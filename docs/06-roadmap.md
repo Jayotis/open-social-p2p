@@ -10,6 +10,9 @@
 - [ ] Produce threat model and privacy requirements.
 - [ ] Choose identity, data ownership, audience and media-manifest models.
 - [ ] Specify adaptive peer grading and bandwidth-fairness goals.
+- [ ] Define open, independently implementable feed ranking, chronological mode and "Why am I seeing this?" explanations.
+- [ ] Research distributed public trend signals, aggregation privacy, federation coverage and Sybil/spam resistance.
+- [ ] Evaluate manipulation scenarios before using P2P demand as any recommendation input.
 - [ ] Describe licensing, documentation and governance policies.
 
 **Gate:** Architecture decision records reviewed; basic publish/reshare/retrieve flows specified.
