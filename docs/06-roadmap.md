@@ -13,6 +13,8 @@
 - [ ] Define open, independently implementable feed ranking, chronological mode and "Why am I seeing this?" explanations.
 - [ ] Research distributed public trend signals, aggregation privacy, federation coverage and Sybil/spam resistance.
 - [ ] Evaluate manipulation scenarios before using P2P demand as any recommendation input.
+- [ ] Specify optional exploration modes for overlooked work and topic-based differing perspectives.
+- [ ] Research verifiable discovery trails and anti-gaming measures for early curators ('scouts').
 - [ ] Describe licensing, documentation and governance policies.
 
 **Gate:** Architecture decision records reviewed; basic publish/reshare/retrieve flows specified.
