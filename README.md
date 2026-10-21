@@ -30,6 +30,7 @@ Peers should choose sources according to **locally measured speed, latency, reli
 | [Open feed and recommendation algorithm](docs/08-open-feed-algorithm.md) | Open-source feed modes, trending criteria, user controls and transparency |
 | [Distributed trending signals](docs/09-distributed-trending-signals.md) | P2P-assisted public trend discovery, data minimization and abuse resistance |
 | [Exploration, divergent perspectives and discovery scouts](docs/10-exploration-divergence-and-scouts.md) | Overlooked posts, cross-perspective discovery and recognition for early curators |
+| [Collective discovery history and referrals](docs/11-collective-discovery-history-and-referrals.md) | Voluntary public recommendations, offline word-of-mouth credit, private local history and P2P discovery snapshots |
 
 ## Candidate technologies — not yet selected
 
