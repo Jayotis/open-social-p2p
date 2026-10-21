@@ -36,6 +36,12 @@ PeerTube may supply video channels, transcoding, playback and federation, but it
 
 Even with user-hosted media, the network needs some infrastructure: account services, federation, discovery of authorized media providers, moderation, push notifications, identity recovery and potentially relays or optional hosting. These services need privacy, operating cost and scaling plans.
 
+### 6. Open feed algorithm and distributed trending
+
+Feed ordering is a **separate algorithm from P2P peer-performance grading**. Candidate discovery may use public ActivityPub interactions and separately opted-in, privacy-preserving aggregate P2P demand observations. Raw bandwidth, replica counts and download requests are not endorsements.
+
+Provide chronological feeds, optional recommended/trending views, local user controls, transparent explanations and independently implementable published ranking rules. See [Open Feed and Recommendation Algorithm](08-open-feed-algorithm.md) and [Distributed Trending Signals](09-distributed-trending-signals.md).
+
 ## Identity and onboarding
 
 The user experiences one signup and one profile. Internally, different services may have distinct identities. Single sign-on does not itself create one portable federated identity.
