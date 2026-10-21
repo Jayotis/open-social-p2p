@@ -95,6 +95,10 @@ Develop privacy-preserving test fixtures and simulation scenarios for:
 - Explicit feed controls overriding trending recommendations.
 - Rapidly spreading harmful content where moderation and personal blocks must be applied separately from popularity.
 
+## Exploration and scouting
+
+An additional [proposal for exploration, divergent perspectives and discovery scouts](10-exploration-divergence-and-scouts.md) defines optional underexposed-content feeds, topic-based alternative viewpoints and recognition for public curators. It preserves creator credit and chronological feeds, and does not assume a global view of engagement.
+
 ## Standards and examples to research
 
 - [W3C ActivityPub specification](https://www.w3.org/TR/activitypub/) — public social activities and federation.
