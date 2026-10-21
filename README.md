@@ -1,20 +1,26 @@
 # Open Social P2P
 
-**A proposed open-source, decentralized social network with user-owned media and peer-to-peer distribution.**
+**Run your own social network at home, connect it to everyone else's, and use it from your phone anywhere.**
 
-**Status: Concept and architecture planning. No production application has been developed.**
+**Status: Stage 1 prototype in progress.** A Rust home node is being built in [`crates/`](crates/); there is no production application yet.
 
 ## The idea
 
-Create a familiar alternative to Facebook, X and YouTube without requiring a single company to store and serve everyone's photos and videos.
+Open Social P2P lets you create your own social media platform in your home. It is private, and it's yours: your feed, your content, your connections. You connect it to a decentralized network of other people's home platforms and reach it from your phone, from anywhere.
 
-Members should be able to sign up normally, connect with people, publish posts, join communities and watch videos **without learning about federation or configuring servers**.
+There is no corporate administration, no data center holding everyone's posts, no handing your data to someone else, and no asking a company to show you content. You get your friends' content directly from them.
 
-A **Flutter mobile app** will be the primary iOS/Android interface. An **optional desktop companion** will let people host media on their own Linux, Windows or macOS computers. With permission, people who reshare public posts can retain and serve verified copies, helping popular content spread across many peers instead of overloading the original author.
+How it works:
+
+- Your **home node** runs on a desktop or another always-on computer. It holds your identity, posts, photos and videos, follows people, gathers their posts and does all the heavy networking. Installing it creates your identity locally; there is no central sign-up ([ADR 0006](docs/decisions/0006-desktop-first-always-on-node.md)).
+- The **Flutter phone app** is the remote control for your node: read, watch and post from anywhere, without your phone carrying the storage, data use or network load ([ADR 0001](docs/decisions/0001-home-node-architecture.md)).
+- **Popular posts spread through the people who already have them.** Followers' nodes and people who reshare can serve verified copies, so a popular post doesn't overload the creator's home connection ([proposal](docs/13-hosting-roles-and-follower-swarm.md)).
+
+Nodes still need some public helpers to get through home routers: relay servers that pass along encrypted traffic without storing it. During development these are run by the iroh project; project and community relays are planned ([ADR 0002](docs/decisions/0002-rust-and-iroh.md), [ADR 0007](docs/decisions/0007-transport-privacy-defaults.md)).
 
 Peers should choose sources according to **locally measured speed, latency, reliability and available capacity**, and respect bandwidth/storage limits. Security, IP-address privacy, audience controls, moderation and deletion limitations are essential design requirements.
 
-**This repository is documentation-first. We are defining requirements and evaluating existing standards before writing application code.**
+Design decisions are recorded in [docs/decisions/](docs/decisions/). The first prototype covers node-to-node publishing, resharing with hosting and verified retrieval; the Android app follows.
 
 ## Project documentation
 
@@ -31,20 +37,39 @@ Peers should choose sources according to **locally measured speed, latency, reli
 | [Distributed trending signals](docs/09-distributed-trending-signals.md) | P2P-assisted public trend discovery, data minimization and abuse resistance |
 | [Exploration, divergent perspectives and discovery scouts](docs/10-exploration-divergence-and-scouts.md) | Overlooked posts, cross-perspective discovery and recognition for early curators |
 | [Collective discovery history and referrals](docs/11-collective-discovery-history-and-referrals.md) | Voluntary public recommendations, offline word-of-mouth credit, private local history and P2P discovery snapshots |
+| [Peer reciprocity and recognition](docs/12-peer-reciprocity-and-recognition.md) | **Proposal (second draft):** nodes assess their own peers, generous tit-for-tat when busy, creator and scout levels, self-reported host stat |
+| [Hosting roles and the follower swarm](docs/13-hosting-roles-and-follower-swarm.md) | **Proposal (second draft):** followers' nodes share prefetched copies, preservation nodes, demand-based expiry |
+| [Critical review of docs 12 and 13](docs/reviews/2026-10-21-review-of-docs-12-and-13.md) | Findings against the first drafts, with a disposition for each |
+| [Architecture decision records](docs/decisions/) | Accepted decisions: home node model, Rust and iroh, native social protocol, signed objects, media profile, desktop-first node, transport privacy defaults |
 
-## Candidate technologies — not yet selected
+## Technologies
 
-- **Flutter:** planned iOS/Android client.
-- **ActivityPub:** candidate federation standard.
-- **Mastodon or Friendica:** possible social backends.
-- **PeerTube:** possible video infrastructure.
-- **libp2p, IPFS/Bitswap, WebRTC:** technologies to evaluate for P2P delivery, networking and verified chunks.
+Selected for the Stage 1 prototype (see the [decision records](docs/decisions/)):
 
-Not every federated service supports the same features. Combining these systems into one account and interface will require research and possibly custom integration.
+- **Rust** home node built on **iroh** (peer connections by public key, hole punching, relay fallback) and **iroh-blobs** (BLAKE3-verified content transfer).
+- **ffmpeg** for transcoding to a low-bitrate 720p profile.
+- **Flutter** for the Android app (iOS later), calling the same Rust code through `flutter_rust_bridge`.
+
+Still to evaluate:
+
+- **ActivityPub** bridge for federation with Mastodon and others (Stage 2).
+- **PeerTube** or adaptive streaming for longer video.
+
+## Building the prototype
+
+Requirements: Rust (stable) and ffmpeg.
+
+```sh
+cargo build
+cargo test            # includes a three-node publish / reshare / origin-offline test
+cargo run --bin osp -- --help
+```
+
+See [docs/testing/stage1-manual.md](docs/testing/stage1-manual.md) for running several nodes and testing across machines.
 
 ## Key design questions
 
-Can resharers voluntarily improve availability by seeding verified copies? How can local observations assign work fairly across faster and slower peers? How can we protect private groups, avoid revealing home network addresses, support users without computers, and manage abuse in a replicated network?
+Can resharers voluntarily improve availability by seeding verified copies? How can local observations assign work fairly across faster and slower peers? How can we protect private groups, avoid revealing home network addresses, keep always-on home nodes simple to run, and manage abuse in a replicated network?
 
 See the [open decisions](docs/07-contributing-and-open-decisions.md) to participate in those discussions.
 

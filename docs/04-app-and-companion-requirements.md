@@ -1,15 +1,23 @@
 # Application and Desktop Companion Requirements
 
-**Status:** Product requirements draft, not a UI or implementation specification.
+**Status:** Product requirements draft, not a UI or implementation specification. The connection model below follows [ADR 0001](decisions/0001-home-node-architecture.md) and [ADR 0006](decisions/0006-desktop-first-always-on-node.md).
+
+## Connection model
+
+- The phone talks **only to its own home node**. The home node does the social and peer-to-peer networking, gathers content and serves it to the phone already transcoded.
+- Pairing: the home node shows a QR code; the phone scans it once and is remembered as one of the person's devices. Devices can be revoked from the node.
+- The connection works on the home network and away from home, without port forwarding (hole punching, or a relay as fallback).
+- When the home node is offline the app shows cached content and says so plainly.
+- A personal always-on node is required ([ADR 0006](decisions/0006-desktop-first-always-on-node.md)). The app shows prominently whether the home node is reachable.
 
 ## Flutter mobile application
 
 ### Onboarding
 
-- One normal registration process; no mandatory selection of servers.
-- Email verification, account recovery, clear terms and age/safety choices appropriate to the service.
-- Friendly usernames in the interface; full federated account addresses available when needed.
-- No desktop installation required to register, post text or participate in discussions.
+- Joining happens on the home node: installing it creates the identity locally. No central sign-up, password database or server selection.
+- Guided identity backup and recovery, clear terms, and age/safety choices appropriate to the network.
+- Friendly display names in the interface; full identity keys available when needed.
+- The phone joins by pairing with the node (QR code), not by creating a separate account.
 
 ### Social experience
 
@@ -28,9 +36,9 @@
 - A 'where this media comes from' transparency view without exposing sensitive home network details.
 - Graceful placeholders for temporarily unavailable media.
 
-## Desktop companion application
+## Home node (desktop companion) application
 
-Target platforms: Linux, Windows and macOS. Implementation language and packaging are to be decided.
+Target platforms: Linux first (the maintainer's test platform), then Windows and macOS. Implemented in Rust ([ADR 0002](decisions/0002-rust-and-iroh.md)); packaging is to be decided.
 
 ### Setup
 
@@ -68,4 +76,4 @@ Keyboard and screen-reader support, caption/subtitle support, media descriptions
 
 ## Definition of a usable early version
 
-An ordinary person can join through Flutter, create a public media post via a paired home node, reshare someone else's post without any technical configuration, optionally help replicate it, and see it remain retrievable when its origin goes offline.
+An ordinary person can install a home node, pair their phone, create a public media post from the phone, reshare someone else's post without any technical configuration, optionally help replicate it, and see it remain retrievable when its origin goes offline.
