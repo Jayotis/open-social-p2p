@@ -1,12 +1,12 @@
 # Proposed System Architecture
 
-**Status:** Proposal; interfaces and technology selections have not been finalized.
+**Status:** Proposal, partly superseded. The home node model, networking stack and object formats are now settled in the [decision records](decisions/); the sections below remain as background where they don't conflict.
 
 ## User-facing products
 
-- **Mobile app:** Flutter application targeting iOS and Android. Familiar feed, profiles, connections, communities, video, notifications, messaging as designed, and account management.
+- **Home node:** the person's agent on the network ([ADR 0001](decisions/0001-home-node-architecture.md)). It runs on their desktop (Linux first, then Windows and macOS) or another always-on machine and does the heavy work: identity, publishing, following and syncing other people's posts, prefetching media, transcoding, and optional replica hosting. A personal node is required to join and is expected to stay on ([ADR 0006](decisions/0006-desktop-first-always-on-node.md)); the software stays able to run on a server so hosted nodes could be offered later.
+- **Mobile app:** Flutter application targeting Android first, then iOS. It is a client of its own home node only: it pairs once by QR code and then reaches the node over one encrypted connection, at home or away. Feed, profiles, video, posting and account management.
 - **Web client:** Comparable experience in a browser; technology undecided.
-- **Desktop companion:** Optional Windows, macOS and Linux application acting as a personal storage and peer-to-peer delivery node. It is not required for a basic social account.
 
 ## Logical subsystems
 
@@ -50,7 +50,7 @@ Design a documented account-mapping model. Advanced federation settings can be d
 
 ## Key flows
 
-**Publish public media:** User chooses a file -> desktop node validates and prepares it -> app creates a post with signed, verifiable media references -> authorized nodes advertise availability -> viewers retrieve and verify.
+**Publish public media:** User picks a photo or video on the phone -> it is uploaded to their home node -> the node transcodes it ([ADR 0005](decisions/0005-media-profile-v1.md)), stores the rendition and publishes a signed post whose attachments carry the BLAKE3 hashes ([ADR 0004](decisions/0004-signed-objects-and-ids.md)) -> followers' nodes sync the post and fetch and verify the media.
 
 **Reshare public media:** User reshares the post socially -> if peer hosting is enabled, their companion downloads and validates eligible content -> it offers a replica subject to quotas and source policy. Likes alone must not implicitly replicate media.
 
