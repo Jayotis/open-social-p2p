@@ -30,7 +30,7 @@ A separate *personal search engine with a crawler hosted in each user's home* ha
 - Creating a proprietary protocol where mature open standards can be reused.
 - Assuming direct peer-to-peer networking can hide IP addresses.
 - Promising that publicly replicated content can always be erased everywhere.
-- Making a desktop computer mandatory to open a social account.
+- ~~Making a desktop computer mandatory to open a social account.~~ Reversed by [ADR 0006](decisions/0006-desktop-first-always-on-node.md): joining requires a personal always-on node, which is what keeps the phone light, private and cheap to run. Hosted nodes may be offered later.
 
 ## Status
 

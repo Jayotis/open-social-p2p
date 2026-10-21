@@ -21,7 +21,17 @@
 
 **Gate:** Architecture decision records reviewed; basic publish/reshare/retrieve flows specified.
 
-## Stage 1 — Isolated desktop/P2P proof of concept (future)
+## Stage 1 — Isolated desktop/P2P proof of concept (in progress)
+
+Stage 1 is split into milestones:
+
+- **M0 — decisions and skeleton (done):** [decision records](decisions/) 0001–0007, Cargo workspace, CI.
+- **M1 — node-to-node prototype (CLI) (built; cross-machine testing pending):** identities, signed posts, follow tickets, outbox sync, media transcoding, reshare with hosting, verified retrieval with the origin offline. See [Stage 1 manual testing](testing/stage1-manual.md).
+- **M2 — Android client and always-on node:** pairing by QR code, feed, playback, posting through the home node, on Wi-Fi and mobile data; the node runs as a service that starts at boot and reports its health to the phone.
+- **M3 — limits, resilience and the follower swarm:** upload limits with "busy, try another host", local peer assessment (measured first; [doc 12](12-peer-reciprocity-and-recognition.md)), follower swarm basics and staggered prefetch ([doc 13](13-hosting-roles-and-follower-swarm.md)), quotas and eviction, resumed transfers, a simulated slow/flaky network harness, and the relay-only privacy mode ([ADR 0007](decisions/0007-transport-privacy-defaults.md)).
+- **Before any public release:** identity backup and recovery ([ADR 0006](decisions/0006-desktop-first-always-on-node.md)).
+
+Original Stage 1 checklist:
 
 - [ ] Pair two or more trusted test devices.
 - [ ] Share and verify a piece of public test media using content hashes.
