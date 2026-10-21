@@ -1,0 +1,28 @@
+[package]
+name = "osp-node"
+description = "Open Social P2P home node: storage, media pipeline, social sync and content distribution"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license-file.workspace = true
+repository.workspace = true
+
+[dependencies]
+osp-proto.workspace = true
+anyhow.workspace = true
+blake3.workspace = true
+data-encoding.workspace = true
+humantime.workspace = true
+iroh.workspace = true
+iroh-blobs.workspace = true
+n0-future.workspace = true
+rusqlite.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+toml.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+tracing-subscriber.workspace = true

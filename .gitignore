@@ -1,0 +1,25 @@
+# Build output
+/target
+
+# Local node homes and logs from scripts/dev-three-nodes.sh
+.osp-dev/
+
+# Personal notes, scratch files and AI assistant session transcripts.
+# Keep anything you don't want published in notes/; git ignores it.
+/notes/
+*.session.txt
+critical-thinking-session*.txt
+
+# AI coding assistant local state
+.claude/
+CLAUDE.local.md
+.cursor/
+.aider*
+.continue/
+
+# Editors and OS files
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
