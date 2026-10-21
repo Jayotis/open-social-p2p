@@ -15,6 +15,8 @@
 - [ ] Evaluate manipulation scenarios before using P2P demand as any recommendation input.
 - [ ] Specify optional exploration modes for overlooked work and topic-based differing perspectives.
 - [ ] Research verifiable discovery trails and anti-gaming measures for early curators ('scouts').
+- [ ] Define voluntary offline referral links and private-by-default local discovery history.
+- [ ] Assess bounded, short-lived P2P discovery snapshot proposals before any private-data aggregation.
 - [ ] Describe licensing, documentation and governance policies.
 
 **Gate:** Architecture decision records reviewed; basic publish/reshare/retrieve flows specified.
