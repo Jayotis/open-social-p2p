@@ -5,6 +5,10 @@ on:
     branches: [main]
   pull_request:
 
+# Read-only access to the repository is all these jobs need.
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
 
@@ -24,10 +28,12 @@ jobs:
       - run: cargo test
 
   audit:
-    # Fails if any dependency has a known security advisory (RustSec database).
+    # Fails if any dependency has a known security vulnerability (RustSec
+    # database). "Unmaintained" notices are reported but don't fail the job.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: rustsec/audit-check@v2
+      - uses: taiki-e/install-action@v2
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          tool: cargo-audit
+      - run: cargo audit
