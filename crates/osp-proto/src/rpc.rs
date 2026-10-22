@@ -1,6 +1,11 @@
 //! Messages between a home node and its own clients (ADR 0001): the local
-//! command-line tool over a Unix socket, and later paired phones over
-//! `osp/client/0`. Same framing as the social protocol.
+//! command-line tool over a Unix socket, and paired phones over
+//! `osp/client/0` (ADR 0008). Same framing as the social protocol.
+//!
+//! Each request gets one reply frame. Two requests also carry raw bytes on
+//! the same stream, and are only accepted over `osp/client/0`: a `Post` with
+//! `uploads` (the device sends the files after its request) and `ReadBlob`
+//! (the node sends the bytes after its reply).
 
 use std::path::PathBuf;
 
@@ -25,12 +30,18 @@ pub enum ClientRequest {
         actor: PublicKey,
     },
     Following,
-    /// Publish a post. Attachment paths are files on the home node's machine,
-    /// so they are accepted only from the local socket, never from a device.
+    /// Publish a post.
+    ///
+    /// `attachments` are files on the home node's machine, so they are
+    /// accepted only from the local socket. `uploads` come from a device:
+    /// their bytes follow this request on the same stream, back to back, in
+    /// order. Either way the node transcodes them before publishing.
     Post {
         content: String,
         #[serde(default)]
         attachments: Vec<PathBuf>,
+        #[serde(default)]
+        uploads: Vec<Upload>,
     },
     Feed {
         #[serde(default = "default_feed_limit")]
@@ -52,27 +63,94 @@ pub enum ClientRequest {
         #[serde(default)]
         out_dir: Option<PathBuf>,
     },
-    /// Sync all follows now and wait for prefetching to finish.
+    /// Sync all follows now. From the local socket this also waits for
+    /// prefetching to finish; a device gets its reply once outboxes are synced.
     Sync,
+    /// Start pairing a new device (local socket only). The ticket works once,
+    /// within a few minutes.
+    NewPairing,
+    /// List paired devices (local socket only).
+    Devices,
+    /// Forget a paired device and close its connections (local socket only).
+    Unpair {
+        device: EndpointId,
+    },
+    /// A new device's first request: the secret from a pairing ticket, and a
+    /// name to show for the device (`osp/client/0` only).
+    Pair {
+        secret: String,
+        name: String,
+    },
+    /// Read a blob the node has, fetching it first if it doesn't
+    /// (`osp/client/0` only). The `Blob` reply is followed by the raw bytes
+    /// from `offset`: `len` of them, or up to the end.
+    ReadBlob {
+        blob: BlobHash,
+        #[serde(default)]
+        offset: u64,
+        #[serde(default)]
+        len: Option<u64>,
+    },
 }
 
 fn default_feed_limit() -> u32 {
     50
 }
 
+/// A file a device sends with a `Post`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Upload {
+    /// The file's name on the device; only its extension is used.
+    pub name: String,
+    pub size: u64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "result", rename_all = "snake_case")]
 pub enum ClientResponse {
     Status(StatusInfo),
-    Ticket { ticket: String },
+    Ticket {
+        ticket: String,
+    },
     Ok,
-    Posted { id: ObjectId },
-    Following { follows: Vec<FollowInfo> },
-    Feed { items: Vec<FeedItem> },
-    Item { item: FeedItem },
-    Fetched { files: Vec<FetchedFile> },
-    Synced { new_objects: usize },
-    Error { message: String },
+    Posted {
+        id: ObjectId,
+    },
+    Following {
+        follows: Vec<FollowInfo>,
+    },
+    Feed {
+        items: Vec<FeedItem>,
+    },
+    Item {
+        item: FeedItem,
+    },
+    Fetched {
+        files: Vec<FetchedFile>,
+    },
+    Synced {
+        new_objects: usize,
+    },
+    /// A pairing ticket for a new device.
+    Pairing {
+        ticket: String,
+        expires_in_secs: u64,
+    },
+    Devices {
+        devices: Vec<DeviceInfo>,
+    },
+    /// Pairing worked: whose node this is.
+    Paired {
+        identity: PublicKey,
+        name: String,
+    },
+    /// The blob's total size; the requested bytes follow.
+    Blob {
+        size: u64,
+    },
+    Error {
+        message: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -88,6 +166,19 @@ pub struct StatusInfo {
     pub peers: Vec<PeerInfo>,
     /// `None` until the first network check finishes, or without relays.
     pub nat: Option<NatKind>,
+    /// Version of the node software.
+    #[serde(default)]
+    pub version: String,
+    #[serde(default)]
+    pub uptime_secs: u64,
+    #[serde(default)]
+    pub devices: usize,
+    /// Free space on the disk that holds the node's home, if known.
+    #[serde(default)]
+    pub disk_free_bytes: Option<u64>,
+    /// Things the owner should look at, in plain words. Empty when all is well.
+    #[serde(default)]
+    pub problems: Vec<String>,
 }
 
 /// How this node's network maps its outgoing UDP, which decides whether
@@ -133,6 +224,9 @@ pub struct PeerInfo {
     pub path: String,
     pub rtt_ms: Option<u64>,
     pub direction: Direction,
+    /// Whether the peer is one of this node's paired devices.
+    #[serde(default)]
+    pub device: bool,
 }
 
 /// Which side opened the live connections to a peer.
@@ -142,6 +236,16 @@ pub enum Direction {
     Outgoing,
     Incoming,
     Both,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeviceInfo {
+    pub id: EndpointId,
+    pub name: Option<String>,
+    /// When it was paired (RFC 3339).
+    pub paired: String,
+    /// Whether it has a live connection to the node right now.
+    pub connected: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

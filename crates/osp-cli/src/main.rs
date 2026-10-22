@@ -1,20 +1,21 @@
 //! `osp`: run and control an Open Social P2P home node.
 //!
-//! `osp daemon` runs the node; every other command talks to the running
+//! `osp daemon` runs the node; most other commands talk to the running
 //! daemon over the Unix socket in the node's home directory.
 
 use std::{
     net::SocketAddr,
     path::{Path, PathBuf},
+    time::{Duration, Instant},
 };
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use osp_node::{Config, Home, Node, RelayChoice};
 use osp_proto::{
-    ObjectId, PublicKey,
+    EndpointId, ObjectId, PublicKey,
     framing::{read_frame, write_frame},
-    rpc::{ClientRequest, ClientResponse, Direction, FeedItem, StatusInfo},
+    rpc::{ClientRequest, ClientResponse, DeviceInfo, Direction, FeedItem, StatusInfo},
 };
 use tokio::net::UnixStream;
 
@@ -99,6 +100,16 @@ enum Command {
     },
     /// Sync everyone you follow now
     Sync,
+    /// Pair your phone: shows a QR code to scan with the app
+    Pair {
+        /// Don't draw a QR code
+        #[arg(long)]
+        no_qr: bool,
+    },
+    /// List paired phones
+    Devices,
+    /// Forget a paired phone, by its name or the start of its ID
+    Unpair { device: String },
 }
 
 #[tokio::main]
@@ -120,10 +131,16 @@ async fn main() -> Result<()> {
             }
             return print(resp, cli.json);
         }
+        Command::Pair { no_qr } => return pair(&home, no_qr, cli.json).await,
+        Command::Unpair { device } => {
+            let id = find_device(&home, &device).await?;
+            ClientRequest::Unpair { device: id }
+        }
         Command::Status => ClientRequest::Status,
         Command::Follow { ticket } => ClientRequest::Follow { ticket },
         Command::Unfollow { actor } => ClientRequest::Unfollow { actor },
         Command::Following => ClientRequest::Following,
+        Command::Devices => ClientRequest::Devices,
         Command::Post { text, attach } => ClientRequest::Post {
             content: text,
             // The daemon has its own working directory, so send absolute paths.
@@ -131,6 +148,7 @@ async fn main() -> Result<()> {
                 .iter()
                 .map(|p| p.canonicalize().with_context(|| format!("{}", p.display())))
                 .collect::<Result<_>>()?,
+            uploads: Vec::new(),
         },
         Command::Feed { limit } => ClientRequest::Feed { limit },
         Command::Show { id } => ClientRequest::Show { id },
@@ -202,6 +220,77 @@ async fn daemon(home: &Path) -> Result<()> {
     node.shutdown().await
 }
 
+/// Shows a pairing QR code, then waits until a new device appears.
+async fn pair(home: &Path, no_qr: bool, json: bool) -> Result<()> {
+    let before: Vec<EndpointId> = devices(home).await?.iter().map(|d| d.id).collect();
+    let resp = send(home, ClientRequest::NewPairing).await?;
+    let ClientResponse::Pairing {
+        ticket,
+        expires_in_secs,
+    } = &resp
+    else {
+        return print(resp, json);
+    };
+    if json {
+        return print(resp, json);
+    }
+    if !no_qr {
+        qr2term::print_qr(ticket).context("drawing QR code")?;
+    }
+    println!("{ticket}\n");
+    println!(
+        "Scan this with the Open Social P2P app on your phone. It works once, within {} minutes.",
+        expires_in_secs / 60
+    );
+    println!("Whoever uses it first becomes a paired device, so don't share it.");
+    println!("Waiting for your phone... (Ctrl-C stops waiting; the code stays valid)");
+
+    let deadline = Instant::now() + Duration::from_secs(*expires_in_secs);
+    while Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        if let Some(d) = devices(home)
+            .await?
+            .into_iter()
+            .find(|d| !before.contains(&d.id))
+        {
+            println!(
+                "Paired with {} ({}).",
+                d.name.as_deref().unwrap_or("a device"),
+                d.id.fmt_short()
+            );
+            return Ok(());
+        }
+    }
+    bail!("the pairing code expired; run `osp pair` again")
+}
+
+async fn devices(home: &Path) -> Result<Vec<DeviceInfo>> {
+    match send(home, ClientRequest::Devices).await? {
+        ClientResponse::Devices { devices } => Ok(devices),
+        ClientResponse::Error { message } => bail!(message),
+        other => bail!("unexpected reply {other:?}"),
+    }
+}
+
+/// A paired device by name (ignoring case) or by the start of its ID.
+async fn find_device(home: &Path, query: &str) -> Result<EndpointId> {
+    let query = query.trim().to_lowercase();
+    let found: Vec<EndpointId> = devices(home)
+        .await?
+        .into_iter()
+        .filter(|d| {
+            d.id.to_string().starts_with(&query)
+                || d.name.as_deref().is_some_and(|n| n.to_lowercase() == query)
+        })
+        .map(|d| d.id)
+        .collect();
+    match found[..] {
+        [id] => Ok(id),
+        [] => bail!("no paired device matches {query:?} (see `osp devices`)"),
+        _ => bail!("{query:?} matches several devices; give more of the ID"),
+    }
+}
+
 async fn send(home: &Path, req: ClientRequest) -> Result<ClientResponse> {
     let socket = Home::new(home).socket();
     let stream = UnixStream::connect(&socket).await.with_context(|| {
@@ -267,6 +356,19 @@ fn print(resp: ClientResponse, json: bool) -> Result<()> {
         }
         ClientResponse::Synced { new_objects: 0 } => println!("Up to date."),
         ClientResponse::Synced { new_objects } => println!("{new_objects} new objects"),
+        ClientResponse::Pairing { ticket, .. } => println!("{ticket}"),
+        ClientResponse::Devices { devices } => {
+            if devices.is_empty() {
+                println!("No paired devices. Pair your phone with `osp pair`.");
+            }
+            for d in devices {
+                let connected = if d.connected { ", connected now" } else { "" };
+                println!("{}  {}", d.name.as_deref().unwrap_or("(no name)"), d.id);
+                println!("    paired {}{connected}", d.paired);
+            }
+        }
+        ClientResponse::Paired { name, .. } => println!("Paired with {name}'s node."),
+        ClientResponse::Blob { size: bytes } => println!("{}", size(bytes)),
     }
     Ok(())
 }
@@ -275,12 +377,16 @@ fn print_status(s: &StatusInfo) {
     println!("Name:      {}", s.name);
     println!("Identity:  {}", s.identity);
     println!("Node:      {}", s.node);
+    println!("Version:   {}, up {}", s.version, uptime(s.uptime_secs));
     println!("Relay:     {}", s.relay.as_deref().unwrap_or("none"));
     println!("Bound:     {}", s.local_addrs.join(", "));
     if let Some(nat) = s.nat {
         println!("NAT:       {}", nat.describe());
     }
-    println!("Follows:   {}   Followers: {}", s.follows, s.followers);
+    println!(
+        "Follows:   {}   Followers: {}   Devices: {}",
+        s.follows, s.followers, s.devices
+    );
     for st in &s.storage {
         println!(
             "Storage:   {:<8} {} blobs, {}",
@@ -289,6 +395,9 @@ fn print_status(s: &StatusInfo) {
             size(st.bytes)
         );
     }
+    if let Some(free) = s.disk_free_bytes {
+        println!("Disk:      {} free", size(free));
+    }
     for p in &s.peers {
         let rtt = p.rtt_ms.map(|r| format!("{r} ms")).unwrap_or_default();
         let direction = match p.direction {
@@ -296,12 +405,28 @@ fn print_status(s: &StatusInfo) {
             Direction::Incoming => "incoming",
             Direction::Both => "both",
         };
+        let device = if p.device { "  (your device)" } else { "" };
         println!(
-            "Peer:      {}  {direction:<8}  {} {}",
+            "Peer:      {}  {direction:<8}  {} {}{device}",
             p.node.fmt_short(),
             p.path,
             rtt
         );
+    }
+    if s.problems.is_empty() {
+        println!("Health:    no problems");
+    }
+    for problem in &s.problems {
+        println!("Problem:   {problem}");
+    }
+}
+
+fn uptime(secs: u64) -> String {
+    match secs {
+        s if s >= 86_400 => format!("{}d {}h", s / 86_400, s % 86_400 / 3600),
+        s if s >= 3600 => format!("{}h {}m", s / 3600, s % 3600 / 60),
+        s if s >= 60 => format!("{}m", s / 60),
+        s => format!("{s}s"),
     }
 }
 

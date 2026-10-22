@@ -464,6 +464,43 @@ impl Db {
 
     // ---- devices ----
 
+    /// Records a paired device, or renames one paired before.
+    pub fn add_device(&self, node: &EndpointId, name: &str) -> Result<()> {
+        self.conn().execute(
+            "INSERT INTO devices (node, name, paired_ms) VALUES (?1, ?2, ?3)
+             ON CONFLICT(node) DO UPDATE SET name = excluded.name",
+            params![node.to_string(), name, now_ms()],
+        )?;
+        Ok(())
+    }
+
+    pub fn remove_device(&self, node: &EndpointId) -> Result<bool> {
+        let n = self.conn().execute(
+            "DELETE FROM devices WHERE node = ?1",
+            params![node.to_string()],
+        )?;
+        Ok(n > 0)
+    }
+
+    /// Paired devices with their names and pairing times, oldest first.
+    pub fn devices(&self) -> Result<Vec<(EndpointId, Option<String>, String)>> {
+        let conn = self.conn();
+        let mut stmt =
+            conn.prepare("SELECT node, name, paired_ms FROM devices ORDER BY paired_ms")?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, Option<String>>(1)?,
+                row.get::<_, i64>(2)?,
+            ))
+        })?;
+        rows.map(|r| {
+            let (node, name, paired) = r?;
+            Ok((node.parse()?, name, format_ms(paired)))
+        })
+        .collect()
+    }
+
     pub fn is_device(&self, node: &EndpointId) -> Result<bool> {
         let found: Option<i64> = self
             .conn()

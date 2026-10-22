@@ -5,8 +5,10 @@
 use std::sync::{Arc, Mutex};
 
 use iroh::{
-    Endpoint, Watcher,
-    endpoint::{AfterHandshakeOutcome, Connection, EndpointHooks, Side, WeakConnectionHandle},
+    Endpoint, EndpointId, Watcher,
+    endpoint::{
+        AfterHandshakeOutcome, Connection, EndpointHooks, Side, VarInt, WeakConnectionHandle,
+    },
     unstable_net_report::NetReport,
 };
 use osp_proto::rpc::{Direction, NatKind, PeerInfo};
@@ -58,10 +60,20 @@ impl ConnTracker {
                     path,
                     rtt_ms,
                     direction,
+                    device: false,
                 }),
             }
         }
         peers
+    }
+
+    /// Closes every live connection with `remote`, on any protocol.
+    pub fn close_all(&self, remote: EndpointId, reason: &[u8]) {
+        for conn in self.lock().iter().filter_map(|weak| weak.upgrade()) {
+            if conn.remote_id() == remote {
+                conn.close(VarInt::from_u32(0), reason);
+            }
+        }
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Vec<WeakConnectionHandle>> {

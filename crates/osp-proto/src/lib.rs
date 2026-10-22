@@ -16,7 +16,7 @@ use std::time::SystemTime;
 
 pub use iroh_base::{EndpointAddr, EndpointId, PublicKey, SecretKey};
 pub use object::{ObjectId, SignedObject};
-pub use ticket::FollowTicket;
+pub use ticket::{FollowTicket, PairingTicket};
 pub use types::{Announce, Attachment, BlobHash, BlobRef, MediaKind, Note, Payload, Person};
 
 /// ALPN of the node-to-node social protocol.

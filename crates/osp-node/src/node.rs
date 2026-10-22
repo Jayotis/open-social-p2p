@@ -5,7 +5,7 @@ use std::{
     os::unix::fs::PermissionsExt,
     path::Path,
     sync::{Arc, Mutex},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use anyhow::{Context, Result, bail};
@@ -26,11 +26,12 @@ use tokio::{
 use tracing::info;
 
 use crate::{
+    client::{ClientProtocol, PendingPairing},
     config::{Config, RelayChoice},
     control::{self, Origin},
     db::{BlobClass, Db},
     home::Home,
-    keys,
+    keys, media,
     network::{self, ConnTracker},
     social::SocialProtocol,
     store::ContentStore,
@@ -70,6 +71,11 @@ pub(crate) struct Core {
     pub sync_now: Notify,
     /// Number of prefetch jobs still downloading, so `Sync` can wait for them.
     pub prefetch_jobs: watch::Sender<usize>,
+    /// Pairing secrets handed out and not used yet. Kept in memory only.
+    pub pairings: Mutex<Vec<PendingPairing>>,
+    pub started: Instant,
+    /// Whether ffmpeg ran at startup; without it, posts with media fail.
+    pub media_tools: bool,
 }
 
 impl Node {
@@ -114,6 +120,7 @@ impl Node {
 
         let store = ContentStore::open(&home.blobs(), &endpoint, db.clone()).await?;
         let profile = own_profile(&identity, &config.name, endpoint.id(), &db)?;
+        let media_tools = media::tools_available(&config.media).await;
         info!(
             identity = %identity.public().fmt_short(),
             node = %endpoint.id().fmt_short(),
@@ -134,12 +141,16 @@ impl Node {
             sync_lock: tokio::sync::Mutex::new(()),
             sync_now: Notify::new(),
             prefetch_jobs: watch::Sender::new(0),
+            pairings: Mutex::new(Vec::new()),
+            started: Instant::now(),
+            media_tools,
         });
 
         let (blobs, serving_rules) = core.store.protocol();
         let router = Router::builder(endpoint)
             .accept(iroh_blobs::ALPN, blobs)
             .accept(osp_proto::SOCIAL_ALPN, SocialProtocol::new(core.clone()))
+            .accept(osp_proto::CLIENT_ALPN, ClientProtocol::new(core.clone()))
             .spawn();
         let sync_loop = tokio::spawn(sync::run_loop(core.clone()));
         let mut tasks = vec![serving_rules, sync_loop];
@@ -222,13 +233,20 @@ impl Core {
     /// and relay URL, so tickets don't reveal home IP addresses; without
     /// relays, direct addresses are all there is.
     pub async fn shareable_addr(&self) -> EndpointAddr {
+        let addr = self.full_addr().await;
         if self.config.network.relay == RelayChoice::Disabled {
-            return self.endpoint.addr();
+            return addr;
         }
-        // Wait briefly for a home relay; without a network we hand out the ID alone.
-        let _ = tokio::time::timeout(Duration::from_secs(10), self.endpoint.online()).await;
-        let addr = self.endpoint.addr();
         EndpointAddr::from_parts(addr.id, addr.addrs.into_iter().filter(|a| a.is_relay()))
+    }
+
+    /// Every address we have, relay and direct. Only for our own devices.
+    pub async fn full_addr(&self) -> EndpointAddr {
+        if self.config.network.relay != RelayChoice::Disabled {
+            // Wait briefly for a home relay; without a network we hand out what we have.
+            let _ = tokio::time::timeout(Duration::from_secs(10), self.endpoint.online()).await;
+        }
+        self.endpoint.addr()
     }
 }
 

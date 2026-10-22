@@ -105,6 +105,7 @@ async fn reshared_media_survives_origin_going_offline() {
         ClientRequest::Post {
             content: "first light".into(),
             attachments: vec![clip],
+            uploads: vec![],
         },
     )
     .await
@@ -251,7 +252,8 @@ async fn tampered_or_unknown_requests_fail_cleanly() {
     assert!(matches!(
         node.handle(ClientRequest::Post {
             content: "  ".into(),
-            attachments: vec![]
+            attachments: vec![],
+            uploads: vec![]
         })
         .await,
         ClientResponse::Error { .. }

@@ -60,6 +60,23 @@ impl Probe {
     }
 }
 
+/// Whether ffmpeg and ffprobe can be run. Without them, posts with media fail.
+pub async fn tools_available(cfg: &MediaConfig) -> bool {
+    for tool in [&cfg.ffmpeg, &cfg.ffprobe] {
+        let ran = Command::new(tool)
+            .arg("-version")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .await;
+        if !ran.is_ok_and(|status| status.success()) {
+            return false;
+        }
+    }
+    true
+}
+
 /// Transcodes `input` into a fresh directory under `work_dir`.
 pub async fn transcode(cfg: &MediaConfig, input: &Path, work_dir: &Path) -> Result<Rendition> {
     let source = probe(cfg, input).await?;

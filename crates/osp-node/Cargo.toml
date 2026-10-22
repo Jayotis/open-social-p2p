@@ -12,6 +12,7 @@ osp-proto.workspace = true
 anyhow.workspace = true
 blake3.workspace = true
 data-encoding.workspace = true
+getrandom.workspace = true
 humantime.workspace = true
 iroh.workspace = true
 iroh-blobs.workspace = true
