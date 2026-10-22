@@ -11,19 +11,24 @@ use std::{
     time::Duration,
 };
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail, ensure};
 use iroh::{Endpoint, EndpointId};
 use iroh_blobs::{
     BlobsProtocol, Hash,
-    api::{blobs::BlobStatus, downloader::Downloader},
+    api::{blobs::BlobStatus, downloader::Downloader, proto::ExportRangesItem},
     provider::events::{
         AbortReason, ConnectMode, EventMask, EventSender, ObserveMode, ProviderMessage,
         RequestMode, ThrottleMode,
     },
     store::fs::FsStore,
 };
+use n0_future::StreamExt;
 use osp_proto::BlobHash;
-use tokio::{sync::mpsc, task::JoinHandle};
+use tokio::{
+    io::{AsyncWrite, AsyncWriteExt},
+    sync::mpsc,
+    task::JoinHandle,
+};
 use tracing::{debug, warn};
 
 use crate::db::{BlobClass, Db};
@@ -90,6 +95,11 @@ impl ContentStore {
         Ok(self.store.has(to_hash(hash)).await?)
     }
 
+    /// The blob's size if it is stored completely.
+    pub async fn stored_size(&self, hash: &BlobHash) -> Result<Option<u64>> {
+        self.size(to_hash(hash)).await
+    }
+
     /// Downloads a blob, trying `providers` in order. Every chunk is verified
     /// against the hash before it is stored.
     pub async fn download(
@@ -126,6 +136,38 @@ impl ContentStore {
             .export(to_hash(hash), &target)
             .await
             .with_context(|| format!("exporting {} to {}", hash.fmt_short(), target.display()))?;
+        Ok(())
+    }
+
+    /// Writes `len` bytes of a stored blob, starting at `offset`, to `out`.
+    pub async fn write_range<W: AsyncWrite + Unpin>(
+        &self,
+        hash: &BlobHash,
+        offset: u64,
+        len: u64,
+        out: &mut W,
+    ) -> Result<()> {
+        let end = offset.checked_add(len).context("range out of bounds")?;
+        let mut items = self
+            .store
+            .export_ranges(to_hash(hash), offset..end)
+            .stream();
+        let mut position = offset;
+        while let Some(item) = items.next().await {
+            match item {
+                ExportRangesItem::Size(_) => {}
+                ExportRangesItem::Data(leaf) => {
+                    ensure!(
+                        leaf.offset == position,
+                        "blob store returned bytes out of order"
+                    );
+                    out.write_all(&leaf.data).await?;
+                    position += leaf.data.len() as u64;
+                }
+                ExportRangesItem::Error(e) => bail!("reading {}: {e}", hash.fmt_short()),
+            }
+        }
+        ensure!(position == end, "blob {} is incomplete", hash.fmt_short());
         Ok(())
     }
 

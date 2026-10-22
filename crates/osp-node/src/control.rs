@@ -1,5 +1,5 @@
 //! Commands from the node's own clients: the local `osp` tool (Unix socket)
-//! and, from milestone M2, paired phones.
+//! and paired phones (`osp/client/0`, see `client.rs`).
 
 use std::{
     os::unix::fs::PermissionsExt,
@@ -9,7 +9,6 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail, ensure};
-use iroh::EndpointId;
 use osp_proto::{
     Announce, Attachment, BlobRef, FollowTicket, Note, ObjectId, Payload, SignedObject,
     framing::{read_frame, write_frame},
@@ -25,18 +24,23 @@ use tokio::{
 };
 use tracing::{debug, warn};
 
-use crate::{config::RelayChoice, db::BlobClass, media, network, node::Core, node::remember};
+use crate::{
+    config::RelayChoice, db::BlobClass, health, media, network, node::Core, node::remember,
+};
 
 /// Longest post text accepted, in bytes. Keeps outbox pages well under the frame limit.
 const MAX_CONTENT_BYTES: usize = 10_000;
 
-/// Where a command came from. Some commands touch the home node's own
-/// filesystem and are only allowed locally.
+/// Most photos or videos in one post.
+pub(crate) const MAX_ATTACHMENTS: usize = 4;
+
+/// Where a command came from. Commands that touch the home node's own
+/// filesystem, or manage devices, are only allowed locally.
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum Origin {
     Local,
-    #[allow(dead_code)] // used from milestone M2
-    Device(EndpointId),
+    /// A paired device over `osp/client/0`.
+    Device,
 }
 
 impl Core {
@@ -82,10 +86,15 @@ impl Core {
             ClientRequest::Post {
                 content,
                 attachments,
+                uploads,
             } => {
                 ensure!(
                     local || attachments.is_empty(),
                     "file paths are only accepted from the local socket"
+                );
+                ensure!(
+                    uploads.is_empty(),
+                    "uploads are only accepted over osp/client/0, without file paths"
                 );
                 ClientResponse::Posted {
                     id: self.post(content, &attachments).await?,
@@ -109,9 +118,28 @@ impl Core {
                     files: self.fetch(&id, out_dir.as_deref()).await?,
                 }
             }
+            // A phone doesn't wait for prefetching: it can read media as soon as it's needed.
             ClientRequest::Sync => ClientResponse::Synced {
-                new_objects: self.sync_all(true).await?,
+                new_objects: self.sync_all(local).await?,
             },
+            ClientRequest::NewPairing => {
+                ensure!(local, "devices can only be paired from the node itself");
+                self.new_pairing().await?
+            }
+            ClientRequest::Devices => {
+                ensure!(local, "devices can only be listed from the node itself");
+                ClientResponse::Devices {
+                    devices: self.devices()?,
+                }
+            }
+            ClientRequest::Unpair { device } => {
+                ensure!(local, "devices can only be unpaired from the node itself");
+                self.unpair(&device)?;
+                ClientResponse::Ok
+            }
+            ClientRequest::Pair { .. } | ClientRequest::ReadBlob { .. } => {
+                bail!("this request is only accepted over osp/client/0")
+            }
         })
     }
 
@@ -121,11 +149,18 @@ impl Core {
             RelayChoice::Disabled => None,
             _ => network::nat_kind(&self.endpoint),
         };
+        let relay = addr.relay_urls().next().map(|u| u.to_string());
+        let disk_free_bytes = health::disk_free(self.home.root());
+        let mut peers = self.tracker.peers();
+        for peer in &mut peers {
+            peer.device = self.db.is_device(&peer.node)?;
+        }
         Ok(StatusInfo {
             name: self.config.name.clone(),
             identity: self.identity.public(),
             node: self.endpoint.id(),
-            relay: addr.relay_urls().next().map(|u| u.to_string()),
+            problems: self.problems(relay.as_deref(), disk_free_bytes)?,
+            relay,
             local_addrs: self
                 .endpoint
                 .bound_sockets()
@@ -135,8 +170,12 @@ impl Core {
             follows: self.db.follows()?.len(),
             followers: self.db.follower_count()?,
             storage: self.db.storage_summary()?,
-            peers: self.tracker.peers(),
+            peers,
             nat,
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            uptime_secs: self.started.elapsed().as_secs(),
+            devices: self.db.devices()?.len(),
+            disk_free_bytes,
         })
     }
 
@@ -159,7 +198,11 @@ impl Core {
         Ok(())
     }
 
-    async fn post(self: &Arc<Self>, content: String, paths: &[PathBuf]) -> Result<ObjectId> {
+    pub(crate) async fn post(
+        self: &Arc<Self>,
+        content: String,
+        paths: &[PathBuf],
+    ) -> Result<ObjectId> {
         ensure!(
             !content.trim().is_empty() || !paths.is_empty(),
             "a post needs text or an attachment"
@@ -167,6 +210,10 @@ impl Core {
         ensure!(
             content.len() <= MAX_CONTENT_BYTES,
             "post text is longer than {MAX_CONTENT_BYTES} bytes"
+        );
+        ensure!(
+            paths.len() <= MAX_ATTACHMENTS,
+            "a post can have at most {MAX_ATTACHMENTS} attachments"
         );
         let mut attachment = Vec::new();
         for path in paths {

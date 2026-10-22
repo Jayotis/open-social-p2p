@@ -1,4 +1,5 @@
-//! Follow tickets: everything needed to follow someone, as one string or QR code.
+//! Tickets: everything needed to follow someone, or to pair a phone with its
+//! home node, as one string or QR code.
 
 use std::{fmt, str::FromStr};
 
@@ -8,7 +9,8 @@ use iroh_base::{EndpointAddr, PublicKey};
 use serde::{Deserialize, Serialize};
 
 /// Uppercase base32 keeps QR codes in their compact alphanumeric mode.
-const PREFIX: &str = "OSP1";
+const FOLLOW_PREFIX: &str = "OSP1";
+const PAIRING_PREFIX: &str = "OSPPAIR1";
 
 /// An identity plus an address for one of its home nodes.
 ///
@@ -21,10 +23,24 @@ pub struct FollowTicket {
     pub node: EndpointAddr,
 }
 
+/// What a phone needs to pair with its home node (ADR 0008): the node's
+/// address and a one-time secret.
+///
+/// Unlike a follow ticket, the address includes the node's addresses on
+/// private networks, so a phone at home can connect without a relay. The
+/// ticket is shown only to the node's owner, works once, and expires after a
+/// few minutes. It is encoded in binary (postcard) rather than JSON, to keep
+/// the QR code small enough for a terminal.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PairingTicket {
+    pub node: EndpointAddr,
+    pub secret: [u8; 16],
+}
+
 impl fmt::Display for FollowTicket {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let json = serde_json::to_vec(self).map_err(|_| fmt::Error)?;
-        write!(f, "{PREFIX}{}", BASE32_NOPAD.encode(&json))
+        write!(f, "{FOLLOW_PREFIX}{}", BASE32_NOPAD.encode(&json))
     }
 }
 
@@ -32,13 +48,34 @@ impl FromStr for FollowTicket {
     type Err = anyhow::Error;
 
     fn from_str(s: &str) -> Result<Self> {
-        let s = s.trim().to_ascii_uppercase();
-        let body = s.strip_prefix(PREFIX).context("not an osp follow ticket")?;
-        let json = BASE32_NOPAD
-            .decode(body.as_bytes())
-            .context("ticket is not valid base32")?;
+        let json = decode(FOLLOW_PREFIX, s).context("not an osp follow ticket")?;
         serde_json::from_slice(&json).context("ticket contents are malformed")
     }
+}
+
+impl fmt::Display for PairingTicket {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let bytes = postcard::to_stdvec(self).map_err(|_| fmt::Error)?;
+        write!(f, "{PAIRING_PREFIX}{}", BASE32_NOPAD.encode(&bytes))
+    }
+}
+
+impl FromStr for PairingTicket {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self> {
+        let bytes = decode(PAIRING_PREFIX, s).context("not an osp pairing ticket")?;
+        postcard::from_bytes(&bytes).context("ticket contents are malformed")
+    }
+}
+
+/// Strips the prefix and decodes the base32 body. Accepts lowercase too.
+fn decode(prefix: &str, s: &str) -> Result<Vec<u8>> {
+    let s = s.trim().to_ascii_uppercase();
+    let body = s.strip_prefix(prefix).context("wrong prefix")?;
+    BASE32_NOPAD
+        .decode(body.as_bytes())
+        .context("ticket is not valid base32")
 }
 
 #[cfg(test)]
@@ -54,8 +91,32 @@ mod tests {
                 .with_ip_addr("127.0.0.1:4433".parse().unwrap()),
         };
         let s = ticket.to_string();
-        assert!(s.starts_with(PREFIX));
+        assert!(s.starts_with(FOLLOW_PREFIX));
         assert_eq!(s.parse::<FollowTicket>().unwrap(), ticket);
         assert_eq!(s.to_lowercase().parse::<FollowTicket>().unwrap(), ticket);
+    }
+
+    #[test]
+    fn pairing_and_follow_tickets_are_not_confused() {
+        let pairing = PairingTicket {
+            node: EndpointAddr::new(SecretKey::generate().public())
+                .with_relay_url("https://relay.example.org./".parse().unwrap())
+                .with_ip_addr("172.16.5.20:4433".parse().unwrap())
+                .with_ip_addr("[fd00::20]:4433".parse().unwrap()),
+            secret: [7; 16],
+        };
+        let s = pairing.to_string();
+        assert!(s.starts_with(PAIRING_PREFIX));
+        // Small enough for a QR code that fits in a terminal.
+        assert!(s.len() < 250, "{} characters", s.len());
+        assert_eq!(s.parse::<PairingTicket>().unwrap(), pairing);
+        assert_eq!(s.to_lowercase().parse::<PairingTicket>().unwrap(), pairing);
+        assert!(s.parse::<FollowTicket>().is_err());
+
+        let follow = FollowTicket {
+            actor: SecretKey::generate().public(),
+            node: EndpointAddr::new(SecretKey::generate().public()),
+        };
+        assert!(follow.to_string().parse::<PairingTicket>().is_err());
     }
 }
