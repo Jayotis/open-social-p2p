@@ -32,7 +32,7 @@ The script starts three daemons (alice, bob, carol), runs the publish → reshar
 
 ```sh
 osp init --name "Your name"        # creates ~/.local/share/osp
-osp daemon                         # leave running (tmux, or systemd below)
+osp daemon                         # leave running, or `osp service install` (see the M2 guide)
 
 # in another terminal
 osp invite                         # ticket + QR code for others to follow you

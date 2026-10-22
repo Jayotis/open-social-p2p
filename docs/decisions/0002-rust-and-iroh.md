@@ -23,7 +23,7 @@ Rust for the core, built on **iroh 1.x** for connectivity and **iroh-blobs** for
 - iroh-blobs is used from **one module only** (`crates/osp-node/src/store.rs`). If its API changes before 1.0, or it has to be replaced, the change stays in that module.
 - iroh-blobs' provider event hook is used to **refuse any request for content the node has not chosen to serve** (see the serving rules in ADR 0003).
 - **Minimum version iroh-blobs 0.103.1.** Earlier versions did not reliably respect the per-request-type settings in `EventMask` (fixed in 0.103.1, 2026-10-06, "Respect the per-request-type modes in EventMask"). The serving rules, and keeping pushes into our store disabled, depend on those settings. The workspace pins this minimum, and CI runs a dependency vulnerability audit.
-- The Flutter app reaches the same Rust code through `flutter_rust_bridge` (Stage 1, milestone M2).
+- The Flutter app reaches the same Rust code through `flutter_rust_bridge` (Stage 1, milestone M2). The phone's side is `crates/osp-client` ([ADR 0008](0008-device-pairing-and-client-protocol.md)).
 
 ## Consequences
 

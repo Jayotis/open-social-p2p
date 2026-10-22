@@ -1,0 +1,65 @@
+# ADR 0008: Device pairing and the client protocol
+
+**Status:** Accepted (2026-10-21)
+
+## Context
+
+The phone is a thin client of its owner's home node ([ADR 0001](0001-home-node-architecture.md)). Each phone has its own device key ([ADR 0004](0004-signed-objects-and-ids.md)), and the node must start at boot and report its health to the phone ([ADR 0006](0006-desktop-first-always-on-node.md)). Milestone M2 needs answers to five questions:
+
+1. How does a phone prove it belongs to the node's owner, and how is that taken back?
+2. What may a paired phone ask the node to do?
+3. How does the phone's video player get media from the node?
+4. How does the phone post a photo or video?
+5. How does the phone learn whether the node is healthy?
+
+## Options considered
+
+**Pairing.** (a) A long-lived shared password typed into the phone. (b) A one-time secret in a QR code shown by the node, after which the phone is known by its device key. (c) Accepting any phone and asking the owner to approve it on the node.
+
+**Media to the phone.** (a) iroh-blobs on the phone, downloading verified chunks from the node, plus a local server to feed the player. (b) Byte ranges streamed over the client protocol, behind a local server on the phone. (c) Downloading the whole file before playing.
+
+## Decision
+
+**Pairing: option (b).**
+
+- `osp pair` on the node prints a **pairing ticket** as a QR code: the node's address and a 128-bit random secret. The ticket works **once**, within **10 minutes**. The node keeps only a hash of the secret, in memory.
+- The address holds the node ID, its relay URL and its addresses on private networks, so a phone at home can connect directly even without internet. Public addresses are left out. That keeps the QR code small, and the phone learns them through the relay anyway.
+- The phone dials the node ID from the ticket over `osp/client/0` and sends `Pair { secret, name }`. The QUIC handshake authenticates both ends by key: the phone knows it reached the node with that ID, and the node knows the phone holds its device key. The node records the device ID and name.
+- From then on the device ID is the credential. **Every request checks it**, and an unknown device may only send `Pair`. `osp unpair` deletes the device and closes its connections. `osp devices` lists devices and shows which are connected.
+
+**What a device may do.** Every request the local `osp` tool can make, except:
+
+- anything naming files on the node's own disk (`Post` attachment paths, `Fetch` with an output directory);
+- managing devices (`NewPairing`, `Devices`, `Unpair`), which stays on the node itself.
+
+A device's `Sync` returns once outboxes are synced. It doesn't wait for prefetching, because the phone can read media as soon as it needs it.
+
+**Media to the phone: option (b).** `ReadBlob { blob, offset, len }` on `osp/client/0` returns the blob's size, then the raw bytes. If the node doesn't have the blob yet, it fetches it first. On the phone, a small HTTP server on 127.0.0.1 turns the player's range requests into `ReadBlob`s, so seeking works. Other apps can reach 127.0.0.1 too, so every URL carries a random token.
+
+Why not iroh-blobs on the phone: the phone talks only to its own node, and that node already checked every chunk against the hash the author signed. The bytes then travel over a connection authenticated to that node. Option (b) keeps iroh-blobs and its store out of the app, and maps directly onto HTTP ranges. The `cache` serving rule (cached media goes only to paired devices, [ADR 0003](0003-native-social-protocol-v0.md)) stays in place for a future where a device fetches over iroh-blobs.
+
+**Posting media.** A `Post` from a device lists its `uploads` (name and size), and the files' bytes follow the request on the same stream. The node writes them to a scratch directory, transcodes them like local attachments ([ADR 0005](0005-media-profile-v1.md)), publishes, and deletes the scratch copies. Limits: four attachments per post, 4 GB per file, and at least 1 GB must stay free on the node's disk.
+
+**Health.** `Status` adds the node's version, uptime, number of devices, free disk space and a list of **problems in plain words**: no relay connection, no followed node reachable on the last sync, ffmpeg missing, or disk space low. `osp status` prints the same list.
+
+**Always on.** `osp service install` installs a systemd **user** service that restarts on failure, and turns on lingering, so it starts at boot without anyone logging in. Root access is needed only if logind refuses lingering. A lock file stops a second node from starting on the same home.
+
+**The phone's network.** The phone uses n0's relays and DNS lookup (resolve only), so it can find the node again if the node's relay changes. The phone never publishes its own address. Direct paths between phone and node are allowed ([ADR 0007](0007-transport-privacy-defaults.md)).
+
+The phone side of all this lives in `crates/osp-client`. The Android app calls it through flutter_rust_bridge, and `cargo run -p osp-client --example phone` uses it from a computer.
+
+## Consequences
+
+- **The QR code is a password for 10 minutes.** Whoever uses it first becomes a paired device. `osp pair` says so, and shows the code only in the owner's terminal. The ticket also holds the node's private-network addresses.
+- **A paired phone has full access** to the owner's node (post, follow, reshare) until it is unpaired. There are no read-only devices yet, and no per-device limits.
+- **The device key lives in the app's private storage** on the phone, not yet in the Android Keystore.
+- **The phone trusts its own node** for media integrity. It doesn't re-verify BLAKE3 hashes itself.
+- **Uploads send the original file.** A phone video can be hundreds of megabytes, which is costly on mobile data. The app should warn before posting on mobile data. Transcoding on the phone is a later option.
+- **Media the node doesn't have yet** is fetched in full before the first byte reaches the phone. Most media is prefetched in advance; streaming a partial download to the phone is M3 work.
+- **Interrupted uploads start over.** Resuming transfers is M3 work.
+
+## Validation and revisit conditions
+
+- `crates/osp-client/tests/phone.rs`: pairing, single-use tickets, refusal of unknown devices, device-only rules, posting a video, the feed, playback through the media server with ranges, and revocation.
+- Manual: the phone on home Wi-Fi and on mobile data pairs, reads the feed, plays a video and posts one ([M2 testing guide](../testing/m2-phone.md)).
+- Revisit when: read-only or limited devices are needed; the phone needs to sign posts itself (identity-signed device grants, ADR 0004); the phone fetches from other nodes; or the Android Keystore becomes the place for device keys.

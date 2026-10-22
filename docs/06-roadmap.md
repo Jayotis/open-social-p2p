@@ -1,6 +1,6 @@
 # Development Roadmap
 
-**Status:** Stage 1 in progress. Milestones M0 and M1 are done; see below.
+**Status:** Stage 1 in progress. Milestones M0 and M1 are done, and M2 is under way; see below.
 
 ## Stage 0 — Requirements and research (current)
 
@@ -27,13 +27,15 @@ Stage 1 is split into milestones:
 
 - **M0 — decisions and skeleton (done):** [decision records](decisions/) 0001–0007, Cargo workspace, CI.
 - **M1 — node-to-node prototype (CLI) (done; tested on one machine and across machines, direct and relayed):** identities, signed posts, follow tickets, outbox sync, media transcoding, reshare with hosting, verified retrieval with the origin offline. See [Stage 1 manual testing](testing/stage1-manual.md).
-- **M2 — Android client and always-on node:** pairing by QR code, feed, playback, posting through the home node, on Wi-Fi and mobile data; the node runs as a service that starts at boot and reports its health to the phone.
+- **M2 — Android client and always-on node (in progress):** pairing by QR code, feed, playback, posting through the home node, on Wi-Fi and mobile data; the node runs as a service that starts at boot and reports its health to the phone.
+  - Done: device pairing and the client protocol ([ADR 0008](decisions/0008-device-pairing-and-client-protocol.md)), health reporting, `osp service install`, and `osp-client` (the phone's networking, tested against a real node). See [M2 testing](testing/m2-phone.md).
+  - Next: the Flutter Android app on top of `osp-client`, tested on a phone at home and on mobile data.
 - **M3 — limits, resilience and the follower swarm:** upload limits with "busy, try another host", local peer assessment (measured first; [doc 12](12-peer-reciprocity-and-recognition.md)), follower swarm basics and staggered prefetch ([doc 13](13-hosting-roles-and-follower-swarm.md)), quotas and eviction, resumed transfers, a simulated slow/flaky network harness, and the relay-only privacy mode ([ADR 0007](decisions/0007-transport-privacy-defaults.md)).
 - **Before any public release:** identity backup and recovery ([ADR 0006](decisions/0006-desktop-first-always-on-node.md)).
 
 Original Stage 1 checklist:
 
-- [ ] Pair two or more trusted test devices.
+- [ ] Pair two or more trusted test devices. (Pairing works with the pretend phone; the Android app is next.)
 - [x] Share and verify a piece of public test media using content hashes.
 - [x] Let a resharer optionally retain and serve the media.
 - [x] Turn off the origin and retrieve from an authorized replica.
