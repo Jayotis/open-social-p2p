@@ -20,10 +20,16 @@ Option 2 for Stage 1.
 - Protocol `osp/social/0` (request/response, one QUIC stream per request, a length-prefixed JSON frame each way):
   - `GetProfile`: the signed `Person` record, which lists the identity's current home node IDs.
   - `GetOutbox { since }`: objects after sequence number `since`.
-  - `Subscribe`: "I follow you, notify me". The author node records the follower's node ID.
-  - `Notify { seq }`: a best-effort push hint so followers sync now instead of on their next poll.
+  - `Subscribe`: "I follow you, notify me". The author node records the follower's node ID. A follower's node sends it again once a day, and after a restart.
+  - `Notify { seq }`: a best-effort push hint so followers sync now instead of on their next poll. A node that doesn't follow the author answers with an error.
   - `WhoHosts { hash }`: which nodes this node knows to be hosting a blob.
 - **Limits on incoming requests.** Anyone who knows a node's ID can connect, so a node limits what each request may cost. A request frame is at most 64 KiB; replies, such as outbox pages, may use the full 16 MiB. A node serves at most 32 requests at once from all peers together, and 4 on any one connection, each within 60 seconds. A request over a limit gets a "busy" error without being read. A connection may have at most 32 streams open, and one-way streams aren't allowed, since no protocol uses them.
+- **Limits on followers and addresses.** Anyone can subscribe, and new identities cost nothing, so:
+  - a node address (in `Subscribe`, `WhoHosts` replies or a follow ticket) may list at most 16 relays and IP addresses;
+  - a node keeps at most 10,000 followers and accepts at most 100 new ones an hour. Someone refused still sees new posts by polling; they only miss the push until their node subscribes again the next day;
+  - a follower not heard from for 30 days is forgotten. Answering a `Notify` or subscribing again counts as being heard from;
+  - followers are notified 16 at a time, 15 seconds each, so ones that don't answer don't delay the rest;
+  - a node remembers at most 20 hosts per blob, and takes at most 20 from one `WhoHosts` reply.
 - **Follow tickets:** to follow someone you need their identity key and an address for their home node, encoded as a short string or QR code. There is no global directory yet.
 - **Reshare and host:** an `Announce` of someone's post carries `hosting: true` when the resharer's node keeps a replica. Anyone who sees the `Announce` learns another provider for that media.
 - **Serving rules** (enforced by the iroh-blobs request hook):
