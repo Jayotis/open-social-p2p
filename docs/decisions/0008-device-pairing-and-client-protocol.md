@@ -54,7 +54,7 @@ The phone side of all this lives in `crates/osp-client`. The Android app calls i
 - **The QR code is a password for 10 minutes.** Whoever uses it first becomes a paired device. `osp pair` says so, and shows the code only in the owner's terminal. The ticket also holds the node's private-network addresses.
 - **A paired phone has full access** to the owner's node (post, follow, reshare) until it is unpaired. There are no read-only devices yet, and no per-device limits.
 - **Unpairing stops new requests, not what the phone already has.** The node closes the phone's connections at once, but the saved feed and any media already buffered stay on the phone (a playing video carries on for up to a minute or so).
-- **The device key lives in the app's private storage** on the phone, not yet in the Android Keystore.
+- **The device key lives in the phone's secure storage** (the `flutter_secure_storage` plugin). On Android it is encrypted with a key held in the Keystore, which can't be copied off the phone, so a copy of the app's files is useless elsewhere. It doesn't help against code running as the app on an unlocked phone, which can ask the Keystore to decrypt just as the app does. Older versions of the app kept the key as a plain file; it is moved into secure storage on the first start and the file deleted, so the phone stays paired. If secure storage can't decrypt the key (it clears itself then, after some resets), the app makes a new key, forgets its pairing and asks to pair again. On an iPhone the plugin would use the Keychain.
 - **The phone trusts its own node** for media integrity. It doesn't re-verify BLAKE3 hashes itself.
 - **Uploads send the original file.** A phone video can be hundreds of megabytes, which is costly on mobile data. The app should warn before posting on mobile data. Transcoding on the phone is a later option.
 - **Media the node doesn't have yet** is fetched in full before the first byte reaches the phone. Most media is prefetched in advance; streaming a partial download to the phone is M3 work.
@@ -62,6 +62,6 @@ The phone side of all this lives in `crates/osp-client`. The Android app calls i
 
 ## Validation and revisit conditions
 
-- `crates/osp-client/tests/phone.rs`: pairing, single-use tickets, refusal of unknown devices, device-only rules, posting a video, the feed, playback through the media server with ranges, and revocation.
+- `crates/osp-client/tests/phone.rs`: pairing, single-use tickets, refusal of unknown devices, device-only rules, posting a video, the feed, playback through the media server with ranges, revocation, and a device key handed in from secure storage. `app/test/device_key_test.dart`: moving an old key file, and making a new key when the stored one is gone.
 - Manual: the phone on home Wi-Fi and on mobile data pairs, reads the feed, plays a video and posts one ([M2 testing guide](../testing/m2-phone.md)).
-- Revisit when: read-only or limited devices are needed; the phone needs to sign posts itself (identity-signed device grants, ADR 0004); the phone fetches from other nodes; or the Android Keystore becomes the place for device keys.
+- Revisit when: read-only or limited devices are needed; the phone needs to sign posts itself (identity-signed device grants, ADR 0004); or the phone fetches from other nodes.
