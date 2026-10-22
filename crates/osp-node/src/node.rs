@@ -8,7 +8,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, bail, ensure};
 use iroh::{
     Endpoint, EndpointAddr, EndpointId, PublicKey, RelayMode, RelayUrl, SecretKey,
     address_lookup::MemoryLookup,
@@ -28,6 +28,9 @@ use tracing::info;
 /// Most streams a peer may have open on one connection at a time. A phone
 /// loading a feed full of images uses the most; extra streams wait their turn.
 const MAX_STREAMS_PER_CONN: u32 = 32;
+
+/// Most relays and IP addresses accepted in one node address (see `check_addr`).
+const MAX_ADDRS: usize = 16;
 
 use crate::{
     client::{ClientProtocol, PendingPairing},
@@ -77,6 +80,8 @@ pub(crate) struct Core {
     pub prefetch_jobs: watch::Sender<usize>,
     /// Pairing secrets handed out and not used yet. Kept in memory only.
     pub pairings: Mutex<Vec<PendingPairing>>,
+    /// When we last asked each followed identity's node to notify us.
+    pub subscribed: Mutex<HashMap<PublicKey, Instant>>,
     pub started: Instant,
     /// Whether ffmpeg ran at startup; without it, posts with media fail.
     pub media_tools: bool,
@@ -146,6 +151,7 @@ impl Node {
             sync_now: Notify::new(),
             prefetch_jobs: watch::Sender::new(0),
             pairings: Mutex::new(Vec::new()),
+            subscribed: Mutex::new(HashMap::new()),
             started: Instant::now(),
             media_tools,
         });
@@ -278,6 +284,18 @@ pub(crate) fn remember(lookup: &MemoryLookup, addr: &EndpointAddr) {
     if !addr.is_empty() {
         lookup.add_endpoint_info(addr.clone());
     }
+}
+
+/// Refuses a node address that lists more than `MAX_ADDRS` relays and IP
+/// addresses. A relay and a few IP addresses is normal; a long list would
+/// let a peer make us store, and dial, addresses of its choosing.
+pub(crate) fn check_addr(addr: &EndpointAddr) -> Result<()> {
+    let n = addr.addrs.len();
+    ensure!(
+        n <= MAX_ADDRS,
+        "node address lists {n} addresses; at most {MAX_ADDRS} are accepted"
+    );
+    Ok(())
 }
 
 async fn bind_endpoint(

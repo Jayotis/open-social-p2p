@@ -17,7 +17,10 @@ use osp_proto::{
 use tokio::sync::Semaphore;
 use tracing::debug;
 
-use crate::node::{Core, remember};
+use crate::{
+    db::now_ms,
+    node::{Core, check_addr, remember},
+};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
@@ -33,6 +36,16 @@ const MAX_REQUESTS_PER_CONN: usize = 4;
 const STREAM_TIMEOUT: Duration = Duration::from_secs(60);
 /// Longest we try to tell a peer we're busy.
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
+/// Most followers a node keeps. Each one costs a notification per post.
+const MAX_FOLLOWERS: usize = 10_000;
+/// Most new followers accepted per hour. Anyone can subscribe, and new
+/// identities are free, so this stops a flood of them. Someone refused
+/// still sees new posts, by polling; they only miss the push notification
+/// until they try again (nodes do once a day).
+const MAX_NEW_FOLLOWERS_PER_HOUR: usize = 100;
+/// Followers not heard from for this long are forgotten. A live follower's
+/// node subscribes again every day, and answers notifications.
+pub(crate) const FOLLOWER_SILENCE: Duration = Duration::from_secs(30 * 24 * 60 * 60);
 
 /// Accepts incoming `osp/social/0` connections.
 #[derive(Clone)]
@@ -158,7 +171,8 @@ impl Core {
             }
             SocialRequest::Subscribe { addr } => {
                 ensure!(addr.id == remote, "can only subscribe on your own behalf");
-                self.db.add_follower(&addr)?;
+                check_addr(&addr)?;
+                self.accept_follower(&addr)?;
                 remember(&self.lookup, &addr);
                 SocialResponse::Ok
             }
@@ -168,10 +182,11 @@ impl Core {
                     .follows()?
                     .iter()
                     .any(|f| f.actor == actor && f.addr.id == remote);
-                if from_followed {
-                    debug!(%seq, actor = %actor.fmt_short(), "notified of new posts");
-                    self.sync_now.notify_one();
-                }
+                // An error tells a node we stopped following that we're not
+                // listening, so it stops counting us as a live follower.
+                ensure!(from_followed, "not following {}", actor.fmt_short());
+                debug!(%seq, actor = %actor.fmt_short(), "notified of new posts");
+                self.sync_now.notify_one();
                 SocialResponse::Ok
             }
             SocialRequest::WhoHosts { blob } => {
@@ -188,6 +203,25 @@ impl Core {
                 SocialResponse::Hosts { nodes }
             }
         })
+    }
+
+    /// Records a subscriber. A node we already have just gets its address
+    /// refreshed; a new one must fit within the limits on followers.
+    fn accept_follower(&self, addr: &EndpointAddr) -> Result<()> {
+        if !self.db.is_follower(&addr.id)? {
+            let now = now_ms();
+            self.db
+                .drop_silent_followers(now - FOLLOWER_SILENCE.as_millis() as i64)?;
+            ensure!(
+                self.db.follower_count()? < MAX_FOLLOWERS,
+                "this node has as many followers as it can notify"
+            );
+            ensure!(
+                self.db.new_followers_since(now - 60 * 60 * 1000)? < MAX_NEW_FOLLOWERS_PER_HOUR,
+                "this node is busy with new followers; try again later"
+            );
+        }
+        self.db.add_follower(addr)
     }
 
     /// Sends one request to another node, reusing an open connection when we have one.

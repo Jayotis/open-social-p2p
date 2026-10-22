@@ -9,6 +9,7 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail, ensure};
+use n0_future::{BufferedStreamExt, StreamExt, stream};
 use osp_proto::{
     Announce, Attachment, BlobRef, FollowTicket, Note, ObjectId, Payload, SignedObject,
     framing::{read_frame, write_frame},
@@ -22,10 +23,14 @@ use tokio::{
     net::{UnixListener, UnixStream},
     task::JoinHandle,
 };
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 use crate::{
-    config::RelayChoice, db::BlobClass, health, media, network, node::Core, node::remember,
+    config::RelayChoice,
+    db::{BlobClass, now_ms},
+    health, media, network,
+    node::{Core, check_addr, remember},
+    social::FOLLOWER_SILENCE,
 };
 
 /// Longest post text accepted, in bytes. Keeps outbox pages well under the frame limit.
@@ -33,6 +38,11 @@ pub(crate) const MAX_CONTENT_BYTES: usize = 10_000;
 
 /// Most photos or videos in one post.
 pub(crate) const MAX_ATTACHMENTS: usize = 4;
+
+/// Followers notified at once after a post.
+const NOTIFY_AT_ONCE: usize = 16;
+/// Give up on notifying one follower after this long.
+const NOTIFY_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Where a command came from. Commands that touch the home node's own
 /// filesystem, or manage devices, are only allowed locally.
@@ -184,16 +194,11 @@ impl Core {
             ticket.actor != self.identity.public(),
             "you can't follow yourself"
         );
+        check_addr(&ticket.node)?;
         remember(&self.lookup, &ticket.node);
         self.db.upsert_follow(&ticket.actor, &ticket.node)?;
-        // Ask to be told about new posts. Best effort: polling covers us otherwise.
-        let me = self.shareable_addr().await;
-        if let Err(e) = self
-            .social_request(&ticket.node, &SocialRequest::Subscribe { addr: me })
-            .await
-        {
-            warn!("subscribing to {} failed: {e:#}", ticket.actor.fmt_short());
-        }
+        // The sync this wakes also subscribes, so we're told about new posts.
+        self.lock_subscribed().remove(&ticket.actor);
         self.sync_now.notify_one();
         Ok(())
     }
@@ -283,18 +288,33 @@ impl Core {
     }
 
     async fn notify_followers(&self, seq: u64) {
-        let req = SocialRequest::Notify {
+        let silent_since = now_ms() - FOLLOWER_SILENCE.as_millis() as i64;
+        match self.db.drop_silent_followers(silent_since) {
+            Ok(0) => {}
+            Ok(n) => info!(
+                followers = n,
+                "forgot followers not heard from in a long time"
+            ),
+            Err(e) => warn!("dropping silent followers: {e:#}"),
+        }
+        let req = &SocialRequest::Notify {
             actor: self.identity.public(),
             seq,
         };
-        for addr in self.db.followers().unwrap_or_default() {
-            let sent =
-                tokio::time::timeout(Duration::from_secs(15), self.social_request(&addr, &req))
-                    .await;
-            if !matches!(sent, Ok(Ok(_))) {
-                debug!(node = %addr.id.fmt_short(), "follower not reachable");
-            }
-        }
+        // Several at once, so followers that don't answer don't hold up the rest.
+        stream::iter(self.db.followers().unwrap_or_default())
+            .map(|addr| async move {
+                let sent =
+                    tokio::time::timeout(NOTIFY_TIMEOUT, self.social_request(&addr, req)).await;
+                if matches!(sent, Ok(Ok(_))) {
+                    self.db.follower_seen(&addr.id).ok();
+                } else {
+                    debug!(node = %addr.id.fmt_short(), "follower not reachable");
+                }
+            })
+            .buffered_unordered(NOTIFY_AT_ONCE)
+            .for_each(|_| {})
+            .await;
     }
 
     async fn fetch(&self, id: &ObjectId, out_dir: Option<&Path>) -> Result<Vec<FetchedFile>> {

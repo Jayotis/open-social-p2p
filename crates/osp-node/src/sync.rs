@@ -1,10 +1,14 @@
 //! Gathering: syncing followed outboxes, prefetching their media, and finding
 //! nodes that can serve a blob.
 
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::{
+    collections::HashMap,
+    sync::{Arc, MutexGuard},
+    time::{Duration, Instant},
+};
 
 use anyhow::{Result, bail, ensure};
-use iroh::EndpointId;
+use iroh::{EndpointId, PublicKey};
 use osp_proto::{
     BlobHash, Note, ObjectId, Payload,
     social::{MAX_OUTBOX_PAGE, SocialRequest, SocialResponse},
@@ -13,8 +17,13 @@ use tracing::{info, warn};
 
 use crate::{
     db::{BlobClass, Follow},
-    node::{Core, remember},
+    node::{Core, check_addr, remember},
 };
+
+/// How often we ask each followed node to keep notifying us.
+const RESUBSCRIBE_EVERY: Duration = Duration::from_secs(24 * 60 * 60);
+/// Hosts taken from one "who hosts" reply. Enough to find a copy.
+const MAX_HOSTS_PER_REPLY: usize = 20;
 
 /// Polls followed nodes on the configured interval, or sooner when woken.
 pub(crate) async fn run_loop(core: Arc<Core>) {
@@ -179,7 +188,37 @@ impl Core {
                 break;
             }
         }
+        self.subscribe_if_due(follow).await;
         Ok((new_objects, blobs))
+    }
+
+    /// Asks a followed node to notify us of new posts: after following,
+    /// after a restart, and then once a day. Repeating it keeps us from
+    /// being forgotten as a silent follower, and updates our address there.
+    /// Best effort: polling finds new posts anyway.
+    async fn subscribe_if_due(&self, follow: &Follow) {
+        {
+            let mut subscribed = self.lock_subscribed();
+            if subscribed
+                .get(&follow.actor)
+                .is_some_and(|last| last.elapsed() < RESUBSCRIBE_EVERY)
+            {
+                return;
+            }
+            // Counted as done even if it fails, so a busy node isn't asked every sync.
+            subscribed.insert(follow.actor, Instant::now());
+        }
+        let me = self.shareable_addr().await;
+        if let Err(e) = self
+            .social_request(&follow.addr, &SocialRequest::Subscribe { addr: me })
+            .await
+        {
+            warn!(actor = %follow.actor.fmt_short(), "subscribing failed: {e:#}");
+        }
+    }
+
+    pub(crate) fn lock_subscribed(&self) -> MutexGuard<'_, HashMap<PublicKey, Instant>> {
+        self.subscribed.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     async fn prefetch(&self, mut blobs: Vec<BlobHash>) {
@@ -234,7 +273,11 @@ impl Core {
             if let Ok(SocialResponse::Hosts { nodes }) =
                 self.social_request(&follow.addr, &req).await
             {
-                for addr in nodes.iter().filter(|a| a.id != me) {
+                let usable = nodes
+                    .iter()
+                    .filter(|a| a.id != me && check_addr(a).is_ok())
+                    .take(MAX_HOSTS_PER_REPLY);
+                for addr in usable {
                     self.db.add_host(blob, addr).ok();
                 }
             }
