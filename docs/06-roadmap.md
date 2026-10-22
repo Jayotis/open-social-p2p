@@ -39,7 +39,7 @@ Stage 1 is split into milestones:
   - Done: limits on serving media: transfers at once (fewer for strangers than for followers), "busy" when they're all taken so the requester tries another host, and an optional upload speed cap ([ADR 0003](decisions/0003-native-social-protocol-v0.md)). Still to come: busy requesters pointed at followers who have a copy (the follower swarm).
   - Done: the phone's device key kept in its secure storage, encrypted with a key held in the Android Keystore ([ADR 0008](decisions/0008-device-pairing-and-client-protocol.md)).
   - Done: release builds of the app signed with a key kept off GitHub ([app README](../app/README.md#release-signing)), and a CI check that no secret or key file is ever committed.
-- **Before any public release:** identity backup and recovery ([ADR 0006](decisions/0006-desktop-first-always-on-node.md)). Designed in [ADR 0009](decisions/0009-identity-backup-and-recovery.md): recovery words, an optional encrypted backup file, and a `Moved` message so followers find a replacement node. Next to build. Also to decide before then: whether to add a second, offline key that can replace a stolen one.
+- **Before any public release:** identity backup and recovery ([ADR 0006](decisions/0006-desktop-first-always-on-node.md)). Designed in [ADR 0009](decisions/0009-identity-backup-and-recovery.md): recovery words, an optional encrypted backup file, and a `Moved` message so followers find a replacement node. Built so far: the recovery words and restoring onto a new node; `Moved` and the backup file are next. Also to decide before then: whether to add a second, offline key that can replace a stolen one.
 
 Original Stage 1 checklist:
 
