@@ -34,6 +34,7 @@ Stage 1 is split into milestones:
   - Not tested on mobile data itself: the test phones have no SIM, so the relayed path on home Wi-Fi stood in for it.
 - **M3 — limits, resilience and the follower swarm (in progress):** upload limits with "busy, try another host", local peer assessment (measured first; [doc 12](12-peer-reciprocity-and-recognition.md)), follower swarm basics and staggered prefetch ([doc 13](13-hosting-roles-and-follower-swarm.md)), quotas and eviction, resumed transfers, a simulated slow/flaky network harness, and the relay-only privacy mode ([ADR 0007](decisions/0007-transport-privacy-defaults.md)).
   - Done: limits on what other nodes and devices can make a node do: requests, followers, the addresses it keeps, object sizes, sync, and the disk space their media takes, with quotas and eviction ([ADR 0003](decisions/0003-native-social-protocol-v0.md), [ADR 0004](decisions/0004-signed-objects-and-ids.md), [ADR 0008](decisions/0008-device-pairing-and-client-protocol.md)).
+  - Done: relay-only mode, opt-in, which hides the node's address from other nodes and phones, and only safe relays taken from other people's addresses ([ADR 0007](decisions/0007-transport-privacy-defaults.md) phase 1, [testing](testing/relay-only.md)).
 - **Before any public release:** identity backup and recovery ([ADR 0006](decisions/0006-desktop-first-always-on-node.md)).
 
 Original Stage 1 checklist:
