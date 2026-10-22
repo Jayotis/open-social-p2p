@@ -47,6 +47,18 @@ Target platforms: Linux first (the maintainer's test platform), then Windows and
 - Work behind typical home routers without requiring manual port forwarding when feasible.
 - Clear local controls, service start/stop and uninstall/data-removal pathways.
 
+### A ready-made node box (idea)
+
+[ADR 0006](decisions/0006-desktop-first-always-on-node.md) already lists single-board computers as suitable home nodes. The idea is to go further: offer a small box, such as a Raspberry Pi with an SSD, that arrives ready to plug in and pair, or a documented image for people who build their own. It draws a few watts instead of a desktop's tens, which suits a machine that is always on.
+
+To check first:
+
+- 64-bit ARM builds in CI, tested on the board itself.
+- An SSD rather than an SD card, which wears out under constant writes.
+- Transcoding speed: the Raspberry Pi 5 has no hardware H.264 encoder, so video is encoded on the CPU; measure it, and use a faster encoder preset if needed.
+- Content screening with a vision model ([doc 05](05-security-privacy-and-governance.md#content-screening-on-the-home-node)) needs more than such a board offers, unless it has an accelerator.
+- Selling hardware brings support, updates, warranty and possibly a business entity. That decision comes later.
+
 ### Storage and publishing
 
 - Import approved files without altering originals without permission.

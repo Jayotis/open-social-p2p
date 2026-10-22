@@ -76,6 +76,7 @@ Stage 1 uses a native protocol ([ADR 0003](decisions/0003-native-social-protocol
 - [ ] Test dedicated video service and adaptive stream integration.
 - [ ] Validate private-content architecture before enabling private P2P.
 - [ ] Develop reporting, appeals and operator tools.
+- [ ] Explore a trusted-friends safety network and content screening on the home node ([doc 05](05-security-privacy-and-governance.md#ideas-to-explore-not-designed-yet)).
 - [ ] Load test popular media distribution and estimate relay costs.
 
 **Gate:** Documented service sustainability and governance assumptions.
@@ -87,6 +88,7 @@ Stage 1 uses a native protocol ([ADR 0003](decisions/0003-native-social-protocol
 - [ ] Compatibility and migration documentation.
 - [ ] Deployment, accessibility and disaster-recovery procedures.
 - [ ] Reproducible packaging and release process.
+- [ ] Decide whether to offer a ready-made node box, such as a Raspberry Pi with an SSD ([doc 04](04-app-and-companion-requirements.md#a-ready-made-node-box-idea)).
 
 ## Success measures to agree on
 
