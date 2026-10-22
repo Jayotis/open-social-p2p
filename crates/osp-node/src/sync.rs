@@ -1,22 +1,28 @@
 //! Gathering: syncing followed outboxes, prefetching their media, and finding
 //! nodes that can serve a blob.
+//!
+//! A followed node decides what its outbox says, so everything it sends is
+//! checked and bounded: each page must move our position forward, a sync
+//! takes a limited number of pages and a limited time, and only so many new
+//! objects are taken from one identity per day.
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     sync::{Arc, MutexGuard},
     time::{Duration, Instant},
 };
 
-use anyhow::{Result, bail, ensure};
+use anyhow::{Result, anyhow, bail, ensure};
 use iroh::{EndpointId, PublicKey};
+use n0_future::{BufferedStreamExt, StreamExt, stream};
 use osp_proto::{
     BlobHash, Note, ObjectId, Payload,
     social::{MAX_OUTBOX_PAGE, SocialRequest, SocialResponse},
 };
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use crate::{
-    db::{BlobClass, Follow},
+    db::{BlobClass, Follow, now_ms},
     node::{Core, check_addr, remember},
 };
 
@@ -24,11 +30,32 @@ use crate::{
 const RESUBSCRIBE_EVERY: Duration = Duration::from_secs(24 * 60 * 60);
 /// Hosts taken from one "who hosts" reply. Enough to find a copy.
 const MAX_HOSTS_PER_REPLY: usize = 20;
+/// However often followed nodes notify us, we sync at most this often.
+const MIN_SYNC_GAP: Duration = Duration::from_secs(5);
+/// Followed nodes synced at once.
+const SYNC_AT_ONCE: usize = 4;
+/// Longest one followed node's sync may take. What arrived by then is kept.
+const FOLLOW_SYNC_TIMEOUT: Duration = Duration::from_secs(120);
+/// Outbox pages taken from one followed node per sync; the rest waits.
+const MAX_PAGES_PER_SYNC: usize = 10;
+/// New posts and reshares taken from one followed identity per day. Far
+/// more than a person posts; it stops a node flooding ours. The rest
+/// waits for the next day.
+const MAX_NEW_PER_DAY: usize = 500;
+/// When we start following someone, we take their latest posts and
+/// reshares, not their whole history.
+const BACKFILL: u64 = 100;
+/// Media larger than this isn't prefetched; it's fetched when it's opened.
+const MAX_PREFETCH_BYTES: u64 = 256 << 20;
+/// Most files, and bytes, prefetched per sync.
+const MAX_PREFETCH_FILES_PER_SYNC: usize = 200;
+const MAX_PREFETCH_BYTES_PER_SYNC: u64 = 1 << 30;
 
 /// Polls followed nodes on the configured interval, or sooner when woken.
 pub(crate) async fn run_loop(core: Arc<Core>) {
     let interval = Duration::from_secs(core.config.sync.interval_secs.max(5));
     loop {
+        let started = Instant::now();
         if let Err(e) = core.sync_all(false).await {
             warn!("sync failed: {e:#}");
         }
@@ -36,6 +63,7 @@ pub(crate) async fn run_loop(core: Arc<Core>) {
             _ = tokio::time::sleep(interval) => {}
             _ = core.sync_now.notified() => {}
         }
+        tokio::time::sleep(MIN_SYNC_GAP.saturating_sub(started.elapsed())).await;
     }
 }
 
@@ -46,12 +74,27 @@ impl Core {
         let mut new_objects = 0;
         {
             let _guard = self.sync_lock.lock().await;
-            let mut to_prefetch = Vec::new();
-            for follow in self.db.follows()? {
-                match self.sync_follow(&follow).await {
+            // A few at once, each within a time limit, so one slow or
+            // hostile node can't hold up the others.
+            let results: Vec<_> = stream::iter(self.db.follows()?)
+                .map(|follow| async move {
+                    let result =
+                        tokio::time::timeout(FOLLOW_SYNC_TIMEOUT, self.sync_follow(&follow))
+                            .await
+                            .unwrap_or_else(|_| {
+                                Err(anyhow!("gave up after {} s", FOLLOW_SYNC_TIMEOUT.as_secs()))
+                            });
+                    (follow, result)
+                })
+                .buffered_unordered(SYNC_AT_ONCE)
+                .collect()
+                .await;
+            let mut candidates = Vec::new();
+            for (follow, result) in results {
+                match result {
                     Ok((n, blobs)) => {
                         new_objects += n;
-                        to_prefetch.extend(blobs);
+                        candidates.extend(blobs);
                     }
                     Err(e) => {
                         warn!(actor = %follow.actor.fmt_short(), "sync failed: {e:#}");
@@ -59,6 +102,7 @@ impl Core {
                     }
                 }
             }
+            let to_prefetch = choose_prefetch(candidates);
             if self.config.sync.prefetch && !to_prefetch.is_empty() {
                 // Counted while still holding the sync lock, so a waiting
                 // `Sync` that runs next is guaranteed to see this job.
@@ -81,8 +125,9 @@ impl Core {
     }
 
     /// Fetches new outbox entries from one followed node. Returns the number
-    /// of new objects and the blobs worth prefetching.
-    async fn sync_follow(&self, follow: &Follow) -> Result<(usize, Vec<BlobHash>)> {
+    /// of new objects, and the media worth prefetching with declared sizes.
+    async fn sync_follow(&self, follow: &Follow) -> Result<(usize, Vec<(BlobHash, u64)>)> {
+        let actor = follow.actor.fmt_short();
         // The profile gives us a display name and proves the node speaks for this identity.
         match self
             .social_request(&follow.addr, &SocialRequest::GetProfile)
@@ -104,12 +149,33 @@ impl Core {
         }
 
         let mut cursor = follow.cursor;
+        if !follow.synced {
+            // A new follow starts near the end of the outbox. Asking for no
+            // entries still tells us where the end is.
+            let req = SocialRequest::GetOutbox { since: 0, limit: 0 };
+            let SocialResponse::Outbox { latest, .. } =
+                self.social_request(&follow.addr, &req).await?
+            else {
+                bail!("unexpected reply to GetOutbox");
+            };
+            cursor = latest.saturating_sub(BACKFILL);
+        }
+
+        let day_ago = now_ms() - 24 * 60 * 60 * 1000;
+        let mut budget =
+            MAX_NEW_PER_DAY.saturating_sub(self.db.objects_received_since(&follow.actor, day_ago)?);
         let mut new_objects = 0;
         let mut blobs = Vec::new();
-        loop {
+        for _ in 0..MAX_PAGES_PER_SYNC {
+            if budget == 0 {
+                warn!(%actor, "took {MAX_NEW_PER_DAY} new objects today; the rest waits");
+                break;
+            }
+            // Never ask for more than today's budget allows.
+            let limit = MAX_OUTBOX_PAGE.min(budget as u32);
             let req = SocialRequest::GetOutbox {
                 since: cursor,
-                limit: MAX_OUTBOX_PAGE,
+                limit,
             };
             let SocialResponse::Outbox {
                 entries,
@@ -119,39 +185,71 @@ impl Core {
             else {
                 bail!("unexpected reply to GetOutbox");
             };
+            ensure!(
+                entries.len() <= limit as usize,
+                "outbox page has {} entries; we asked for at most {limit}",
+                entries.len()
+            );
+            // Each reshare may bring the post it points at and that post's author.
+            ensure!(
+                referenced.len() <= 2 * entries.len(),
+                "outbox page bundles more objects than its reshares need"
+            );
 
-            // Store referenced objects first, so reshares in this page can be resolved.
-            let mut notes: HashMap<ObjectId, Note> = HashMap::new();
-            for obj in referenced {
-                let Ok(payload) = obj.verify() else {
-                    warn!("dropping referenced object with a bad signature");
-                    continue;
-                };
-                if let Payload::Person(person) = &payload {
-                    // Second-hand, possibly stale: only use it if we know nothing better.
-                    if self.db.profile(&person.actor)?.is_none() {
-                        self.db.upsert_profile(&person.actor, &person.name, &obj)?;
+            // Check every entry first. Sequence numbers must rise, so each
+            // page moves us forward; a node can't keep us going round.
+            let page_len = entries.len();
+            let mut checked = Vec::new();
+            for entry in entries {
+                ensure!(entry.seq > cursor, "outbox entries are out of order");
+                cursor = entry.seq;
+                match entry.object.verify() {
+                    Ok(payload) if payload.actor() == follow.actor => {
+                        checked.push((entry.object, payload));
                     }
-                    continue;
-                }
-                if self.db.insert_object(&obj, &payload)? {
-                    new_objects += 1;
-                }
-                if let Payload::Note(note) = payload {
-                    notes.insert(obj.id(), note);
+                    Ok(_) => warn!(%actor, "skipping an outbox entry signed by someone else"),
+                    Err(e) => warn!(%actor, "skipping an invalid outbox entry: {e:#}"),
                 }
             }
 
-            let page_len = entries.len();
-            for entry in entries {
-                let payload = entry.object.verify()?;
-                ensure!(
-                    payload.actor() == follow.actor,
-                    "outbox entry signed by someone else"
-                );
-                let is_new = self.db.insert_object(&entry.object, &payload)?;
+            // Keep only what this page's reshares point at: the reshared
+            // post, and its author's profile.
+            let mut wanted_posts = HashSet::new();
+            let mut wanted_authors = HashSet::new();
+            for (_, payload) in &checked {
+                if let Payload::Announce(a) = payload {
+                    wanted_posts.insert(a.object);
+                    wanted_authors.insert(a.object_actor);
+                }
+            }
+            let mut notes: HashMap<ObjectId, Note> = HashMap::new();
+            for obj in referenced {
+                let Ok(payload) = obj.verify() else {
+                    warn!(%actor, "dropping an invalid referenced object");
+                    continue;
+                };
+                match &payload {
+                    Payload::Person(person) if wanted_authors.contains(&person.actor) => {
+                        // Second-hand, possibly stale: only use it if we know nothing better.
+                        if self.db.profile(&person.actor)?.is_none() {
+                            self.db.upsert_profile(&person.actor, &person.name, &obj)?;
+                        }
+                    }
+                    Payload::Note(note) if wanted_posts.contains(&obj.id()) => {
+                        if self.db.insert_object(&obj, &payload)? {
+                            new_objects += 1;
+                        }
+                        notes.insert(obj.id(), note.clone());
+                    }
+                    _ => debug!(%actor, "ignoring a referenced object no reshare points at"),
+                }
+            }
+
+            for (object, payload) in checked {
+                let is_new = self.db.insert_object(&object, &payload)?;
                 if is_new {
                     new_objects += 1;
+                    budget = budget.saturating_sub(1);
                 }
                 match &payload {
                     Payload::Note(note) => {
@@ -160,7 +258,7 @@ impl Core {
                             self.db.add_host(&blob, &follow.addr)?;
                         }
                         if is_new {
-                            blobs.extend(note.blobs());
+                            blobs.extend(prefetchable(note));
                         }
                     }
                     Payload::Announce(announce) => {
@@ -175,13 +273,12 @@ impl Core {
                                 }
                             }
                             if is_new {
-                                blobs.extend(note.blobs());
+                                blobs.extend(prefetchable(&note));
                             }
                         }
                     }
                     Payload::Person(_) => {}
                 }
-                cursor = cursor.max(entry.seq);
             }
             self.db.set_follow_synced(&follow.actor, cursor)?;
             if page_len == 0 || cursor >= latest {
@@ -295,4 +392,38 @@ impl Core {
             None => Ok(None),
         }
     }
+}
+
+/// A post's media worth fetching ahead of time, with declared sizes:
+/// thumbnails always, media files up to `MAX_PREFETCH_BYTES`.
+fn prefetchable(note: &Note) -> Vec<(BlobHash, u64)> {
+    let mut blobs = Vec::new();
+    for a in &note.attachment {
+        if a.size <= MAX_PREFETCH_BYTES {
+            blobs.push((a.blob, a.size));
+        }
+        if let Some(thumb) = &a.thumbnail {
+            blobs.push((thumb.blob, thumb.size));
+        }
+    }
+    blobs
+}
+
+/// Picks what one sync prefetches, within the per-sync limits.
+fn choose_prefetch(mut candidates: Vec<(BlobHash, u64)>) -> Vec<BlobHash> {
+    candidates.sort();
+    candidates.dedup_by_key(|(blob, _)| *blob);
+    let mut chosen = Vec::new();
+    let mut bytes = 0;
+    for (blob, size) in candidates {
+        if chosen.len() == MAX_PREFETCH_FILES_PER_SYNC {
+            break;
+        }
+        if bytes + size > MAX_PREFETCH_BYTES_PER_SYNC {
+            continue;
+        }
+        bytes += size;
+        chosen.push(blob);
+    }
+    chosen
 }

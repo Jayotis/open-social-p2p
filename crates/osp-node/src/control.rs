@@ -18,6 +18,7 @@ use osp_proto::{
         StatusInfo,
     },
     social::SocialRequest,
+    types::{MAX_ATTACHMENTS, MAX_CONTENT_BYTES},
 };
 use tokio::{
     net::{UnixListener, UnixStream},
@@ -32,12 +33,6 @@ use crate::{
     node::{Core, check_addr, remember},
     social::FOLLOWER_SILENCE,
 };
-
-/// Longest post text accepted, in bytes. Keeps outbox pages well under the frame limit.
-pub(crate) const MAX_CONTENT_BYTES: usize = 10_000;
-
-/// Most photos or videos in one post.
-pub(crate) const MAX_ATTACHMENTS: usize = 4;
 
 /// Followers notified at once after a post.
 const NOTIFY_AT_ONCE: usize = 16;

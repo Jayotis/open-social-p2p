@@ -132,6 +132,8 @@ pub struct Follow {
     pub actor: PublicKey,
     pub addr: EndpointAddr,
     pub cursor: u64,
+    /// Whether a sync has ever completed a page from this follow.
+    pub synced: bool,
 }
 
 /// SQLite connection shared by the node's tasks.
@@ -187,6 +189,16 @@ impl Db {
             ],
         )?;
         Ok(n > 0)
+    }
+
+    /// How many objects by `actor` arrived at or after `since_ms`.
+    pub fn objects_received_since(&self, actor: &PublicKey, since_ms: i64) -> Result<usize> {
+        let n: i64 = self.conn().query_row(
+            "SELECT COUNT(*) FROM objects WHERE actor = ?1 AND received_ms >= ?2",
+            params![actor.to_string(), since_ms],
+            |row| row.get(0),
+        )?;
+        Ok(n as usize)
     }
 
     pub fn get_object(&self, id: &ObjectId) -> Result<Option<SignedObject>> {
@@ -278,20 +290,23 @@ impl Db {
 
     pub fn follows(&self) -> Result<Vec<Follow>> {
         let conn = self.conn();
-        let mut stmt = conn.prepare("SELECT actor, node_addr, cursor FROM follows")?;
+        let mut stmt =
+            conn.prepare("SELECT actor, node_addr, cursor, last_sync IS NOT NULL FROM follows")?;
         let rows = stmt.query_map([], |row| {
             Ok((
                 row.get::<_, String>(0)?,
                 row.get::<_, String>(1)?,
                 row.get::<_, i64>(2)?,
+                row.get::<_, bool>(3)?,
             ))
         })?;
         rows.map(|r| {
-            let (actor, addr, cursor) = r?;
+            let (actor, addr, cursor, synced) = r?;
             Ok(Follow {
                 actor: actor.parse()?,
                 addr: serde_json::from_str(&addr)?,
                 cursor: cursor as u64,
+                synced,
             })
         })
         .collect()

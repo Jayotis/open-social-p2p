@@ -14,6 +14,10 @@ use crate::types::Payload;
 /// use of the same key.
 const SIG_DOMAIN: &[u8] = b"osp-v0:";
 
+/// Largest payload, in bytes. The longest post allowed fits even if every
+/// character of its text and alt text needs escaping in JSON.
+pub const MAX_PAYLOAD_BYTES: usize = 128 * 1024;
+
 crate::types::hex_id! {
     /// Identifier of a signed object: the BLAKE3 hash of its payload bytes.
     ObjectId
@@ -43,7 +47,12 @@ impl SignedObject {
             payload.actor() == key.public(),
             "payload actor must be the signing identity"
         );
+        payload.check_limits()?;
         let bytes = serde_json::to_vec(payload)?;
+        ensure!(
+            bytes.len() <= MAX_PAYLOAD_BYTES,
+            "object is larger than {MAX_PAYLOAD_BYTES} bytes"
+        );
         let sig = key.sign(&signing_input(&bytes));
         Ok(Self {
             payload: bytes,
@@ -67,9 +76,14 @@ impl SignedObject {
         &self.payload
     }
 
-    /// Checks the signature and that the payload's `actor` is the signer, then
-    /// returns the parsed payload. Never use a payload that hasn't been through this.
+    /// Checks the size, the signature, that the payload's `actor` is the
+    /// signer, and the limits on its contents, then returns the parsed
+    /// payload. Never use a payload that hasn't been through this.
     pub fn verify(&self) -> Result<Payload> {
+        ensure!(
+            self.payload.len() <= MAX_PAYLOAD_BYTES,
+            "object is larger than {MAX_PAYLOAD_BYTES} bytes"
+        );
         let sig: [u8; Signature::LENGTH] = self
             .sig
             .as_slice()
@@ -84,6 +98,7 @@ impl SignedObject {
             payload.actor() == self.signer,
             "payload actor does not match signer"
         );
+        payload.check_limits()?;
         Ok(payload)
     }
 }
@@ -112,7 +127,10 @@ mod base64url {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::Note;
+    use crate::types::{
+        Attachment, BlobHash, BlobRef, MAX_ALT_TEXT_BYTES, MAX_ATTACHMENT_BYTES, MAX_ATTACHMENTS,
+        MAX_CONTENT_BYTES, MAX_NAME_BYTES, MediaKind, Note, Person,
+    };
 
     fn note(key: &SecretKey, text: &str) -> Payload {
         Payload::Note(Note {
@@ -161,6 +179,94 @@ mod tests {
         let alice = SecretKey::generate();
         let mallory = SecretKey::generate();
         assert!(SignedObject::sign(&mallory, &note(&alice, "hello")).is_err());
+    }
+
+    /// Signs without the limit checks, as a hostile author's software might.
+    fn sign_unchecked(key: &SecretKey, payload: &Payload) -> SignedObject {
+        let bytes = serde_json::to_vec(payload).unwrap();
+        SignedObject {
+            sig: key.sign(&signing_input(&bytes)).to_bytes().to_vec(),
+            payload: bytes,
+            signer: key.public(),
+        }
+    }
+
+    fn attachment(media_type: &str, size: u64, alt: Option<String>) -> Attachment {
+        Attachment {
+            kind: MediaKind::Image,
+            media_type: media_type.to_string(),
+            blob: BlobHash::from_bytes([1; 32]),
+            size,
+            width: 10,
+            height: 10,
+            duration_ms: None,
+            name: alt,
+            thumbnail: Some(BlobRef {
+                blob: BlobHash::from_bytes([2; 32]),
+                size: 100,
+                media_type: "image/webp".to_string(),
+            }),
+            profile: "v1-720p".to_string(),
+        }
+    }
+
+    fn note_with(key: &SecretKey, content: String, attachment: Vec<Attachment>) -> Payload {
+        Payload::Note(Note {
+            actor: key.public(),
+            content,
+            published: "2026-10-22T12:00:00.000Z".to_string(),
+            attachment,
+            in_reply_to: None,
+        })
+    }
+
+    #[test]
+    fn objects_over_the_limits_are_refused_when_signing_and_verifying() {
+        let key = SecretKey::generate();
+        let image = || attachment("image/webp", 1000, None);
+        let bad = [
+            note_with(&key, "x".repeat(MAX_CONTENT_BYTES + 1), vec![]),
+            note_with(&key, "hi".into(), vec![image(); MAX_ATTACHMENTS + 1]),
+            note_with(&key, "hi".into(), vec![attachment("text/html", 10, None)]),
+            note_with(
+                &key,
+                "hi".into(),
+                vec![attachment("video/mp4", MAX_ATTACHMENT_BYTES + 1, None)],
+            ),
+            Payload::Person(Person {
+                actor: key.public(),
+                name: "n".repeat(MAX_NAME_BYTES + 1),
+                summary: None,
+                nodes: vec![],
+                published: "2026-10-22T12:00:00.000Z".to_string(),
+            }),
+        ];
+        for payload in &bad {
+            assert!(SignedObject::sign(&key, payload).is_err(), "{payload:?}");
+            assert!(
+                sign_unchecked(&key, payload).verify().is_err(),
+                "{payload:?}"
+            );
+        }
+        // Junk padding in fields nobody checks still hits the size limit.
+        let mut huge = sign_unchecked(&key, &note(&key, "hi"));
+        huge.payload
+            .extend(std::iter::repeat_n(b' ', MAX_PAYLOAD_BYTES));
+        assert!(huge.verify().unwrap_err().to_string().contains("larger"));
+    }
+
+    #[test]
+    fn the_largest_allowed_post_fits_even_when_fully_escaped() {
+        let key = SecretKey::generate();
+        // Control characters are escaped as \u00XX: six bytes each.
+        let alt = || Some("\u{1}".repeat(MAX_ALT_TEXT_BYTES));
+        let payload = note_with(
+            &key,
+            "\u{1}".repeat(MAX_CONTENT_BYTES),
+            vec![attachment("video/mp4", MAX_ATTACHMENT_BYTES, alt()); MAX_ATTACHMENTS],
+        );
+        let obj = SignedObject::sign(&key, &payload).unwrap();
+        assert_eq!(obj.verify().unwrap(), payload);
     }
 
     #[test]

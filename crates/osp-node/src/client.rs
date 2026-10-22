@@ -28,6 +28,7 @@ use osp_proto::{
     rpc::{
         ClientRequest, ClientResponse, DeviceInfo, MAX_PAIR_REQUEST_LEN, MAX_REQUEST_LEN, Upload,
     },
+    types::MAX_ATTACHMENTS,
 };
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWriteExt},
@@ -35,13 +36,7 @@ use tokio::{
 };
 use tracing::{debug, info};
 
-use crate::{
-    config::RelayChoice,
-    control::{MAX_ATTACHMENTS, Origin},
-    db::BlobClass,
-    health,
-    node::Core,
-};
+use crate::{config::RelayChoice, control::Origin, db::BlobClass, health, node::Core};
 
 /// How long a pairing ticket works.
 const PAIRING_TTL: Duration = Duration::from_secs(600);
@@ -443,7 +438,7 @@ mod tests {
     fn largest_requests_fit_their_limits() {
         // Control characters are escaped as \u00XX: six bytes each.
         let post = ClientRequest::Post {
-            content: "\u{1}".repeat(crate::control::MAX_CONTENT_BYTES),
+            content: "\u{1}".repeat(osp_proto::types::MAX_CONTENT_BYTES),
             attachments: Vec::new(),
             uploads: (0..MAX_ATTACHMENTS)
                 .map(|_| Upload {
