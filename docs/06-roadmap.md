@@ -38,6 +38,7 @@ Stage 1 is split into milestones:
   - Done: limits on posting media: one transcode at a time with time limits, a cap on posts in progress, and disk space set aside for an upload before it is sent ([ADR 0005](decisions/0005-media-profile-v1.md), [ADR 0008](decisions/0008-device-pairing-and-client-protocol.md)).
   - Done: limits on serving media: transfers at once (fewer for strangers than for followers), "busy" when they're all taken so the requester tries another host, and an optional upload speed cap ([ADR 0003](decisions/0003-native-social-protocol-v0.md)). Still to come: busy requesters pointed at followers who have a copy (the follower swarm).
   - Done: the phone's device key kept in its secure storage, encrypted with a key held in the Android Keystore ([ADR 0008](decisions/0008-device-pairing-and-client-protocol.md)).
+  - Done: release builds of the app signed with a key kept off GitHub ([app README](../app/README.md#release-signing)), and a CI check that no secret or key file is ever committed.
 - **Before any public release:** identity backup and recovery ([ADR 0006](decisions/0006-desktop-first-always-on-node.md)).
 
 Original Stage 1 checklist:
