@@ -39,7 +39,7 @@ Stage 1 is split into milestones:
   - Done: limits on serving media: transfers at once (fewer for strangers than for followers), "busy" when they're all taken so the requester tries another host, and an optional upload speed cap ([ADR 0003](decisions/0003-native-social-protocol-v0.md)). Still to come: busy requesters pointed at followers who have a copy (the follower swarm).
   - Done: the phone's device key kept in its secure storage, encrypted with a key held in the Android Keystore ([ADR 0008](decisions/0008-device-pairing-and-client-protocol.md)).
   - Done: release builds of the app signed with a key kept off GitHub ([app README](../app/README.md#release-signing)), and a CI check that no secret or key file is ever committed.
-- **Before any public release:** identity backup and recovery ([ADR 0006](decisions/0006-desktop-first-always-on-node.md)).
+- **Before any public release:** identity backup and recovery ([ADR 0006](decisions/0006-desktop-first-always-on-node.md)). Designed in [ADR 0009](decisions/0009-identity-backup-and-recovery.md): recovery words, an optional encrypted backup file, and a `Moved` message so followers find a replacement node. Next to build. Also to decide before then: whether to add a second, offline key that can replace a stolen one.
 
 Original Stage 1 checklist:
 
@@ -58,7 +58,7 @@ Original Stage 1 checklist:
 Stage 1 uses a native protocol ([ADR 0003](decisions/0003-native-social-protocol-v0.md)) because ActivityPub delivers to each account's public HTTPS inbox, which a home node doesn't have. Stage 2 adds a bridge: a gateway with a public HTTPS address that translates between the fediverse and home nodes.
 
 - [ ] Decision record for the bridge: who runs gateways and who pays, how a home identity maps to a fediverse account and its keys, and what a gateway can see. Or adopt an emerging standard if one suits home nodes better.
-- [ ] Identity backup and recovery first ([ADR 0006](decisions/0006-desktop-first-always-on-node.md)): a fediverse account needs a stable identity.
+- [ ] Identity backup and recovery first ([ADR 0006](decisions/0006-desktop-first-always-on-node.md), [ADR 0009](decisions/0009-identity-backup-and-recovery.md)): a fediverse account needs a stable identity.
 - [ ] Replies, likes and boosts in the native protocol, so interactions cross the bridge both ways.
 - [ ] Media for fediverse servers, which fetch over HTTPS: the gateway fetches from home nodes and replicas, with caching and cost limits.
 - [ ] Moderation, blocking and reporting for content arriving from other servers.
