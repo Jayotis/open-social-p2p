@@ -30,6 +30,14 @@ Option 2 for Stage 1.
   - a follower not heard from for 30 days is forgotten. Answering a `Notify` or subscribing again counts as being heard from;
   - followers are notified 16 at a time, 15 seconds each, so ones that don't answer don't delay the rest;
   - a node remembers at most 20 hosts per blob, and takes at most 20 from one `WhoHosts` reply.
+- **Limits on syncing.** A followed node decides what its outbox says, so a reader bounds what it takes:
+  - every outbox entry must have a higher sequence number than the reader's position, so each page moves the reader forward; otherwise that node's sync stops with an error;
+  - an outbox page holds at most as many entries as asked for, and at most two bundled objects per entry (a reshared post and its author's profile). Bundled objects no reshare in the page points at are dropped. Entries that fail the object rules ([ADR 0004](0004-signed-objects-and-ids.md)) are skipped;
+  - one sync takes at most 10 pages from a followed node, within 2 minutes, with 4 followed nodes synced at once;
+  - a reader takes at most 500 new objects a day from one followed identity; the rest waits. A new follow starts with the latest 100 entries, not the whole history;
+  - a node syncs at most every 5 seconds, however often it's notified;
+  - media over 256 MiB isn't prefetched, and one sync prefetches at most 200 files and 1 GiB;
+  - a node serving its outbox keeps each page under about 8 MiB of objects.
 - **Follow tickets:** to follow someone you need their identity key and an address for their home node, encoded as a short string or QR code. There is no global directory yet.
 - **Reshare and host:** an `Announce` of someone's post carries `hosting: true` when the resharer's node keeps a replica. Anyone who sees the `Announce` learns another provider for that media.
 - **Serving rules** (enforced by the iroh-blobs request hook):
