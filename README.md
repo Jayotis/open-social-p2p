@@ -2,7 +2,7 @@
 
 **Run your own social network at home, connect it to everyone else's, and use it from your phone anywhere.**
 
-**Status: Stage 1 prototype in progress.** A Rust home node and the phone's networking code are being built in [`crates/`](crates/), and the Android app is next. There is no production application yet.
+**Status: Stage 1 prototype in progress.** A Rust home node ([`crates/`](crates/)) and an Android app ([`app/`](app/)) work together on test devices; limits and resilience come next ([roadmap](docs/06-roadmap.md)). There is no production application yet.
 
 ## The idea
 
