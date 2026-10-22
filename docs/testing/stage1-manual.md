@@ -64,6 +64,8 @@ Use `--home DIR` (or `OSP_HOME=DIR`) to run several nodes on one machine. Add `-
 
 To time a transfer, run `follow` and `sync` together, e.g. `time (osp follow <ticket> && osp sync)`. `sync` waits until prefetched media has finished downloading, so `osp fetch` afterwards only copies the file out.
 
+The RTT in `status` is QUIC's smoothed estimate. It climbs while a transfer runs and takes a minute or two to settle afterwards, so read it before or well after a big download. Through n0's public relays each uploading node gets about 1 MB/s (October 2026: two uploads from different nodes at once each held that rate, so the limit is per node, not the uplink). A queue builds behind that limit and adds close to a second of delay to everything else on the connection until the transfer ends. Direct connections bypass it, and a self-hosted relay can lift it.
+
 When all three machines share a home network, the connections between them go direct over the LAN even with a VPN on, as long as the VPN allows local traffic. To test the path a remote peer would get:
 
 - **Remote peer behind the VPN, no hardware changes:** on A, add `bind = "<VPN address>:0"` under `[network]` in `config.toml` and restart the daemon, using the VPN interface's IPv4 address from `ip -brief addr`. A then sends everything through the tunnel, and its LAN address is never offered. Follow A from fresh nodes on B and C (`--home ~/osp-vpntest`) so the media is downloaded again. Remove the `bind` line afterwards.
