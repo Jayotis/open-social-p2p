@@ -5,6 +5,7 @@
 //! prefetches content for their phone, and optionally hosts copies of posts
 //! they reshare. [`Node`] is the entry point.
 
+pub mod backup;
 mod client;
 pub mod config;
 mod control;

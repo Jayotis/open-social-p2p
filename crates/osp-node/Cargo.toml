@@ -10,6 +10,7 @@ repository.workspace = true
 [dependencies]
 osp-proto.workspace = true
 anyhow.workspace = true
+bip39.workspace = true
 blake3.workspace = true
 data-encoding.workspace = true
 getrandom.workspace = true

@@ -33,6 +33,7 @@ const MAX_STREAMS_PER_CONN: u32 = 32;
 const MAX_ADDRS: usize = 16;
 
 use crate::{
+    backup,
     client::{ClientProtocol, PendingPairing},
     config::{Config, RelayChoice},
     control::{self, Origin},
@@ -98,18 +99,16 @@ pub(crate) struct Core {
 impl Node {
     /// Creates a new node home: keys, config and database.
     pub fn init(home: &Path, config: &Config) -> Result<()> {
-        let home = Home::new(home);
-        if home.is_initialized() {
-            bail!("{} already holds a node", home.root().display());
-        }
-        std::fs::create_dir_all(home.root())
-            .with_context(|| format!("creating {}", home.root().display()))?;
-        std::fs::set_permissions(home.root(), std::fs::Permissions::from_mode(0o700))?;
-        keys::create(&home.identity_key())?;
-        keys::create(&home.node_key())?;
-        config.save(&home.config())?;
-        Db::open(&home.db())?;
-        Ok(())
+        create_home(&Home::new(home), config, &SecretKey::generate())
+    }
+
+    /// Creates a node home for an existing identity, given its recovery
+    /// words (ADR 0009). The node gets a new node key, so the network sees
+    /// a new node speaking for the same identity. Returns the identity.
+    pub fn restore(home: &Path, config: &Config, words: &str) -> Result<PublicKey> {
+        let identity = backup::identity_from_words(words)?;
+        create_home(&Home::new(home), config, &identity)?;
+        Ok(identity.public())
     }
 
     /// Starts the node stored in `home`.
@@ -290,6 +289,22 @@ impl Core {
         }
         self.endpoint.addr()
     }
+}
+
+/// Writes a new home's keys, config and database. Refuses to touch a home
+/// that already holds a node.
+fn create_home(home: &Home, config: &Config, identity: &SecretKey) -> Result<()> {
+    if home.is_initialized() {
+        bail!("{} already holds a node", home.root().display());
+    }
+    std::fs::create_dir_all(home.root())
+        .with_context(|| format!("creating {}", home.root().display()))?;
+    std::fs::set_permissions(home.root(), std::fs::Permissions::from_mode(0o700))?;
+    keys::save(&home.identity_key(), identity)?;
+    keys::create(&home.node_key())?;
+    config.save(&home.config())?;
+    Db::open(&home.db())?;
+    Ok(())
 }
 
 /// Takes the home's lock, so two nodes never share one home (they would
