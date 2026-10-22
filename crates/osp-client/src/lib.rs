@@ -41,7 +41,8 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
 const REPLY_TIMEOUT: Duration = Duration::from_secs(60);
 /// How long to wait for a post with media: the node transcodes before replying.
 const POST_REPLY_TIMEOUT: Duration = Duration::from_secs(30 * 60);
-/// How long to wait for the start of a blob the node may first have to fetch.
+/// How long to wait for a blob the node may first have to fetch, and for
+/// `Fetch` and `Sync`, which can also wait on other nodes.
 const BLOB_REPLY_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 
 /// How the client reaches the network.
@@ -207,9 +208,13 @@ impl Client {
     /// Sends one request to the home node and waits for its reply. A reply
     /// of `Error` becomes an `Err` with the node's message.
     pub async fn request(&self, req: &ClientRequest) -> Result<ClientResponse> {
+        let timeout = match req {
+            ClientRequest::Fetch { .. } | ClientRequest::Sync => BLOB_REPLY_TIMEOUT,
+            _ => REPLY_TIMEOUT,
+        };
         let (mut send, mut recv) = self.send_request(req).await?;
         send.finish()?;
-        check(read_reply(&mut recv, REPLY_TIMEOUT).await?)
+        check(read_reply(&mut recv, timeout).await?)
     }
 
     /// Fetches the feed and saves a copy for offline use.
