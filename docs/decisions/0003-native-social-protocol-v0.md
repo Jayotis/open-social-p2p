@@ -23,6 +23,7 @@ Option 2 for Stage 1.
   - `Subscribe`: "I follow you, notify me". The author node records the follower's node ID.
   - `Notify { seq }`: a best-effort push hint so followers sync now instead of on their next poll.
   - `WhoHosts { hash }`: which nodes this node knows to be hosting a blob.
+- **Limits on incoming requests.** Anyone who knows a node's ID can connect, so a node limits what each request may cost. A request frame is at most 64 KiB; replies, such as outbox pages, may use the full 16 MiB. A node serves at most 32 requests at once from all peers together, and 4 on any one connection, each within 60 seconds. A request over a limit gets a "busy" error without being read. A connection may have at most 32 streams open, and one-way streams aren't allowed, since no protocol uses them.
 - **Follow tickets:** to follow someone you need their identity key and an address for their home node, encoded as a short string or QR code. There is no global directory yet.
 - **Reshare and host:** an `Announce` of someone's post carries `hosting: true` when the resharer's node keeps a replica. Anyone who sees the `Announce` learns another provider for that media.
 - **Serving rules** (enforced by the iroh-blobs request hook):
