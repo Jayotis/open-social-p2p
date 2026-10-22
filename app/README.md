@@ -24,9 +24,34 @@ flutter build apk --release --target-platform android-arm64
 adb install -r build/app/outputs/flutter-apk/app-release.apk
 ```
 
-Release builds are signed with the debug key for now. That's fine for testing, not for publishing.
+Without a release key (below), release builds are signed with the debug key and the build prints a warning. That's fine for testing, not for publishing.
 
 To install without a USB cable, copy the APK to the phone and open it, allowing installs from that source.
+
+## Release signing
+
+Release builds are signed with the key that `android/key.properties` names. The key stays on the maintainer's computer; CI doesn't build or sign APKs, so no signing secret is stored on GitHub.
+
+To set it up once, create a keystore outside the repository:
+
+```sh
+mkdir -p ~/keys && chmod 700 ~/keys
+keytool -genkeypair -keystore ~/keys/osp-release.jks -storetype PKCS12 \
+  -keyalg RSA -keysize 4096 -validity 10000 -alias release
+```
+
+Then create `android/key.properties` (git ignores it) with the keystore's full path and the password you chose. A PKCS12 keystore uses the same password for the store and the key:
+
+```properties
+storeFile=/home/you/keys/osp-release.jks
+storePassword=the password
+keyAlias=release
+keyPassword=the password
+```
+
+Back up the keystore and its password somewhere other than this computer. Android only installs an update signed with the same key as the installed app; if the key is lost, people must uninstall the app, losing its pairing, before they can install one signed with a new key. The same applies when switching a phone from a debug-signed build to a release-signed one.
+
+To check which key signed an APK: `apksigner verify --print-certs build/app/outputs/flutter-apk/app-release.apk` (`apksigner` is in the Android SDK's `build-tools`).
 
 ## After changing the Rust API
 
