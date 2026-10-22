@@ -25,6 +25,8 @@ const SOCIAL_LIMIT: usize = 32;
 const SOCIAL_LIMIT_PER_CONN: usize = 4;
 /// Matches `MAX_UNKNOWN_REQUESTS` in `client.rs`.
 const UNKNOWN_LIMIT: usize = 8;
+/// Matches `MAX_NEW_FOLLOWERS_PER_HOUR` in `social.rs`.
+const NEW_FOLLOWERS_PER_HOUR: usize = 100;
 
 /// Long enough for loopback, far shorter than any of the node's timeouts.
 const PROMPTLY: Duration = Duration::from_secs(5);
@@ -36,10 +38,18 @@ async fn start(root: &Path, name: &str) -> Node {
 }
 
 /// A peer nobody has seen before, connected to the node. Holds its endpoint,
-/// since dropping that closes the connection.
+/// since dropping that closes the connection. The endpoint never accepts
+/// connections, so the node dialling it back waits until it gives up.
 struct Stranger {
-    _endpoint: Endpoint,
+    endpoint: Endpoint,
     conn: Connection,
+}
+
+impl Stranger {
+    /// Its own address, as it would give it when subscribing.
+    fn addr(&self) -> EndpointAddr {
+        self.endpoint.addr()
+    }
 }
 
 impl std::ops::Deref for Stranger {
@@ -63,10 +73,26 @@ async fn stranger(node: &EndpointAddr, alpn: &[u8]) -> Stranger {
         .await
         .unwrap();
     let conn = endpoint.connect(node.clone(), alpn).await.unwrap();
-    Stranger {
-        _endpoint: endpoint,
-        conn,
+    Stranger { endpoint, conn }
+}
+
+/// Runs a local request that must succeed.
+async fn call(node: &Node, req: ClientRequest) -> ClientResponse {
+    match node.handle(req).await {
+        ClientResponse::Error { message } => panic!("request failed: {message}"),
+        resp => resp,
     }
+}
+
+async fn follower_count(node: &Node) -> usize {
+    match call(node, ClientRequest::Status).await {
+        ClientResponse::Status(status) => status.followers,
+        other => panic!("unexpected {other:?}"),
+    }
+}
+
+async fn subscribe(peer: &Stranger) -> SocialResponse {
+    ask(peer, &SocialRequest::Subscribe { addr: peer.addr() }).await
 }
 
 /// Starts a request that never finishes: announces 100 bytes and sends 10.
@@ -215,4 +241,109 @@ async fn unknown_devices_get_only_a_few_places() {
     assert!(reply.is_err(), "no reply is expected, got {reply:?}");
 
     node.shutdown().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn subscribers_need_a_short_address_and_arrive_at_a_limited_rate() {
+    let dir = tempfile::tempdir().unwrap();
+    let node = start(dir.path(), "Jade").await;
+    let addr = node.addr().await;
+
+    // An address padded with IP addresses of the subscriber's choosing.
+    let padder = stranger(&addr, SOCIAL_ALPN).await;
+    let mut padded = padder.addr();
+    for port in 1..=20 {
+        padded = padded.with_ip_addr(SocketAddr::from(([10, 0, 0, 1], port)));
+    }
+    let resp = ask(&padder, &SocialRequest::Subscribe { addr: padded }).await;
+    assert!(
+        matches!(&resp, SocialResponse::Error { message } if message.contains("at most")),
+        "{resp:?}"
+    );
+
+    // New identities, one after another, up to the hourly limit.
+    let first = stranger(&addr, SOCIAL_ALPN).await;
+    assert!(matches!(subscribe(&first).await, SocialResponse::Ok));
+    for _ in 1..NEW_FOLLOWERS_PER_HOUR {
+        let peer = stranger(&addr, SOCIAL_ALPN).await;
+        let resp = subscribe(&peer).await;
+        assert!(matches!(resp, SocialResponse::Ok), "{resp:?}");
+    }
+    let late = stranger(&addr, SOCIAL_ALPN).await;
+    assert!(is_busy(&subscribe(&late).await));
+    assert_eq!(follower_count(&node).await, NEW_FOLLOWERS_PER_HOUR);
+    // A follower the node already has may still subscribe again.
+    assert!(matches!(subscribe(&first).await, SocialResponse::Ok));
+
+    // Notifications are only welcome from nodes this one follows.
+    let notify = SocialRequest::Notify {
+        actor: SecretKey::generate().public(),
+        seq: 1,
+    };
+    let resp = ask(&first, &notify).await;
+    assert!(
+        matches!(&resp, SocialResponse::Error { message } if message.contains("not following")),
+        "{resp:?}"
+    );
+
+    node.shutdown().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn followers_that_never_answer_dont_delay_the_others() {
+    let dir = tempfile::tempdir().unwrap();
+    let author = start(dir.path(), "Kim").await;
+    let addr = author.addr().await;
+
+    // Followers whose nodes never accept a connection: notifying each one
+    // waits until it times out.
+    let mut silent = Vec::new();
+    for _ in 0..10 {
+        let peer = stranger(&addr, SOCIAL_ALPN).await;
+        assert!(matches!(subscribe(&peer).await, SocialResponse::Ok));
+        silent.push(peer);
+    }
+    // A real follower, subscribed last, so one-by-one it would be told last.
+    let reader = start(dir.path(), "Lee").await;
+    let ClientResponse::Ticket { ticket } = call(&author, ClientRequest::Invite).await else {
+        panic!("no ticket");
+    };
+    call(&reader, ClientRequest::Follow { ticket }).await;
+    let mut subscribed = false;
+    for _ in 0..50 {
+        if follower_count(&author).await == silent.len() + 1 {
+            subscribed = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(subscribed, "following should subscribe");
+
+    call(
+        &author,
+        ClientRequest::Post {
+            content: "hello, followers".into(),
+            attachments: vec![],
+            uploads: vec![],
+        },
+    )
+    .await;
+    // The reader's node polls only hourly in tests, so only the notification
+    // can bring the post this soon.
+    let mut arrived = false;
+    for _ in 0..50 {
+        let ClientResponse::Feed { items } = call(&reader, ClientRequest::Feed { limit: 10 }).await
+        else {
+            panic!("no feed");
+        };
+        if items.iter().any(|i| i.content == "hello, followers") {
+            arrived = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(arrived, "the live follower should be notified at once");
+
+    author.shutdown().await.unwrap();
+    reader.shutdown().await.unwrap();
 }

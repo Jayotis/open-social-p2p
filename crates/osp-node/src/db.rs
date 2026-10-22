@@ -80,6 +80,17 @@ CREATE TABLE IF NOT EXISTS devices (
 );
 ";
 
+/// Changes to the schema above, applied in order to every database, old or
+/// new. SQLite's `user_version` records how many have run. Only ever append.
+const MIGRATIONS: &[&str] = &[
+    // 1: when each follower last answered or subscribed, so long-silent ones can be dropped.
+    "ALTER TABLE followers ADD COLUMN seen_ms INTEGER",
+];
+
+/// Hosts remembered per blob. More than enough to find a copy; a peer
+/// can't grow the table without bound by naming hosts.
+const MAX_HOSTS_PER_BLOB: i64 = 20;
+
 /// Why a blob is kept, which decides who it is served to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum BlobClass {
@@ -143,6 +154,7 @@ impl Db {
         let conn = Connection::open(path).with_context(|| format!("opening {}", path.display()))?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.execute_batch(SCHEMA)?;
+        migrate(&conn).with_context(|| format!("updating {}", path.display()))?;
         Ok(Self {
             conn: Mutex::new(conn),
         })
@@ -333,13 +345,55 @@ impl Db {
 
     // ---- followers ----
 
+    /// Records a follower, or updates the address of one we have. Either
+    /// way it counts as heard from now.
     pub fn add_follower(&self, addr: &EndpointAddr) -> Result<()> {
         self.conn().execute(
-            "INSERT INTO followers (node, node_addr, since) VALUES (?1, ?2, ?3)
-             ON CONFLICT(node) DO UPDATE SET node_addr = excluded.node_addr",
+            "INSERT INTO followers (node, node_addr, since, seen_ms) VALUES (?1, ?2, ?3, ?3)
+             ON CONFLICT(node) DO UPDATE SET node_addr = excluded.node_addr, seen_ms = excluded.seen_ms",
             params![addr.id.to_string(), serde_json::to_string(addr)?, now_ms()],
         )?;
         Ok(())
+    }
+
+    pub fn is_follower(&self, node: &EndpointId) -> Result<bool> {
+        let found: Option<i64> = self
+            .conn()
+            .query_row(
+                "SELECT 1 FROM followers WHERE node = ?1",
+                params![node.to_string()],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(found.is_some())
+    }
+
+    /// Notes that a follower's node answered.
+    pub fn follower_seen(&self, node: &EndpointId) -> Result<()> {
+        self.conn().execute(
+            "UPDATE followers SET seen_ms = ?2 WHERE node = ?1",
+            params![node.to_string(), now_ms()],
+        )?;
+        Ok(())
+    }
+
+    /// How many followers first subscribed at or after `since_ms`.
+    pub fn new_followers_since(&self, since_ms: i64) -> Result<usize> {
+        let n: i64 = self.conn().query_row(
+            "SELECT COUNT(*) FROM followers WHERE since >= ?1",
+            params![since_ms],
+            |row| row.get(0),
+        )?;
+        Ok(n as usize)
+    }
+
+    /// Forgets followers not heard from since `before_ms`. Returns how many.
+    pub fn drop_silent_followers(&self, before_ms: i64) -> Result<usize> {
+        let n = self.conn().execute(
+            "DELETE FROM followers WHERE COALESCE(seen_ms, since) < ?1",
+            params![before_ms],
+        )?;
+        Ok(n)
     }
 
     pub fn followers(&self) -> Result<Vec<EndpointAddr>> {
@@ -439,8 +493,10 @@ impl Db {
 
     // ---- hosts ----
 
+    /// Records a host of a blob, keeping only the most recently seen few.
     pub fn add_host(&self, blob: &BlobHash, addr: &EndpointAddr) -> Result<()> {
-        self.conn().execute(
+        let conn = self.conn();
+        conn.execute(
             "INSERT INTO hosts (blob, node, node_addr, seen_ms) VALUES (?1, ?2, ?3, ?4)
              ON CONFLICT(blob, node) DO UPDATE SET node_addr = excluded.node_addr, seen_ms = excluded.seen_ms",
             params![
@@ -450,15 +506,23 @@ impl Db {
                 now_ms()
             ],
         )?;
+        conn.execute(
+            "DELETE FROM hosts WHERE blob = ?1 AND node NOT IN
+             (SELECT node FROM hosts WHERE blob = ?1 ORDER BY seen_ms DESC LIMIT ?2)",
+            params![blob.to_string(), MAX_HOSTS_PER_BLOB],
+        )?;
         Ok(())
     }
 
     /// Known hosts of a blob, most recently seen first.
     pub fn hosts(&self, blob: &BlobHash) -> Result<Vec<EndpointAddr>> {
         let conn = self.conn();
-        let mut stmt =
-            conn.prepare("SELECT node_addr FROM hosts WHERE blob = ?1 ORDER BY seen_ms DESC")?;
-        let rows = stmt.query_map(params![blob.to_string()], |row| row.get::<_, String>(0))?;
+        let mut stmt = conn.prepare(
+            "SELECT node_addr FROM hosts WHERE blob = ?1 ORDER BY seen_ms DESC LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(params![blob.to_string(), MAX_HOSTS_PER_BLOB], |row| {
+            row.get::<_, String>(0)
+        })?;
         rows.map(|r| Ok(serde_json::from_str(&r?)?)).collect()
     }
 
@@ -521,6 +585,18 @@ impl Db {
     }
 }
 
+/// Runs the migrations this database hasn't had yet.
+fn migrate(conn: &Connection) -> Result<()> {
+    let done: i64 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
+    for (i, sql) in MIGRATIONS.iter().enumerate().skip(done as usize) {
+        conn.execute_batch(&format!(
+            "BEGIN; {sql}; PRAGMA user_version = {}; COMMIT;",
+            i + 1
+        ))?;
+    }
+    Ok(())
+}
+
 fn format_ms(ms: i64) -> String {
     let t = UNIX_EPOCH + std::time::Duration::from_millis(ms.max(0) as u64);
     humantime::format_rfc3339_seconds(t).to_string()
@@ -541,5 +617,78 @@ mod tests {
         assert_eq!(db.blob_class(&h).unwrap(), Some(BlobClass::Replica));
         db.put_blob(&h, BlobClass::Cache, 10).unwrap();
         assert_eq!(db.blob_class(&h).unwrap(), Some(BlobClass::Replica));
+    }
+
+    fn some_addr() -> EndpointAddr {
+        EndpointAddr::new(iroh::SecretKey::generate().public())
+    }
+
+    #[test]
+    fn a_database_from_before_migrations_is_updated_and_keeps_its_rows() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("old.db");
+        let old = some_addr();
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(SCHEMA).unwrap();
+            conn.execute(
+                "INSERT INTO followers (node, node_addr, since) VALUES (?1, ?2, 1)",
+                params![old.id.to_string(), serde_json::to_string(&old).unwrap()],
+            )
+            .unwrap();
+        }
+        let db = Db::open(&path).unwrap();
+        assert!(db.is_follower(&old.id).unwrap());
+        db.follower_seen(&old.id).unwrap();
+        drop(db);
+        // Opening again doesn't run the migrations twice.
+        let db = Db::open(&path).unwrap();
+        assert_eq!(db.follower_count().unwrap(), 1);
+    }
+
+    #[test]
+    fn silent_followers_are_dropped_and_new_ones_counted() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(&dir.path().join("t.db")).unwrap();
+        let (quiet, chatty) = (some_addr(), some_addr());
+        db.add_follower(&quiet).unwrap();
+        db.add_follower(&chatty).unwrap();
+        let start = now_ms();
+        assert_eq!(db.new_followers_since(start - 60_000).unwrap(), 2);
+        // Only the quiet one was last heard from long ago.
+        db.conn()
+            .execute(
+                "UPDATE followers SET since = 1, seen_ms = 1 WHERE node = ?1",
+                params![quiet.id.to_string()],
+            )
+            .unwrap();
+        assert_eq!(db.new_followers_since(start - 60_000).unwrap(), 1);
+        assert_eq!(db.drop_silent_followers(start - 60_000).unwrap(), 1);
+        assert!(!db.is_follower(&quiet.id).unwrap());
+        assert!(db.is_follower(&chatty.id).unwrap());
+    }
+
+    #[test]
+    fn hosts_per_blob_are_capped() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(&dir.path().join("t.db")).unwrap();
+        let blob = BlobHash::from_bytes([3; 32]);
+        for _ in 0..MAX_HOSTS_PER_BLOB + 5 {
+            db.add_host(&blob, &some_addr()).unwrap();
+        }
+        // Inserts can share a millisecond; make the order unambiguous.
+        db.conn()
+            .execute("UPDATE hosts SET seen_ms = 1", [])
+            .unwrap();
+        let latest = some_addr();
+        db.add_host(&blob, &latest).unwrap();
+        let hosts = db.hosts(&blob).unwrap();
+        assert_eq!(hosts.len(), MAX_HOSTS_PER_BLOB as usize);
+        assert!(hosts.contains(&latest));
+        let stored: i64 = db
+            .conn()
+            .query_row("SELECT COUNT(*) FROM hosts", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(stored, MAX_HOSTS_PER_BLOB);
     }
 }
