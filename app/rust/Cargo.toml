@@ -16,6 +16,7 @@ crate-type = ["cdylib", "staticlib"]
 flutter_rust_bridge = "=2.13.0"
 osp-client.workspace = true
 anyhow.workspace = true
+log = "0.4"
 tracing.workspace = true
 tracing-subscriber.workspace = true
 

@@ -19,7 +19,11 @@ use crate::{frb_generated::StreamSink, logging};
 
 #[frb(init)]
 pub fn init_app() {
-    flutter_rust_bridge::setup_default_user_utils();
+    // Not flutter_rust_bridge's default setup: that sends every Rust log
+    // line to logcat at trace level and sets RUST_BACKTRACE, so every error
+    // would capture a backtrace. Warnings are enough for logcat; the app's
+    // own log goes to a file (see `logging.rs`).
+    flutter_rust_bridge::setup_log_to_console(log::LevelFilter::Warn);
 }
 
 /// The app's connection to its home node.
