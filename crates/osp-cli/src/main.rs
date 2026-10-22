@@ -3,7 +3,10 @@
 //! `osp daemon` runs the node; most other commands talk to the running
 //! daemon over the Unix socket in the node's home directory.
 
+mod service;
+
 use std::{
+    io::IsTerminal,
     net::SocketAddr,
     path::{Path, PathBuf},
     time::{Duration, Instant},
@@ -110,6 +113,17 @@ enum Command {
     Devices,
     /// Forget a paired phone, by its name or the start of its ID
     Unpair { device: String },
+    /// Run the node in the background, starting at boot (systemd user service)
+    #[command(subcommand)]
+    Service(ServiceCommand),
+}
+
+#[derive(Subcommand)]
+enum ServiceCommand {
+    /// Install, enable and start the service
+    Install,
+    /// Stop, disable and remove the service (keeps the node's data)
+    Uninstall,
 }
 
 #[tokio::main]
@@ -136,6 +150,8 @@ async fn main() -> Result<()> {
             let id = find_device(&home, &device).await?;
             ClientRequest::Unpair { device: id }
         }
+        Command::Service(ServiceCommand::Install) => return service::install(&home).await,
+        Command::Service(ServiceCommand::Uninstall) => return service::uninstall(),
         Command::Status => ClientRequest::Status,
         Command::Follow { ticket } => ClientRequest::Follow { ticket },
         Command::Unfollow { actor } => ClientRequest::Unfollow { actor },
@@ -203,6 +219,8 @@ async fn daemon(home: &Path) -> Result<()> {
                     "osp_node=info,iroh=warn,iroh::net_report::report=error,iroh_blobs=warn".into()
                 }),
         )
+        // No colour codes in the journal when running as a service.
+        .with_ansi(std::io::stdout().is_terminal())
         .init();
     let mut node = Node::spawn(home).await?;
     node.serve_local_socket().await?;
