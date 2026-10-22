@@ -25,6 +25,13 @@ The home node transcodes everything it publishes with ffmpeg (run as a separate 
 
 **Privacy:** all container and stream metadata is removed (`-map_metadata -1 -map_chapters -1`), which strips GPS, device model and capture time. The rendition is checked with ffprobe as part of the test suite.
 
+**Transcoding limits:** so that many posts at once, or a file that makes ffmpeg hang, can't tie up the machine:
+
+- One transcode runs at a time; other posts wait their turn, in order. At most four posts with media can be in progress at once (arriving from a phone, waiting, or transcoding); more are refused until one is done. Posts with only text aren't affected.
+- A video transcode is stopped after 30 minutes by default: `max_transcode_secs` under `[media]` in `config.toml`, which a slow machine can raise. Transcoding an image or making a thumbnail is stopped after 2 minutes, and reading a file with ffprobe after 1 minute.
+- ffmpeg also stops at the duration limit (`-t`), so a file that doesn't give its length, or gives a wrong one, can't produce a longer video.
+- A failed transcode's scratch files are deleted.
+
 **No adaptive streaming yet:** one rendition per video. 1080p, 4K and multiple renditions (HLS or DASH) are deliberately out of scope for Stage 1.
 
 ## Options considered
