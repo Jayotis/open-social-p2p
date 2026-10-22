@@ -39,6 +39,8 @@ use crate::{
 const NOTIFY_AT_ONCE: usize = 16;
 /// Give up on notifying one follower after this long.
 const NOTIFY_TIMEOUT: Duration = Duration::from_secs(15);
+/// How often followers who haven't heard that we moved are told again.
+const TELL_MOVED_EVERY: Duration = Duration::from_secs(60 * 60);
 /// Most posts with media in progress at once: arriving from a phone,
 /// waiting for their turn at ffmpeg, or transcoding. More are refused
 /// until one is done.
@@ -313,7 +315,7 @@ impl Core {
         Ok(obj.id())
     }
 
-    async fn notify_followers(&self, seq: u64) {
+    fn forget_silent_followers(&self) {
         let silent_since = now_ms() - FOLLOWER_SILENCE.as_millis() as i64;
         match self.db.drop_silent_followers(silent_since) {
             Ok(0) => {}
@@ -323,6 +325,51 @@ impl Core {
             ),
             Err(e) => warn!("dropping silent followers: {e:#}"),
         }
+    }
+
+    /// Tells followers who haven't heard yet that this identity moved to
+    /// this node (ADR 0009). Returns how many are still to be told.
+    async fn tell_moved(&self) -> usize {
+        // The startup loop and a new post can both get here; one at a time,
+        // so each follower is told once.
+        let _guard = self.tell_moved_lock.lock().await;
+        self.forget_silent_followers();
+        let to_tell = self.db.followers_to_tell_moved().unwrap_or_default();
+        if to_tell.is_empty() {
+            return 0;
+        }
+        let req = &SocialRequest::Moved {
+            profile: self.profile.clone(),
+            addr: self.shareable_addr().await,
+        };
+        let count = to_tell.len();
+        let told: Vec<bool> = stream::iter(to_tell)
+            .map(|addr| async move {
+                let sent =
+                    tokio::time::timeout(NOTIFY_TIMEOUT, self.social_request(&addr, req)).await;
+                match sent {
+                    Ok(Ok(_)) => self.db.told_moved(&addr.id).is_ok(),
+                    Ok(Err(e)) => {
+                        debug!(node = %addr.id.fmt_short(), "follower refused the move: {e:#}");
+                        false
+                    }
+                    Err(_) => false,
+                }
+            })
+            .buffered_unordered(NOTIFY_AT_ONCE)
+            .collect()
+            .await;
+        let left = told.iter().filter(|told| !**told).count();
+        info!(
+            told = count - left,
+            left, "told followers this node took over the identity"
+        );
+        left
+    }
+
+    async fn notify_followers(&self, seq: u64) {
+        // Followers who don't know we moved would refuse the notice.
+        self.tell_moved().await;
         let req = &SocialRequest::Notify {
             actor: self.identity.public(),
             seq,
@@ -474,6 +521,15 @@ fn extension(media_type: &str) -> &str {
 
 /// Serves the local command-line tool. The socket lives in the node's home
 /// directory (mode 0700) and is itself readable only by the owner.
+/// After this node takes an identity over, tells its followers at startup
+/// and then every hour until each has heard, or been forgotten as silent.
+/// New posts tell them too (`notify_followers`).
+pub(crate) async fn tell_moved_loop(core: Arc<Core>) {
+    while core.tell_moved().await > 0 {
+        tokio::time::sleep(TELL_MOVED_EVERY).await;
+    }
+}
+
 pub(crate) async fn serve_unix(core: Arc<Core>, path: PathBuf) -> Result<JoinHandle<()>> {
     if path.exists() {
         if UnixStream::connect(&path).await.is_ok() {

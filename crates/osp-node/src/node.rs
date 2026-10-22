@@ -5,7 +5,7 @@ use std::{
     os::unix::fs::PermissionsExt,
     path::Path,
     sync::{Arc, Mutex},
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::{Context, Result, bail, ensure};
@@ -86,6 +86,8 @@ pub(crate) struct Core {
     pub pairings: Mutex<Vec<PendingPairing>>,
     /// When we last asked each followed identity's node to notify us.
     pub subscribed: Mutex<HashMap<PublicKey, Instant>>,
+    /// Followers are told we moved by one task at a time.
+    pub tell_moved_lock: tokio::sync::Mutex<()>,
     pub started: Instant,
     /// Whether ffmpeg ran at startup; without it, posts with media fail.
     pub media_tools: bool,
@@ -169,6 +171,7 @@ impl Node {
             prefetch_jobs: watch::Sender::new(0),
             pairings: Mutex::new(Vec::new()),
             subscribed: Mutex::new(HashMap::new()),
+            tell_moved_lock: tokio::sync::Mutex::new(()),
             started: Instant::now(),
             media_tools,
             media_posts: Semaphore::new(control::MAX_MEDIA_POSTS),
@@ -182,7 +185,8 @@ impl Node {
             .accept(osp_proto::CLIENT_ALPN, ClientProtocol::new(core.clone()))
             .spawn();
         let sync_loop = tokio::spawn(sync::run_loop(core.clone()));
-        let mut tasks = vec![serving_rules, sync_loop];
+        let tell_moved = tokio::spawn(control::tell_moved_loop(core.clone()));
+        let mut tasks = vec![serving_rules, sync_loop, tell_moved];
         if core.config.network.relay != RelayChoice::Disabled {
             tasks.push(tokio::spawn(network::log_nat_changes(
                 core.endpoint.clone(),
@@ -411,6 +415,8 @@ async fn bind_endpoint(
 }
 
 /// Reuses the stored profile if nothing changed, so its ID stays stable.
+/// If the stored one lists another node, this node has taken the identity
+/// over (ADR 0009), and every follower is marked to be told.
 fn own_profile(
     identity: &SecretKey,
     name: &str,
@@ -418,21 +424,40 @@ fn own_profile(
     db: &Db,
 ) -> Result<SignedObject> {
     let me = identity.public();
-    if let Some(existing) = db.profile(&me)?
-        && let Ok(Payload::Person(p)) = existing.verify()
+    let previous = match db.profile(&me)?.map(|obj| (obj.verify(), obj)) {
+        Some((Ok(Payload::Person(p)), obj)) => Some((p, obj)),
+        _ => None,
+    };
+    if let Some((p, existing)) = &previous
         && p.name == name
         && p.nodes == [node]
     {
-        return Ok(existing);
+        return Ok(existing.clone());
+    }
+    // Followers take the newer profile, so make it later than the one it
+    // replaces even if this computer's clock is behind.
+    let mut at = SystemTime::now();
+    if let Some(ms) = previous
+        .as_ref()
+        .and_then(|(p, _)| osp_proto::parse_rfc3339_ms(&p.published))
+    {
+        at = at.max(UNIX_EPOCH + Duration::from_millis(ms as u64 + 1));
     }
     let person = Payload::Person(Person {
         actor: me,
         name: name.to_string(),
         summary: None,
         nodes: vec![node],
-        published: osp_proto::now_rfc3339(),
+        published: humantime::format_rfc3339_millis(at).to_string(),
     });
     let obj = SignedObject::sign(identity, &person)?;
     db.upsert_profile(&me, name, &obj)?;
+    if previous.is_some_and(|(p, _)| !p.nodes.contains(&node)) {
+        let followers = db.mark_followers_to_tell_moved()?;
+        info!(
+            followers,
+            "this node took over the identity; telling its followers"
+        );
+    }
     Ok(obj)
 }

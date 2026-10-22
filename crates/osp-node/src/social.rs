@@ -15,7 +15,7 @@ use osp_proto::{
     social::{MAX_OUTBOX_PAGE, MAX_REQUEST_LEN, OutboxEntry, SocialRequest, SocialResponse},
 };
 use tokio::sync::Semaphore;
-use tracing::debug;
+use tracing::{debug, info};
 
 use crate::{
     db::now_ms,
@@ -215,7 +215,64 @@ impl Core {
                 );
                 SocialResponse::Hosts { nodes }
             }
+            SocialRequest::Moved { profile, addr } => {
+                ensure!(
+                    addr.id == remote,
+                    "can only announce a move on your own behalf"
+                );
+                check_addr(&addr)?;
+                self.follow_moved(&profile, &addr)?;
+                SocialResponse::Ok
+            }
         })
+    }
+
+    /// Points a follow at the node an identity moved to (ADR 0009). Believed
+    /// only with a profile signed by that identity, listing that node, and
+    /// newer than the one we have, so an old profile can't be replayed to
+    /// point us back.
+    fn follow_moved(&self, profile: &SignedObject, addr: &EndpointAddr) -> Result<()> {
+        let Payload::Person(person) = profile.verify()? else {
+            bail!("not a profile");
+        };
+        let actor = person.actor;
+        let follow = self
+            .db
+            .follows()?
+            .into_iter()
+            .find(|f| f.actor == actor)
+            .with_context(|| format!("not following {}", actor.fmt_short()))?;
+        ensure!(
+            person.nodes.contains(&addr.id),
+            "the profile doesn't list your node"
+        );
+        if follow.addr.id == addr.id {
+            return Ok(()); // Told before.
+        }
+        let published = osp_proto::parse_rfc3339_ms(&person.published)
+            .context("the profile has no valid date")?;
+        if let Some(stored) = self.db.profile(&actor)?
+            && let Ok(Payload::Person(known)) = stored.verify()
+            && let Some(known_ms) = osp_proto::parse_rfc3339_ms(&known.published)
+        {
+            ensure!(
+                published > known_ms,
+                "this profile is older than the one we have"
+            );
+        }
+        self.db.upsert_profile(&actor, &person.name, profile)?;
+        remember(&self.lookup, addr);
+        // A different node: the follow starts over there (`upsert_follow`),
+        // and the sync this wakes subscribes to it.
+        self.db.upsert_follow(&actor, addr)?;
+        self.lock_subscribed().remove(&actor);
+        self.sync_now.notify_one();
+        info!(
+            actor = %actor.fmt_short(),
+            node = %addr.id.fmt_short(),
+            "a followed identity moved to another node"
+        );
+        Ok(())
     }
 
     /// Records a subscriber. A node we already have just gets its address
