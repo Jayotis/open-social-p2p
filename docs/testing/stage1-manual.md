@@ -129,7 +129,7 @@ Add a row per run. Results here are public, so describe networks in general term
 
 - Public posts only; no private or group content.
 - Following is manual (tickets or QR codes); no directory or search.
-- No upload rate limits yet (M3). Storage quotas and eviction came later, in M3 ([ADR 0003](../decisions/0003-native-social-protocol-v0.md)).
+- No upload rate limits, storage quotas or eviction yet. They came later, in M3 ([ADR 0003](../decisions/0003-native-social-protocol-v0.md)).
 - Media is unavailable when the author's node and every host are offline.
 - Development uses n0's public relays and DNS lookup ([ADR 0002](../decisions/0002-rust-and-iroh.md)).
 - Not yet tested: HDR phone video, rotated photos, very long uploads.
