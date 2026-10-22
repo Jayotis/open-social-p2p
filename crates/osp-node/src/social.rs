@@ -10,7 +10,7 @@ use iroh::{
     protocol::{AcceptError, ProtocolHandler},
 };
 use osp_proto::{
-    Payload, SOCIAL_ALPN,
+    Payload, SOCIAL_ALPN, SignedObject,
     framing::{read_frame, read_frame_max, write_frame},
     social::{MAX_OUTBOX_PAGE, MAX_REQUEST_LEN, OutboxEntry, SocialRequest, SocialResponse},
 };
@@ -36,6 +36,9 @@ const MAX_REQUESTS_PER_CONN: usize = 4;
 const STREAM_TIMEOUT: Duration = Duration::from_secs(60);
 /// Longest we try to tell a peer we're busy.
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
+/// Object bytes in one outbox page, at most. Encoded for sending, that is
+/// still well under the 16 MiB frame limit.
+const MAX_PAGE_BYTES: usize = 8 << 20;
 /// Most followers a node keeps. Each one costs a notification per post.
 const MAX_FOLLOWERS: usize = 10_000;
 /// Most new followers accepted per hour. Anyone can subscribe, and new
@@ -143,26 +146,36 @@ impl Core {
                 profile: self.profile.clone(),
             },
             SocialRequest::GetOutbox { since, limit } => {
-                let rows = self.db.outbox_since(since, limit.min(MAX_OUTBOX_PAGE))?;
-                // Include what each reshare points at, and its author's
-                // profile, so a reader can show it even if the author is offline.
-                let mut referenced = Vec::new();
-                for (_, obj) in &rows {
-                    if let Ok(Payload::Announce(a)) = obj.verify() {
+                let mut entries = Vec::new();
+                let mut referenced: Vec<SignedObject> = Vec::new();
+                let mut page_bytes = 0;
+                for (seq, object) in self.db.outbox_since(since, limit.min(MAX_OUTBOX_PAGE))? {
+                    // Include what each reshare points at, and its author's
+                    // profile, so a reader can show it even if the author is offline.
+                    let mut extra = Vec::new();
+                    if let Ok(Payload::Announce(a)) = object.verify() {
                         if let Some(target) = self.db.get_object(&a.object)? {
-                            referenced.push(target);
+                            extra.push(target);
                         }
                         if let Some(profile) = self.db.profile(&a.object_actor)?
                             && !referenced.contains(&profile)
                         {
-                            referenced.push(profile);
+                            extra.push(profile);
                         }
                     }
+                    // Keep the page well inside the frame limit; the rest
+                    // comes with the next page.
+                    let bytes: usize = std::iter::once(&object)
+                        .chain(&extra)
+                        .map(|o| o.payload_bytes().len())
+                        .sum();
+                    if !entries.is_empty() && page_bytes + bytes > MAX_PAGE_BYTES {
+                        break;
+                    }
+                    page_bytes += bytes;
+                    entries.push(OutboxEntry { seq, object });
+                    referenced.extend(extra);
                 }
-                let entries = rows
-                    .into_iter()
-                    .map(|(seq, object)| OutboxEntry { seq, object })
-                    .collect();
                 SocialResponse::Outbox {
                     entries,
                     referenced,

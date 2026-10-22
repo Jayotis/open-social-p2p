@@ -4,6 +4,7 @@
 //! JSON-LD. Unknown fields are ignored when parsing, so newer nodes can add
 //! fields without breaking older ones.
 
+use anyhow::{Result, ensure};
 use iroh_base::{EndpointId, PublicKey};
 use serde::{Deserialize, Serialize};
 
@@ -111,7 +112,66 @@ impl Payload {
             Payload::Announce(a) => &a.published,
         }
     }
+
+    /// Checks the limits every node applies to objects, its own and others'.
+    /// They keep one author from making readers store or fetch without bound.
+    pub fn check_limits(&self) -> Result<()> {
+        match self {
+            Payload::Person(p) => {
+                ensure!(
+                    p.name.len() <= MAX_NAME_BYTES,
+                    "profile name is longer than {MAX_NAME_BYTES} bytes"
+                );
+                ensure!(
+                    p.summary
+                        .as_ref()
+                        .is_none_or(|s| s.len() <= MAX_SUMMARY_BYTES),
+                    "profile summary is longer than {MAX_SUMMARY_BYTES} bytes"
+                );
+                ensure!(
+                    p.nodes.len() <= MAX_PROFILE_NODES,
+                    "profile lists more than {MAX_PROFILE_NODES} nodes"
+                );
+            }
+            Payload::Note(n) => {
+                ensure!(
+                    n.content.len() <= MAX_CONTENT_BYTES,
+                    "post text is longer than {MAX_CONTENT_BYTES} bytes"
+                );
+                ensure!(
+                    n.attachment.len() <= MAX_ATTACHMENTS,
+                    "a post can have at most {MAX_ATTACHMENTS} attachments"
+                );
+                for a in &n.attachment {
+                    a.check_limits()?;
+                }
+            }
+            Payload::Announce(_) => {}
+        }
+        Ok(())
+    }
 }
+
+/// Longest post text, in bytes.
+pub const MAX_CONTENT_BYTES: usize = 10_000;
+/// Most photos or videos in one post.
+pub const MAX_ATTACHMENTS: usize = 4;
+/// Largest media file an attachment may declare. Ten minutes of video in
+/// media profile v1 is about 120 MB; this leaves room for nodes that
+/// allow longer videos.
+pub const MAX_ATTACHMENT_BYTES: u64 = 1 << 30;
+/// Largest thumbnail. A 480-pixel WebP is tens of kilobytes.
+pub const MAX_THUMBNAIL_BYTES: u64 = 2 << 20;
+/// Longest alt text, in bytes.
+pub const MAX_ALT_TEXT_BYTES: usize = 1_500;
+/// The file types media profile v1 produces (ADR 0005).
+pub const MEDIA_TYPES: [&str; 2] = ["video/mp4", "image/webp"];
+/// Longest display name, in bytes.
+pub const MAX_NAME_BYTES: usize = 200;
+/// Longest profile summary, in bytes.
+pub const MAX_SUMMARY_BYTES: usize = 2_000;
+/// Most home nodes a profile may list.
+pub const MAX_PROFILE_NODES: usize = 8;
 
 /// A profile. Also tells others which home nodes speak for this identity.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -180,6 +240,38 @@ pub struct Attachment {
 impl Attachment {
     pub fn blobs(&self) -> impl Iterator<Item = BlobHash> + '_ {
         std::iter::once(self.blob).chain(self.thumbnail.as_ref().map(|t| t.blob))
+    }
+
+    fn check_limits(&self) -> Result<()> {
+        ensure!(
+            MEDIA_TYPES.contains(&self.media_type.as_str()),
+            "attachments must be one of {MEDIA_TYPES:?}, not {:?}",
+            self.media_type
+        );
+        ensure!(
+            self.size <= MAX_ATTACHMENT_BYTES,
+            "attachment declares {} bytes; the limit is {MAX_ATTACHMENT_BYTES}",
+            self.size
+        );
+        ensure!(
+            self.name
+                .as_ref()
+                .is_none_or(|n| n.len() <= MAX_ALT_TEXT_BYTES),
+            "alt text is longer than {MAX_ALT_TEXT_BYTES} bytes"
+        );
+        if let Some(thumb) = &self.thumbnail {
+            ensure!(
+                thumb.media_type == "image/webp",
+                "thumbnails must be image/webp, not {:?}",
+                thumb.media_type
+            );
+            ensure!(
+                thumb.size <= MAX_THUMBNAIL_BYTES,
+                "thumbnail declares {} bytes; the limit is {MAX_THUMBNAIL_BYTES}",
+                thumb.size
+            );
+        }
+        Ok(())
     }
 }
 
