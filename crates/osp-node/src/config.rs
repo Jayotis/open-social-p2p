@@ -14,6 +14,7 @@ pub struct Config {
     pub sync: SyncConfig,
     pub media: MediaConfig,
     pub storage: StorageConfig,
+    pub serving: ServingConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -82,6 +83,16 @@ pub struct StorageConfig {
     pub cache_quota_mb: u64,
 }
 
+/// Sending media to other nodes.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ServingConfig {
+    /// Most megabits per second for sending media to other nodes, all
+    /// together. 0 means no cap. About half your upload speed leaves room
+    /// for everything else, your phone included.
+    pub max_upload_mbps: u64,
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -90,6 +101,7 @@ impl Default for Config {
             sync: SyncConfig::default(),
             media: MediaConfig::default(),
             storage: StorageConfig::default(),
+            serving: ServingConfig::default(),
         }
     }
 }
@@ -157,6 +169,7 @@ impl Config {
                 ..MediaConfig::default()
             },
             storage: StorageConfig::default(),
+            serving: ServingConfig::default(),
         }
     }
 

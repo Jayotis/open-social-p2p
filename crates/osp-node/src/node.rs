@@ -176,7 +176,7 @@ impl Node {
             transcode_lock: tokio::sync::Mutex::new(()),
         });
 
-        let (blobs, serving_rules) = core.store.protocol();
+        let (blobs, serving_rules) = core.store.protocol(&core.config.serving);
         let router = Router::builder(endpoint)
             .accept(iroh_blobs::ALPN, blobs)
             .accept(osp_proto::SOCIAL_ALPN, SocialProtocol::new(core.clone()))
