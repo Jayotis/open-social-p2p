@@ -1,6 +1,6 @@
 # ADR 0009: Identity backup and recovery
 
-**Status:** Accepted (2026-10-22). Not built yet; it must be before any public release ([ADR 0006](0006-desktop-first-always-on-node.md)).
+**Status:** Accepted (2026-10-22). Partly built: the recovery words, restoring onto a new node, and follows that change node starting over. Still to build, before any public release ([ADR 0006](0006-desktop-first-always-on-node.md)): `Moved` and the backup file.
 
 ## Context
 

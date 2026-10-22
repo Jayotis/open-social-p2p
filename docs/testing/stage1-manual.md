@@ -31,7 +31,7 @@ The script starts three daemons (alice, bob, carol), runs the publish → reshar
 ## Running a node by hand
 
 ```sh
-osp init --name "Your name"        # creates ~/.local/share/osp
+osp init --name "Your name"        # creates ~/.local/share/osp and shows 24 recovery words
 osp daemon                         # leave running, or `osp service install` (see the M2 guide)
 
 # in another terminal
@@ -45,6 +45,13 @@ osp status                         # relay, NAT, connections (direct/relay), sto
 ```
 
 Use `--home DIR` (or `OSP_HOME=DIR`) to run several nodes on one machine. Add `--json` to any command for machine-readable output. Logging detail: `RUST_LOG=osp_node=debug osp daemon`.
+
+### Moving or restoring a node
+
+The identity is the key in `identity.key`; the 24 recovery words that `osp init` shows are that key written as words ([ADR 0009](../decisions/0009-identity-backup-and-recovery.md)). `osp backup words` shows them again.
+
+- **Moving to another computer while the old one works:** stop the node, copy its whole home directory to the new computer, and run `osp service install` there. The node keeps its node ID, so followers and phones don't notice. Never run the old copy again.
+- **The old computer is lost:** `osp init --restore` asks for the words and creates a node for the same identity with a new node ID. Followers find it once you give them a new follow code (`osp invite`), and phones pair again. Following again with a code for a different node starts the follow over, from the latest 100 posts.
 
 ## Cross-machine scenario
 
