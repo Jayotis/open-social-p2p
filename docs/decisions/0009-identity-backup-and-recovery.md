@@ -1,6 +1,6 @@
 # ADR 0009: Identity backup and recovery
 
-**Status:** Accepted (2026-10-22). Partly built: the recovery words, restoring onto a new node, follows that change node starting over, and `Moved`. Still to build, before any public release ([ADR 0006](0006-desktop-first-always-on-node.md)): the backup file.
+**Status:** Accepted (2026-10-22), and built. Still to decide before any public release ([ADR 0006](0006-desktop-first-always-on-node.md)): whether to add a second, offline key that can replace a stolen one (below).
 
 ## Context
 
@@ -41,18 +41,19 @@ Backup option (b), theft option (a) for now.
 - The words are shown **only in the node's own terminal**. No paired phone can ask for them, as with managing devices ([ADR 0008](0008-device-pairing-and-client-protocol.md)).
 - There is no passphrase on top of the words: they are the key.
 
-**Backup file** (optional): `osp backup export <file>`.
+**Backup file** (optional): `osp backup export <file>`, made by the running node and only from its own terminal, never by a paired phone.
 
-- It holds the profile, the person's own posts in outbox order (the signed objects byte for byte, so their IDs don't change), who they follow (identity and address), the nodes that follow them, and the media of their own posts. `--no-media` leaves the media out for a small file; restored posts then show their media only where someone who reshared them hosts a copy.
+- It holds the profile, the person's own posts in outbox order (the signed objects byte for byte, so their IDs don't change) and what their reshares point at, who they follow (identity and address), the nodes that follow them, and the media of their own posts. `--no-media` leaves the media out for a small file; restored posts then show their media only where someone who reshared them hosts a copy.
 - It leaves out the node key, the paired phones (they belong to the old node; phones pair again), other people's posts and cached media (synced again from the people followed), and replicas (fetched again from other hosts after the restore, within the replica quota).
-- It is encrypted and authenticated with a key derived from the identity key, in chunks, so a file of several gigabytes never needs to fit in memory. Whoever has the words can open it; without them it is unreadable, so it can be kept on a USB stick or in a cloud folder. The file starts with a format version and the identity's public key, so a restore can tell at once whether it matches the words.
+- It is encrypted and authenticated with ChaCha20-Poly1305, in chunks of 1 MiB, so a file of several gigabytes never needs to fit in memory. Each file has its own key, derived with BLAKE3 from the identity key and a random salt in the file. Each chunk's nonce holds its number and whether it is the last, so a chunk can't be changed, moved, dropped or cut off unnoticed. Whoever has the words can open it; without them it is unreadable, so it can be kept on a USB stick or in a cloud folder. The file starts with a format version and the identity's public key, so a restore can tell at once whether it matches the words.
+- It is written beside its destination and then renamed, so a backup that fails part way never replaces a good one.
 - The file is a snapshot made by hand. Making it automatically, for example to a chosen folder or to the paired phone, is a later step.
 
 **Restoring after the old computer is lost.**
 
-- `osp init --restore` on the new computer asks for the words, and optionally a backup file. It makes a new node key and refuses to write over an existing home.
+- `osp init --restore [--backup <file>]` on the new computer asks for the words. It checks the backup file belongs to them before creating anything, makes a new node key, and refuses to write over an existing home. If restoring the file fails part way, it removes what it created, so it can simply be run again. Without `--name`, the name in the backed-up profile is kept.
 - The node signs a new profile that lists only itself, dated now.
-- With a backup file, it imports the posts in their original order, the follows (each one starts like a new follow, with the latest 100 entries), the followers and the media. Then it tells each follower it has moved (below).
+- With a backup file, it imports the posts in their original order, the follows (each one starts like a new follow, with the latest 100 entries) and the followers, each counted as heard from at the restore, so it has the usual 30 days to hear of the move. The media is checked against its hashes and left in the home for the node to take into its blob store when it starts. Then it tells each follower it has moved (below). At every start, the node also fetches any media it promised to host (reshares with hosting) but doesn't have, which after a restore is all of it.
 - With the words alone, the identity is back, but followers only find the new node when the owner gives them a new follow code (`osp invite`). Their copies of old posts stay valid, since the identity hasn't changed. The new node starts with no posts.
 
 **Telling followers: `Moved`.** A new request in `osp/social/0`: `Moved { profile, addr }`, a signed `Person` and the sending node's address, which must be its own. A node accepts it only if:

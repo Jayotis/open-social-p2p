@@ -30,7 +30,7 @@ The phone is a thin client of its owner's home node ([ADR 0001](0001-home-node-a
 
 **What a device may do.** Every request the local `osp` tool can make, except:
 
-- anything naming files on the node's own disk (`Post` attachment paths, `Fetch` with an output directory);
+- anything naming files on the node's own disk (`Post` attachment paths, `Fetch` with an output directory, `ExportBackup`, [ADR 0009](0009-identity-backup-and-recovery.md));
 - managing devices (`NewPairing`, `Devices`, `Unpair`), which stays on the node itself.
 
 A device's `Sync` returns once outboxes are synced. It doesn't wait for prefetching, because the phone can read media as soon as it needs it.
