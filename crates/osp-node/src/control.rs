@@ -149,6 +149,13 @@ impl Core {
                 self.unpair(&device)?;
                 ClientResponse::Ok
             }
+            ClientRequest::ExportBackup { path, media } => {
+                ensure!(local, "backups are only made from the node itself");
+                ClientResponse::BackedUp {
+                    info: self.export_backup(&path, media).await?,
+                    path,
+                }
+            }
             ClientRequest::Pair { .. } | ClientRequest::ReadBlob { .. } => {
                 bail!("this request is only accepted over osp/client/0")
             }

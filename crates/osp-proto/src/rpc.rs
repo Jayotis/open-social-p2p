@@ -99,6 +99,13 @@ pub enum ClientRequest {
         #[serde(default)]
         len: Option<u64>,
     },
+    /// Write an encrypted backup of this identity to a file on the home
+    /// node (local socket only, ADR 0009). With `media`, it includes the
+    /// media of its own posts.
+    ExportBackup {
+        path: PathBuf,
+        media: bool,
+    },
 }
 
 fn default_feed_limit() -> u32 {
@@ -156,9 +163,27 @@ pub enum ClientResponse {
     Blob {
         size: u64,
     },
+    BackedUp {
+        path: PathBuf,
+        info: BackupInfo,
+    },
     Error {
         message: String,
     },
+}
+
+/// What a backup file holds (ADR 0009).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BackupInfo {
+    /// Own posts and reshares.
+    pub posts: usize,
+    pub follows: usize,
+    pub followers: usize,
+    pub media_files: usize,
+    /// Media of own posts the node no longer has, so the backup lacks it.
+    pub media_missing: usize,
+    /// The size of the file.
+    pub bytes: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

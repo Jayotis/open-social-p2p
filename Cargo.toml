@@ -29,6 +29,7 @@ iroh-relay = "1.4" # tests only: a relay server on loopback
 n0-future = "0.3"
 postcard = { version = "1", default-features = false, features = ["use-std"] }
 qr2term = "0.3"
+ring = "0.17" # already used by iroh; encrypts backup files (ADR 0009)
 rusqlite = { version = "0.40", features = ["bundled"] }
 rustix = { version = "1", features = ["fs"] }
 serde = { version = "1", features = ["derive"] }

@@ -2967,6 +2967,7 @@ dependencies = [
  "iroh-relay",
  "n0-future",
  "osp-proto",
+ "ring",
  "rusqlite",
  "rustix 1.1.5",
  "serde",

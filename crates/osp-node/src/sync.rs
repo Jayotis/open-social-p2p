@@ -352,6 +352,36 @@ impl Core {
         }
     }
 
+    /// Fetches media we promised to host by resharing with hosting, but
+    /// don't have: after a restore, which leaves replicas out (ADR 0009).
+    /// Within the replica quota, like any replica. Runs once at startup.
+    pub(crate) async fn refetch_replicas(&self) {
+        let Ok(outbox) = self.db.outbox_since(0, u32::MAX) else {
+            return;
+        };
+        for (_, obj) in outbox {
+            let Ok(Payload::Announce(announce)) = obj.verify() else {
+                continue;
+            };
+            if !announce.hosting {
+                continue;
+            }
+            let Ok(Some(note)) = self.stored_note(&announce.object) else {
+                continue;
+            };
+            for (blob, size) in note.sized_blobs() {
+                let held = self.db.blob_class(&blob).ok().flatten();
+                if held.is_some_and(|c| c.is_public()) {
+                    continue;
+                }
+                match self.ensure_blob(&blob, BlobClass::Replica, size).await {
+                    Ok(_) => info!(blob = %blob.fmt_short(), "fetched media we host again"),
+                    Err(e) => warn!(blob = %blob.fmt_short(), "media we host is missing: {e:#}"),
+                }
+            }
+        }
+    }
+
     /// Nodes believed to serve `blob`, most recently seen first.
     fn known_providers(&self, blob: &BlobHash) -> Result<Vec<EndpointId>> {
         let me = self.endpoint.id();

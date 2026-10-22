@@ -161,10 +161,15 @@ async fn phone_pairs_posts_plays_and_is_revoked() {
     let info = phone.connection_info().await.expect("connected");
     assert_eq!(info.path, "direct");
 
-    // Device management stays on the node itself.
-    for req in [ClientRequest::NewPairing, ClientRequest::Devices] {
+    // Device management and backups stay on the node itself.
+    let backup = ClientRequest::ExportBackup {
+        path: dir.path().join("backup"),
+        media: false,
+    };
+    for req in [ClientRequest::NewPairing, ClientRequest::Devices, backup] {
         assert!(phone.request(&req).await.is_err());
     }
+    assert!(!dir.path().join("backup").exists());
     let paths = ClientRequest::Post {
         content: "sneaky".into(),
         attachments: vec!["/etc/hostname".into()],
