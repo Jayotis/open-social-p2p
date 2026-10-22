@@ -1,13 +1,17 @@
 //! Peers that misbehave on purpose: oversized requests, floods of requests
 //! that never finish, unknown devices, floods of subscribers, followed
-//! nodes whose outboxes never move on or never end, and followed nodes
-//! whose media would overfill the disk. The node must turn them away
-//! quickly and keep serving everyone else.
+//! nodes whose outboxes never move on or never end, followed nodes whose
+//! media would overfill the disk, and crowds downloading our media. The
+//! node must turn them away quickly and keep serving everyone else.
 //!
 //! Each stranger is a fresh iroh endpoint with a new key, as an attacker's
 //! would be. Everything runs in this process on loopback.
 
-use std::{net::SocketAddr, path::Path, time::Duration};
+use std::{
+    net::SocketAddr,
+    path::Path,
+    time::{Duration, Instant},
+};
 
 use iroh::{
     Endpoint, EndpointAddr, RelayMode, SecretKey,
@@ -15,11 +19,11 @@ use iroh::{
     endpoint::{Connection, RecvStream, SendStream, presets},
     protocol::{AcceptError, ProtocolHandler, Router},
 };
-use iroh_blobs::{BlobsProtocol, store::mem::MemStore};
+use iroh_blobs::{BlobsProtocol, Hash, get, protocol::GetRequest, store::mem::MemStore};
 use osp_node::{BlobClass, Config, Node};
 use osp_proto::{
-    Attachment, BlobHash, CLIENT_ALPN, FollowTicket, MediaKind, Note, Payload, Person, SOCIAL_ALPN,
-    SignedObject,
+    Attachment, BlobHash, CLIENT_ALPN, FollowTicket, MediaKind, Note, ObjectId, Payload, Person,
+    SOCIAL_ALPN, SignedObject,
     framing::{read_frame, write_frame},
     rpc::{self, ClientRequest, ClientResponse, FollowInfo},
     social::{self, OutboxEntry, SocialRequest, SocialResponse},
@@ -34,6 +38,11 @@ const UNKNOWN_LIMIT: usize = 8;
 const NEW_FOLLOWERS_PER_HOUR: usize = 100;
 /// Matches `MAX_NEW_PER_DAY` in `sync.rs`.
 const MAX_NEW_PER_DAY: u64 = 500;
+/// Match the transfer limits in `store.rs`.
+const TRANSFER_LIMIT: usize = 8;
+const STRANGER_TRANSFER_LIMIT: usize = 4;
+const TRANSFER_LIMIT_PER_NODE: usize = 2;
+const BUSY_WAIT: Duration = Duration::from_secs(10);
 
 /// Long enough for loopback, far shorter than any of the node's timeouts.
 const PROMPTLY: Duration = Duration::from_secs(5);
@@ -701,4 +710,239 @@ async fn a_followed_nodes_media_cant_overfill_the_cache_or_be_bigger_than_declar
 async fn add_blob(store: &MemStore, bytes: Vec<u8>) -> BlobHash {
     let tag = store.add_bytes(bytes).await.unwrap();
     BlobHash::from_bytes(*tag.hash.as_bytes())
+}
+
+/// Posts a photo of noise, which compresses badly: a 2048 px WebP of about
+/// 3 MB, more than a QUIC stream buffers (1.25 MB). Returns the post and
+/// the photo's blob and size.
+async fn post_noise_photo(node: &Node, dir: &Path) -> (ObjectId, BlobHash, u64) {
+    let photo = dir.join("noise.png");
+    let status = tokio::process::Command::new("ffmpeg")
+        .args([
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+        ])
+        .arg("nullsrc=s=2048x2048,geq=random(1)*255:random(1)*255:random(1)*255")
+        .args(["-frames:v", "1"])
+        .arg(&photo)
+        .status()
+        .await
+        .expect("ffmpeg must be installed");
+    assert!(status.success());
+    let post = ClientRequest::Post {
+        content: "noise".into(),
+        attachments: vec![photo],
+        uploads: vec![],
+    };
+    let ClientResponse::Posted { id } = call(node, post).await else {
+        panic!("not posted");
+    };
+    let ClientResponse::Feed { items } = call(node, ClientRequest::Feed { limit: 1 }).await else {
+        panic!("no feed");
+    };
+    let photo = &items[0].attachments[0].attachment;
+    (id, photo.blob, photo.size)
+}
+
+/// Asks for a blob without reading the answer. Once the stream's buffer is
+/// full the transfer can't finish, so it keeps its place until dropped.
+async fn hold(conn: &Connection, blob: BlobHash) -> get::fsm::ConnectedNext {
+    let request = GetRequest::blob(Hash::from_bytes(*blob.as_bytes()));
+    let connected = get::fsm::start(conn.clone(), request, Default::default())
+        .next()
+        .await
+        .unwrap();
+    let held = connected.next().await.unwrap();
+    // Gives the node time to grant it a place.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    held
+}
+
+/// Downloads a blob in full. Returns whether it arrived, and how long that
+/// took, or how long until the node refused.
+async fn fetch(conn: &Connection, blob: BlobHash) -> (bool, Duration) {
+    let started = Instant::now();
+    let got = MemStore::new()
+        .remote()
+        .fetch(conn.clone(), Hash::from_bytes(*blob.as_bytes()))
+        .await;
+    (got.is_ok(), started.elapsed())
+}
+
+/// A stranger that subscribed to the node, so the node counts it as a
+/// follower, connected for downloading media.
+async fn follower_downloading(addr: &EndpointAddr) -> (Stranger, Connection) {
+    let follower = stranger(addr, SOCIAL_ALPN).await;
+    assert!(matches!(subscribe(&follower).await, SocialResponse::Ok));
+    let conn = follower
+        .endpoint
+        .connect(addr.clone(), iroh_blobs::ALPN)
+        .await
+        .unwrap();
+    (follower, conn)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn media_transfers_take_turns_and_strangers_get_only_some_places() {
+    let dir = tempfile::tempdir().unwrap();
+    let node = start(dir.path(), "Mona").await;
+    let addr = node.addr().await;
+    let (_, blob, _) = post_noise_photo(&node, dir.path()).await;
+
+    // One node's third transfer waits until one of its first two ends.
+    let first = stranger(&addr, iroh_blobs::ALPN).await;
+    let mut held = Vec::new();
+    for _ in 0..TRANSFER_LIMIT_PER_NODE {
+        held.push(hold(&first, blob).await);
+    }
+    let conn = first.conn.clone();
+    let third = tokio::spawn(async move { fetch(&conn, blob).await });
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert!(
+        !third.is_finished(),
+        "a node's third transfer waits its turn"
+    );
+    held.pop();
+    let (ok, took) = third.await.unwrap();
+    assert!(ok && took < BUSY_WAIT, "served once a place was free");
+
+    // Strangers share half the places between them.
+    held.push(hold(&first, blob).await);
+    let second = stranger(&addr, iroh_blobs::ALPN).await;
+    for _ in 0..STRANGER_TRANSFER_LIMIT - TRANSFER_LIMIT_PER_NODE {
+        held.push(hold(&second, blob).await);
+    }
+    let latecomer = stranger(&addr, iroh_blobs::ALPN).await;
+    let conn = latecomer.conn.clone();
+    let refused = tokio::spawn(async move { fetch(&conn, blob).await });
+
+    // A follower still gets a place straight away.
+    let (_follower, conn) = follower_downloading(&addr).await;
+    let (ok, took) = fetch(&conn, blob).await;
+    assert!(ok && took < BUSY_WAIT, "the follower waited {took:?}");
+
+    // The stranger is turned away as busy, but only after waiting.
+    let (ok, took) = refused.await.unwrap();
+    assert!(!ok, "a stranger over the limit is refused");
+    assert!(
+        took >= BUSY_WAIT - Duration::from_secs(1),
+        "refused after {took:?}"
+    );
+
+    drop(held);
+    node.shutdown().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_node_with_every_place_taken_sends_downloads_to_another_host() {
+    let dir = tempfile::tempdir().unwrap();
+    let node = start(dir.path(), "Nora").await;
+    let addr = node.addr().await;
+    let (id, blob, size) = post_noise_photo(&node, dir.path()).await;
+
+    // Another host with the same photo.
+    let out = dir.path().join("out");
+    let ClientResponse::Fetched { files } = call(
+        &node,
+        ClientRequest::Fetch {
+            id,
+            out_dir: Some(out),
+        },
+    )
+    .await
+    else {
+        panic!("not fetched");
+    };
+    let photo = files.iter().find(|f| f.blob == blob).expect("the photo");
+    let media = MemStore::new();
+    let path = photo.path.as_ref().expect("exported");
+    add_blob(&media, std::fs::read(path).unwrap()).await;
+    let endpoint = Endpoint::builder(presets::Minimal)
+        .relay_mode(RelayMode::Disabled)
+        .clear_ip_transports()
+        .bind_addr("127.0.0.1:0".parse::<SocketAddr>().unwrap())
+        .unwrap()
+        .bind()
+        .await
+        .unwrap();
+    let other_host = endpoint.addr();
+    let _other = Router::builder(endpoint)
+        .accept(iroh_blobs::ALPN, BlobsProtocol::new(&media, None))
+        .spawn();
+
+    // Strangers and followers take every place.
+    let mut peers = Vec::new();
+    let mut held = Vec::new();
+    for _ in 0..STRANGER_TRANSFER_LIMIT / TRANSFER_LIMIT_PER_NODE {
+        let peer = stranger(&addr, iroh_blobs::ALPN).await;
+        for _ in 0..TRANSFER_LIMIT_PER_NODE {
+            held.push(hold(&peer, blob).await);
+        }
+        peers.push(peer);
+    }
+    for _ in 0..(TRANSFER_LIMIT - STRANGER_TRANSFER_LIMIT) / TRANSFER_LIMIT_PER_NODE {
+        let (follower, conn) = follower_downloading(&addr).await;
+        for _ in 0..TRANSFER_LIMIT_PER_NODE {
+            held.push(hold(&conn, blob).await);
+        }
+        peers.push(follower);
+    }
+
+    // Even a follower is refused now, after waiting.
+    let (_late, conn) = follower_downloading(&addr).await;
+    let refused = tokio::spawn(async move { fetch(&conn, blob).await });
+
+    // A node downloading the photo is refused too, and moves on to the
+    // other host.
+    let reader = start(dir.path(), "Otto").await;
+    let started = Instant::now();
+    let got = reader
+        .download_blob_from(&blob, size, &[addr.clone(), other_host])
+        .await;
+    assert_eq!(got.unwrap(), size);
+    let took = started.elapsed();
+    assert!(
+        took >= BUSY_WAIT - Duration::from_secs(1),
+        "it asked the busy node first, {took:?}"
+    );
+
+    let (ok, took) = refused.await.unwrap();
+    assert!(!ok, "a follower over the overall limit is refused");
+    assert!(
+        took >= BUSY_WAIT - Duration::from_secs(1),
+        "refused after {took:?}"
+    );
+
+    drop(held);
+    reader.shutdown().await.unwrap();
+    node.shutdown().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_upload_cap_slows_sending_to_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut config = Config::local_test("Pia");
+    config.serving.max_upload_mbps = 8;
+    let home = dir.path().join("pia");
+    Node::init(&home, &config).unwrap();
+    let node = Node::spawn(&home).await.unwrap();
+    let addr = node.addr().await;
+    let (_, blob, size) = post_noise_photo(&node, dir.path()).await;
+
+    // At 8 Mbit/s, a megabyte a second. On loopback it would take far less.
+    let at_cap = Duration::from_secs_f64(size as f64 * 8.0 / 8_000_000.0);
+    let peer = stranger(&addr, iroh_blobs::ALPN).await;
+    let (ok, took) = fetch(&peer, blob).await;
+    assert!(ok);
+    assert!(
+        took >= at_cap.mul_f64(0.8),
+        "{size} bytes took {took:?}; the cap allows no less than {at_cap:?}"
+    );
+
+    node.shutdown().await.unwrap();
 }

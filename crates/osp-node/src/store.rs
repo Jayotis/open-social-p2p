@@ -1,4 +1,5 @@
-//! Content-addressed blob storage and transfer, within the storage quotas.
+//! Content-addressed blob storage and transfer, within the storage quotas
+//! and the serving limits.
 //!
 //! This is the only module that uses iroh-blobs (ADR 0002). It is still
 //! pre-1.0, so keeping it behind this small interface means an API change, or
@@ -16,7 +17,7 @@ use std::{
         Arc, Mutex, MutexGuard,
         atomic::{AtomicBool, Ordering},
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use anyhow::{Context, Result, bail, ensure};
@@ -41,13 +42,13 @@ use n0_future::StreamExt;
 use osp_proto::BlobHash;
 use tokio::{
     io::{AsyncWrite, AsyncWriteExt},
-    sync::mpsc,
+    sync::{OwnedSemaphorePermit, Semaphore, mpsc},
     task::JoinHandle,
 };
 use tracing::{debug, info, warn};
 
 use crate::{
-    config::StorageConfig,
+    config::{ServingConfig, StorageConfig},
     db::{BlobClass, Db},
     health,
 };
@@ -66,8 +67,20 @@ const MIN_FREE_DISK: u64 = health::LOW_DISK_BYTES;
 /// Names of the tags that keep our blobs from the garbage collector.
 const TAG_PREFIX: &str = "osp/";
 
+/// Most media transfers served to other nodes at once.
+const MAX_TRANSFERS: usize = 8;
+/// Most of those for strangers: nodes that neither follow us nor are our
+/// devices. A crowd of strangers then can't crowd out our followers.
+const MAX_STRANGER_TRANSFERS: usize = 4;
+/// Most at once for any one node.
+const MAX_TRANSFERS_PER_NODE: usize = 2;
+/// How long a request over one of those limits waits for a place. After
+/// that it is refused as busy, and the requester tries another host.
+const BUSY_WAIT: Duration = Duration::from_secs(10);
+
 /// Which provider events we want to see. Every data request is intercepted so
 /// the serving rules can refuse it; pushes (writes into our store) are off.
+/// `protocol` turns on throttling when there is an upload cap.
 const EVENT_MASK: EventMask = EventMask {
     connected: ConnectMode::Intercept,
     get: RequestMode::Intercept,
@@ -135,9 +148,20 @@ impl ContentStore {
 
     /// A protocol handler that serves blobs by the rules in ADR 0003, plus the
     /// task that applies those rules. Abort the task when shutting down.
-    pub fn protocol(&self) -> (BlobsProtocol, JoinHandle<()>) {
-        let (events, rx) = EventSender::channel(64, EVENT_MASK);
-        let task = tokio::spawn(enforce_serving_rules(rx, self.db.clone()));
+    pub fn protocol(&self, serving: &ServingConfig) -> (BlobsProtocol, JoinHandle<()>) {
+        let pacer = (serving.max_upload_mbps > 0).then(|| Pacer::new(serving.max_upload_mbps));
+        let mask = EventMask {
+            // Then every 16 KiB sent waits for our go-ahead, which costs a
+            // little, so only with a cap.
+            throttle: if pacer.is_some() {
+                ThrottleMode::Intercept
+            } else {
+                ThrottleMode::None
+            },
+            ..EVENT_MASK
+        };
+        let (events, rx) = EventSender::channel(64, mask);
+        let task = tokio::spawn(enforce_serving_rules(rx, self.db.clone(), pacer));
         (BlobsProtocol::new(&self.store, Some(events)), task)
     }
 
@@ -481,22 +505,26 @@ fn to_blob_hash(hash: Hash) -> BlobHash {
 ///   child hashes: refused. (Without that last rule, a crafted request could
 ///   use a public blob whose bytes happen to be hashes to reach cached blobs,
 ///   revealing what this node has viewed.)
-async fn enforce_serving_rules(mut rx: mpsc::Receiver<ProviderMessage>, db: Arc<Db>) {
+///
+/// A request that may be served still waits for a place within the
+/// transfer limits, and is refused as busy if none frees up in time. With
+/// an upload cap, `pacer` spaces out what is sent.
+async fn enforce_serving_rules(
+    mut rx: mpsc::Receiver<ProviderMessage>,
+    db: Arc<Db>,
+    mut pacer: Option<Pacer>,
+) {
     let mut peers: HashMap<u64, Option<EndpointId>> = HashMap::new();
+    let mut places = Places::new();
     while let Some(msg) = rx.recv().await {
-        match msg {
-            ProviderMessage::ClientConnected(msg) => {
-                peers.insert(msg.inner.connection_id, msg.inner.endpoint_id);
-                msg.tx.send(Ok(())).await.ok();
-            }
-            ProviderMessage::ConnectionClosed(msg) => {
-                peers.remove(&msg.inner.connection_id);
-            }
+        // Requests for data: who asked, whether the rules allow it, and the
+        // channels for the answer and for news of the transfer.
+        let (peer, allowed, answer, updates) = match msg {
             ProviderMessage::GetRequestReceived(msg) => {
                 let peer = peers.get(&msg.inner.connection_id).copied().flatten();
                 let request = &msg.inner.request;
                 let ok = request.ranges.is_blob() && may_serve(&db, request.hash, peer);
-                msg.tx.send(verdict(ok)).await.ok();
+                (peer, ok, msg.tx, msg.rx)
             }
             ProviderMessage::GetManyRequestReceived(msg) => {
                 let peer = peers.get(&msg.inner.connection_id).copied().flatten();
@@ -506,22 +534,136 @@ async fn enforce_serving_rules(mut rx: mpsc::Receiver<ProviderMessage>, db: Arc<
                     .hashes
                     .iter()
                     .all(|h| may_serve(&db, *h, peer));
-                msg.tx.send(verdict(ok)).await.ok();
+                (peer, ok, msg.tx, msg.rx)
+            }
+            ProviderMessage::ClientConnected(msg) => {
+                peers.insert(msg.inner.connection_id, msg.inner.endpoint_id);
+                msg.tx.send(Ok(())).await.ok();
+                continue;
+            }
+            ProviderMessage::ConnectionClosed(msg) => {
+                peers.remove(&msg.inner.connection_id);
+                continue;
             }
             ProviderMessage::ObserveRequestReceived(msg) => {
                 let peer = peers.get(&msg.inner.connection_id).copied().flatten();
                 let ok = may_serve(&db, msg.inner.request.hash, peer);
                 msg.tx.send(verdict(ok)).await.ok();
+                continue;
             }
             ProviderMessage::PushRequestReceived(msg) => {
                 msg.tx.send(Err(AbortReason::Permission)).await.ok();
+                continue;
             }
             ProviderMessage::Throttle(msg) => {
-                msg.tx.send(Ok(())).await.ok();
+                let wait = match pacer.as_mut() {
+                    Some(pacer) => pacer.wait_for(msg.inner.size),
+                    None => Duration::ZERO,
+                };
+                // Waiting here would hold up every other request.
+                tokio::spawn(async move {
+                    tokio::time::sleep(wait).await;
+                    msg.tx.send(Ok(())).await.ok();
+                });
+                continue;
             }
             // Notification-only variants; nothing to decide.
-            _ => {}
+            _ => continue,
+        };
+        if !allowed {
+            answer.send(verdict(false)).await.ok();
+            continue;
         }
+        let needed = places.needed(peer, &db);
+        tokio::spawn(async move {
+            let Some(_held) = take_places(needed).await else {
+                debug!(?peer, "busy: refused a blob request");
+                answer.send(Err(AbortReason::RateLimited)).await.ok();
+                return;
+            };
+            if answer.send(Ok(())).await.is_ok() {
+                // The channel closes when the transfer ends; the places
+                // are given back then.
+                let mut updates = updates;
+                while let Ok(Some(_)) = updates.recv().await {}
+            }
+        });
+    }
+}
+
+/// The transfer limits. Each limit is a semaphore with one permit per place.
+struct Places {
+    all: Arc<Semaphore>,
+    strangers: Arc<Semaphore>,
+    per_node: HashMap<Option<EndpointId>, Arc<Semaphore>>,
+}
+
+impl Places {
+    fn new() -> Self {
+        Self {
+            all: Arc::new(Semaphore::new(MAX_TRANSFERS)),
+            strangers: Arc::new(Semaphore::new(MAX_STRANGER_TRANSFERS)),
+            per_node: HashMap::new(),
+        }
+    }
+
+    /// The limits a request from `peer` needs a place in, in the order to
+    /// take them.
+    fn needed(&mut self, peer: Option<EndpointId>, db: &Db) -> Vec<Arc<Semaphore>> {
+        // Forget nodes with nothing in progress or waiting.
+        self.per_node
+            .retain(|_, limit| Arc::strong_count(limit) > 1);
+        let own = self
+            .per_node
+            .entry(peer)
+            .or_insert_with(|| Arc::new(Semaphore::new(MAX_TRANSFERS_PER_NODE)));
+        let mut needed = vec![own.clone()];
+        if !is_follower_or_device(db, peer) {
+            needed.push(self.strangers.clone());
+        }
+        needed.push(self.all.clone());
+        needed
+    }
+}
+
+/// Waits up to `BUSY_WAIT` for a place in each limit. `None` if one stayed
+/// full. The places are given back when the permits are dropped.
+async fn take_places(needed: Vec<Arc<Semaphore>>) -> Option<Vec<OwnedSemaphorePermit>> {
+    let all = async {
+        let mut held = Vec::new();
+        for limit in needed {
+            held.push(limit.acquire_owned().await.ok()?);
+        }
+        Some(held)
+    };
+    tokio::time::timeout(BUSY_WAIT, all).await.ok().flatten()
+}
+
+fn is_follower_or_device(db: &Db, peer: Option<EndpointId>) -> bool {
+    peer.is_some_and(|p| db.is_follower(&p).unwrap_or(false) || db.is_device(&p).unwrap_or(false))
+}
+
+/// Spaces out what the node sends so it stays under `max_upload_mbps`.
+struct Pacer {
+    bytes_per_sec: f64,
+    /// When everything let through so far will have gone out at the cap.
+    next: Instant,
+}
+
+impl Pacer {
+    fn new(mbps: u64) -> Self {
+        Self {
+            bytes_per_sec: mbps as f64 * 1_000_000.0 / 8.0,
+            next: Instant::now(),
+        }
+    }
+
+    /// How long to hold back the next `bytes`.
+    fn wait_for(&mut self, bytes: u64) -> Duration {
+        let now = Instant::now();
+        let start = self.next.max(now);
+        self.next = start + Duration::from_secs_f64(bytes as f64 / self.bytes_per_sec);
+        start - now
     }
 }
 
