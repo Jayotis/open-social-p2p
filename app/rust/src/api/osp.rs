@@ -8,6 +8,7 @@ use std::{path::PathBuf, sync::Arc};
 use anyhow::{bail, Result};
 use flutter_rust_bridge::frb;
 use osp_client::{
+    device_key_from_hex,
     osp_proto::{
         rpc::{ClientRequest, ClientResponse, FeedItem},
         BlobHash, MediaKind, ObjectId,
@@ -112,12 +113,14 @@ pub struct PostProgress {
 }
 
 impl OspApp {
-    /// Starts the client. `dir` is the app's private data directory.
-    pub async fn open(dir: String) -> Result<OspApp> {
+    /// Starts the client. `dir` is the app's private data directory, and
+    /// `device_key` the key the app keeps in the phone's secure storage.
+    pub async fn open(dir: String, device_key: String) -> Result<OspApp> {
         let dir = PathBuf::from(dir);
         logging::init(&dir);
         tracing::info!("app starting");
-        let client = Client::open(&dir, ClientOptions::default()).await?;
+        let key = device_key_from_hex(&device_key)?;
+        let client = Client::open_with_key(&dir, key, ClientOptions::default()).await?;
         Ok(OspApp { client, dir })
     }
 
@@ -336,6 +339,13 @@ fn post(item: FeedItem) -> Post {
         reshared_by,
         resharer_hosts,
     }
+}
+
+/// A new device key, as 64 hex digits, for the app to keep in the phone's
+/// secure storage.
+#[frb(sync)]
+pub fn new_device_key() -> String {
+    osp_client::new_device_key()
 }
 
 /// Makes sure a ticket looks like a pairing ticket before trying to pair.

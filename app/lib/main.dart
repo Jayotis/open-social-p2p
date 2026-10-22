@@ -1,10 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:path_provider/path_provider.dart';
 
+import 'device_key.dart';
 import 'format.dart';
 import 'node.dart';
 import 'screens/feed_screen.dart';
 import 'screens/pair_screen.dart';
+import 'src/rust/api/osp.dart';
 import 'src/rust/frb_generated.dart';
 
 Future<void> main() async {
@@ -13,9 +15,15 @@ Future<void> main() async {
   HomeNode? node;
   String? error;
   try {
-    // App-private storage: the device key, the pairing and the saved feed.
+    // App-private storage: the pairing and the saved feed. The device key
+    // is in the phone's secure storage.
     final dir = await getApplicationSupportDirectory();
-    node = await HomeNode.open(dir.path);
+    final key = await loadDeviceKey(
+      const PhoneSecretStore(),
+      dir,
+      newDeviceKey,
+    );
+    node = await HomeNode.open(dir.path, key);
   } catch (e) {
     error = describeError(e);
   }

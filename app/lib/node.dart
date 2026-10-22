@@ -4,6 +4,7 @@ import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:device_info_plus/device_info_plus.dart';
 import 'package:flutter/widgets.dart';
 
+import 'device_key.dart';
 import 'format.dart';
 import 'src/rust/api/osp.dart';
 
@@ -38,12 +39,22 @@ class HomeNode extends ChangeNotifier with WidgetsBindingObserver {
   /// While a post is uploading, the connection stays open in the background.
   bool uploading = false;
 
+  /// Something to tell the owner on the pairing screen.
+  String? notice;
+
   Timer? _poll;
   StreamSubscription<List<ConnectivityResult>>? _network;
   final Map<String, Future<String>> _urls = {};
 
-  static Future<HomeNode> open(String dir) async {
-    final node = HomeNode._(await OspApp.open(dir: dir));
+  static Future<HomeNode> open(String dir, DeviceKey key) async {
+    final node = HomeNode._(await OspApp.open(dir: dir, deviceKey: key.hex));
+    if (key.isNew && node.app.pairedNode() != null) {
+      // The old key was lost, and the node knows only that one.
+      await node.app.forget();
+      node.notice =
+          "This phone's key couldn't be unlocked, so it got a new one. "
+          'Pair it with your home node again.';
+    }
     node.paired = node.app.pairedNode();
     node._showSaved();
     WidgetsBinding.instance.addObserver(node);
@@ -142,6 +153,7 @@ class HomeNode extends ChangeNotifier with WidgetsBindingObserver {
       deviceName: await _deviceName(),
     );
     paired = info;
+    notice = null;
     notifyListeners();
     _start();
     return info;
