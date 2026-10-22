@@ -12,7 +12,7 @@ Each record captures one significant decision: the problem, the options consider
 | [0006](0006-desktop-first-always-on-node.md) | Desktop-first, always-on personal node | Accepted |
 | [0007](0007-transport-privacy-defaults.md) | Transport privacy defaults: private messages, direct media | Accepted |
 | [0008](0008-device-pairing-and-client-protocol.md) | Device pairing and the client protocol | Accepted |
-| [0009](0009-identity-backup-and-recovery.md) | Identity backup and recovery | Accepted; partly built |
+| [0009](0009-identity-backup-and-recovery.md) | Identity backup and recovery | Accepted |
 
 Proposals under review that may become ADRs: [peer reciprocity and recognition](../12-peer-reciprocity-and-recognition.md) and [hosting roles and the follower swarm](../13-hosting-roles-and-follower-swarm.md). See the [critical review](../reviews/2026-10-21-review-of-docs-12-and-13.md) for what blocks them.
 

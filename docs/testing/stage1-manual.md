@@ -51,7 +51,8 @@ Use `--home DIR` (or `OSP_HOME=DIR`) to run several nodes on one machine. Add `-
 The identity is the key in `identity.key`; the 24 recovery words that `osp init` shows are that key written as words ([ADR 0009](../decisions/0009-identity-backup-and-recovery.md)). `osp backup words` shows them again.
 
 - **Moving to another computer while the old one works:** stop the node, copy its whole home directory to the new computer, and run `osp service install` there. The node keeps its node ID, so followers and phones don't notice. Never run the old copy again.
-- **The old computer is lost:** `osp init --restore` asks for the words and creates a node for the same identity with a new node ID. Followers find it once you give them a new follow code (`osp invite`), and phones pair again. Following again with a code for a different node starts the follow over, from the latest 100 posts.
+- **A backup file:** `osp backup export ~/osp-backup.ospbackup` writes your posts, follows, followers and the media of your posts, encrypted so that only your recovery words open it (`--no-media` for a small file). Keep it somewhere other than this computer, and make a new one now and then.
+- **The old computer is lost:** `osp init --restore --backup ~/osp-backup.ospbackup` asks for the words and creates a node for the same identity with a new node ID. When it starts, it tells your followers that you moved, and fetches again the media you host for others. Phones pair again. Without a backup file (`osp init --restore` alone), followers find the new node once you give them a new follow code (`osp invite`). Following again with a code for a different node starts the follow over, from the latest 100 posts.
 
 ## Cross-machine scenario
 
