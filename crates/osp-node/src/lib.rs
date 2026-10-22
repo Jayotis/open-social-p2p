@@ -11,6 +11,7 @@ mod db;
 mod home;
 mod keys;
 pub mod media;
+mod network;
 mod node;
 mod social;
 mod store;

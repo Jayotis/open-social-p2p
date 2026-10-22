@@ -41,7 +41,7 @@ osp post "Hello" --attach clip.mp4 # transcoded to 720p, metadata stripped
 osp feed
 osp reshare <post-id> --host       # reshare and keep/serve a copy
 osp fetch <post-id> --out ~/Downloads
-osp status                         # relay, connections (direct/relay), storage
+osp status                         # relay, NAT, connections (direct/relay), storage
 ```
 
 Use `--home DIR` (or `OSP_HOME=DIR`) to run several nodes on one machine. Add `--json` to any command for machine-readable output. Logging detail: `RUST_LOG=osp_node=debug osp daemon`.
@@ -60,7 +60,7 @@ Use `--home DIR` (or `OSP_HOME=DIR`) to run several nodes on one machine. Add `-
 4. B: `osp sync && osp feed`, then `osp reshare <id> --host`.
 5. Stop A's daemon (Ctrl-C).
 6. C: `osp sync && osp feed`, then `osp fetch <id> --out /tmp/osp-test`.
-7. On B and C: `osp status`. Note whether each peer shows `direct` or `relay`. Status lists only connections the node opened itself, so B shows its link to A and C shows its link to B.
+7. On B and C: `osp status`. Note whether each peer shows `direct` or `relay`, and the `NAT:` line. A public address that varies by destination usually means other nodes connect through the relay.
 
 To time a transfer, run `follow` and `sync` together, e.g. `time (osp follow <ticket> && osp sync)`. `sync` waits until prefetched media has finished downloading, so `osp fetch` afterwards only copies the file out.
 

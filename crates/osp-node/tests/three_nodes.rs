@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use osp_node::{BlobClass, Config, Node};
 use osp_proto::{
     BlobHash, ObjectId,
-    rpc::{ClientRequest, ClientResponse, FeedItem},
+    rpc::{ClientRequest, ClientResponse, Direction, FeedItem, StatusInfo},
 };
 
 async fn start(root: &Path, name: &str) -> Node {
@@ -41,6 +41,13 @@ async fn follow(node: &Node, ticket: String) {
 async fn sync(node: &Node) {
     match call(node, ClientRequest::Sync).await {
         ClientResponse::Synced { .. } => {}
+        other => panic!("unexpected {other:?}"),
+    }
+}
+
+async fn status(node: &Node) -> StatusInfo {
+    match call(node, ClientRequest::Status).await {
+        ClientResponse::Status(status) => status,
         other => panic!("unexpected {other:?}"),
     }
 }
@@ -151,6 +158,23 @@ async fn reshared_media_survives_origin_going_offline() {
     assert_eq!(by.name.as_deref(), Some("Bob"));
     assert!(by.hosting);
     assert!(item.attachments[0].local, "Carol prefetched from Bob");
+
+    // Both ends list the connection, including the side that didn't open it.
+    let peer = |status: &StatusInfo, node| {
+        status
+            .peers
+            .iter()
+            .find(|p| p.node == node)
+            .map(|p| p.direction)
+    };
+    assert_eq!(
+        peer(&status(&bob).await, carol.node_id()),
+        Some(Direction::Incoming)
+    );
+    assert_eq!(
+        peer(&status(&carol).await, bob.node_id()),
+        Some(Direction::Outgoing)
+    );
 
     // Export the file and check it is byte-for-byte what Alice signed.
     let out_dir = dir.path().join("carol-out");

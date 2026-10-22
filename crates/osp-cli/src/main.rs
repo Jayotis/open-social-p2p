@@ -14,7 +14,7 @@ use osp_node::{Config, Home, Node, RelayChoice};
 use osp_proto::{
     ObjectId, PublicKey,
     framing::{read_frame, write_frame},
-    rpc::{ClientRequest, ClientResponse, FeedItem, StatusInfo},
+    rpc::{ClientRequest, ClientResponse, Direction, FeedItem, StatusInfo},
 };
 use tokio::net::UnixStream;
 
@@ -179,7 +179,11 @@ async fn daemon(home: &Path) -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "osp_node=info,iroh=warn,iroh_blobs=warn".into()),
+                // iroh warns on every network check (about every 25 s) while
+                // the NAT maps addresses per destination; the node logs it once.
+                .unwrap_or_else(|_| {
+                    "osp_node=info,iroh=warn,iroh::net_report::report=error,iroh_blobs=warn".into()
+                }),
         )
         .init();
     let mut node = Node::spawn(home).await?;
@@ -273,6 +277,9 @@ fn print_status(s: &StatusInfo) {
     println!("Node:      {}", s.node);
     println!("Relay:     {}", s.relay.as_deref().unwrap_or("none"));
     println!("Bound:     {}", s.local_addrs.join(", "));
+    if let Some(nat) = s.nat {
+        println!("NAT:       {}", nat.describe());
+    }
     println!("Follows:   {}   Followers: {}", s.follows, s.followers);
     for st in &s.storage {
         println!(
@@ -284,7 +291,17 @@ fn print_status(s: &StatusInfo) {
     }
     for p in &s.peers {
         let rtt = p.rtt_ms.map(|r| format!("{r} ms")).unwrap_or_default();
-        println!("Peer:      {}  {} {}", p.node.fmt_short(), p.path, rtt);
+        let direction = match p.direction {
+            Direction::Outgoing => "outgoing",
+            Direction::Incoming => "incoming",
+            Direction::Both => "both",
+        };
+        println!(
+            "Peer:      {}  {direction:<8}  {} {}",
+            p.node.fmt_short(),
+            p.path,
+            rtt
+        );
     }
 }
 
