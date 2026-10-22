@@ -45,6 +45,11 @@ Option 2 for Stage 1.
   - `replica`: media I chose to host by resharing; served to anyone.
   - `cache`: media my node prefetched for my phone; served only to my paired devices.
   - Anything else is refused.
+- **Storage quotas.** Followed nodes decide what their posts link to, so media other people posted has a quota per class, set under `[storage]` in `config.toml`: `cache_quota_mb` (default 5 GB) and `replica_quota_mb` (default 10 GB). Media of my own posts has no quota; it only has to fit on the disk.
+  - Every download gets the size its post declares, and is stopped once more bytes than that arrive. When the phone asks for a blob, the node uses the largest size any stored post declares for it; a blob no stored post includes isn't downloaded.
+  - Before a download, room is made for the declared size. A full cache evicts what my devices used longest ago. Replicas are never evicted, since hosting is a promise to others, so a reshare with hosting that doesn't fit is refused with a message; a reshare without hosting still works.
+  - A download must leave at least 2 GiB free on the disk.
+  - Evicting a blob removes its database row and its tag in the blob store; the iroh-blobs garbage collector deletes untagged blobs every 10 minutes. At startup the node makes the tags match the database and trims the cache to its quota. Hosted media over a lowered quota isn't deleted; the node reports it as a problem.
 - **Stage 1 is public content only.** Private, followers-only and group content stays out until a reviewed design exists ([doc 05](../05-security-privacy-and-governance.md)).
 
 ## Consequences
