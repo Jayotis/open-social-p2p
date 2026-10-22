@@ -24,10 +24,15 @@ use iroh::{
 };
 use osp_proto::{
     BlobHash, ObjectId, PairingTicket,
-    framing::{read_frame, write_frame},
-    rpc::{ClientRequest, ClientResponse, DeviceInfo, Upload},
+    framing::{read_frame_max, write_frame},
+    rpc::{
+        ClientRequest, ClientResponse, DeviceInfo, MAX_PAIR_REQUEST_LEN, MAX_REQUEST_LEN, Upload,
+    },
 };
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
+use tokio::{
+    io::{AsyncRead, AsyncReadExt, AsyncWriteExt},
+    sync::Semaphore,
+};
 use tracing::{debug, info};
 
 use crate::{
@@ -48,6 +53,11 @@ const MAX_UPLOAD_BYTES: u64 = 4 << 30;
 const DISK_RESERVE_BYTES: u64 = 1 << 30;
 /// Give up on a request frame, or on an upload that stops moving, after this long.
 const IDLE_TIMEOUT: Duration = Duration::from_secs(60);
+/// Most requests from unknown devices handled at once. They can only try
+/// to pair, which is rare, so more than this is someone probing the node.
+const MAX_UNKNOWN_REQUESTS: usize = 8;
+/// Give up on an unknown device's request after this long.
+const UNKNOWN_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// A pairing secret not used yet. Only its hash is kept.
 pub(crate) struct PendingPairing {
@@ -59,11 +69,16 @@ pub(crate) struct PendingPairing {
 #[derive(Clone)]
 pub(crate) struct ClientProtocol {
     core: Arc<Core>,
+    /// Shared by every connection, for `MAX_UNKNOWN_REQUESTS`.
+    unknown_requests: Arc<Semaphore>,
 }
 
 impl ClientProtocol {
     pub fn new(core: Arc<Core>) -> Self {
-        Self { core }
+        Self {
+            core,
+            unknown_requests: Arc::new(Semaphore::new(MAX_UNKNOWN_REQUESTS)),
+        }
     }
 }
 
@@ -79,10 +94,38 @@ impl ProtocolHandler for ClientProtocol {
         let device = conn.remote_id();
         while let Ok((send, recv)) = conn.accept_bi().await {
             let core = self.core.clone();
-            tokio::spawn(async move {
-                if let Err(e) = serve_stream(&core, device, send, recv).await {
-                    debug!(device = %device.fmt_short(), "client request failed: {e:#}");
+            // Checked on every request, so a device can pair on this
+            // connection and carry on, and an unpaired one is refused at once.
+            let paired = match core.db.is_device(&device) {
+                Ok(paired) => paired,
+                Err(e) => {
+                    debug!("checking device {}: {e:#}", device.fmt_short());
+                    continue;
                 }
+            };
+            if paired {
+                tokio::spawn(async move {
+                    if let Err(e) = serve_stream(&core, device, true, send, recv).await {
+                        debug!(device = %device.fmt_short(), "client request failed: {e:#}");
+                    }
+                });
+                continue;
+            }
+            let Ok(permit) = self.unknown_requests.clone().try_acquire_owned() else {
+                debug!(device = %device.fmt_short(), "too many requests from unknown devices");
+                continue;
+            };
+            tokio::spawn(async move {
+                let served = tokio::time::timeout(
+                    UNKNOWN_TIMEOUT,
+                    serve_stream(&core, device, false, send, recv),
+                )
+                .await
+                .unwrap_or_else(|_| Err(anyhow::anyhow!("took too long")));
+                if let Err(e) = served {
+                    debug!(device = %device.fmt_short(), "unknown device's request failed: {e:#}");
+                }
+                drop(permit);
             });
         }
         Ok(())
@@ -92,18 +135,24 @@ impl ProtocolHandler for ClientProtocol {
 async fn serve_stream(
     core: &Arc<Core>,
     device: EndpointId,
+    paired: bool,
     mut send: SendStream,
     mut recv: RecvStream,
 ) -> Result<()> {
-    let req: ClientRequest = tokio::time::timeout(IDLE_TIMEOUT, read_frame(&mut recv))
+    // An unknown device may only pair, so its request is read with a small
+    // limit and it can't make the node hold a large frame.
+    let max = if paired {
+        MAX_REQUEST_LEN
+    } else {
+        MAX_PAIR_REQUEST_LEN
+    };
+    let req: ClientRequest = tokio::time::timeout(IDLE_TIMEOUT, read_frame_max(&mut recv, max))
         .await
         .context("request timed out")??;
-    // Pairing is the only thing an unknown device may do. The check runs on
-    // every request, so an unpaired device is refused at once.
     if let ClientRequest::Pair { secret, name } = req {
         let resp = reply(core.pair_device(device, &secret, &name));
         write_frame(&mut send, &resp).await?;
-    } else if !core.db.is_device(&device)? {
+    } else if !paired {
         let resp = ClientResponse::Error {
             message: "this device isn't paired with this node".to_string(),
         };
@@ -388,6 +437,30 @@ mod tests {
         assert_eq!(extension("x.a/b"), "bin");
         assert_eq!(extension("noext"), "bin");
         assert_eq!(extension("weird.sh;rm"), "bin");
+    }
+
+    #[test]
+    fn largest_requests_fit_their_limits() {
+        // Control characters are escaped as \u00XX: six bytes each.
+        let post = ClientRequest::Post {
+            content: "\u{1}".repeat(crate::control::MAX_CONTENT_BYTES),
+            attachments: Vec::new(),
+            uploads: (0..MAX_ATTACHMENTS)
+                .map(|_| Upload {
+                    name: "\u{1}".repeat(255),
+                    size: u64::MAX,
+                })
+                .collect(),
+        };
+        let len = serde_json::to_vec(&post).unwrap().len();
+        assert!(len <= MAX_REQUEST_LEN as usize, "post is {len} bytes");
+
+        let pair = ClientRequest::Pair {
+            secret: "f".repeat(32),
+            name: "\u{1}".repeat(MAX_DEVICE_NAME * 4),
+        };
+        let len = serde_json::to_vec(&pair).unwrap().len();
+        assert!(len <= MAX_PAIR_REQUEST_LEN as usize, "pair is {len} bytes");
     }
 
     #[tokio::test]

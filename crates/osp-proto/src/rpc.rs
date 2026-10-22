@@ -17,6 +17,14 @@ use crate::{
     types::{Attachment, BlobHash},
 };
 
+/// Largest request frame a node reads from a paired device, in bytes. The
+/// biggest request is a `Post`, whose text is limited to 10,000 bytes.
+pub const MAX_REQUEST_LEN: u32 = 256 * 1024;
+
+/// Largest request frame a node reads from a device it doesn't know. Such a
+/// device may only send `Pair`, which is tiny.
+pub const MAX_PAIR_REQUEST_LEN: u32 = 4 * 1024;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum ClientRequest {
