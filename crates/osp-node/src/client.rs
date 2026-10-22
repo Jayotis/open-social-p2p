@@ -28,7 +28,6 @@ use osp_proto::{
     rpc::{
         ClientRequest, ClientResponse, DeviceInfo, MAX_PAIR_REQUEST_LEN, MAX_REQUEST_LEN, Upload,
     },
-    types::MAX_ATTACHMENTS,
 };
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWriteExt},
@@ -36,7 +35,12 @@ use tokio::{
 };
 use tracing::{debug, info};
 
-use crate::{config::RelayChoice, control::Origin, db::BlobClass, health, node::Core};
+use crate::{
+    config::RelayChoice,
+    control::{self, Origin},
+    db::BlobClass,
+    node::Core,
+};
 
 /// How long a pairing ticket works.
 const PAIRING_TTL: Duration = Duration::from_secs(600);
@@ -44,8 +48,6 @@ const PAIRING_TTL: Duration = Duration::from_secs(600);
 const MAX_DEVICE_NAME: usize = 64;
 /// Largest file a device may upload. Phone videos up to the length limit fit.
 const MAX_UPLOAD_BYTES: u64 = 4 << 30;
-/// Space to leave free on the node's disk after an upload.
-const DISK_RESERVE_BYTES: u64 = 1 << 30;
 /// Give up on a request frame, or on an upload that stops moving, after this long.
 const IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 /// Most requests from unknown devices handled at once. They can only try
@@ -304,16 +306,15 @@ impl Core {
 
     /// Receives a device's files into a scratch directory, then posts them
     /// like local attachments. The scratch copies are deleted either way.
+    /// A post the node can't take on is refused before any file bytes are
+    /// read: too big, the node busy with other posts, or the disk too full.
     async fn post_uploads(
         self: &Arc<Self>,
         content: String,
         uploads: &[Upload],
         recv: &mut RecvStream,
     ) -> Result<ObjectId> {
-        ensure!(
-            uploads.len() <= MAX_ATTACHMENTS,
-            "a post can have at most {MAX_ATTACHMENTS} attachments"
-        );
+        control::check_post(&content, uploads.len())?;
         for u in uploads {
             ensure!(u.size > 0, "{} is empty", u.name);
             ensure!(
@@ -323,25 +324,27 @@ impl Core {
                 MAX_UPLOAD_BYTES >> 30
             );
         }
-        let total: u64 = uploads.iter().map(|u| u.size).sum();
-        if let Some(free) = health::disk_free(self.home.root()) {
-            ensure!(
-                total + DISK_RESERVE_BYTES <= free,
-                "not enough free space on the home node for this upload"
-            );
+        let _slot = self.media_post_slot()?;
+        // Room for every file before any arrives, so two uploads at once
+        // can't both count on the same free space.
+        let mut rooms = Vec::new();
+        for u in uploads {
+            rooms.push(self.store.reserve_upload(u.size).await?);
         }
 
         let dir = upload_dir(&self.home.work())?;
         let result = async {
             let mut paths = Vec::new();
-            for (i, upload) in uploads.iter().enumerate() {
+            for ((i, upload), room) in uploads.iter().enumerate().zip(rooms) {
                 let path = dir.join(format!("{i}.{}", extension(&upload.name)));
                 receive_file(recv, &path, upload.size)
                     .await
                     .with_context(|| format!("receiving {}", upload.name))?;
+                // The file is on the disk now, so the free space counts it.
+                drop(room);
                 paths.push(path);
             }
-            self.post(content, &paths).await
+            self.publish_post(content, &paths).await
         }
         .await;
         let _ = std::fs::remove_dir_all(&dir);
@@ -447,7 +450,7 @@ mod tests {
         let post = ClientRequest::Post {
             content: "\u{1}".repeat(osp_proto::types::MAX_CONTENT_BYTES),
             attachments: Vec::new(),
-            uploads: (0..MAX_ATTACHMENTS)
+            uploads: (0..osp_proto::types::MAX_ATTACHMENTS)
                 .map(|_| Upload {
                     name: "\u{1}".repeat(255),
                     size: u64::MAX,

@@ -20,7 +20,7 @@ use osp_proto::{
     rpc::{ClientRequest, ClientResponse},
 };
 use tokio::{
-    sync::{Notify, watch},
+    sync::{Notify, Semaphore, watch},
     task::JoinHandle,
 };
 use tracing::info;
@@ -88,6 +88,11 @@ pub(crate) struct Core {
     pub started: Instant,
     /// Whether ffmpeg ran at startup; without it, posts with media fail.
     pub media_tools: bool,
+    /// Places for posts with media in progress (`control::MAX_MEDIA_POSTS`).
+    pub media_posts: Semaphore,
+    /// Only one transcode runs at a time, so many posts at once can't start
+    /// many ffmpegs. Posts waiting for it take their turn in order.
+    pub transcode_lock: tokio::sync::Mutex<()>,
 }
 
 impl Node {
@@ -167,6 +172,8 @@ impl Node {
             subscribed: Mutex::new(HashMap::new()),
             started: Instant::now(),
             media_tools,
+            media_posts: Semaphore::new(control::MAX_MEDIA_POSTS),
+            transcode_lock: tokio::sync::Mutex::new(()),
         });
 
         let (blobs, serving_rules) = core.store.protocol();
@@ -238,6 +245,13 @@ impl Node {
             .store
             .download(hash, ids, BlobClass::Cache, size)
             .await
+    }
+
+    /// Promises `bytes` of disk space, as an upload in progress does, until
+    /// the returned guard is dropped. For tests: it fills the disk as far
+    /// as the node can tell, without writing anything.
+    pub async fn reserve_disk_space(&self, bytes: u64) -> Result<store::Reservation<'_>> {
+        self.core.store.reserve_upload(bytes).await
     }
 
     /// Stops background work, closes connections and flushes the blob store.

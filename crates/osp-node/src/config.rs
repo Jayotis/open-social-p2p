@@ -62,6 +62,9 @@ pub struct MediaConfig {
     pub ffprobe: String,
     /// Longest video accepted for publishing.
     pub max_video_secs: u64,
+    /// Stop transcoding a video that takes longer than this. On a slow
+    /// machine, raise it if long videos fail to post.
+    pub max_transcode_secs: u64,
     /// x264 speed/size trade-off. Slower presets give smaller files.
     pub x264_preset: String,
 }
@@ -117,6 +120,8 @@ impl Default for MediaConfig {
             ffmpeg: "ffmpeg".to_string(),
             ffprobe: "ffprobe".to_string(),
             max_video_secs: 600,
+            // As long as a phone waits for its post to be published.
+            max_transcode_secs: 1800,
             x264_preset: "medium".to_string(),
         }
     }
