@@ -1,6 +1,6 @@
 # ADR 0009: Identity backup and recovery
 
-**Status:** Accepted (2026-10-22). Partly built: the recovery words, restoring onto a new node, and follows that change node starting over. Still to build, before any public release ([ADR 0006](0006-desktop-first-always-on-node.md)): `Moved` and the backup file.
+**Status:** Accepted (2026-10-22). Partly built: the recovery words, restoring onto a new node, follows that change node starting over, and `Moved`. Still to build, before any public release ([ADR 0006](0006-desktop-first-always-on-node.md)): the backup file.
 
 ## Context
 
@@ -55,13 +55,15 @@ Backup option (b), theft option (a) for now.
 - With a backup file, it imports the posts in their original order, the follows (each one starts like a new follow, with the latest 100 entries), the followers and the media. Then it tells each follower it has moved (below).
 - With the words alone, the identity is back, but followers only find the new node when the owner gives them a new follow code (`osp invite`). Their copies of old posts stay valid, since the identity hasn't changed. The new node starts with no posts.
 
-**Telling followers: `Moved`.** A new request in `osp/social/0`: `Moved { profile }`, a signed `Person`. A node accepts it only if:
+**Telling followers: `Moved`.** A new request in `osp/social/0`: `Moved { profile, addr }`, a signed `Person` and the sending node's address, which must be its own. A node accepts it only if:
 
 - it follows that identity;
 - the profile is valid under the object rules (ADR 0004) and its `nodes` list includes the sending node (the connection proves the sender holds that node's key);
 - the profile is newer (`published` later) than the one it already has for that identity, so an old profile can't be replayed to point it back.
 
-It then points the follow at the sending node's address and stores the new profile.
+It then points the follow at the sending node's address, stores the new profile and subscribes to the new node.
+
+A node knows it has taken an identity over when the profile it has stored lists a different node. It signs a new profile, dated later than the old one even if its clock is behind, and marks every follower as still to be told. It sends them `Moved` when it starts, then every hour, and before notifying them of each new post, until each has answered or subscribed to it. Followers not heard from for 30 days are forgotten as usual ([ADR 0003](0003-native-social-protocol-v0.md)).
 
 **A follow that changes node starts over.** The new node numbers its outbox from 1, so a follow's position in the old node's outbox means nothing there. When a follow's node changes, whether through `Moved` or by following again with a code for a different node, the follow restarts like a new one: the latest 100 entries, skipping objects it already has (object IDs are content hashes, so duplicates are recognised).
 
