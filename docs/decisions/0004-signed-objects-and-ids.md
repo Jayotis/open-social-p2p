@@ -32,6 +32,11 @@ Identity and node keys are separate from the start so that a person can move the
 - **Object ID = hex BLAKE3 of `payload_bytes`.**
 - The payload bytes are stored and transmitted exactly as signed and **never re-serialised**, so no JSON canonicalisation is needed. Readers parse the bytes; writers never rebuild them.
 - The payload's `actor` field must equal `signer`; receivers reject objects where it doesn't.
+- **Limits.** Signing and verifying both refuse objects outside these limits, so one author can't make readers store or fetch without bound:
+  - the payload is at most 128 KiB;
+  - a profile name is at most 200 bytes, its summary at most 2,000, and it lists at most 8 nodes;
+  - post text is at most 10,000 bytes, with at most 4 attachments;
+  - an attachment is `video/mp4` or `image/webp` (media profile v1, [ADR 0005](0005-media-profile-v1.md)) and declares at most 1 GiB; its alt text is at most 1,500 bytes; its thumbnail is `image/webp` and declares at most 2 MiB.
 
 **Media**
 
