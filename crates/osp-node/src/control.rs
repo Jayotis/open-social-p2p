@@ -14,7 +14,7 @@ use osp_proto::{
     Announce, Attachment, BlobRef, FollowTicket, Note, ObjectId, Payload, SignedObject,
     framing::{read_frame, write_frame},
     rpc::{
-        AttachmentInfo, ClientRequest, ClientResponse, FeedItem, FetchedFile, PeerInfo, ResharedBy,
+        AttachmentInfo, ClientRequest, ClientResponse, FeedItem, FetchedFile, ResharedBy,
         StatusInfo,
     },
     social::SocialRequest,
@@ -25,7 +25,7 @@ use tokio::{
 };
 use tracing::{debug, warn};
 
-use crate::{db::BlobClass, media, node::Core, node::remember};
+use crate::{config::RelayChoice, db::BlobClass, media, network, node::Core, node::remember};
 
 /// Longest post text accepted, in bytes. Keeps outbox pages well under the frame limit.
 const MAX_CONTENT_BYTES: usize = 10_000;
@@ -117,24 +117,10 @@ impl Core {
 
     async fn status(&self) -> Result<StatusInfo> {
         let addr = self.endpoint.addr();
-        let peers = self
-            .live_conns()
-            .iter()
-            .map(|conn| {
-                let paths = conn.paths();
-                let selected = paths.iter().find(|p| p.is_selected());
-                PeerInfo {
-                    node: conn.remote_id(),
-                    path: match &selected {
-                        Some(p) if p.is_relay() => "relay",
-                        Some(p) if p.is_ip() => "direct",
-                        _ => "none",
-                    }
-                    .to_string(),
-                    rtt_ms: selected.map(|p| p.rtt().as_millis() as u64),
-                }
-            })
-            .collect();
+        let nat = match self.config.network.relay {
+            RelayChoice::Disabled => None,
+            _ => network::nat_kind(&self.endpoint),
+        };
         Ok(StatusInfo {
             name: self.config.name.clone(),
             identity: self.identity.public(),
@@ -149,7 +135,8 @@ impl Core {
             follows: self.db.follows()?.len(),
             followers: self.db.follower_count()?,
             storage: self.db.storage_summary()?,
-            peers,
+            peers: self.tracker.peers(),
+            nat,
         })
     }
 

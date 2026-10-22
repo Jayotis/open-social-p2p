@@ -200,15 +200,6 @@ impl Core {
         self.lock_conns().remove(id);
     }
 
-    /// Open connections, for `status`.
-    pub(crate) fn live_conns(&self) -> Vec<Connection> {
-        self.lock_conns()
-            .values()
-            .filter(|c| c.close_reason().is_none())
-            .cloned()
-            .collect()
-    }
-
     fn lock_conns(
         &self,
     ) -> std::sync::MutexGuard<'_, std::collections::HashMap<EndpointId, Connection>> {

@@ -31,6 +31,7 @@ use crate::{
     db::{BlobClass, Db},
     home::Home,
     keys,
+    network::{self, ConnTracker},
     social::SocialProtocol,
     store::ContentStore,
     sync,
@@ -59,6 +60,8 @@ pub(crate) struct Core {
     pub profile: SignedObject,
     /// Open `osp/social/0` connections, reused across requests.
     pub conns: Mutex<HashMap<EndpointId, Connection>>,
+    /// Every live connection in either direction, for `status`.
+    pub tracker: ConnTracker,
     /// Only one sync runs at a time.
     pub sync_lock: tokio::sync::Mutex<()>,
     /// Wakes the sync loop early (on a push notification or a new follow).
@@ -97,7 +100,8 @@ impl Node {
         std::fs::create_dir_all(home.work())?;
 
         let lookup = MemoryLookup::new();
-        let endpoint = bind_endpoint(&config, node_key, lookup.clone()).await?;
+        let tracker = ConnTracker::default();
+        let endpoint = bind_endpoint(&config, node_key, lookup.clone(), tracker.clone()).await?;
         for follow in db.follows()? {
             remember(&lookup, &follow.addr);
         }
@@ -123,6 +127,7 @@ impl Node {
             store,
             profile,
             conns: Mutex::new(HashMap::new()),
+            tracker,
             sync_lock: tokio::sync::Mutex::new(()),
             sync_now: Notify::new(),
             prefetch_jobs: watch::Sender::new(0),
@@ -134,11 +139,17 @@ impl Node {
             .accept(osp_proto::SOCIAL_ALPN, SocialProtocol::new(core.clone()))
             .spawn();
         let sync_loop = tokio::spawn(sync::run_loop(core.clone()));
+        let mut tasks = vec![serving_rules, sync_loop];
+        if core.config.network.relay != RelayChoice::Disabled {
+            tasks.push(tokio::spawn(network::log_nat_changes(
+                core.endpoint.clone(),
+            )));
+        }
 
         Ok(Self {
             core,
             router,
-            tasks: vec![serving_rules, sync_loop],
+            tasks,
             serving_socket: false,
         })
     }
@@ -224,9 +235,14 @@ pub(crate) fn remember(lookup: &MemoryLookup, addr: &EndpointAddr) {
     }
 }
 
-async fn bind_endpoint(config: &Config, key: SecretKey, lookup: MemoryLookup) -> Result<Endpoint> {
+async fn bind_endpoint(
+    config: &Config,
+    key: SecretKey,
+    lookup: MemoryLookup,
+    tracker: ConnTracker,
+) -> Result<Endpoint> {
     let net = &config.network;
-    let mut builder = Endpoint::builder(presets::N0);
+    let mut builder = Endpoint::builder(presets::N0).hooks(tracker);
     if !net.address_lookup {
         builder = builder.clear_address_lookup();
     }
