@@ -8,6 +8,12 @@ use iroh::SecretKey;
 /// Generates a key and writes it to `path`. Refuses to overwrite an existing key.
 pub fn create(path: &Path) -> Result<SecretKey> {
     let key = SecretKey::generate();
+    save(path, &key)?;
+    Ok(key)
+}
+
+/// Writes `key` to `path`. Refuses to overwrite an existing key.
+pub fn save(path: &Path, key: &SecretKey) -> Result<()> {
     let mut file = OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -15,7 +21,7 @@ pub fn create(path: &Path) -> Result<SecretKey> {
         .open(path)
         .with_context(|| format!("creating {}", path.display()))?;
     file.write_all(data_encoding::HEXLOWER.encode(&key.to_bytes()).as_bytes())?;
-    Ok(key)
+    Ok(())
 }
 
 pub fn load(path: &Path) -> Result<SecretKey> {

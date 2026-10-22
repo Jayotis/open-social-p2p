@@ -57,6 +57,9 @@ enum Command {
         /// Don't publish or look up node addresses via n0's DNS service
         #[arg(long)]
         no_address_lookup: bool,
+        /// Bring back an existing identity: asks for its 24 recovery words
+        #[arg(long)]
+        restore: bool,
     },
     /// Run the node in the foreground (Ctrl-C to stop)
     Daemon,
@@ -116,6 +119,15 @@ enum Command {
     /// Run the node in the background, starting at boot (systemd user service)
     #[command(subcommand)]
     Service(ServiceCommand),
+    /// Back up your identity
+    #[command(subcommand)]
+    Backup(BackupCommand),
+}
+
+#[derive(Subcommand)]
+enum BackupCommand {
+    /// Show your 24 recovery words again
+    Words,
 }
 
 #[derive(Subcommand)]
@@ -136,8 +148,15 @@ async fn main() -> Result<()> {
             relay,
             bind,
             no_address_lookup,
-        } => return init(&home, name, &relay, bind, !no_address_lookup),
+            restore,
+        } => return init(&home, name, &relay, bind, !no_address_lookup, restore),
         Command::Daemon => return daemon(&home).await,
+        // Read from the key file, not asked of the daemon: only someone who
+        // can read the node's files sees them, never a paired phone.
+        Command::Backup(BackupCommand::Words) => {
+            print_words(&osp_node::backup::recovery_words(&home)?);
+            return Ok(());
+        }
         Command::Invite { no_qr } => {
             let resp = send(&home, ClientRequest::Invite).await?;
             if let (false, ClientResponse::Ticket { ticket }) = (cli.json || no_qr, &resp) {
@@ -191,6 +210,7 @@ fn init(
     relay: &str,
     bind: Option<SocketAddr>,
     address_lookup: bool,
+    restore: bool,
 ) -> Result<()> {
     let mut config = Config {
         name,
@@ -203,10 +223,61 @@ fn init(
     };
     config.network.bind = bind;
     config.network.address_lookup = address_lookup;
-    Node::init(home, &config)?;
-    println!("Created a node in {}", home.display());
+    if restore {
+        let identity = Node::restore(home, &config, &read_words()?)?;
+        println!("Restored identity {identity}");
+        println!("on a new node in {}.", home.display());
+        println!();
+        println!("This is a new node, so:");
+        println!("- people who follow you find it once you give them a new code (`osp invite`);");
+        println!("- your phone pairs again (`osp pair`);");
+        println!("- never start the old node again, or your followers get two nodes for you.");
+    } else {
+        Node::init(home, &config)?;
+        println!("Created a node in {}", home.display());
+        print_words(&osp_node::backup::recovery_words(home)?);
+    }
+    println!();
     println!("Start it with: osp --home {} daemon", home.display());
     Ok(())
+}
+
+/// Prints recovery words numbered in rows of four, so reading them left to
+/// right, line by line, gives the right order.
+fn print_words(words: &[&str]) {
+    println!();
+    println!("Your recovery words. Write them down, in order, and keep them somewhere safe:");
+    println!();
+    for (row, chunk) in words.chunks(4).enumerate() {
+        let line: Vec<String> = chunk
+            .iter()
+            .enumerate()
+            .map(|(i, word)| format!("{:>2}. {word:<8}", row * 4 + i + 1))
+            .collect();
+        println!("  {}", line.join("   ").trim_end());
+    }
+    println!();
+    println!("These words are your identity. If this computer is lost, `osp init --restore`");
+    println!("brings it back on another one. Anyone who has them can post as you, so never");
+    println!("type them into a website or send them to anyone.");
+    println!("`osp backup words` shows them again.");
+}
+
+/// Reads recovery words from standard input, over as many lines as it takes.
+/// Not from the command line, so they don't end up in the shell's history.
+fn read_words() -> Result<String> {
+    let count = osp_node::backup::WORD_COUNT;
+    if std::io::stdin().is_terminal() {
+        println!("Type your {count} recovery words, in order, separated by spaces or new lines:");
+    }
+    let mut words = Vec::new();
+    for line in std::io::stdin().lines() {
+        words.extend(line?.split_whitespace().map(str::to_string));
+        if words.len() >= count {
+            break;
+        }
+    }
+    Ok(words.join(" "))
 }
 
 async fn daemon(home: &Path) -> Result<()> {
