@@ -4,6 +4,9 @@
 # Local node homes and logs from scripts/dev-three-nodes.sh
 .osp-dev/
 
+# Node, identity and device keys, wherever a test leaves them
+*.key
+
 # Personal notes, scratch files and AI assistant session transcripts.
 # Keep anything you don't want published in notes/; git ignores it.
 /notes/
