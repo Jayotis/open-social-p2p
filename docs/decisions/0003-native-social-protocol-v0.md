@@ -45,6 +45,11 @@ Option 2 for Stage 1.
   - `replica`: media I chose to host by resharing; served to anyone.
   - `cache`: media my node prefetched for my phone; served only to my paired devices.
   - Anything else is refused.
+- **Serving limits.** Anyone who knows a node's ID can download its public media, so a node limits how much it sends:
+  - at most 8 transfers at once, at most 4 of them to strangers (nodes that neither follow me nor are my devices), and at most 2 to any one node. A crowd of strangers then can't crowd out my followers;
+  - a request over a limit waits up to 10 seconds for a place, so a burst of requests from one node just takes turns. If no place frees up, it is refused as busy (iroh-blobs' `RateLimited`), and the requester tries the other hosts it knows, then asks the nodes it follows (`WhoHosts`);
+  - an optional cap on sending speed for all transfers together: `max_upload_mbps` under `[serving]` in `config.toml`, off by default. About half the home's upload speed leaves room for everything else.
+  - My own phone isn't affected: it reads media through its own connection to the node ([ADR 0008](0008-device-pairing-and-client-protocol.md)).
 - **Storage quotas.** Followed nodes decide what their posts link to, so media other people posted has a quota per class, set under `[storage]` in `config.toml`: `cache_quota_mb` (default 5 GB) and `replica_quota_mb` (default 10 GB). Media of my own posts has no quota; it only has to fit on the disk.
   - Every download gets the size its post declares, and is stopped once more bytes than that arrive. When the phone asks for a blob, the node uses the largest size any stored post declares for it; a blob no stored post includes isn't downloaded.
   - Before a download, room is made for the declared size. A full cache evicts what my devices used longest ago. Replicas are never evicted, since hosting is a promise to others, so a reshare with hosting that doesn't fit is refused with a message; a reshare without hosting still works.
