@@ -29,6 +29,14 @@ pub enum SocialRequest {
     Notify { actor: PublicKey, seq: u64 },
     /// Which nodes this node knows to be serving `blob`.
     WhoHosts { blob: BlobHash },
+    /// "The identity you follow now lives on this node" (ADR 0009). Sent to
+    /// followers when a node takes over an identity. `profile` is its signed
+    /// profile listing the sending node; `addr` is how to reach that node and
+    /// must belong to it.
+    Moved {
+        profile: SignedObject,
+        addr: EndpointAddr,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -89,6 +89,8 @@ const MIGRATIONS: &[&str] = &[
     // phone asks for can be stopped once it passes that. Filled in from
     // the posts already stored by `migrate`.
     "CREATE TABLE declared_sizes (blob TEXT PRIMARY KEY, size INTEGER NOT NULL)",
+    // 3: followers still to be told that this identity moved to this node (ADR 0009).
+    "ALTER TABLE followers ADD COLUMN tell_moved INTEGER NOT NULL DEFAULT 0",
 ];
 
 /// Hosts remembered per blob. More than enough to find a copy; a peer
@@ -395,12 +397,37 @@ impl Db {
     // ---- followers ----
 
     /// Records a follower, or updates the address of one we have. Either
-    /// way it counts as heard from now.
+    /// way it counts as heard from now. A follower subscribing here knows
+    /// where we are, so it needn't be told we moved.
     pub fn add_follower(&self, addr: &EndpointAddr) -> Result<()> {
         self.conn().execute(
             "INSERT INTO followers (node, node_addr, since, seen_ms) VALUES (?1, ?2, ?3, ?3)
-             ON CONFLICT(node) DO UPDATE SET node_addr = excluded.node_addr, seen_ms = excluded.seen_ms",
+             ON CONFLICT(node) DO UPDATE SET node_addr = excluded.node_addr,
+                 seen_ms = excluded.seen_ms, tell_moved = 0",
             params![addr.id.to_string(), serde_json::to_string(addr)?, now_ms()],
+        )?;
+        Ok(())
+    }
+
+    /// Marks every follower as still to be told that we moved (ADR 0009).
+    pub fn mark_followers_to_tell_moved(&self) -> Result<usize> {
+        Ok(self
+            .conn()
+            .execute("UPDATE followers SET tell_moved = 1", [])?)
+    }
+
+    pub fn followers_to_tell_moved(&self) -> Result<Vec<EndpointAddr>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare("SELECT node_addr FROM followers WHERE tell_moved = 1")?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+        rows.map(|r| Ok(serde_json::from_str(&r?)?)).collect()
+    }
+
+    /// Notes that a follower heard we moved.
+    pub fn told_moved(&self, node: &EndpointId) -> Result<()> {
+        self.conn().execute(
+            "UPDATE followers SET tell_moved = 0, seen_ms = ?2 WHERE node = ?1",
+            params![node.to_string(), now_ms()],
         )?;
         Ok(())
     }
@@ -832,6 +859,23 @@ mod tests {
         assert_eq!(db.drop_silent_followers(start - 60_000).unwrap(), 1);
         assert!(!db.is_follower(&quiet.id).unwrap());
         assert!(db.is_follower(&chatty.id).unwrap());
+    }
+
+    #[test]
+    fn followers_are_told_of_a_move_until_they_hear_or_subscribe() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(&dir.path().join("t.db")).unwrap();
+        let (a, b, c) = (some_addr(), some_addr(), some_addr());
+        for f in [&a, &b, &c] {
+            db.add_follower(f).unwrap();
+        }
+        assert!(db.followers_to_tell_moved().unwrap().is_empty());
+        assert_eq!(db.mark_followers_to_tell_moved().unwrap(), 3);
+        db.told_moved(&a.id).unwrap();
+        // Subscribing to this node means b already knows where we are.
+        db.add_follower(&b).unwrap();
+        let left: Vec<_> = db.followers_to_tell_moved().unwrap();
+        assert_eq!(left.iter().map(|f| f.id).collect::<Vec<_>>(), [c.id]);
     }
 
     #[test]
