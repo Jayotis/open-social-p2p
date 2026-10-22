@@ -53,6 +53,7 @@ The phone side of all this lives in `crates/osp-client`. The Android app calls i
 
 - **The QR code is a password for 10 minutes.** Whoever uses it first becomes a paired device. `osp pair` says so, and shows the code only in the owner's terminal. The ticket also holds the node's private-network addresses.
 - **A paired phone has full access** to the owner's node (post, follow, reshare) until it is unpaired. There are no read-only devices yet, and no per-device limits.
+- **Unpairing stops new requests, not what the phone already has.** The node closes the phone's connections at once, but the saved feed and any media already buffered stay on the phone (a playing video carries on for up to a minute or so).
 - **The device key lives in the app's private storage** on the phone, not yet in the Android Keystore.
 - **The phone trusts its own node** for media integrity. It doesn't re-verify BLAKE3 hashes itself.
 - **Uploads send the original file.** A phone video can be hundreds of megabytes, which is costly on mobile data. The app should warn before posting on mobile data. Transcoding on the phone is a later option.
