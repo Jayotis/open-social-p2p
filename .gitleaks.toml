@@ -1,0 +1,17 @@
+# Secret scanning for CI (the "secrets" job in .github/workflows/ci.yml).
+# Gitleaks' own rules find well-known formats: cloud tokens, PEM private
+# keys and so on. Our keys are plain hex in files with no telling marker,
+# so the rules below flag the files themselves wherever they show up.
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "osp-key-file"
+description = "A node's identity or node key, or a phone's device key"
+path = '''(^|/)(identity|node|device)\.key$'''
+
+[[rules]]
+id = "android-signing-key"
+description = "An Android keystore or the key.properties that unlocks it"
+path = '''(\.jks|\.keystore|(^|/)key\.properties)$'''
