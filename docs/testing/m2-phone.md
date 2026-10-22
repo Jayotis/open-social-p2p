@@ -28,6 +28,21 @@ osp unpair NAME   # by name, or by the start of the device ID
 
 The code works once, within 10 minutes. Whoever uses it first becomes a paired device, so don't share it or show it on a screen others can photograph.
 
+## The Android app
+
+Build it as described in [`app/README.md`](../../app/README.md). Then install it in one of two ways:
+
+- **Over USB:** turn on *Developer options → USB debugging* on the phone, connect it, accept the prompt on the phone, then run `adb install -r app/build/app/outputs/flutter-apk/app-release.apk`.
+- **By copying the file:** copy the APK to the phone and open it. Android asks to allow installs from that app (Files, say) once.
+
+First run: tap *Scan QR code* and scan the code from `osp pair`. If the camera can't read the terminal, run `osp pair --no-qr` and paste the text into *Paste the code instead*, for example by sending it to yourself.
+
+What the app shows:
+
+- **The dot in the top bar:** green means the node answered recently, amber means it reports a problem, red means it can't be reached. Tap it for details: direct or relay, round-trip time, the node's version, uptime, disk space and problems, and a diagnostics log.
+- **When the node can't be reached:** a red banner, and the feed as last saved. Posting is disabled until the node is back.
+- **On mobile data:** the app asks before playing a video over 10 MB or uploading over 20 MB.
+
 ## Without the app: a pretend phone
 
 The example program `phone` runs the app's networking code on a computer. Run it on a different machine, or a different network, to test the path a phone away from home would take.
@@ -69,3 +84,6 @@ Results here are public, so describe networks in general terms. Keep details of 
 - A paired device has full access until unpaired; no read-only devices.
 - The phone uploads the original file; there is no phone-side transcoding or resume yet.
 - Media the node hasn't fetched yet is downloaded in full by the node before the phone gets the first byte.
+- The app doesn't keep media on the phone: when the node is unreachable, the saved feed shows text and layout, but no pictures or video.
+- Android may stop the app in the background, which interrupts an upload. Keep the app open until the post is sent.
+- The app looks up DNS with public resolvers rather than the phone's own settings. It still works, but networks that block outside DNS will break relay connections.
