@@ -6,11 +6,11 @@
 use std::{net::SocketAddr, path::Path, time::Duration};
 
 use iroh::{Endpoint, EndpointAddr, RelayMode, address_lookup::MemoryLookup, endpoint::presets};
-use osp_node::{Config, Node, backup};
+use osp_node::{BlobClass, Config, Node, backup};
 use osp_proto::{
-    Payload, Person, SOCIAL_ALPN, SecretKey, SignedObject,
+    BlobHash, ObjectId, Payload, Person, SOCIAL_ALPN, SecretKey, SignedObject,
     framing::{read_frame, write_frame},
-    rpc::{ClientRequest, ClientResponse, FollowInfo},
+    rpc::{BackupInfo, ClientRequest, ClientResponse, FollowInfo, StatusInfo},
     social::{SocialRequest, SocialResponse},
 };
 
@@ -46,8 +46,75 @@ async fn follow(follower: &Node, followed: &Node) {
 /// Syncs, then returns the texts in the feed, newest first.
 async fn feed_texts(node: &Node) -> Vec<String> {
     call(node, ClientRequest::Sync).await;
+    texts(node).await
+}
+
+/// The texts in the feed, newest first, without syncing first.
+async fn texts(node: &Node) -> Vec<String> {
     match call(node, ClientRequest::Feed { limit: 50 }).await {
         ClientResponse::Feed { items } => items.into_iter().map(|i| i.content).collect(),
+        other => panic!("unexpected {other:?}"),
+    }
+}
+
+/// Checks `ready` every 100 ms, for up to 20 s.
+async fn wait_until(what: &str, mut ready: impl AsyncFnMut() -> bool) {
+    for _ in 0..200 {
+        if ready().await {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    panic!("gave up waiting for {what}");
+}
+
+/// Posts a small photo made with ffmpeg from an ffmpeg test `source`,
+/// such as "testsrc" or "smptebars". Returns the post and the photo.
+async fn post_photo(node: &Node, dir: &Path, name: &str, source: &str) -> (ObjectId, BlobHash) {
+    let photo = dir.join(format!("{name}.png"));
+    let status = tokio::process::Command::new("ffmpeg")
+        .args(["-hide_banner", "-loglevel", "error", "-y"])
+        .args(["-f", "lavfi", "-i", &format!("{source}=size=320x240")])
+        .args(["-frames:v", "1"])
+        .arg(&photo)
+        .status()
+        .await
+        .expect("ffmpeg must be installed");
+    assert!(status.success());
+    let req = ClientRequest::Post {
+        content: name.into(),
+        attachments: vec![photo],
+        uploads: vec![],
+    };
+    let ClientResponse::Posted { id } = call(node, req).await else {
+        panic!("not posted")
+    };
+    let ClientResponse::Item { item } = call(node, ClientRequest::Show { id }).await else {
+        panic!("not shown")
+    };
+    (id, item.attachments[0].attachment.blob)
+}
+
+async fn export(node: &Node, path: &Path, media: bool) -> BackupInfo {
+    let req = ClientRequest::ExportBackup {
+        path: path.into(),
+        media,
+    };
+    match call(node, req).await {
+        ClientResponse::BackedUp { info, .. } => info,
+        other => panic!("unexpected {other:?}"),
+    }
+}
+
+/// The IDs in a node's outbox, in order, as another node sees them.
+async fn outbox_ids(node: &Node) -> Vec<ObjectId> {
+    let (_peer, conn) = stranger(&node.addr().await).await;
+    let req = SocialRequest::GetOutbox {
+        since: 0,
+        limit: 100,
+    };
+    match ask(&conn, &req).await {
+        SocialResponse::Outbox { entries, .. } => entries.iter().map(|e| e.object.id()).collect(),
         other => panic!("unexpected {other:?}"),
     }
 }
@@ -75,11 +142,15 @@ async fn following(node: &Node) -> Vec<FollowInfo> {
     }
 }
 
-async fn followers(node: &Node) -> usize {
+async fn status(node: &Node) -> StatusInfo {
     match call(node, ClientRequest::Status).await {
-        ClientResponse::Status(status) => status.followers,
+        ClientResponse::Status(status) => status,
         other => panic!("unexpected {other:?}"),
     }
+}
+
+async fn followers(node: &Node) -> usize {
+    status(node).await.followers
 }
 
 /// A key file as the node writes it: 32 bytes in hex.
@@ -169,8 +240,9 @@ async fn a_restored_identity_reaches_followers_who_follow_its_new_node() {
     let (identity, old_node) = (alice.identity(), alice.node_id());
     alice.shutdown().await.unwrap();
     let home = dir.path().join("alice-new");
-    let restored = Node::restore(&home, &Config::local_test("Alice"), &words).unwrap();
-    assert_eq!(restored, identity);
+    let restored = Node::restore(&home, &Config::local_test("Alice"), &words, None).unwrap();
+    assert_eq!(restored.identity, identity);
+    assert!(restored.from_file.is_none());
     let alice = Node::spawn(&home).await.unwrap();
     assert_eq!(alice.identity(), identity);
     assert_ne!(alice.node_id(), old_node);
@@ -185,7 +257,7 @@ async fn a_restored_identity_reaches_followers_who_follow_its_new_node() {
     );
 
     // A node isn't restored over an existing one.
-    let err = Node::restore(&home, &Config::local_test("Alice"), &words).unwrap_err();
+    let err = Node::restore(&home, &Config::local_test("Alice"), &words, None).unwrap_err();
     assert!(err.to_string().contains("already holds a node"), "{err}");
 }
 
@@ -302,4 +374,126 @@ async fn a_move_needs_a_newer_profile_that_lists_the_sender() {
     let follows = following(&bob).await;
     assert_eq!(follows[0].cursor, 0);
     assert!(follows[0].last_sync.is_none());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_backup_brings_back_posts_follows_followers_and_media() {
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter("osp_node=debug,warn")
+        .with_test_writer()
+        .try_init();
+    let dir = tempfile::tempdir().unwrap();
+    let alice = start(dir.path(), "Alice").await;
+    let bob = start(dir.path(), "Bob").await;
+    let carol = start(dir.path(), "Carol").await;
+
+    // Alice follows Bob and reshares his photo, hosting it. Carol follows Alice.
+    let (bobs_post, bobs_photo) = post_photo(&bob, dir.path(), "bob", "smptebars").await;
+    follow(&alice, &bob).await;
+    call(&alice, ClientRequest::Sync).await;
+    post(&alice, "hello").await;
+    let (_, alices_photo) = post_photo(&alice, dir.path(), "alice", "testsrc").await;
+    let reshare = ClientRequest::Reshare {
+        id: bobs_post,
+        host: true,
+    };
+    call(&alice, reshare).await;
+    assert_eq!(
+        alice.blob_class(&bobs_photo).unwrap(),
+        Some(BlobClass::Replica)
+    );
+    follow(&carol, &alice).await;
+    feed_texts(&carol).await;
+    assert_eq!(followers(&alice).await, 1);
+
+    let file = dir.path().join("alice.ospbackup");
+    let info = export(&alice, &file, true).await;
+    assert_eq!((info.posts, info.follows, info.followers), (3, 1, 1));
+    assert!(info.media_files >= 1);
+    assert_eq!(info.media_missing, 0);
+    assert_eq!(info.bytes, std::fs::metadata(&file).unwrap().len());
+    let ids = outbox_ids(&alice).await;
+    let words = backup::recovery_words(&dir.path().join("alice"))
+        .unwrap()
+        .join(" ");
+
+    // Alice's computer is lost. She restores from her words and the file,
+    // keeping the name in the backup.
+    alice.shutdown().await.unwrap();
+    let home = dir.path().join("alice-new");
+    let mut config = Config::local_test("");
+    config.name = String::new();
+    let restored = Node::restore(&home, &config, &words, Some(&file)).unwrap();
+    let from_file = restored.from_file.unwrap();
+    assert_eq!(
+        (from_file.posts, from_file.follows, from_file.followers),
+        (3, 1, 1)
+    );
+    assert_eq!(from_file.media_files, info.media_files);
+    let alice = Node::spawn(&home).await.unwrap();
+
+    // Her posts in their order with their IDs, her name, her media, her follow.
+    assert_eq!(outbox_ids(&alice).await, ids);
+    assert_eq!(status(&alice).await.name, "Alice");
+    assert_eq!(
+        alice.blob_class(&alices_photo).unwrap(),
+        Some(BlobClass::Own)
+    );
+    assert!(!home.join("restored-media").exists());
+    let follows = following(&alice).await;
+    assert_eq!(follows.len(), 1);
+    assert_eq!(follows[0].actor, bob.identity());
+
+    // The photo she hosts for Bob is fetched again.
+    wait_until("the hosted photo", async || {
+        alice.blob_class(&bobs_photo).unwrap() == Some(BlobClass::Replica)
+    })
+    .await;
+    // Carol is told Alice moved, and gets her new posts.
+    post(&alice, "after the move").await;
+    wait_until("Carol to get the new post", async || {
+        texts(&carol).await.contains(&"after the move".to_string())
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_backup_opens_only_with_its_own_words_and_unchanged() {
+    let dir = tempfile::tempdir().unwrap();
+    let alice = start(dir.path(), "Alice").await;
+    post(&alice, "hello").await;
+    let file = dir.path().join("alice.ospbackup");
+    let info = export(&alice, &file, false).await;
+    assert_eq!((info.posts, info.media_files), (1, 0));
+    alice.shutdown().await.unwrap();
+    let words = backup::recovery_words(&dir.path().join("alice"))
+        .unwrap()
+        .join(" ");
+    Node::init(&dir.path().join("other"), &Config::local_test("Other")).unwrap();
+    let other_words = backup::recovery_words(&dir.path().join("other"))
+        .unwrap()
+        .join(" ");
+
+    // Each failed restore leaves nothing behind, so it can be run again.
+    let config = Config::local_test("Alice");
+    let home = dir.path().join("restored");
+    let refused = |words: &str, file: &Path, expected: &str| {
+        let err = Node::restore(&home, &config, words, Some(file)).unwrap_err();
+        assert!(err.to_string().contains(expected), "{err:#}");
+        assert!(!home.exists(), "a failed restore left {}", home.display());
+    };
+    refused(&other_words, &file, "another identity");
+    let bytes = std::fs::read(&file).unwrap();
+    let mut changed = bytes.clone();
+    let middle = changed.len() / 2;
+    changed[middle] ^= 1;
+    std::fs::write(dir.path().join("changed"), &changed).unwrap();
+    refused(&words, &dir.path().join("changed"), "damaged");
+    std::fs::write(dir.path().join("short"), &bytes[..bytes.len() - 10]).unwrap();
+    refused(&words, &dir.path().join("short"), "damaged");
+
+    let restored = Node::restore(&home, &config, &words, Some(&file)).unwrap();
+    assert_eq!(restored.from_file.unwrap().posts, 1);
+    let alice = Node::spawn(&home).await.unwrap();
+    assert_eq!(texts(&alice).await, ["hello"]);
 }

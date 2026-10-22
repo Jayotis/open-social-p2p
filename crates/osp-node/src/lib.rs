@@ -24,4 +24,4 @@ mod sync;
 pub use config::{Config, RelayChoice};
 pub use db::BlobClass;
 pub use home::Home;
-pub use node::Node;
+pub use node::{Node, Restored};

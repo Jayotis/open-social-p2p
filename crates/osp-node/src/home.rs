@@ -45,6 +45,11 @@ impl Home {
         self.root.join("work")
     }
 
+    /// Media a restore left for the node to import when it starts (ADR 0009).
+    pub fn restored_media(&self) -> PathBuf {
+        self.root.join("restored-media")
+    }
+
     /// Unix socket the local command-line tool talks to.
     pub fn socket(&self) -> PathBuf {
         self.root.join("osp.sock")

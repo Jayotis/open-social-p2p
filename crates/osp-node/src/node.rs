@@ -3,7 +3,7 @@
 use std::{
     collections::HashMap,
     os::unix::fs::PermissionsExt,
-    path::Path,
+    path::{Path, PathBuf},
     sync::{Arc, Mutex},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -17,7 +17,7 @@ use iroh::{
 };
 use osp_proto::{
     BlobHash, Payload, Person, SignedObject,
-    rpc::{ClientRequest, ClientResponse},
+    rpc::{BackupInfo, ClientRequest, ClientResponse},
 };
 use tokio::{
     sync::{Notify, Semaphore, watch},
@@ -105,12 +105,44 @@ impl Node {
     }
 
     /// Creates a node home for an existing identity, given its recovery
-    /// words (ADR 0009). The node gets a new node key, so the network sees
-    /// a new node speaking for the same identity. Returns the identity.
-    pub fn restore(home: &Path, config: &Config, words: &str) -> Result<PublicKey> {
+    /// words and optionally a backup file (ADR 0009). The node gets a new
+    /// node key, so the network sees a new node speaking for the same
+    /// identity; when it starts, it tells the followers in the backup.
+    ///
+    /// An empty `config.name` takes the name from the backed-up profile.
+    /// If restoring the file fails, what was created is removed again.
+    pub fn restore(
+        home: &Path,
+        config: &Config,
+        words: &str,
+        backup_file: Option<&Path>,
+    ) -> Result<Restored> {
         let identity = backup::identity_from_words(words)?;
-        create_home(&Home::new(home), config, &identity)?;
-        Ok(identity.public())
+        let home = Home::new(home);
+        // Check the file before creating anything.
+        let file = backup_file
+            .map(|path| backup::BackupFile::open(path, &identity))
+            .transpose()?;
+        let mut config = config.clone();
+        if config.name.is_empty() {
+            config.name = file
+                .as_ref()
+                .and_then(|f| f.name())
+                .unwrap_or_else(|| Config::default().name);
+        }
+        let existed = home.root().exists();
+        create_home(&home, &config, &identity)?;
+        let from_file = match file.map(|f| f.restore(&home, &identity)).transpose() {
+            Ok(info) => info,
+            Err(e) => {
+                remove_new_home(&home, existed);
+                return Err(e);
+            }
+        };
+        Ok(Restored {
+            identity: identity.public(),
+            from_file,
+        })
     }
 
     /// Starts the node stored in `home`.
@@ -146,6 +178,7 @@ impl Node {
             store::GC_INTERVAL,
         )
         .await?;
+        import_restored_media(&home, &store).await?;
         let profile = own_profile(&identity, &config.name, endpoint.id(), &db)?;
         let media_tools = media::tools_available(&config.media).await;
         info!(
@@ -186,7 +219,11 @@ impl Node {
             .spawn();
         let sync_loop = tokio::spawn(sync::run_loop(core.clone()));
         let tell_moved = tokio::spawn(control::tell_moved_loop(core.clone()));
-        let mut tasks = vec![serving_rules, sync_loop, tell_moved];
+        let replicas = {
+            let core = core.clone();
+            tokio::spawn(async move { core.refetch_replicas().await })
+        };
+        let mut tasks = vec![serving_rules, sync_loop, tell_moved, replicas];
         if core.config.network.relay != RelayChoice::Disabled {
             tasks.push(tokio::spawn(network::log_nat_changes(
                 core.endpoint.clone(),
@@ -293,6 +330,66 @@ impl Core {
         }
         self.endpoint.addr()
     }
+}
+
+/// What `Node::restore` brought back.
+#[derive(Debug, Clone)]
+pub struct Restored {
+    pub identity: PublicKey,
+    /// What came from the backup file, if one was given.
+    pub from_file: Option<BackupInfo>,
+}
+
+/// Undoes a restore that failed part way, so it can simply be run again.
+/// Removes only what the restore created.
+fn remove_new_home(home: &Home, existed: bool) {
+    let db = home.db();
+    let wal = PathBuf::from(format!("{}-wal", db.display()));
+    let shm = PathBuf::from(format!("{}-shm", db.display()));
+    for file in [
+        home.identity_key(),
+        home.node_key(),
+        home.config(),
+        db,
+        wal,
+        shm,
+    ] {
+        let _ = std::fs::remove_file(file);
+    }
+    let _ = std::fs::remove_dir_all(home.restored_media());
+    if !existed {
+        let _ = std::fs::remove_dir(home.root());
+    }
+}
+
+/// Moves the media a restore left into the blob store, as media of our own
+/// posts. Each file is deleted once it's in; one that fails stays for the
+/// next start.
+async fn import_restored_media(home: &Home, store: &ContentStore) -> Result<()> {
+    let dir = home.restored_media();
+    if !dir.exists() {
+        return Ok(());
+    }
+    let mut imported = 0;
+    for entry in std::fs::read_dir(&dir)? {
+        let path = entry?.path();
+        let expected: BlobHash = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .and_then(|n| n.parse().ok())
+            .with_context(|| format!("{} isn't restored media", path.display()))?;
+        let (hash, _) = store.import(&path, BlobClass::Own).await?;
+        ensure!(
+            hash == expected,
+            "restored media {} doesn't match its name",
+            path.display()
+        );
+        std::fs::remove_file(&path)?;
+        imported += 1;
+    }
+    std::fs::remove_dir(&dir)?;
+    info!(files = imported, "imported the media of a restored backup");
+    Ok(())
 }
 
 /// Writes a new home's keys, config and database. Refuses to touch a home

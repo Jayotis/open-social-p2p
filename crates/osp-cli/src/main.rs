@@ -45,9 +45,9 @@ struct Cli {
 enum Command {
     /// Create a new node: identity, keys and config
     Init {
-        /// Display name for your profile
-        #[arg(long, default_value = "Anonymous")]
-        name: String,
+        /// Display name for your profile [default: Anonymous, or the name in the backup]
+        #[arg(long)]
+        name: Option<String>,
         /// Relays: "default" (n0's public relays), "disabled", or your own relay URL
         #[arg(long, default_value = "default")]
         relay: String,
@@ -60,6 +60,9 @@ enum Command {
         /// Bring back an existing identity: asks for its 24 recovery words
         #[arg(long)]
         restore: bool,
+        /// With --restore: also restore posts, follows, followers and media from this backup file
+        #[arg(long, requires = "restore")]
+        backup: Option<PathBuf>,
     },
     /// Run the node in the foreground (Ctrl-C to stop)
     Daemon,
@@ -128,6 +131,14 @@ enum Command {
 enum BackupCommand {
     /// Show your 24 recovery words again
     Words,
+    /// Write an encrypted backup of your posts, follows, followers and media
+    Export {
+        /// Where to write it. Keep it somewhere other than this computer.
+        file: PathBuf,
+        /// Leave out the photos and videos of your posts, for a small file
+        #[arg(long)]
+        no_media: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -149,7 +160,19 @@ async fn main() -> Result<()> {
             bind,
             no_address_lookup,
             restore,
-        } => return init(&home, name, &relay, bind, !no_address_lookup, restore),
+            backup,
+        } => {
+            let lookup = !no_address_lookup;
+            return init(
+                &home,
+                name,
+                &relay,
+                bind,
+                lookup,
+                restore,
+                backup.as_deref(),
+            );
+        }
         Command::Daemon => return daemon(&home).await,
         // Read from the key file, not asked of the daemon: only someone who
         // can read the node's files sees them, never a paired phone.
@@ -157,6 +180,11 @@ async fn main() -> Result<()> {
             print_words(&osp_node::backup::recovery_words(&home)?);
             return Ok(());
         }
+        // The daemon writes the file, so send an absolute path.
+        Command::Backup(BackupCommand::Export { file, no_media }) => ClientRequest::ExportBackup {
+            path: std::path::absolute(&file)?,
+            media: !no_media,
+        },
         Command::Invite { no_qr } => {
             let resp = send(&home, ClientRequest::Invite).await?;
             if let (false, ClientResponse::Ticket { ticket }) = (cli.json || no_qr, &resp) {
@@ -206,16 +234,19 @@ fn default_home() -> PathBuf {
 
 fn init(
     home: &Path,
-    name: String,
+    name: Option<String>,
     relay: &str,
     bind: Option<SocketAddr>,
     address_lookup: bool,
     restore: bool,
+    backup: Option<&Path>,
 ) -> Result<()> {
-    let mut config = Config {
-        name,
-        ..Config::default()
-    };
+    let mut config = Config::default();
+    if let Some(name) = name {
+        config.name = name;
+    } else if backup.is_some() {
+        config.name = String::new(); // Take the name in the backup.
+    }
     config.network.relay = match relay {
         "default" => RelayChoice::Default,
         "disabled" => RelayChoice::Disabled,
@@ -224,12 +255,22 @@ fn init(
     config.network.bind = bind;
     config.network.address_lookup = address_lookup;
     if restore {
-        let identity = Node::restore(home, &config, &read_words()?)?;
-        println!("Restored identity {identity}");
+        let restored = Node::restore(home, &config, &read_words()?, backup)?;
+        println!("Restored identity {}", restored.identity);
         println!("on a new node in {}.", home.display());
+        if let Some(info) = &restored.from_file {
+            println!(
+                "From the backup: {} posts, {} follows, {} followers and {} media files.",
+                info.posts, info.follows, info.followers, info.media_files
+            );
+        }
         println!();
         println!("This is a new node, so:");
-        println!("- people who follow you find it once you give them a new code (`osp invite`);");
+        if restored.from_file.is_some() {
+            println!("- when it starts, it tells your followers that you moved here;");
+        } else {
+            println!("- your followers find it once you give them a new code (`osp invite`);");
+        }
         println!("- your phone pairs again (`osp pair`);");
         println!("- never start the old node again, or your followers get two nodes for you.");
     } else {
@@ -458,6 +499,21 @@ fn print(resp: ClientResponse, json: bool) -> Result<()> {
         }
         ClientResponse::Paired { name, .. } => println!("Paired with {name}'s node."),
         ClientResponse::Blob { size: bytes } => println!("{}", size(bytes)),
+        ClientResponse::BackedUp { path, info } => {
+            println!("Wrote {} ({}):", path.display(), size(info.bytes));
+            println!(
+                "{} posts, {} follows, {} followers and {} media files.",
+                info.posts, info.follows, info.followers, info.media_files
+            );
+            if info.media_missing > 0 {
+                println!(
+                    "{} media files of your posts are missing from this node, so the backup lacks them.",
+                    info.media_missing
+                );
+            }
+            println!("It is encrypted: only your recovery words open it. Keep it somewhere other");
+            println!("than this computer, and make a new one now and then.");
+        }
     }
     Ok(())
 }
