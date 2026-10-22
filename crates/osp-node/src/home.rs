@@ -50,6 +50,11 @@ impl Home {
         self.root.join("osp.sock")
     }
 
+    /// Held locked by the running node, so a second one can't start on the same home.
+    pub fn lock(&self) -> PathBuf {
+        self.root.join("lock")
+    }
+
     pub fn is_initialized(&self) -> bool {
         self.config().exists() && self.identity_key().exists()
     }

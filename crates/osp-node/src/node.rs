@@ -43,6 +43,8 @@ pub struct Node {
     router: Router,
     tasks: Vec<JoinHandle<()>>,
     serving_socket: bool,
+    /// Locked for as long as the node runs; the lock goes when the file closes.
+    _lock: std::fs::File,
 }
 
 /// State shared by the protocol handlers and background tasks.
@@ -93,6 +95,7 @@ impl Node {
         if !home.is_initialized() {
             bail!("no node in {}; run `osp init` first", home.root().display());
         }
+        let lock = lock_home(&home)?;
         let config = Config::load(&home.config())?;
         let identity = keys::load(&home.identity_key())?;
         let node_key = keys::load(&home.node_key())?;
@@ -151,6 +154,7 @@ impl Node {
             router,
             tasks,
             serving_socket: false,
+            _lock: lock,
         })
     }
 
@@ -226,6 +230,25 @@ impl Core {
         let addr = self.endpoint.addr();
         EndpointAddr::from_parts(addr.id, addr.addrs.into_iter().filter(|a| a.is_relay()))
     }
+}
+
+/// Takes the home's lock, so two nodes never share one home (they would
+/// otherwise wait on each other's databases without saying why).
+fn lock_home(home: &Home) -> Result<std::fs::File> {
+    let path = home.lock();
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&path)
+        .with_context(|| format!("opening {}", path.display()))?;
+    if rustix::fs::flock(&file, rustix::fs::FlockOperation::NonBlockingLockExclusive).is_err() {
+        bail!(
+            "another node is already running in {} (as a service? see `systemctl --user status osp`)",
+            home.root().display()
+        );
+    }
+    Ok(file)
 }
 
 /// Adds an address to the lookup table, unless it carries nothing but an ID.

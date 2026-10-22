@@ -217,6 +217,22 @@ async fn reshared_media_survives_origin_going_offline() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_second_node_on_the_same_home_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("frank");
+    Node::init(&home, &Config::local_test("Frank")).unwrap();
+    let first = Node::spawn(&home).await.unwrap();
+    let second = tokio::time::timeout(std::time::Duration::from_secs(5), Node::spawn(&home))
+        .await
+        .expect("refused promptly, not left waiting");
+    let err = second.err().expect("second node must not start");
+    assert!(err.to_string().contains("already running"), "{err:#}");
+    first.shutdown().await.unwrap();
+    let again = Node::spawn(&home).await.expect("home is free once stopped");
+    again.shutdown().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn tampered_or_unknown_requests_fail_cleanly() {
     let dir = tempfile::tempdir().unwrap();
     let node = start(dir.path(), "Erin").await;
