@@ -78,7 +78,7 @@ Results here are public, so describe networks in general terms. Keep details of 
 | Date | Node network | Phone network | Path (phone ↔ node) | Video start | Post (size, time) | Notes |
 | --- | --- | --- | --- | --- | --- | --- |
 | 2026-10-21 | one machine, n0 relays | pretend phone, same machine | direct, 2 ms | — | 11 MB upload + transcode: 1.4 s | `phone` example; 0.8 MB rendition read back with matching BLAKE3 |
-| 2026-10-21 | home network, behind a VPN, node as a user service | Android 12 phone, home Wi-Fi | direct, 2–7 ms | 5:27 video (52 MB): playing within 3 s; seeking to 4:03 worked | not yet | Paired by pasting the code. Node stopped: red banner within one status poll, feed still shown, posting disabled. Node started: green again in 3 s |
+| 2026-10-21 | home network, behind a VPN, node as a user service | Android 12 phone, home Wi-Fi | direct, 2–7 ms | 5:27 video (52 MB): playing within 3 s; seeking to 4:03 worked | photo, upright, published as a 62 KB 960×1280 WebP | Paired by pasting the code. Node stopped: red banner within one status poll, feed still shown, posting disabled. Node started: green again in 3 s. The test phone has no SIM, so mobile data (a relayed path) is still untested |
 
 ## Known limitations
 
