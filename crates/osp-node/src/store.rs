@@ -218,6 +218,13 @@ impl ContentStore {
         Ok(size)
     }
 
+    /// Promises disk space to a file a device is uploading, until the
+    /// returned guard is dropped. Uploads and downloads count each other's
+    /// promises, and leave the same space free on the disk.
+    pub async fn reserve_upload(&self, bytes: u64) -> Result<Reservation<'_>> {
+        self.reserve(BlobClass::Own, bytes).await
+    }
+
     /// Fails if hosting `bytes` more for others would go over the replica
     /// quota. Downloads check this themselves; this is for checking a
     /// whole post before fetching any of it.
@@ -309,7 +316,7 @@ impl ContentStore {
                 let promised: u64 = reserved.values().sum();
                 ensure!(
                     free.saturating_sub(promised) >= bytes.saturating_add(MIN_FREE_DISK),
-                    "not enough free disk space: fetching {} would leave less than {} free",
+                    "not enough free disk space: storing {} more would leave less than {} free",
                     mb(bytes),
                     mb(MIN_FREE_DISK)
                 );
@@ -422,9 +429,9 @@ impl ContentStore {
     }
 }
 
-/// Space promised to one download. Given back when dropped, by which time
-/// the blob is recorded in the database, or abandoned.
-struct Reservation<'a> {
+/// Space promised to one download or upload. Given back when dropped, by
+/// which time the bytes are on the disk, or abandoned.
+pub struct Reservation<'a> {
     store: &'a ContentStore,
     class: BlobClass,
     bytes: u64,
@@ -662,6 +669,25 @@ mod tests {
         assert!(store.check_replica_room(KB).is_err());
         drop(room);
         assert!(store.check_replica_room(KB).is_ok());
+    }
+
+    #[tokio::test]
+    async fn promised_space_counts_toward_the_free_disk_floor() {
+        let f = Fixture::new().await;
+        let store = f.open().await;
+        let free = health::disk_free(&store.dir).expect("free space is known");
+        let margin = 64 << 20;
+        let Some(spare) = free.checked_sub(MIN_FREE_DISK + margin) else {
+            eprintln!("skipped: less than {} free", mb(MIN_FREE_DISK + margin));
+            return;
+        };
+        // A promise is only bookkeeping, so nearly all the free space can be
+        // promised without writing anything.
+        let upload = store.reserve_upload(spare).await.unwrap();
+        let err = store.reserve_upload(2 * margin).await.err().unwrap();
+        assert!(format!("{err:#}").contains("free disk space"), "{err:#}");
+        drop(upload);
+        store.reserve_upload(2 * margin).await.unwrap();
     }
 
     #[tokio::test]

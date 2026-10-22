@@ -22,6 +22,7 @@ use osp_proto::{
 };
 use tokio::{
     net::{UnixListener, UnixStream},
+    sync::SemaphorePermit,
     task::JoinHandle,
 };
 use tracing::{debug, info, warn};
@@ -38,6 +39,10 @@ use crate::{
 const NOTIFY_AT_ONCE: usize = 16;
 /// Give up on notifying one follower after this long.
 const NOTIFY_TIMEOUT: Duration = Duration::from_secs(15);
+/// Most posts with media in progress at once: arriving from a phone,
+/// waiting for their turn at ffmpeg, or transcoding. More are refused
+/// until one is done.
+pub(crate) const MAX_MEDIA_POSTS: usize = 4;
 
 /// Where a command came from. Commands that touch the home node's own
 /// filesystem, or manage devices, are only allowed locally.
@@ -203,18 +208,32 @@ impl Core {
         content: String,
         paths: &[PathBuf],
     ) -> Result<ObjectId> {
-        ensure!(
-            !content.trim().is_empty() || !paths.is_empty(),
-            "a post needs text or an attachment"
-        );
-        ensure!(
-            content.len() <= MAX_CONTENT_BYTES,
-            "post text is longer than {MAX_CONTENT_BYTES} bytes"
-        );
-        ensure!(
-            paths.len() <= MAX_ATTACHMENTS,
-            "a post can have at most {MAX_ATTACHMENTS} attachments"
-        );
+        check_post(&content, paths.len())?;
+        let _slot = if paths.is_empty() {
+            None
+        } else {
+            Some(self.media_post_slot()?)
+        };
+        self.publish_post(content, paths).await
+    }
+
+    /// One of the `MAX_MEDIA_POSTS` places for posts with media, kept until
+    /// the post is published or fails.
+    pub(crate) fn media_post_slot(&self) -> Result<SemaphorePermit<'_>> {
+        self.media_posts.try_acquire().map_err(|_| {
+            anyhow::anyhow!(
+                "the home node is busy preparing other posts; try again in a few minutes"
+            )
+        })
+    }
+
+    /// Transcodes the files and publishes the post. The caller has checked
+    /// the post with `check_post` and, if it has files, holds a media slot.
+    pub(crate) async fn publish_post(
+        self: &Arc<Self>,
+        content: String,
+        paths: &[PathBuf],
+    ) -> Result<ObjectId> {
         let mut attachment = Vec::new();
         for path in paths {
             attachment.push(self.prepare_media(path).await?);
@@ -229,9 +248,13 @@ impl Core {
         .await
     }
 
-    /// Transcodes a file and stores the rendition and thumbnail as our own blobs.
+    /// Transcodes a file, once it's this post's turn, and stores the
+    /// rendition and thumbnail as our own blobs.
     async fn prepare_media(&self, path: &Path) -> Result<Attachment> {
-        let r = media::transcode(&self.config.media, path, &self.home.work()).await?;
+        let r = {
+            let _turn = self.transcode_lock.lock().await;
+            media::transcode(&self.config.media, path, &self.home.work()).await?
+        };
         let (blob, size) = self.store.import(&r.file, BlobClass::Own).await?;
         let (thumb, thumb_size) = self.store.import(&r.thumbnail, BlobClass::Own).await?;
         if let Some(job_dir) = r.file.parent() {
@@ -421,6 +444,24 @@ impl Core {
             Payload::Person(_) => bail!("{id} is a profile, not a post"),
         }
     }
+}
+
+/// Refuses a post that is empty, too long or has too many attachments,
+/// before any of its files are received or transcoded.
+pub(crate) fn check_post(content: &str, attachments: usize) -> Result<()> {
+    ensure!(
+        !content.trim().is_empty() || attachments > 0,
+        "a post needs text or an attachment"
+    );
+    ensure!(
+        content.len() <= MAX_CONTENT_BYTES,
+        "post text is longer than {MAX_CONTENT_BYTES} bytes"
+    );
+    ensure!(
+        attachments <= MAX_ATTACHMENTS,
+        "a post can have at most {MAX_ATTACHMENTS} attachments"
+    );
+    Ok(())
 }
 
 fn extension(media_type: &str) -> &str {

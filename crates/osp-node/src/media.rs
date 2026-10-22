@@ -8,6 +8,7 @@ use std::{
     path::{Path, PathBuf},
     process::Stdio,
     sync::atomic::{AtomicU64, Ordering},
+    time::Duration,
 };
 
 use anyhow::{Context, Result, bail, ensure};
@@ -27,6 +28,12 @@ const IMAGE_SCALE: &str =
     "scale=w='min(2048,iw)':h='min(2048,ih)':force_original_aspect_ratio=decrease";
 const THUMB_SCALE: &str =
     "scale=w='min(480,iw)':h='min(480,ih)':force_original_aspect_ratio=decrease";
+
+/// Stop ffprobe if reading a file's details takes longer than this.
+const PROBE_TIMEOUT: Duration = Duration::from_secs(60);
+/// Stop ffmpeg if transcoding an image, or making a thumbnail, takes longer
+/// than this. Video transcodes have `media.max_transcode_secs`.
+const QUICK_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// A finished rendition, ready to be imported into the blob store.
 #[derive(Debug)]
@@ -77,7 +84,8 @@ pub async fn tools_available(cfg: &MediaConfig) -> bool {
     true
 }
 
-/// Transcodes `input` into a fresh directory under `work_dir`.
+/// Transcodes `input` into a fresh directory under `work_dir`. If that
+/// fails, the directory and whatever ffmpeg left in it are deleted.
 pub async fn transcode(cfg: &MediaConfig, input: &Path, work_dir: &Path) -> Result<Rendition> {
     let source = probe(cfg, input).await?;
     ensure!(
@@ -86,11 +94,15 @@ pub async fn transcode(cfg: &MediaConfig, input: &Path, work_dir: &Path) -> Resu
         input.display()
     );
     let job_dir = new_job_dir(work_dir)?;
-    if source.is_still_image() {
+    let result = if source.is_still_image() {
         transcode_image(cfg, input, &job_dir).await
     } else {
         transcode_video(cfg, input, &source, &job_dir).await
+    };
+    if result.is_err() {
+        let _ = std::fs::remove_dir_all(&job_dir);
     }
+    result
 }
 
 async fn transcode_video(
@@ -99,6 +111,8 @@ async fn transcode_video(
     source: &Probe,
     job_dir: &Path,
 ) -> Result<Rendition> {
+    // A file that doesn't say how long it is gets past this check; `-t`
+    // below stops ffmpeg at the limit anyway.
     let duration = source.duration_secs.unwrap_or(0.0);
     ensure!(
         duration <= cfg.max_video_secs as f64,
@@ -106,6 +120,7 @@ async fn transcode_video(
         duration,
         cfg.max_video_secs
     );
+    let max_secs = cfg.max_video_secs.to_string();
     let out = job_dir.join("video.mp4");
     let mut args: Vec<&str> = vec!["-i", path_str(input)?, "-map", "0:v:0", "-map", "0:a:0?"];
     args.extend([
@@ -137,10 +152,12 @@ async fn transcode_video(
         "2",
         "-ar",
         "48000",
+        "-t",
+        &max_secs,
     ]);
     args.extend(STRIP_METADATA);
     args.extend(["-movflags", "+faststart", path_str(&out)?]);
-    run_ffmpeg(cfg, &args).await?;
+    run_ffmpeg(cfg, &args, Run::Video).await?;
 
     let result = probe(cfg, &out).await?;
     let (width, height) = result.video.context("transcoded video has no picture")?;
@@ -152,7 +169,7 @@ async fn transcode_video(
     args.extend(["-vf", THUMB_SCALE, "-c:v", "libwebp", "-quality", "75"]);
     args.extend(STRIP_METADATA);
     args.push(path_str(&thumbnail)?);
-    run_ffmpeg(cfg, &args).await?;
+    run_ffmpeg(cfg, &args, Run::Quick).await?;
 
     Ok(Rendition {
         kind: MediaKind::Video,
@@ -171,14 +188,14 @@ async fn transcode_image(cfg: &MediaConfig, input: &Path, job_dir: &Path) -> Res
     args.extend(["-vf", IMAGE_SCALE, "-c:v", "libwebp", "-quality", "80"]);
     args.extend(STRIP_METADATA);
     args.push(path_str(&out)?);
-    run_ffmpeg(cfg, &args).await?;
+    run_ffmpeg(cfg, &args, Run::Quick).await?;
 
     let thumbnail = job_dir.join("thumb.webp");
     let mut args = vec!["-i", path_str(&out)?, "-frames:v", "1"];
     args.extend(["-vf", THUMB_SCALE, "-c:v", "libwebp", "-quality", "75"]);
     args.extend(STRIP_METADATA);
     args.push(path_str(&thumbnail)?);
-    run_ffmpeg(cfg, &args).await?;
+    run_ffmpeg(cfg, &args, Run::Quick).await?;
 
     let (width, height) = probe(cfg, &out)
         .await?
@@ -232,7 +249,7 @@ pub async fn probe(cfg: &MediaConfig, path: &Path) -> Result<Probe> {
         tags: HashMap<String, String>,
     }
 
-    let output = Command::new(&cfg.ffprobe)
+    let run = Command::new(&cfg.ffprobe)
         .args([
             "-v",
             "error",
@@ -243,8 +260,17 @@ pub async fn probe(cfg: &MediaConfig, path: &Path) -> Result<Probe> {
         ])
         .arg(path)
         .stdin(Stdio::null())
-        .output()
+        .kill_on_drop(true)
+        .output();
+    let output = tokio::time::timeout(PROBE_TIMEOUT, run)
         .await
+        .map_err(|_| {
+            anyhow::anyhow!(
+                "ffprobe took longer than {} s to read {} and was stopped",
+                PROBE_TIMEOUT.as_secs(),
+                path.display()
+            )
+        })?
         .with_context(|| format!("running {} (is ffmpeg installed?)", cfg.ffprobe))?;
     if !output.status.success() {
         bail!(
@@ -279,14 +305,38 @@ pub async fn probe(cfg: &MediaConfig, path: &Path) -> Result<Probe> {
     })
 }
 
-async fn run_ffmpeg(cfg: &MediaConfig, args: &[&str]) -> Result<()> {
-    let output = Command::new(&cfg.ffmpeg)
+/// Which time limit an ffmpeg run has.
+#[derive(Debug, Clone, Copy)]
+enum Run {
+    /// Transcoding a video: `media.max_transcode_secs`.
+    Video,
+    /// Transcoding an image, or making a thumbnail: quick on any machine.
+    Quick,
+}
+
+async fn run_ffmpeg(cfg: &MediaConfig, args: &[&str], run: Run) -> Result<()> {
+    let (limit, hint) = match run {
+        Run::Video => (
+            Duration::from_secs(cfg.max_transcode_secs),
+            "; on a slow machine, raise media.max_transcode_secs in config.toml",
+        ),
+        Run::Quick => (QUICK_TIMEOUT, ""),
+    };
+    let ffmpeg = Command::new(&cfg.ffmpeg)
         .args(["-hide_banner", "-nostdin", "-loglevel", "error", "-y"])
         .args(args)
         .stdin(Stdio::null())
         .kill_on_drop(true)
-        .output()
+        .output();
+    // Giving up drops the process, and kill_on_drop stops it.
+    let output = tokio::time::timeout(limit, ffmpeg)
         .await
+        .map_err(|_| {
+            anyhow::anyhow!(
+                "ffmpeg took longer than {} s and was stopped{hint}",
+                limit.as_secs()
+            )
+        })?
         .with_context(|| format!("running {} (is ffmpeg installed?)", cfg.ffmpeg))?;
     if !output.status.success() {
         bail!("ffmpeg failed: {}", last_lines(&output.stderr));
@@ -434,5 +484,47 @@ mod tests {
         };
         let input = make_clip(dir.path(), "320x240", 3).await;
         assert!(transcode(&cfg, &input, dir.path()).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn a_video_that_doesnt_say_how_long_it_is_stops_at_the_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = MediaConfig {
+            max_video_secs: 1,
+            x264_preset: "ultrafast".into(),
+            ..MediaConfig::default()
+        };
+        // A raw H.264 stream has no header giving its length.
+        let input = dir.path().join("clip.h264");
+        let status = Command::new("ffmpeg")
+            .args(["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi"])
+            .args(["-i", "testsrc=duration=3:size=320x240:rate=30"])
+            .args(["-c:v", "libx264", "-preset", "ultrafast", "-f", "h264"])
+            .arg(&input)
+            .status()
+            .await
+            .unwrap();
+        assert!(status.success());
+        assert_eq!(probe(&cfg, &input).await.unwrap().duration_secs, None);
+
+        let r = transcode(&cfg, &input, dir.path()).await.unwrap();
+        let ms = r.duration_ms.unwrap();
+        assert!(ms <= 1100, "the 3 s clip was published {ms} ms long");
+    }
+
+    #[tokio::test]
+    async fn a_failed_transcode_leaves_nothing_behind() {
+        let dir = tempfile::tempdir().unwrap();
+        let input = make_clip(dir.path(), "320x240", 1).await;
+        let work = dir.path().join("work");
+        std::fs::create_dir(&work).unwrap();
+        // `false` ignores its arguments and fails, as a broken ffmpeg would.
+        let cfg = MediaConfig {
+            ffmpeg: "false".into(),
+            ..MediaConfig::default()
+        };
+        let err = transcode(&cfg, &input, &work).await.unwrap_err();
+        assert!(format!("{err:#}").contains("ffmpeg failed"), "{err:#}");
+        assert_eq!(std::fs::read_dir(&work).unwrap().count(), 0);
     }
 }
