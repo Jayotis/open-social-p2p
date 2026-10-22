@@ -26,6 +26,7 @@ The phone is a thin client of its owner's home node ([ADR 0001](0001-home-node-a
 - The address holds the node ID, its relay URL and its addresses on private networks, so a phone at home can connect directly even without internet. Public addresses are left out. That keeps the QR code small, and the phone learns them through the relay anyway.
 - The phone dials the node ID from the ticket over `osp/client/0` and sends `Pair { secret, name }`. The QUIC handshake authenticates both ends by key: the phone knows it reached the node with that ID, and the node knows the phone holds its device key. The node records the device ID and name.
 - From then on the device ID is the credential. **Every request checks it**, and an unknown device may only send `Pair`. `osp unpair` deletes the device and closes its connections. `osp devices` lists devices and shows which are connected.
+- The check comes before the request is read, so an unknown device's request is held to 4 KiB, with at most 8 handled at once and 10 seconds each. A paired device's request may be up to 256 KiB (uploaded files follow it on the stream and don't count).
 
 **What a device may do.** Every request the local `osp` tool can make, except:
 
