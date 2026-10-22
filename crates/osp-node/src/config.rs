@@ -27,6 +27,11 @@ pub struct NetworkConfig {
     /// Bind to this address only (for example `127.0.0.1:0` in tests).
     /// By default the node binds every interface on a random port.
     pub bind: Option<SocketAddr>,
+    /// Connect only through this node's own relays, never directly, so
+    /// other nodes and phones never learn its IP address. The relay
+    /// operator still sees it. Slower, and every byte passes through the
+    /// relay (ADR 0007).
+    pub relay_only: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -92,6 +97,7 @@ impl Default for NetworkConfig {
             relay: RelayChoice::Default,
             address_lookup: true,
             bind: None,
+            relay_only: false,
         }
     }
 }
@@ -135,6 +141,7 @@ impl Config {
                 relay: RelayChoice::Disabled,
                 address_lookup: false,
                 bind: Some("127.0.0.1:0".parse().expect("valid address")),
+                relay_only: false,
             },
             sync: SyncConfig {
                 interval_secs: 3600,

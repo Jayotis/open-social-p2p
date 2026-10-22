@@ -5,23 +5,39 @@
 use std::sync::{Arc, Mutex};
 
 use iroh::{
-    Endpoint, EndpointId, Watcher,
+    Endpoint, EndpointAddr, EndpointId, Watcher,
     endpoint::{
-        AfterHandshakeOutcome, Connection, EndpointHooks, Side, VarInt, WeakConnectionHandle,
+        AfterHandshakeOutcome, BeforeConnectOutcome, Connection, EndpointHooks, Side, VarInt,
+        WeakConnectionHandle,
     },
     unstable_net_report::NetReport,
 };
 use osp_proto::rpc::{Direction, NatKind, PeerInfo};
-use tracing::info;
+use tracing::{info, warn};
+
+use crate::relays::RelayPolicy;
 
 /// Remembers each connection once its handshake completes. Holds only weak
-/// handles, so it never keeps a connection open.
-#[derive(Debug, Clone, Default)]
+/// handles, so it never keeps a connection open. Also refuses to dial an
+/// address the relay policy doesn't allow.
+#[derive(Debug, Clone)]
 pub(crate) struct ConnTracker {
     conns: Arc<Mutex<Vec<WeakConnectionHandle>>>,
+    relays: RelayPolicy,
 }
 
 impl EndpointHooks for ConnTracker {
+    /// Addresses are filtered before they get here (`RelayPolicy::filter`);
+    /// this catches any that weren't.
+    async fn before_connect(&self, remote: &EndpointAddr, _alpn: &[u8]) -> BeforeConnectOutcome {
+        if remote.addrs.iter().all(|a| self.relays.permits(a)) {
+            BeforeConnectOutcome::Accept
+        } else {
+            warn!(node = %remote.id.fmt_short(), "refused to dial an address the relay policy doesn't allow");
+            BeforeConnectOutcome::Reject
+        }
+    }
+
     async fn after_handshake(&self, conn: &Connection) -> AfterHandshakeOutcome {
         let mut conns = self.lock();
         conns.retain(|weak| weak.upgrade().is_some_and(|c| c.close_reason().is_none()));
@@ -31,6 +47,13 @@ impl EndpointHooks for ConnTracker {
 }
 
 impl ConnTracker {
+    pub fn new(relays: RelayPolicy) -> Self {
+        Self {
+            conns: Arc::default(),
+            relays,
+        }
+    }
+
     /// One entry per remote node with a live connection.
     pub fn peers(&self) -> Vec<PeerInfo> {
         let live: Vec<Connection> = self
