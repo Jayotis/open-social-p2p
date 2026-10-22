@@ -318,25 +318,28 @@ impl Core {
         self.subscribed.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    async fn prefetch(&self, mut blobs: Vec<BlobHash>) {
-        blobs.sort();
-        blobs.dedup();
-        for blob in blobs {
-            if let Err(e) = self.ensure_blob(&blob, BlobClass::Cache).await {
+    async fn prefetch(&self, blobs: Vec<(BlobHash, u64)>) {
+        for (blob, size) in blobs {
+            if let Err(e) = self.ensure_blob(&blob, BlobClass::Cache, size).await {
                 warn!(blob = %blob.fmt_short(), "prefetch failed: {e:#}");
             }
         }
     }
 
-    /// Makes sure a blob is stored locally, downloading it if needed, and
-    /// records it under at least `class`.
-    pub(crate) async fn ensure_blob(&self, blob: &BlobHash, class: BlobClass) -> Result<u64> {
+    /// Makes sure a blob is stored locally, downloading at most `declared`
+    /// bytes of it if needed, and records it under at least `class`.
+    pub(crate) async fn ensure_blob(
+        &self,
+        blob: &BlobHash,
+        class: BlobClass,
+        declared: u64,
+    ) -> Result<u64> {
         let providers = if self.store.has(blob).await? {
             Vec::new()
         } else {
             self.known_providers(blob)?
         };
-        match self.store.download(blob, providers, class).await {
+        match self.store.download(blob, providers, class, declared).await {
             Ok(size) => Ok(size),
             Err(first_error) => {
                 // Ask the nodes we follow who else has it, then try again.
@@ -344,7 +347,7 @@ impl Core {
                 if found.is_empty() {
                     return Err(first_error);
                 }
-                self.store.download(blob, found, class).await
+                self.store.download(blob, found, class, declared).await
             }
         }
     }
@@ -410,7 +413,7 @@ fn prefetchable(note: &Note) -> Vec<(BlobHash, u64)> {
 }
 
 /// Picks what one sync prefetches, within the per-sync limits.
-fn choose_prefetch(mut candidates: Vec<(BlobHash, u64)>) -> Vec<BlobHash> {
+fn choose_prefetch(mut candidates: Vec<(BlobHash, u64)>) -> Vec<(BlobHash, u64)> {
     candidates.sort();
     candidates.dedup_by_key(|(blob, _)| *blob);
     let mut chosen = Vec::new();
@@ -423,7 +426,7 @@ fn choose_prefetch(mut candidates: Vec<(BlobHash, u64)>) -> Vec<BlobHash> {
             continue;
         }
         bytes += size;
-        chosen.push(blob);
+        chosen.push((blob, size));
     }
     chosen
 }

@@ -258,8 +258,16 @@ impl Core {
     async fn reshare(self: &Arc<Self>, id: &ObjectId, host: bool) -> Result<ObjectId> {
         let (note_id, note) = self.resolve_note(id)?;
         if host {
-            for blob in note.blobs() {
-                self.ensure_blob(&blob, BlobClass::Replica).await?;
+            // Check the whole post fits before fetching any of it.
+            let mut needed = 0;
+            for (blob, size) in note.sized_blobs() {
+                if !self.db.blob_class(&blob)?.is_some_and(|c| c.is_public()) {
+                    needed += size;
+                }
+            }
+            self.store.check_replica_room(needed)?;
+            for (blob, size) in note.sized_blobs() {
+                self.ensure_blob(&blob, BlobClass::Replica, size).await?;
             }
         }
         self.publish(Payload::Announce(Announce {
@@ -316,7 +324,7 @@ impl Core {
         let (_, note) = self.resolve_note(id)?;
         let mut files = Vec::new();
         for a in &note.attachment {
-            let size = self.ensure_blob(&a.blob, BlobClass::Cache).await?;
+            let size = self.ensure_blob(&a.blob, BlobClass::Cache, a.size).await?;
             let path = match out_dir {
                 Some(dir) => {
                     std::fs::create_dir_all(dir)

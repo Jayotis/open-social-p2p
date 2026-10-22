@@ -195,13 +195,14 @@ async fn reshared_media_survives_origin_going_offline() {
 
     // Serving rules: a stranger may download Bob's replica, but not Carol's cache.
     let dave = start(dir.path(), "Dave").await;
+    let size = files[0].size;
     assert!(
-        dave.download_blob_from(&video, &[carol.addr().await])
+        dave.download_blob_from(&video, size, &[carol.addr().await])
             .await
             .is_err(),
         "Carol must not serve her cache to strangers"
     );
-    dave.download_blob_from(&video, &[bob.addr().await])
+    dave.download_blob_from(&video, size, &[bob.addr().await])
         .await
         .expect("Bob serves his replica to anyone");
 

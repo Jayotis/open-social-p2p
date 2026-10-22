@@ -271,8 +271,15 @@ impl Core {
         let size = async {
             let size = match self.store.stored_size(blob).await? {
                 Some(size) => size,
-                None => self.ensure_blob(blob, BlobClass::Cache).await?,
+                None => {
+                    // The device only names the blob; our posts say how big it may be.
+                    let declared = self.db.declared_size(blob)?.with_context(|| {
+                        format!("no post on this node includes {}", blob.fmt_short())
+                    })?;
+                    self.ensure_blob(blob, BlobClass::Cache, declared).await?
+                }
             };
+            self.db.touch_blob(blob).ok();
             ensure!(
                 offset <= size,
                 "offset {offset} is past the end of {} ({size} bytes)",

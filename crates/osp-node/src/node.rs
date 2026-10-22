@@ -41,7 +41,7 @@ use crate::{
     keys, media,
     network::{self, ConnTracker},
     social::SocialProtocol,
-    store::ContentStore,
+    store::{self, ContentStore},
     sync,
 };
 
@@ -127,7 +127,14 @@ impl Node {
             remember(&lookup, &addr);
         }
 
-        let store = ContentStore::open(&home.blobs(), &endpoint, db.clone()).await?;
+        let store = ContentStore::open(
+            &home.blobs(),
+            &endpoint,
+            db.clone(),
+            &config.storage,
+            store::GC_INTERVAL,
+        )
+        .await?;
         let profile = own_profile(&identity, &config.name, endpoint.id(), &db)?;
         let media_tools = media::tools_available(&config.media).await;
         info!(
@@ -209,17 +216,22 @@ impl Node {
         self.core.db.blob_class(hash)
     }
 
-    /// Downloads a blob from specific nodes into the cache. For tests and diagnostics.
+    /// Downloads a blob of at most `size` bytes from specific nodes into
+    /// the cache. For tests and diagnostics.
     pub async fn download_blob_from(
         &self,
         hash: &BlobHash,
+        size: u64,
         providers: &[EndpointAddr],
     ) -> Result<u64> {
         for addr in providers {
             remember(&self.core.lookup, addr);
         }
         let ids = providers.iter().map(|a| a.id).collect();
-        self.core.store.download(hash, ids, BlobClass::Cache).await
+        self.core
+            .store
+            .download(hash, ids, BlobClass::Cache, size)
+            .await
     }
 
     /// Stops background work, closes connections and flushes the blob store.
