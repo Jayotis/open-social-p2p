@@ -14,7 +14,9 @@
 
 Manages identity, account onboarding, posts, follow relationships, group membership, feeds, interactions, moderation and federation.
 
-**Candidates:** Mastodon or Friendica as a starting backend, with ActivityPub for federation. Neither has been selected. Evaluate compatibility, extension points, API completeness, upgrade cost, group models, moderation and licensing.
+**Stage 1** ([ADR 0003](decisions/0003-native-social-protocol-v0.md)): a native node-to-node protocol over iroh, with objects in ActivityStreams 2.0 vocabulary, instead of building on Mastodon or Friendica. ActivityPub delivers to each account's public HTTPS inbox, which a home node behind a router or VPN doesn't have.
+
+**Federation (Stage 2):** an ActivityPub bridge, a gateway with a public HTTPS address that translates between the fediverse and home nodes, so people on Mastodon and other servers can follow and reply without installing anything. Open questions include who runs gateways, how a home identity maps to a fediverse account, how fediverse servers get media that lives on home nodes, and which interactions and moderation tools must exist first. See the [roadmap](06-roadmap.md#stage-2--federation-through-an-activitypub-bridge-future).
 
 ### 2. Media ownership layer
 
@@ -24,7 +26,7 @@ A home node must never expose arbitrary filesystem paths or private material sim
 
 ### 3. Content distribution layer
 
-A distinct peer-to-peer transport retrieves media from one or more authorized copies. It should support chunk verification, peer discovery, load-aware source selection, transport encryption, resumable transfers, NAT traversal and optional relays. libp2p/IPFS/Bitswap/WebRTC are **candidates to evaluate**, not committed dependencies.
+A distinct peer-to-peer transport retrieves media from one or more authorized copies. It should support chunk verification, peer discovery, load-aware source selection, transport encryption, resumable transfers, NAT traversal and optional relays. Stage 1 uses iroh and iroh-blobs ([ADR 0002](decisions/0002-rust-and-iroh.md)).
 
 Social interactions and P2P file delivery are different responsibilities. ActivityPub reposts do not automatically create replicated media copies.
 
