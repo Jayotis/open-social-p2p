@@ -263,3 +263,37 @@ async fn phone_pairs_posts_plays_and_is_revoked() {
     }
     node.shutdown().await.unwrap();
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_key_from_secure_storage_is_used_and_never_written() {
+    let dir = tempfile::tempdir().unwrap();
+    let node = start_node(dir.path(), "Alice").await;
+    let phone_dir = dir.path().join("phone");
+
+    // The app keeps the key outside the client's directory.
+    let stored = osp_client::new_device_key();
+    let key = osp_client::device_key_from_hex(&stored).unwrap();
+    let phone = Client::open_with_key(&phone_dir, key.clone(), ClientOptions::local_test())
+        .await
+        .unwrap();
+    assert_eq!(phone.device_id(), key.public());
+    phone
+        .pair(&new_pairing(&node).await, "Test phone")
+        .await
+        .unwrap();
+    phone.shutdown().await;
+    assert!(!phone_dir.join("device.key").exists());
+
+    // Opened again with the same key, it is still the paired phone.
+    let key = osp_client::device_key_from_hex(&stored).unwrap();
+    let phone = Client::open_with_key(&phone_dir, key, ClientOptions::local_test())
+        .await
+        .unwrap();
+    assert_eq!(status(&phone).await.devices, 1);
+    phone.shutdown().await;
+
+    for bad in ["not hex", &"ab".repeat(31)] {
+        assert!(osp_client::device_key_from_hex(bad).is_err(), "{bad}");
+    }
+    node.shutdown().await.unwrap();
+}

@@ -80,6 +80,16 @@ class _PairScreenState extends State<PairScreen> {
               style: theme.textTheme.headlineSmall,
               textAlign: TextAlign.center,
             ),
+            if (widget.node.notice case final notice?) ...[
+              const SizedBox(height: 16),
+              Card(
+                color: theme.colorScheme.errorContainer,
+                child: Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: Text(notice),
+                ),
+              ),
+            ],
             const SizedBox(height: 16),
             const Text(
               'This app is a remote control for your home node: the computer '

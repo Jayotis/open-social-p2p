@@ -66,7 +66,7 @@ class RustLib extends BaseEntrypoint<RustLibApi, RustLibApiImpl, RustLibWire> {
   String get codegenVersion => '2.13.0';
 
   @override
-  int get rustContentHash => 1466773870;
+  int get rustContentHash => -399082614;
 
   static const kDefaultExternalLibraryLoaderConfig =
       ExternalLibraryLoaderConfig(
@@ -109,7 +109,10 @@ abstract class RustLibApi extends BaseApi {
 
   Future<void> crateApiOspOspAppNetworkChanged({required OspApp that});
 
-  Future<OspApp> crateApiOspOspAppOpen({required String dir});
+  Future<OspApp> crateApiOspOspAppOpen({
+    required String dir,
+    required String deviceKey,
+  });
 
   Future<NodeInfo> crateApiOspOspAppPair({
     required OspApp that,
@@ -144,6 +147,8 @@ abstract class RustLibApi extends BaseApi {
   bool crateApiOspIsFollowTicket({required String text});
 
   bool crateApiOspIsPairingTicket({required String text});
+
+  String crateApiOspNewDeviceKey();
 
   RustArcIncrementStrongCountFnType get rust_arc_increment_strong_count_OspApp;
 
@@ -465,12 +470,16 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
-  Future<OspApp> crateApiOspOspAppOpen({required String dir}) {
+  Future<OspApp> crateApiOspOspAppOpen({
+    required String dir,
+    required String deviceKey,
+  }) {
     return handler.executeNormal(
       NormalTask(
         callFfi: (port_) {
           final serializer = SseSerializer(generalizedFrbRustBinding);
           sse_encode_String(dir, serializer);
+          sse_encode_String(deviceKey, serializer);
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
@@ -484,14 +493,16 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           decodeErrorData: sse_decode_AnyhowException,
         ),
         constMeta: kCrateApiOspOspAppOpenConstMeta,
-        argValues: [dir],
+        argValues: [dir, deviceKey],
         apiImpl: this,
       ),
     );
   }
 
-  TaskConstMeta get kCrateApiOspOspAppOpenConstMeta =>
-      const TaskConstMeta(debugName: "OspApp_open", argNames: ["dir"]);
+  TaskConstMeta get kCrateApiOspOspAppOpenConstMeta => const TaskConstMeta(
+    debugName: "OspApp_open",
+    argNames: ["dir", "deviceKey"],
+  );
 
   @override
   Future<NodeInfo> crateApiOspOspAppPair({
@@ -833,6 +844,28 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
 
   TaskConstMeta get kCrateApiOspIsPairingTicketConstMeta =>
       const TaskConstMeta(debugName: "is_pairing_ticket", argNames: ["text"]);
+
+  @override
+  String crateApiOspNewDeviceKey() {
+    return handler.executeSync(
+      SyncTask(
+        callFfi: () {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 22)!;
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_String,
+          decodeErrorData: null,
+        ),
+        constMeta: kCrateApiOspNewDeviceKeyConstMeta,
+        argValues: [],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiOspNewDeviceKeyConstMeta =>
+      const TaskConstMeta(debugName: "new_device_key", argNames: []);
 
   RustArcIncrementStrongCountFnType
   get rust_arc_increment_strong_count_OspApp => wire

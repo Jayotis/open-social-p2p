@@ -3,7 +3,8 @@
 //!
 //! The Android app calls this through flutter_rust_bridge. Tests and desktop
 //! tools can use it directly. Everything the client keeps lives in one
-//! directory: its device key, the pairing and the last feed it saw.
+//! directory: the pairing, the last feed it saw, and its device key, unless
+//! the app keeps that in the phone's secure storage (`open_with_key`).
 
 mod media;
 
@@ -19,7 +20,7 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 use iroh::{
-    Endpoint, EndpointAddr, PublicKey, RelayMode, SecretKey,
+    Endpoint, EndpointAddr, PublicKey, RelayMode,
     address_lookup::{DnsAddressLookup, MemoryLookup, PkarrResolver},
     endpoint::{Connection, RecvStream, SendStream, presets},
 };
@@ -32,6 +33,7 @@ use serde::{Deserialize, Serialize};
 use tokio::io::AsyncReadExt;
 use tracing::debug;
 
+pub use iroh::SecretKey;
 pub use osp_proto;
 
 use crate::media::MediaServer;
@@ -119,9 +121,22 @@ pub struct Client {
 
 impl Client {
     /// Opens (or creates) the client state in `dir` and starts its endpoint.
+    /// The device key is kept in `dir` too, as a file.
     pub async fn open(dir: &Path, options: ClientOptions) -> Result<Arc<Self>> {
         std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
         let key = load_or_create_key(&dir.join("device.key"))?;
+        Self::open_with_key(dir, key, options).await
+    }
+
+    /// Like `open`, with a device key kept somewhere safer than a file,
+    /// such as the phone's secure storage. Nothing about the key is
+    /// written to `dir`.
+    pub async fn open_with_key(
+        dir: &Path,
+        key: SecretKey,
+        options: ClientOptions,
+    ) -> Result<Arc<Self>> {
+        std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
         let pairing: Option<Pairing> = read_json(&dir.join("pairing.json"))?;
 
         let lookup = MemoryLookup::new();
@@ -455,18 +470,32 @@ fn check(resp: ClientResponse) -> Result<ClientResponse> {
     }
 }
 
-/// The device key: 32 bytes as hex, readable only by the app.
+/// A new device key, written as 64 hex digits for storing outside the client.
+pub fn new_device_key() -> String {
+    device_key_to_hex(&SecretKey::generate())
+}
+
+/// Reads a device key written as 64 hex digits.
+pub fn device_key_from_hex(text: &str) -> Result<SecretKey> {
+    let bytes = data_encoding::HEXLOWER
+        .decode(text.trim().as_bytes())
+        .context("the device key is not hex")?;
+    let bytes: [u8; 32] = bytes
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("the device key must be 32 bytes"))?;
+    Ok(SecretKey::from_bytes(&bytes))
+}
+
+fn device_key_to_hex(key: &SecretKey) -> String {
+    data_encoding::HEXLOWER.encode(&key.to_bytes())
+}
+
+/// The device key file: 32 bytes as hex, readable only by the app.
 fn load_or_create_key(path: &Path) -> Result<SecretKey> {
     if path.exists() {
         let text =
             std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
-        let bytes = data_encoding::HEXLOWER
-            .decode(text.trim().as_bytes())
-            .with_context(|| format!("{} is not a hex key", path.display()))?;
-        let bytes: [u8; 32] = bytes
-            .try_into()
-            .map_err(|_| anyhow::anyhow!("{} must hold 32 bytes", path.display()))?;
-        return Ok(SecretKey::from_bytes(&bytes));
+        return device_key_from_hex(&text).with_context(|| format!("in {}", path.display()));
     }
     let key = SecretKey::generate();
     let mut file = OpenOptions::new()
@@ -475,7 +504,7 @@ fn load_or_create_key(path: &Path) -> Result<SecretKey> {
         .mode(0o600)
         .open(path)
         .with_context(|| format!("creating {}", path.display()))?;
-    file.write_all(data_encoding::HEXLOWER.encode(&key.to_bytes()).as_bytes())?;
+    file.write_all(device_key_to_hex(&key).as_bytes())?;
     Ok(key)
 }
 

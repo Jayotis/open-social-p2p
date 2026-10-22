@@ -9,6 +9,10 @@ import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 // These functions are ignored because they are not marked as `pub`: `node_info`, `post`
 // These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `clone`, `clone`
 
+/// A new device key, as 64 hex digits, for the app to keep in the phone's
+/// secure storage.
+String newDeviceKey() => RustLib.instance.api.crateApiOspNewDeviceKey();
+
 /// Makes sure a ticket looks like a pairing ticket before trying to pair.
 bool isPairingTicket({required String text}) =>
     RustLib.instance.api.crateApiOspIsPairingTicket(text: text);
@@ -45,9 +49,15 @@ abstract class OspApp implements RustOpaqueInterface {
   /// Call when the phone's network changes (Wi-Fi to mobile data, say).
   Future<void> networkChanged();
 
-  /// Starts the client. `dir` is the app's private data directory.
-  static Future<OspApp> open({required String dir}) =>
-      RustLib.instance.api.crateApiOspOspAppOpen(dir: dir);
+  /// Starts the client. `dir` is the app's private data directory, and
+  /// `device_key` the key the app keeps in the phone's secure storage.
+  static Future<OspApp> open({
+    required String dir,
+    required String deviceKey,
+  }) => RustLib.instance.api.crateApiOspOspAppOpen(
+    dir: dir,
+    deviceKey: deviceKey,
+  );
 
   Future<NodeInfo> pair({required String ticket, required String deviceName});
 
