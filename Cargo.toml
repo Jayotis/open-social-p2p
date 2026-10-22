@@ -24,6 +24,7 @@ humantime = "2.4"
 iroh = { version = "1.4", features = ["unstable-net-report"] } # NAT behaviour for `status`; outside semver, so a bump may need code changes
 iroh-base = { version = "1.4", features = ["key"] }
 iroh-blobs = "0.103.1" # minimum: earlier versions ignored EventMask modes (ADR 0002)
+iroh-relay = "1.4" # tests only: a relay server on loopback
 n0-future = "0.3"
 postcard = { version = "1", default-features = false, features = ["use-std"] }
 qr2term = "0.3"

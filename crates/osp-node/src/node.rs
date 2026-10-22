@@ -10,8 +10,8 @@ use std::{
 
 use anyhow::{Context, Result, bail, ensure};
 use iroh::{
-    Endpoint, EndpointAddr, EndpointId, PublicKey, RelayMode, RelayUrl, SecretKey,
-    address_lookup::MemoryLookup,
+    Endpoint, EndpointAddr, EndpointId, PublicKey, RelayMode, SecretKey,
+    address_lookup::{DnsAddressLookup, MemoryLookup, PkarrPublisher, PkarrResolver},
     endpoint::{Connection, QuicTransportConfig, presets},
     protocol::Router,
 };
@@ -40,6 +40,7 @@ use crate::{
     home::Home,
     keys, media,
     network::{self, ConnTracker},
+    relays::{self, Checked, RelayPolicy},
     social::SocialProtocol,
     store::{self, ContentStore},
     sync,
@@ -64,6 +65,8 @@ pub(crate) struct Core {
     /// Addresses we learned out of band (tickets, subscriptions, WhoHosts),
     /// so peers can be dialled by ID without a lookup service.
     pub lookup: MemoryLookup,
+    /// Which relays in other people's addresses we may use.
+    pub relays: RelayPolicy,
     pub db: Arc<Db>,
     pub store: ContentStore,
     /// Our signed profile, served to anyone who asks.
@@ -112,14 +115,16 @@ impl Node {
         }
         let lock = lock_home(&home)?;
         let config = Config::load(&home.config())?;
+        check_network_config(&config)?;
         let identity = keys::load(&home.identity_key())?;
         let node_key = keys::load(&home.node_key())?;
         let db = Arc::new(Db::open(&home.db())?);
         std::fs::create_dir_all(home.work())?;
 
         let lookup = MemoryLookup::new();
-        let tracker = ConnTracker::default();
-        let endpoint = bind_endpoint(&config, node_key, lookup.clone(), tracker.clone()).await?;
+        let relays = RelayPolicy::from_config(&config.network)?;
+        let tracker = ConnTracker::new(relays.clone());
+        let endpoint = bind_endpoint(&config, node_key, &lookup, &relays, tracker.clone()).await?;
         for follow in db.follows()? {
             remember(&lookup, &follow.addr);
         }
@@ -149,6 +154,7 @@ impl Node {
             identity,
             endpoint: endpoint.clone(),
             lookup,
+            relays,
             db,
             store,
             profile,
@@ -310,10 +316,27 @@ pub(crate) fn check_addr(addr: &EndpointAddr) -> Result<()> {
     Ok(())
 }
 
+/// Refuses settings that can't work together.
+fn check_network_config(config: &Config) -> Result<()> {
+    let net = &config.network;
+    if net.relay_only {
+        ensure!(
+            net.relay != RelayChoice::Disabled,
+            "relay_only needs relays: set relay to \"default\" or to your own relays in config.toml"
+        );
+        ensure!(
+            net.bind.is_none(),
+            "relay_only and bind can't be used together: a relay-only node has no IP sockets to bind"
+        );
+    }
+    Ok(())
+}
+
 async fn bind_endpoint(
     config: &Config,
     key: SecretKey,
-    lookup: MemoryLookup,
+    lookup: &MemoryLookup,
+    relays: &RelayPolicy,
     tracker: ConnTracker,
 ) -> Result<Endpoint> {
     let net = &config.network;
@@ -323,30 +346,36 @@ async fn bind_endpoint(
         // so whatever a peer sent on them would sit in memory.
         .max_concurrent_uni_streams(0u32.into())
         .build();
+    // The lookups are set up again here, as in the N0 preset, so that what
+    // they find passes the relay policy first.
     let mut builder = Endpoint::builder(presets::N0)
         .hooks(tracker)
-        .transport_config(transport);
-    if !net.address_lookup {
-        builder = builder.clear_address_lookup();
+        .transport_config(transport)
+        .clear_address_lookup()
+        .address_lookup(Checked::new(lookup.clone(), relays.clone()));
+    if net.address_lookup {
+        builder = builder
+            .address_lookup(PkarrPublisher::n0_dns())
+            .address_lookup(Checked::new(PkarrResolver::n0_dns(), relays.clone()))
+            .address_lookup(Checked::new(DnsAddressLookup::n0_dns(), relays.clone()));
     }
     builder = match &net.relay {
         RelayChoice::Default => builder,
         RelayChoice::Disabled => builder.relay_mode(RelayMode::Disabled),
-        RelayChoice::Custom(urls) => {
-            let urls = urls
-                .iter()
-                .map(|u| u.parse::<RelayUrl>())
-                .collect::<Result<Vec<_>, _>>()
-                .context("invalid relay URL in config")?;
-            builder.relay_mode(RelayMode::custom(urls))
+        RelayChoice::Custom(_) => {
+            builder.relay_mode(RelayMode::custom(relays::own_relays(&net.relay)?))
         }
     };
-    if let Some(addr) = net.bind {
+    if net.relay_only {
+        // No IP sockets at all, so there is nothing to connect directly
+        // with, and no address to give away. Without a relay, nothing
+        // connects: there is no direct path to fall back to.
+        builder = builder.clear_ip_transports();
+    } else if let Some(addr) = net.bind {
         builder = builder.clear_ip_transports().bind_addr(addr)?;
     }
     builder
         .secret_key(key)
-        .address_lookup(lookup)
         .bind()
         .await
         .context("starting network endpoint")

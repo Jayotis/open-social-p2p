@@ -15,6 +15,7 @@ mod keys;
 pub mod media;
 mod network;
 mod node;
+mod relays;
 mod social;
 mod store;
 mod sync;

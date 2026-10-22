@@ -263,14 +263,31 @@ impl Core {
         if let Some(conn) = self.cached_conn(&addr.id) {
             return Ok(conn);
         }
+        let refused = self.relays.refused_relays(addr);
+        let addr = &self.relays.filter(addr);
         remember(&self.lookup, addr);
         let conn = tokio::time::timeout(
             CONNECT_TIMEOUT,
             self.endpoint.connect(addr.clone(), SOCIAL_ALPN),
         )
         .await
-        .with_context(|| format!("connecting to {} timed out", addr.id.fmt_short()))?
-        .with_context(|| format!("connecting to {}", addr.id.fmt_short()))?;
+        .with_context(|| format!("connecting to {} timed out", addr.id.fmt_short()))
+        .and_then(|r| r.with_context(|| format!("connecting to {}", addr.id.fmt_short())));
+        let conn = match conn {
+            Ok(conn) => conn,
+            Err(e) if !refused.is_empty() => {
+                return Err(e.context(format!(
+                    "its address names relays this node won't use: {}{}",
+                    refused.join(", "),
+                    if self.config.network.relay_only {
+                        " (relay-only mode uses only the relays in config.toml)"
+                    } else {
+                        " (only public https relays are used)"
+                    }
+                )));
+            }
+            Err(e) => return Err(e),
+        };
         self.lock_conns().insert(addr.id, conn.clone());
         Ok(conn)
     }
