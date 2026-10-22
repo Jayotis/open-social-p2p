@@ -2,7 +2,7 @@
 
 **Run your own social network at home, connect it to everyone else's, and use it from your phone anywhere.**
 
-**Status: Stage 1 prototype in progress.** A Rust home node is being built in [`crates/`](crates/); there is no production application yet.
+**Status: Stage 1 prototype in progress.** A Rust home node and the phone's networking code are being built in [`crates/`](crates/), and the Android app is next. There is no production application yet.
 
 ## The idea
 
@@ -20,7 +20,7 @@ Nodes still need some public helpers to get through home routers: relay servers 
 
 Peers should choose sources according to **locally measured speed, latency, reliability and available capacity**, and respect bandwidth/storage limits. Security, IP-address privacy, audience controls, moderation and deletion limitations are essential design requirements.
 
-Design decisions are recorded in [docs/decisions/](docs/decisions/). The first prototype covers node-to-node publishing, resharing with hosting and verified retrieval; the Android app follows.
+Design decisions are recorded in [docs/decisions/](docs/decisions/). The first prototype covers node-to-node publishing, resharing with hosting and verified retrieval. The second adds pairing a phone with its node by QR code, with the node running as an always-on service; the Android app is being built on top.
 
 ## Project documentation
 
@@ -40,7 +40,7 @@ Design decisions are recorded in [docs/decisions/](docs/decisions/). The first p
 | [Peer reciprocity and recognition](docs/12-peer-reciprocity-and-recognition.md) | **Proposal (second draft):** nodes assess their own peers, generous tit-for-tat when busy, creator and scout levels, self-reported host stat |
 | [Hosting roles and the follower swarm](docs/13-hosting-roles-and-follower-swarm.md) | **Proposal (second draft):** followers' nodes share prefetched copies, preservation nodes, demand-based expiry |
 | [Critical review of docs 12 and 13](docs/reviews/2026-10-21-review-of-docs-12-and-13.md) | Findings against the first drafts, with a disposition for each |
-| [Architecture decision records](docs/decisions/) | Accepted decisions: home node model, Rust and iroh, native social protocol, signed objects, media profile, desktop-first node, transport privacy defaults |
+| [Architecture decision records](docs/decisions/) | Accepted decisions: home node model, Rust and iroh, native social protocol, signed objects, media profile, desktop-first node, transport privacy defaults, device pairing and the client protocol |
 
 ## Technologies
 
@@ -61,11 +61,18 @@ Requirements: Rust (stable) and ffmpeg.
 
 ```sh
 cargo build
-cargo test            # includes a three-node publish / reshare / origin-offline test
+cargo test            # three-node publish / reshare / origin-offline, and phone pairing tests
 cargo run --bin osp -- --help
 ```
 
-See [docs/testing/stage1-manual.md](docs/testing/stage1-manual.md) for running several nodes and testing across machines.
+See [docs/testing/stage1-manual.md](docs/testing/stage1-manual.md) for running several nodes and testing across machines, and [docs/testing/m2-phone.md](docs/testing/m2-phone.md) for running a node as a service and pairing a phone.
+
+| Crate | What it is |
+| --- | --- |
+| [`osp-proto`](crates/osp-proto/) | Wire formats: signed objects, payloads, requests, tickets |
+| [`osp-node`](crates/osp-node/) | The home node: storage, media pipeline, sync, serving phones |
+| [`osp-cli`](crates/osp-cli/) | The `osp` command: daemon, service, pairing and everything else |
+| [`osp-client`](crates/osp-client/) | What a paired phone runs; used by the Android app |
 
 ## Key design questions
 
