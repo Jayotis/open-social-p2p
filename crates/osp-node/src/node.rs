@@ -12,7 +12,7 @@ use anyhow::{Context, Result, bail};
 use iroh::{
     Endpoint, EndpointAddr, EndpointId, PublicKey, RelayMode, RelayUrl, SecretKey,
     address_lookup::MemoryLookup,
-    endpoint::{Connection, presets},
+    endpoint::{Connection, QuicTransportConfig, presets},
     protocol::Router,
 };
 use osp_proto::{
@@ -24,6 +24,10 @@ use tokio::{
     task::JoinHandle,
 };
 use tracing::info;
+
+/// Most streams a peer may have open on one connection at a time. A phone
+/// loading a feed full of images uses the most; extra streams wait their turn.
+const MAX_STREAMS_PER_CONN: u32 = 32;
 
 use crate::{
     client::{ClientProtocol, PendingPairing},
@@ -283,7 +287,15 @@ async fn bind_endpoint(
     tracker: ConnTracker,
 ) -> Result<Endpoint> {
     let net = &config.network;
-    let mut builder = Endpoint::builder(presets::N0).hooks(tracker);
+    let transport = QuicTransportConfig::builder()
+        .max_concurrent_bidi_streams(MAX_STREAMS_PER_CONN.into())
+        // None of our protocols use one-way streams. Nobody would read them,
+        // so whatever a peer sent on them would sit in memory.
+        .max_concurrent_uni_streams(0u32.into())
+        .build();
+    let mut builder = Endpoint::builder(presets::N0)
+        .hooks(tracker)
+        .transport_config(transport);
     if !net.address_lookup {
         builder = builder.clear_address_lookup();
     }

@@ -29,7 +29,7 @@ use crate::{
 };
 
 /// Longest post text accepted, in bytes. Keeps outbox pages well under the frame limit.
-const MAX_CONTENT_BYTES: usize = 10_000;
+pub(crate) const MAX_CONTENT_BYTES: usize = 10_000;
 
 /// Most photos or videos in one post.
 pub(crate) const MAX_ATTACHMENTS: usize = 4;

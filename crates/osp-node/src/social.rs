@@ -11,25 +11,43 @@ use iroh::{
 };
 use osp_proto::{
     Payload, SOCIAL_ALPN,
-    framing::{read_frame, write_frame},
-    social::{MAX_OUTBOX_PAGE, OutboxEntry, SocialRequest, SocialResponse},
+    framing::{read_frame, read_frame_max, write_frame},
+    social::{MAX_OUTBOX_PAGE, MAX_REQUEST_LEN, OutboxEntry, SocialRequest, SocialResponse},
 };
+use tokio::sync::Semaphore;
 use tracing::debug;
 
 use crate::node::{Core, remember};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+/// Most requests served at once, from all peers together. Anyone who knows
+/// the node's ID can connect, so this keeps a flood from using up the
+/// machine. Requests over a limit get a "busy" reply.
+const MAX_REQUESTS: usize = 32;
+/// Most requests served at once on one connection. Nodes send theirs one
+/// at a time, so this is only reached by a peer misbehaving.
+const MAX_REQUESTS_PER_CONN: usize = 4;
+/// Longest one request may take, reading it and replying together, so a
+/// peer that stops sending or stops reading can't keep its place.
+const STREAM_TIMEOUT: Duration = Duration::from_secs(60);
+/// Longest we try to tell a peer we're busy.
+const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Accepts incoming `osp/social/0` connections.
 #[derive(Clone)]
 pub(crate) struct SocialProtocol {
     core: Arc<Core>,
+    /// Shared by every connection, for `MAX_REQUESTS`.
+    requests: Arc<Semaphore>,
 }
 
 impl SocialProtocol {
     pub fn new(core: Arc<Core>) -> Self {
-        Self { core }
+        Self {
+            core,
+            requests: Arc::new(Semaphore::new(MAX_REQUESTS)),
+        }
     }
 }
 
@@ -42,17 +60,45 @@ impl fmt::Debug for SocialProtocol {
 impl ProtocolHandler for SocialProtocol {
     async fn accept(&self, conn: Connection) -> Result<(), AcceptError> {
         let remote = conn.remote_id();
-        // Each request arrives on its own stream; serve them concurrently.
+        let on_this_conn = Arc::new(Semaphore::new(MAX_REQUESTS_PER_CONN));
+        // Each request arrives on its own stream; serve them concurrently,
+        // within the limits.
         while let Ok((send, recv)) = conn.accept_bi().await {
+            let (Ok(overall), Ok(here)) = (
+                self.requests.clone().try_acquire_owned(),
+                on_this_conn.clone().try_acquire_owned(),
+            ) else {
+                // Not even reading the request keeps being busy cheap.
+                debug!(remote = %remote.fmt_short(), "too many social requests; replied busy");
+                tell_busy(send).await;
+                continue;
+            };
             let core = self.core.clone();
             tokio::spawn(async move {
-                if let Err(e) = serve_stream(&core, remote, send, recv).await {
+                let served =
+                    tokio::time::timeout(STREAM_TIMEOUT, serve_stream(&core, remote, send, recv))
+                        .await
+                        .unwrap_or_else(|_| Err(anyhow::anyhow!("took too long")));
+                if let Err(e) = served {
                     debug!(remote = %remote.fmt_short(), "social request failed: {e:#}");
                 }
+                drop((overall, here));
             });
         }
         Ok(())
     }
+}
+
+async fn tell_busy(mut send: SendStream) {
+    let resp = SocialResponse::Error {
+        message: "this node is busy; try again later".to_string(),
+    };
+    let _ = tokio::time::timeout(BUSY_TIMEOUT, async {
+        write_frame(&mut send, &resp).await?;
+        send.finish()?;
+        anyhow::Ok(())
+    })
+    .await;
 }
 
 async fn serve_stream(
@@ -61,9 +107,7 @@ async fn serve_stream(
     mut send: SendStream,
     mut recv: RecvStream,
 ) -> Result<()> {
-    let req: SocialRequest = tokio::time::timeout(REQUEST_TIMEOUT, read_frame(&mut recv))
-        .await
-        .context("request timed out")??;
+    let req: SocialRequest = read_frame_max(&mut recv, MAX_REQUEST_LEN).await?;
     let resp = match core.answer_social(remote, req).await {
         Ok(resp) => resp,
         Err(e) => SocialResponse::Error {

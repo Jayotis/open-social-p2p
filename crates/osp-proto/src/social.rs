@@ -11,6 +11,10 @@ use crate::{object::SignedObject, types::BlobHash};
 /// Largest outbox page a node will return.
 pub const MAX_OUTBOX_PAGE: u32 = 100;
 
+/// Largest request frame a node reads, in bytes. Every request is small;
+/// replies (outbox pages) may use the full frame size.
+pub const MAX_REQUEST_LEN: u32 = 64 * 1024;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum SocialRequest {
