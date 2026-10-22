@@ -10,7 +10,13 @@ Requirements: Rust (stable) and ffmpeg (`sudo apt install ffmpeg`). ffmpeg is on
 cargo build --release      # produces target/release/osp
 ```
 
-Build on each machine rather than copying the binary: a binary built on a newer distribution may not run on an older one (glibc versions differ).
+A binary built on a newer distribution may not run on an older one, because glibc versions differ. Either build on each machine, or check the newest glibc the binary needs and copy it to machines that have at least that version (`ldd --version`):
+
+```sh
+objdump -T target/release/osp | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1
+```
+
+Copying is the easy route to a machine with no compiler.
 
 ## One machine, scripted
 
@@ -54,12 +60,15 @@ Use `--home DIR` (or `OSP_HOME=DIR`) to run several nodes on one machine. Add `-
 4. B: `osp sync && osp feed`, then `osp reshare <id> --host`.
 5. Stop A's daemon (Ctrl-C).
 6. C: `osp sync && osp feed`, then `osp fetch <id> --out /tmp/osp-test`.
-7. On B and C: `osp status`. Note whether each peer shows `direct` or `relay`.
+7. On B and C: `osp status`. Note whether each peer shows `direct` or `relay`. Status lists only connections the node opened itself, so B shows its link to A and C shows its link to B.
 
-Optional variations:
+To time a transfer, run `follow` and `sync` together, e.g. `time (osp follow <ticket> && osp sync)`. `sync` waits until prefetched media has finished downloading, so `osp fetch` afterwards only copies the file out.
 
-- Repeat with the VPN's less strict NAT mode, if it has one, and see whether A's connections become direct.
-- Run C on mobile data via a laptop hotspot to test a fully remote path.
+When all three machines share a home network, the connections between them go direct over the LAN even with a VPN on, as long as the VPN allows local traffic. To test the path a remote peer would get:
+
+- **Remote peer behind the VPN, no hardware changes:** on A, add `bind = "<VPN address>:0"` under `[network]` in `config.toml` and restart the daemon, using the VPN interface's IPv4 address from `ip -brief addr`. A then sends everything through the tunnel, and its LAN address is never offered. Follow A from fresh nodes on B and C (`--home ~/osp-vpntest`) so the media is downloaded again. Remove the `bind` line afterwards.
+- Repeat that with the VPN's less strict NAT mode, if it has one, and see whether A's connections become direct.
+- Run C on mobile data via a hotspot to test a fully remote path from a carrier network.
 
 ## Running a test node on a shared machine
 
@@ -103,10 +112,11 @@ Notes:
 - Upload rate limits arrive in M3. Until then keep a shared machine in the viewer role (C). A viewer stores media in its `cache` class, which it serves only to its own paired devices, so it uploads nothing to strangers.
 - Like most peer-to-peer software, iroh may ask the router for a port mapping (UPnP / NAT-PMP) if the router offers it. Nothing breaks if it doesn't.
 - To remove everything: `sudo systemctl disable --now osp-node`, delete the unit file, `sudo userdel -r osp`.
+- For a quick test without sudo, run it as your own user at low priority instead: `tmux new -d -s osp 'nice -n 10 ionice -c3 osp daemon'`.
 
 ## Results to record
 
-Add a row per run:
+Add a row per run. Results here are public, so describe networks in general terms. Keep details of your own machines and network in `notes/`, which git ignores.
 
 | Date | A network | B network | C network | A↔B path | B↔C path | Time for C to fetch | Notes |
 | --- | --- | --- | --- | --- | --- | --- | --- |
