@@ -410,7 +410,12 @@ impl Client {
             self.endpoint.connect(node.clone(), CLIENT_ALPN),
         )
         .await
-        .context("the home node didn't answer in time")?
+        .map_err(|_| {
+            anyhow::anyhow!(
+                "the home node didn't answer within {} seconds",
+                CONNECT_TIMEOUT.as_secs()
+            )
+        })?
         .context("can't reach the home node")
     }
 
@@ -431,9 +436,15 @@ async fn request_on(
 }
 
 async fn read_reply(recv: &mut RecvStream, timeout: Duration) -> Result<ClientResponse> {
+    // The timeout's own error says only "deadline has elapsed", so replace it.
     tokio::time::timeout(timeout, read_frame(recv))
         .await
-        .context("the home node didn't reply in time")?
+        .map_err(|_| {
+            anyhow::anyhow!(
+                "the home node didn't reply within {} seconds",
+                timeout.as_secs()
+            )
+        })?
 }
 
 /// Turns an `Error` reply into an `Err`.
