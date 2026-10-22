@@ -30,7 +30,8 @@ Stage 1 is split into milestones:
 - **M2 — Android client and always-on node (in progress):** pairing by QR code, feed, playback, posting through the home node, on Wi-Fi and mobile data; the node runs as a service that starts at boot and reports its health to the phone.
   - Done: device pairing and the client protocol ([ADR 0008](decisions/0008-device-pairing-and-client-protocol.md)), health reporting, `osp service install`, and `osp-client` (the phone's networking, tested against a real node). See [M2 testing](testing/m2-phone.md).
   - Built: the Flutter Android app ([`app/`](../app/)) on top of `osp-client`: pairing, feed, playback, posting, reshare, follow codes and node health.
-  - Next: testing the app on a phone at home and on mobile data, and with the node running as a service.
+  - Tested on a phone on home Wi-Fi, against a node running as a service: pairing, feed, playback with seeking, posting a photo, and the offline banner ([results](testing/m2-phone.md#results-to-record)).
+  - Still to test: the phone away from home (mobile data or another network, so the path is relayed), and the node coming back after a reboot without anyone logging in.
 - **M3 — limits, resilience and the follower swarm:** upload limits with "busy, try another host", local peer assessment (measured first; [doc 12](12-peer-reciprocity-and-recognition.md)), follower swarm basics and staggered prefetch ([doc 13](13-hosting-roles-and-follower-swarm.md)), quotas and eviction, resumed transfers, a simulated slow/flaky network harness, and the relay-only privacy mode ([ADR 0007](decisions/0007-transport-privacy-defaults.md)).
 - **Before any public release:** identity backup and recovery ([ADR 0006](decisions/0006-desktop-first-always-on-node.md)).
 
