@@ -19,7 +19,7 @@ On reflection, the home node is not an optional extra. It is the person's gatewa
 Option 2.
 
 - **Joining the network means installing the node** on a desktop or a small always-on computer. The node creates the person's identity locally ([ADR 0004](0004-signed-objects-and-ids.md)); there is no central sign-up and no password database. The phone is then paired with the node by QR code.
-- **The identity belongs to the person, not the machine.** The identity key is separate from the machine's node key, so it can be backed up and moved to a replacement computer. Backup and recovery must be designed before any public release.
+- **The identity belongs to the person, not the machine.** The identity key is separate from the machine's node key, so it can be backed up and moved to a replacement computer. Backup and recovery must be designed before any public release ([ADR 0009](0009-identity-backup-and-recovery.md)).
 - **Always-on is an expected requirement.** The node starts at boot without anyone logging in, reconnects after network failures, and reports its health to the phone. The phone app shows prominently whether the home node is reachable. When it isn't, the phone shows cached content, and posting or fetching waits until the node is back.
 - **Uptime rewards itself.** People keep their node running because their own phone depends on it. The network does not award points for uptime.
 - **Suitable hardware:** an always-on desktop, a mini PC, or a single-board computer. Builds for 64-bit ARM Linux are planned and need testing. A laptop that travels with its owner is not a suitable home node.

@@ -46,7 +46,7 @@ Each attachment inside a signed `Note` carries the BLAKE3 hash of the blob (plus
 
 - Any language can implement verification: base64url-decode, verify ed25519, BLAKE3 the bytes.
 - Objects are immutable. Edits and deletions will be new objects (`Update` and `Delete` in AS2 terms) that reference the original ID; deletion can be requested but not guaranteed ([doc 05](../05-security-privacy-and-governance.md)).
-- Losing the identity key means losing the identity. Backup and recovery (for example a recovery phrase) are planned for a later milestone.
+- Losing the identity key means losing the identity. Backup and recovery (recovery words and a backup file) are decided in [ADR 0009](0009-identity-backup-and-recovery.md).
 
 ## Validation and revisit conditions
 
