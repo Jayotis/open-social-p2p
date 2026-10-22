@@ -2595,6 +2595,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "osp-client"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "blake3",
+ "clap",
+ "data-encoding",
+ "getrandom 0.4.3",
+ "iroh",
+ "osp-node",
+ "osp-proto",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "osp-node"
 version = "0.1.0"
 dependencies = [

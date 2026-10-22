@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/osp-proto", "crates/osp-node", "crates/osp-cli"]
+members = ["crates/osp-proto", "crates/osp-node", "crates/osp-cli", "crates/osp-client"]
 
 [workspace.package]
 version = "0.1.0"
@@ -12,6 +12,7 @@ repository = "https://github.com/Jayotis/open-social-p2p"
 [workspace.dependencies]
 osp-proto = { path = "crates/osp-proto" }
 osp-node = { path = "crates/osp-node" }
+osp-client = { path = "crates/osp-client" }
 
 anyhow = "1"
 blake3 = "1.8"
