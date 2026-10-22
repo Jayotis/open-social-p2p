@@ -6,7 +6,7 @@
 
 ## The idea
 
-Open Social P2P lets you create your own social media platform in your home. It is private, and it's yours: your feed, your content, your connections. You connect it to a decentralized network of other people's home platforms and reach it from your phone, from anywhere.
+Open Social P2P lets you create your own social media platform in your home. It's yours: your feed, your content, your connections. You connect it to a decentralized network of other people's home platforms and reach it from your phone, from anywhere.
 
 There is no corporate administration, no data center holding everyone's posts, no handing your data to someone else, and no asking a company to show you content. You get your friends' content directly from them.
 
@@ -18,9 +18,11 @@ How it works:
 
 Nodes still need some public helpers to get through home routers: relay servers that pass along encrypted traffic without storing it. During development these are run by the iroh project; project and community relays are planned ([ADR 0002](docs/decisions/0002-rust-and-iroh.md), [ADR 0007](docs/decisions/0007-transport-privacy-defaults.md)).
 
+**Your internet address.** By default your node connects directly to the nodes it exchanges posts and media with, as BitTorrent does, so they can see your home's internet address. In relay-only mode (`relay_only = true` in the node's `config.toml`) everything goes through a relay instead: other nodes, and your own phone, never learn your address, but the relay operator does, and video is slower. Neither mode makes you anonymous ([ADR 0007](docs/decisions/0007-transport-privacy-defaults.md), [testing](docs/testing/relay-only.md)).
+
 Peers should choose sources according to **locally measured speed, latency, reliability and available capacity**, and respect bandwidth/storage limits. Security, IP-address privacy, audience controls, moderation and deletion limitations are essential design requirements.
 
-Design decisions are recorded in [docs/decisions/](docs/decisions/). The first prototype covers node-to-node publishing, resharing with hosting and verified retrieval. The second adds pairing a phone with its node by QR code, with the node running as an always-on service; the Android app is being built on top.
+Design decisions are recorded in [docs/decisions/](docs/decisions/). The first prototype covers node-to-node publishing, resharing with hosting and verified retrieval. The second adds the Android app, paired with its node by QR code, with the node running as an always-on service. The third, under way, limits what other nodes can make a node do, and adds storage quotas and relay-only mode.
 
 ## Project documentation
 
@@ -65,7 +67,7 @@ cargo test            # three-node publish / reshare / origin-offline, and phone
 cargo run --bin osp -- --help
 ```
 
-See [docs/testing/stage1-manual.md](docs/testing/stage1-manual.md) for running several nodes and testing across machines, and [docs/testing/m2-phone.md](docs/testing/m2-phone.md) for running a node as a service and pairing a phone.
+See [docs/testing/stage1-manual.md](docs/testing/stage1-manual.md) for running several nodes and testing across machines, [docs/testing/m2-phone.md](docs/testing/m2-phone.md) for running a node as a service and pairing a phone, and [docs/testing/relay-only.md](docs/testing/relay-only.md) for relay-only mode.
 
 | Crate | What it is |
 | --- | --- |

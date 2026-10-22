@@ -1,6 +1,6 @@
 # ADR 0007: Transport privacy defaults, private messages and direct media
 
-**Status:** Accepted (2026-10-21). Implementation is phased; relay-only behaviour must be validated (see below).
+**Status:** Accepted (2026-10-21). Implementation is phased. Phase 1, an opt-in relay-only mode, was implemented and checked with a packet capture on 2026-10-22 (see below).
 
 ## Context
 
@@ -52,7 +52,11 @@ None of these modes is anonymous in the strong sense, and none may be described 
 
 ## Implementation phases
 
-1. **Node-wide private mode:** relay-only for everything. iroh 1.4's endpoint builder can drop its IP transports (`clear_ip_transports()`), which should leave only relay paths. To validate: confirm with a packet capture that peers never learn the node's address.
+1. **Node-wide relay-only mode (done; opt-in).** `relay_only = true` under `[network]` in `config.toml`. Until phase 2, the default is direct for everything, not the split described above.
+   - The node binds no IP sockets (`clear_ip_transports()` in iroh 1.4), so it can only connect through a relay and has no address to hand out. With no direct path to fall back to, it fails closed. It refuses to start with relays disabled or with a `bind` address.
+   - iroh connects to whatever relay a peer's address names. A peer could therefore name a server of its own, and learn the node's address when the node connects to it. So in this mode the node uses only the relays in its own config. Relay URLs from tickets, `Subscribe`, `WhoHosts` replies and DNS lookups are filtered before iroh sees them, and a connect hook refuses anything left over. Errors name the relay that was refused.
+   - In direct mode too, a relay named by someone else must be a public `https` server, not plain `http`, not `localhost`, and not on a private or loopback address. Then a peer can't make the node send requests into its home network. The node's own configured relays are always allowed.
+   - Checked on the maintainer's machines ([testing](../testing/relay-only.md)), with a node behind a VPN, another node and two phones on the same home network. After the switch the node opened no UDP sockets and talked only to its relay and the DNS publishing service. It sent nothing directly to the other node or the phones. They all reached it through the relay, and video played and seeked. Phones paired while the node was in direct mode kept trying its old local address; nothing answered.
 2. **Separate planes:** either two endpoints (a relay-only control endpoint with its own key, and a direct media endpoint, both listed in the signed profile), or per-connection path restrictions if iroh supports them. To evaluate.
 3. **Tor for the control plane:** evaluate `iroh-tor-transport` once it and iroh's custom-transport API are stable.
 
