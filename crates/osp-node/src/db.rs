@@ -285,10 +285,30 @@ impl Db {
 
     // ---- follows ----
 
+    /// Follows `actor` at `addr`, or updates the address of a follow. A
+    /// follow that moves to a different node starts over like a new one,
+    /// since that node numbers its outbox from 1 (ADR 0009).
     pub fn upsert_follow(&self, actor: &PublicKey, addr: &EndpointAddr) -> Result<()> {
-        self.conn().execute(
-            "INSERT INTO follows (actor, node_addr) VALUES (?1, ?2)
-             ON CONFLICT(actor) DO UPDATE SET node_addr = excluded.node_addr",
+        let conn = self.conn();
+        let current: Option<String> = conn
+            .query_row(
+                "SELECT node_addr FROM follows WHERE actor = ?1",
+                params![actor.to_string()],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let same_node = match current {
+            Some(json) => serde_json::from_str::<EndpointAddr>(&json)?.id == addr.id,
+            None => false,
+        };
+        let sql = if same_node {
+            "UPDATE follows SET node_addr = ?2 WHERE actor = ?1"
+        } else {
+            // Replacing the row resets its position, sync time and error.
+            "INSERT OR REPLACE INTO follows (actor, node_addr) VALUES (?1, ?2)"
+        };
+        conn.execute(
+            sql,
             params![actor.to_string(), serde_json::to_string(addr)?],
         )?;
         Ok(())
@@ -812,6 +832,36 @@ mod tests {
         assert_eq!(db.drop_silent_followers(start - 60_000).unwrap(), 1);
         assert!(!db.is_follower(&quiet.id).unwrap());
         assert!(db.is_follower(&chatty.id).unwrap());
+    }
+
+    #[test]
+    fn a_follow_that_moves_to_another_node_starts_over() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(&dir.path().join("t.db")).unwrap();
+        let actor = iroh::SecretKey::generate().public();
+        let node = some_addr();
+        db.upsert_follow(&actor, &node).unwrap();
+        db.set_follow_synced(&actor, 50).unwrap();
+        db.set_follow_error(&actor, "unreachable").unwrap();
+
+        // The same node at a new address keeps its place.
+        let relay: iroh::RelayUrl = "https://relay.example.org".parse().unwrap();
+        db.upsert_follow(&actor, &node.clone().with_relay_url(relay))
+            .unwrap();
+        let [follow] = &db.follows().unwrap()[..] else {
+            panic!("one follow expected")
+        };
+        assert_eq!((follow.cursor, follow.synced), (50, true));
+
+        // Another node starts again from the latest entries.
+        let other = some_addr();
+        db.upsert_follow(&actor, &other).unwrap();
+        let [follow] = &db.follows().unwrap()[..] else {
+            panic!("one follow expected")
+        };
+        assert_eq!(follow.addr.id, other.id);
+        assert_eq!((follow.cursor, follow.synced), (0, false));
+        assert_eq!(db.follow_infos().unwrap()[0].last_error, None);
     }
 
     fn note_with_media(
