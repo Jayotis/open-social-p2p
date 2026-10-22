@@ -61,11 +61,16 @@ pub struct MediaConfig {
     pub x264_preset: String,
 }
 
-/// Quotas are recorded now and enforced from milestone M3.
+/// Disk space for media other people posted. Media of your own posts has
+/// no quota; it only has to fit on the disk.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct StorageConfig {
+    /// Media you host for others by resharing with hosting. When it's
+    /// full, new hosting is refused; nothing is deleted to make room.
     pub replica_quota_mb: u64,
+    /// Media fetched for your own devices. When it's full, what was used
+    /// longest ago is deleted to make room.
     pub cache_quota_mb: u64,
 }
 

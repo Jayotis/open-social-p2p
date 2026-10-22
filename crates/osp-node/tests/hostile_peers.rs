@@ -1,7 +1,8 @@
 //! Peers that misbehave on purpose: oversized requests, floods of requests
-//! that never finish, unknown devices, floods of subscribers, and followed
-//! nodes whose outboxes never move on or never end. The node must turn
-//! them away quickly and keep serving everyone else.
+//! that never finish, unknown devices, floods of subscribers, followed
+//! nodes whose outboxes never move on or never end, and followed nodes
+//! whose media would overfill the disk. The node must turn them away
+//! quickly and keep serving everyone else.
 //!
 //! Each stranger is a fresh iroh endpoint with a new key, as an attacker's
 //! would be. Everything runs in this process on loopback.
@@ -14,9 +15,11 @@ use iroh::{
     endpoint::{Connection, RecvStream, SendStream, presets},
     protocol::{AcceptError, ProtocolHandler, Router},
 };
-use osp_node::{Config, Node};
+use iroh_blobs::{BlobsProtocol, store::mem::MemStore};
+use osp_node::{BlobClass, Config, Node};
 use osp_proto::{
-    CLIENT_ALPN, FollowTicket, Note, Payload, Person, SOCIAL_ALPN, SignedObject,
+    Attachment, BlobHash, CLIENT_ALPN, FollowTicket, MediaKind, Note, Payload, Person, SOCIAL_ALPN,
+    SignedObject,
     framing::{read_frame, write_frame},
     rpc::{self, ClientRequest, ClientResponse, FollowInfo},
     social::{self, OutboxEntry, SocialRequest, SocialResponse},
@@ -363,16 +366,21 @@ enum Outbox {
     /// Makes up a full page of new posts every time, claims there's
     /// always more, and slips in a post nobody reshared.
     Endless,
+    /// Serves its `posts` in order, as an honest node would. What the
+    /// posts say may still be untrue.
+    Posts,
 }
 
 /// A followed node that signs its profile and posts properly, but whose
-/// outbox never moves on, or never ends.
+/// outbox never moves on, or never ends, or whose posts lie.
 #[derive(Clone)]
 struct HostileAuthor {
     key: SecretKey,
     outbox: Outbox,
     /// Someone else's post, sent along without any reshare pointing at it.
     stray: SignedObject,
+    /// What `Outbox::Posts` serves.
+    posts: Vec<SignedObject>,
 }
 
 impl std::fmt::Debug for HostileAuthor {
@@ -420,11 +428,27 @@ impl HostileAuthor {
                             .collect(),
                         vec![self.stray.clone()],
                     ),
+                    (Outbox::Posts, _) => (
+                        (1..)
+                            .zip(&self.posts)
+                            .map(|(seq, object)| OutboxEntry {
+                                seq,
+                                object: object.clone(),
+                            })
+                            .filter(|e| e.seq > since)
+                            .take(limit as usize)
+                            .collect(),
+                        vec![],
+                    ),
+                };
+                let latest = match self.outbox {
+                    Outbox::Posts => self.posts.len() as u64,
+                    _ => since + 1_000_000,
                 };
                 SocialResponse::Outbox {
                     entries,
                     referenced,
-                    latest: since + 1_000_000,
+                    latest,
                 }
             }
             _ => SocialResponse::Ok,
@@ -440,21 +464,53 @@ impl HostileAuthor {
 }
 
 fn note(key: &SecretKey, content: &str) -> SignedObject {
+    note_with(key, content, vec![])
+}
+
+fn note_with(key: &SecretKey, content: &str, attachment: Vec<Attachment>) -> SignedObject {
     let payload = Payload::Note(Note {
         actor: key.public(),
         content: content.into(),
         published: osp_proto::now_rfc3339(),
-        attachment: vec![],
+        attachment,
         in_reply_to: None,
     });
     SignedObject::sign(key, &payload).unwrap()
 }
 
+/// A video attachment that declares `size` bytes for `blob`.
+fn video(blob: BlobHash, size: u64) -> Attachment {
+    Attachment {
+        kind: MediaKind::Video,
+        media_type: "video/mp4".into(),
+        blob,
+        size,
+        width: 1280,
+        height: 720,
+        duration_ms: Some(1000),
+        name: None,
+        thumbnail: None,
+        profile: "v1-720p".into(),
+    }
+}
+
 /// Runs a hostile author on loopback. Returns its router (keep it) and a
 /// ticket to follow it.
 async fn hostile_author(outbox: Outbox) -> (Router, String, SignedObject) {
-    let key = SecretKey::generate();
     let stray = note(&SecretKey::generate(), "nobody reshared this");
+    let author = HostileAuthor {
+        key: SecretKey::generate(),
+        outbox,
+        stray: stray.clone(),
+        posts: vec![],
+    };
+    let (router, ticket) = serve(author, None).await;
+    (router, ticket, stray)
+}
+
+/// Runs an author on loopback, serving `media` too if given. Returns its
+/// router (keep it) and a ticket to follow it.
+async fn serve(author: HostileAuthor, media: Option<&MemStore>) -> (Router, String) {
     let endpoint = Endpoint::builder(presets::Minimal)
         .secret_key(SecretKey::generate())
         .relay_mode(RelayMode::Disabled)
@@ -465,19 +521,15 @@ async fn hostile_author(outbox: Outbox) -> (Router, String, SignedObject) {
         .await
         .unwrap();
     let ticket = FollowTicket {
-        actor: key.public(),
+        actor: author.key.public(),
         node: endpoint.addr(),
     }
     .to_string();
-    let author = HostileAuthor {
-        key,
-        outbox,
-        stray: stray.clone(),
-    };
-    let router = Router::builder(endpoint)
-        .accept(SOCIAL_ALPN, author)
-        .spawn();
-    (router, ticket, stray)
+    let mut router = Router::builder(endpoint).accept(SOCIAL_ALPN, author);
+    if let Some(media) = media {
+        router = router.accept(iroh_blobs::ALPN, BlobsProtocol::new(media, None));
+    }
+    (router.spawn(), ticket)
 }
 
 async fn sync_within(node: &Node, limit: Duration) {
@@ -567,4 +619,86 @@ async fn a_followed_node_cant_flood_us_with_posts() {
     assert!(matches!(shown, ClientResponse::Error { .. }), "{shown:?}");
 
     reader.shutdown().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_followed_nodes_media_cant_overfill_the_cache_or_be_bigger_than_declared() {
+    const KB: u64 = 1 << 10;
+    let dir = tempfile::tempdir().unwrap();
+    // A reader with 1 MB for cached media and no room for hosting.
+    let mut config = Config::local_test("Una");
+    config.storage.cache_quota_mb = 1;
+    config.storage.replica_quota_mb = 0;
+    let home = dir.path().join("una");
+    Node::init(&home, &config).unwrap();
+    let reader = Node::spawn(&home).await.unwrap();
+
+    // Three honest 400 KB videos, which don't all fit, and one five
+    // times bigger than its post says.
+    let media = MemStore::new();
+    let key = SecretKey::generate();
+    let mut posts = Vec::new();
+    let mut honest = Vec::new();
+    for fill in 1..=3u8 {
+        let blob = add_blob(&media, vec![fill; 400 * KB as usize]).await;
+        honest.push(blob);
+        posts.push(note_with(&key, "a video", vec![video(blob, 400 * KB)]));
+    }
+    let liar = add_blob(&media, vec![9; 500 * KB as usize]).await;
+    posts.push(note_with(
+        &key,
+        "a small video",
+        vec![video(liar, 100 * KB)],
+    ));
+    let author = HostileAuthor {
+        key,
+        outbox: Outbox::Posts,
+        stray: note(&SecretKey::generate(), "unused"),
+        posts,
+    };
+    let (_mallory, ticket) = serve(author, Some(&media)).await;
+    call(&reader, ClientRequest::Follow { ticket }).await;
+
+    // A sync from the owner waits for the prefetch to finish.
+    sync_within(&reader, Duration::from_secs(60)).await;
+    let cached = honest
+        .iter()
+        .filter(|b| reader.blob_class(b).unwrap() == Some(BlobClass::Cache))
+        .count();
+    assert_eq!(
+        cached, 2,
+        "two fit in 1 MB; the third made room by evicting one"
+    );
+    assert_eq!(
+        reader.blob_class(&liar).unwrap(),
+        None,
+        "stopped and not kept"
+    );
+    let ClientResponse::Status(status) = call(&reader, ClientRequest::Status).await else {
+        panic!("no status");
+    };
+    let cache = status.storage.iter().find(|s| s.class == "cache").unwrap();
+    assert!(cache.bytes <= 1 << 20, "{cache:?}");
+
+    // Hosting needs replica room, and there is none; a plain reshare is fine.
+    let ClientResponse::Feed { items } = call(&reader, ClientRequest::Feed { limit: 10 }).await
+    else {
+        panic!("no feed");
+    };
+    let id = items[0].id;
+    let resp = reader
+        .handle(ClientRequest::Reshare { id, host: true })
+        .await;
+    assert!(
+        matches!(&resp, ClientResponse::Error { message } if message.contains("replica quota")),
+        "{resp:?}"
+    );
+    call(&reader, ClientRequest::Reshare { id, host: false }).await;
+
+    reader.shutdown().await.unwrap();
+}
+
+async fn add_blob(store: &MemStore, bytes: Vec<u8>) -> BlobHash {
+    let tag = store.add_bytes(bytes).await.unwrap();
+    BlobHash::from_bytes(*tag.hash.as_bytes())
 }

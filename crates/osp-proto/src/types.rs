@@ -202,6 +202,13 @@ impl Note {
     pub fn blobs(&self) -> impl Iterator<Item = BlobHash> + '_ {
         self.attachment.iter().flat_map(|a| a.blobs())
     }
+
+    /// The same blobs, each with the size this note declares for it.
+    pub fn sized_blobs(&self) -> impl Iterator<Item = (BlobHash, u64)> + '_ {
+        self.attachment.iter().flat_map(|a| {
+            std::iter::once((a.blob, a.size)).chain(a.thumbnail.as_ref().map(|t| (t.blob, t.size)))
+        })
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

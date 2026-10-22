@@ -12,7 +12,7 @@ use std::{
 use anyhow::{Context, Result};
 use iroh::{EndpointAddr, EndpointId, PublicKey};
 use osp_proto::{
-    BlobHash, ObjectId, Payload, SignedObject,
+    BlobHash, Note, ObjectId, Payload, SignedObject,
     rpc::{FollowInfo, StorageInfo},
 };
 use rusqlite::{Connection, OptionalExtension, params};
@@ -85,11 +85,19 @@ CREATE TABLE IF NOT EXISTS devices (
 const MIGRATIONS: &[&str] = &[
     // 1: when each follower last answered or subscribed, so long-silent ones can be dropped.
     "ALTER TABLE followers ADD COLUMN seen_ms INTEGER",
+    // 2: the size stored posts declare for each blob, so a download the
+    // phone asks for can be stopped once it passes that. Filled in from
+    // the posts already stored by `migrate`.
+    "CREATE TABLE declared_sizes (blob TEXT PRIMARY KEY, size INTEGER NOT NULL)",
 ];
 
 /// Hosts remembered per blob. More than enough to find a copy; a peer
 /// can't grow the table without bound by naming hosts.
 const MAX_HOSTS_PER_BLOB: i64 = 20;
+
+/// A blob's `accessed_ms` is updated at most this often, so a phone
+/// seeking through a video doesn't write to the database on every request.
+const TOUCH_EVERY_MS: i64 = 60_000;
 
 /// Why a blob is kept, which decides who it is served to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -176,7 +184,8 @@ impl Db {
         let published = osp_proto::parse_rfc3339_ms(payload.published())
             .unwrap_or(received)
             .min(received);
-        let n = self.conn().execute(
+        let conn = self.conn();
+        let n = conn.execute(
             "INSERT OR IGNORE INTO objects (id, actor, kind, published_ms, received_ms, signed)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             params![
@@ -188,6 +197,11 @@ impl Db {
                 serde_json::to_string(obj)?
             ],
         )?;
+        if n > 0
+            && let Payload::Note(note) = payload
+        {
+            declare_sizes(&conn, note)?;
+        }
         Ok(n > 0)
     }
 
@@ -491,6 +505,93 @@ impl Db {
         Ok(())
     }
 
+    /// Forgets a blob, whatever its class.
+    pub fn remove_blob(&self, hash: &BlobHash) -> Result<()> {
+        self.conn().execute(
+            "DELETE FROM blobs WHERE hash = ?1",
+            params![hash.to_string()],
+        )?;
+        Ok(())
+    }
+
+    /// Every blob we hold, with its class.
+    pub fn blobs(&self) -> Result<Vec<(BlobHash, BlobClass)>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare("SELECT hash, class FROM blobs")?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        rows.map(|r| {
+            let (hash, class) = r?;
+            Ok((hash.parse()?, BlobClass::parse(&class)?))
+        })
+        .collect()
+    }
+
+    /// Total size of the blobs kept under `class`.
+    pub fn class_bytes(&self, class: BlobClass) -> Result<u64> {
+        let n: i64 = self.conn().query_row(
+            "SELECT COALESCE(SUM(size), 0) FROM blobs WHERE class = ?1",
+            params![class.as_str()],
+            |row| row.get(0),
+        )?;
+        Ok(n as u64)
+    }
+
+    /// Notes that one of my devices just used a blob, so the cache keeps
+    /// it longer.
+    pub fn touch_blob(&self, hash: &BlobHash) -> Result<()> {
+        let now = now_ms();
+        self.conn().execute(
+            "UPDATE blobs SET accessed_ms = ?2 WHERE hash = ?1 AND accessed_ms < ?3",
+            params![hash.to_string(), now, now - TOUCH_EVERY_MS],
+        )?;
+        Ok(())
+    }
+
+    /// Forgets the cache blobs used longest ago until at least `bytes`
+    /// are freed, or the cache is empty. Returns them, so their data can
+    /// be released. Never touches other classes.
+    pub fn evict_cache(&self, bytes: u64) -> Result<Vec<BlobHash>> {
+        let conn = self.conn();
+        let mut evicted = Vec::new();
+        let mut freed = 0;
+        {
+            let mut stmt = conn.prepare(
+                "SELECT hash, size FROM blobs WHERE class = 'cache' ORDER BY accessed_ms, added_ms",
+            )?;
+            let mut rows = stmt.query([])?;
+            while freed < bytes
+                && let Some(row) = rows.next()?
+            {
+                evicted.push(row.get::<_, String>(0)?.parse::<BlobHash>()?);
+                freed += row.get::<_, i64>(1)? as u64;
+            }
+        }
+        for hash in &evicted {
+            conn.execute(
+                "DELETE FROM blobs WHERE hash = ?1",
+                params![hash.to_string()],
+            )?;
+        }
+        Ok(evicted)
+    }
+
+    /// The largest size any stored post declares for a blob. The blob's
+    /// real size is fixed by its hash, so a smaller claim elsewhere is
+    /// simply wrong, and it mustn't stop the honest post's media loading.
+    pub fn declared_size(&self, blob: &BlobHash) -> Result<Option<u64>> {
+        let size: Option<i64> = self
+            .conn()
+            .query_row(
+                "SELECT size FROM declared_sizes WHERE blob = ?1",
+                params![blob.to_string()],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(size.map(|s| s as u64))
+    }
+
     pub fn storage_summary(&self) -> Result<Vec<StorageInfo>> {
         let conn = self.conn();
         let mut stmt = conn.prepare(
@@ -600,14 +701,44 @@ impl Db {
     }
 }
 
-/// Runs the migrations this database hasn't had yet.
+/// Runs the migrations this database hasn't had yet, each in one transaction.
 fn migrate(conn: &Connection) -> Result<()> {
     let done: i64 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
     for (i, sql) in MIGRATIONS.iter().enumerate().skip(done as usize) {
-        conn.execute_batch(&format!(
-            "BEGIN; {sql}; PRAGMA user_version = {}; COMMIT;",
-            i + 1
-        ))?;
+        let version = i as i64 + 1;
+        let tx = conn.unchecked_transaction()?;
+        tx.execute_batch(sql)?;
+        if version == 2 {
+            backfill_declared_sizes(&tx)?;
+        }
+        tx.pragma_update(None, "user_version", version)?;
+        tx.commit()?;
+    }
+    Ok(())
+}
+
+/// Records the sizes a post declares for its media and thumbnails.
+fn declare_sizes(conn: &Connection, note: &Note) -> Result<()> {
+    for (blob, size) in note.sized_blobs() {
+        conn.execute(
+            "INSERT INTO declared_sizes (blob, size) VALUES (?1, ?2)
+             ON CONFLICT(blob) DO UPDATE SET size = MAX(size, excluded.size)",
+            params![blob.to_string(), size as i64],
+        )?;
+    }
+    Ok(())
+}
+
+/// Fills in `declared_sizes` from the posts stored before it existed.
+fn backfill_declared_sizes(conn: &Connection) -> Result<()> {
+    let mut stmt = conn.prepare("SELECT signed FROM objects WHERE kind = 'Note'")?;
+    let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+    for json in rows {
+        let obj: SignedObject = serde_json::from_str(&json?).context("corrupt stored object")?;
+        // Checked when it arrived; one that fails today's checks gets no sizes.
+        if let Ok(Payload::Note(note)) = obj.verify() {
+            declare_sizes(conn, &note)?;
+        }
     }
     Ok(())
 }
@@ -681,6 +812,98 @@ mod tests {
         assert_eq!(db.drop_silent_followers(start - 60_000).unwrap(), 1);
         assert!(!db.is_follower(&quiet.id).unwrap());
         assert!(db.is_follower(&chatty.id).unwrap());
+    }
+
+    fn note_with_media(
+        key: &iroh::SecretKey,
+        media: &[(BlobHash, u64)],
+    ) -> (SignedObject, Payload) {
+        let attachment = media
+            .iter()
+            .map(|&(blob, size)| osp_proto::Attachment {
+                kind: osp_proto::MediaKind::Video,
+                media_type: "video/mp4".into(),
+                blob,
+                size,
+                width: 1,
+                height: 1,
+                duration_ms: None,
+                name: None,
+                thumbnail: None,
+                profile: "v1-720p".into(),
+            })
+            .collect();
+        let payload = Payload::Note(Note {
+            actor: key.public(),
+            content: "media".into(),
+            published: osp_proto::now_rfc3339(),
+            attachment,
+            in_reply_to: None,
+        });
+        (SignedObject::sign(key, &payload).unwrap(), payload)
+    }
+
+    #[test]
+    fn declared_sizes_come_from_new_posts_and_posts_stored_before() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("old.db");
+        let key = iroh::SecretKey::generate();
+        let (old, new) = (BlobHash::from_bytes([1; 32]), BlobHash::from_bytes([2; 32]));
+        {
+            // A database from before migration 2, holding a post with media.
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(SCHEMA).unwrap();
+            conn.execute_batch(MIGRATIONS[0]).unwrap();
+            conn.pragma_update(None, "user_version", 1).unwrap();
+            let (obj, _) = note_with_media(&key, &[(old, 500)]);
+            conn.execute(
+                "INSERT INTO objects (id, actor, kind, published_ms, received_ms, signed)
+                 VALUES (?1, ?2, 'Note', 1, 1, ?3)",
+                params![
+                    obj.id().to_string(),
+                    key.public().to_string(),
+                    serde_json::to_string(&obj).unwrap()
+                ],
+            )
+            .unwrap();
+        }
+        let db = Db::open(&path).unwrap();
+        assert_eq!(db.declared_size(&old).unwrap(), Some(500));
+        assert_eq!(db.declared_size(&new).unwrap(), None);
+
+        let (obj, payload) = note_with_media(&key, &[(new, 300)]);
+        db.insert_object(&obj, &payload).unwrap();
+        assert_eq!(db.declared_size(&new).unwrap(), Some(300));
+        // Another post can't shrink it, only raise it.
+        let (obj, payload) = note_with_media(&key, &[(new, 10), (old, 900)]);
+        db.insert_object(&obj, &payload).unwrap();
+        assert_eq!(db.declared_size(&new).unwrap(), Some(300));
+        assert_eq!(db.declared_size(&old).unwrap(), Some(900));
+    }
+
+    #[test]
+    fn eviction_takes_cache_blobs_used_longest_ago_and_nothing_else() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(&dir.path().join("t.db")).unwrap();
+        let [own, replica, stale, recent] = [1u8, 2, 3, 4].map(|b| BlobHash::from_bytes([b; 32]));
+        db.put_blob(&own, BlobClass::Own, 100).unwrap();
+        db.put_blob(&replica, BlobClass::Replica, 100).unwrap();
+        db.put_blob(&stale, BlobClass::Cache, 100).unwrap();
+        db.put_blob(&recent, BlobClass::Cache, 100).unwrap();
+        db.conn()
+            .execute("UPDATE blobs SET accessed_ms = 1", [])
+            .unwrap();
+        db.touch_blob(&recent).unwrap();
+        assert_eq!(db.class_bytes(BlobClass::Cache).unwrap(), 200);
+
+        assert_eq!(db.evict_cache(0).unwrap(), vec![]);
+        assert_eq!(db.evict_cache(1).unwrap(), vec![stale]);
+        assert_eq!(db.blob_class(&stale).unwrap(), None);
+        // Asking for more than the cache holds empties the cache, no more.
+        assert_eq!(db.evict_cache(1 << 30).unwrap(), vec![recent]);
+        assert_eq!(db.class_bytes(BlobClass::Cache).unwrap(), 0);
+        assert_eq!(db.blob_class(&own).unwrap(), Some(BlobClass::Own));
+        assert_eq!(db.blob_class(&replica).unwrap(), Some(BlobClass::Replica));
     }
 
     #[test]

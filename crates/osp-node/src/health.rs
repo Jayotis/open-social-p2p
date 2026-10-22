@@ -5,10 +5,10 @@ use std::path::Path;
 
 use anyhow::Result;
 
-use crate::{config::RelayChoice, node::Core};
+use crate::{config::RelayChoice, db::BlobClass, node::Core};
 
 /// Warn when less than this is free on the node's disk.
-const LOW_DISK_BYTES: u64 = 2 << 30;
+pub(crate) const LOW_DISK_BYTES: u64 = 2 << 30;
 
 /// Space available to the node's user on the filesystem holding `path`.
 pub(crate) fn disk_free(path: &Path) -> Option<u64> {
@@ -48,6 +48,16 @@ impl Core {
             && free < LOW_DISK_BYTES
         {
             problems.push(format!("only {} MB free on the node's disk", free >> 20));
+        }
+        // Possible after lowering the quota. Hosted media isn't deleted to fit.
+        let hosted = self.db.class_bytes(BlobClass::Replica)?;
+        let quota = self.config.storage.replica_quota_mb << 20;
+        if hosted > quota {
+            problems.push(format!(
+                "media you host for others takes {} MB, more than storage.replica_quota_mb ({} MB), so new hosting is refused",
+                hosted >> 20,
+                quota >> 20
+            ));
         }
         Ok(problems)
     }
