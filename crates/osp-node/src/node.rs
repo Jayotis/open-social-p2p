@@ -485,8 +485,16 @@ fn create_home(home: &Home, config: &Config, identity: &SecretKey, key: NewKey) 
     Ok(())
 }
 
+/// How long `lock_home` keeps trying a lock that's held.
+const LOCK_WAIT: Duration = Duration::from_secs(1);
+
 /// Takes the home's lock, so two nodes never share one home (they would
 /// otherwise wait on each other's databases without saying why).
+///
+/// A held lock is tried again for a moment first. A child process that is
+/// starting (ffmpeg, say) has a copy of every file its parent has open,
+/// the lock too, until it runs. So in a process that runs several nodes,
+/// as the tests do, a lock just released can still look held.
 fn lock_home(home: &Home) -> Result<std::fs::File> {
     let path = home.lock();
     let file = std::fs::OpenOptions::new()
@@ -495,11 +503,15 @@ fn lock_home(home: &Home) -> Result<std::fs::File> {
         .write(true)
         .open(&path)
         .with_context(|| format!("opening {}", path.display()))?;
-    if rustix::fs::flock(&file, rustix::fs::FlockOperation::NonBlockingLockExclusive).is_err() {
-        bail!(
-            "another node is already running in {} (as a service? see `systemctl --user status osp`)",
-            home.root().display()
-        );
+    let give_up = Instant::now() + LOCK_WAIT;
+    while rustix::fs::flock(&file, rustix::fs::FlockOperation::NonBlockingLockExclusive).is_err() {
+        if Instant::now() >= give_up {
+            bail!(
+                "another node is already running in {} (as a service? see `systemctl --user status osp`)",
+                home.root().display()
+            );
+        }
+        std::thread::sleep(Duration::from_millis(50));
     }
     Ok(file)
 }

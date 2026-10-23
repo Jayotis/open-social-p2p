@@ -6,7 +6,7 @@
 
 use std::path::{Path, PathBuf};
 
-use osp_node::{BlobClass, Config, Node};
+use osp_node::{BlobClass, Config, Home, Node};
 use osp_proto::{
     BlobHash, ObjectId,
     rpc::{ClientRequest, ClientResponse, Direction, FeedItem, StatusInfo},
@@ -232,6 +232,20 @@ async fn a_second_node_on_the_same_home_is_refused() {
     first.shutdown().await.unwrap();
     let again = Node::spawn(&home).await.expect("home is free once stopped");
     again.shutdown().await.unwrap();
+
+    // A lock that's let go a moment later is waited for, as when a child
+    // process that's starting still has a copy of it.
+    let held = std::fs::File::open(Home::new(&home).lock()).unwrap();
+    rustix::fs::flock(&held, rustix::fs::FlockOperation::NonBlockingLockExclusive).unwrap();
+    let release = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        drop(held);
+    });
+    let third = Node::spawn(&home)
+        .await
+        .expect("a lock let go a moment later is waited for");
+    release.join().unwrap();
+    third.shutdown().await.unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread")]
