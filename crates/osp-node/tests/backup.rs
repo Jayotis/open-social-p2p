@@ -3,9 +3,18 @@
 //!
 //! All nodes run in this process on loopback with relays and DNS lookup off.
 
-use std::{net::SocketAddr, path::Path, time::Duration};
+use std::{
+    net::SocketAddr,
+    path::Path,
+    time::{Duration, SystemTime},
+};
 
-use iroh::{Endpoint, EndpointAddr, RelayMode, address_lookup::MemoryLookup, endpoint::presets};
+use iroh::{
+    Endpoint, EndpointAddr, RelayMode,
+    address_lookup::MemoryLookup,
+    endpoint::{Connection, presets},
+    protocol::{AcceptError, ProtocolHandler, Router},
+};
 use osp_node::{BlobClass, Config, Node, backup};
 use osp_proto::{
     BlobHash, ObjectId, Payload, Person, SOCIAL_ALPN, SecretKey, SignedObject,
@@ -180,9 +189,45 @@ fn profile(key: &SecretKey, nodes: Vec<iroh::EndpointId>, published: &str) -> Si
     SignedObject::sign(key, &person).unwrap()
 }
 
+/// The time `by` from now, written as a `published` date.
+fn from_now(by: Duration) -> String {
+    humantime::format_rfc3339_millis(SystemTime::now() + by).to_string()
+}
+
+/// A node run by someone who stole an identity's key. It serves `profile`
+/// and an empty outbox, and says yes to anything else.
+#[derive(Debug, Clone)]
+struct Thief {
+    profile: SignedObject,
+}
+
+impl ProtocolHandler for Thief {
+    async fn accept(&self, conn: Connection) -> Result<(), AcceptError> {
+        while let Ok((mut send, mut recv)) = conn.accept_bi().await {
+            let Ok(req) = read_frame::<_, SocialRequest>(&mut recv).await else {
+                continue;
+            };
+            let resp = match req {
+                SocialRequest::GetProfile => SocialResponse::Profile {
+                    profile: self.profile.clone(),
+                },
+                SocialRequest::GetOutbox { .. } => SocialResponse::Outbox {
+                    entries: vec![],
+                    referenced: vec![],
+                    latest: 0,
+                },
+                _ => SocialResponse::Ok,
+            };
+            write_frame(&mut send, &resp).await.ok();
+            send.finish().ok();
+        }
+        Ok(())
+    }
+}
+
 /// A node nobody has seen before, connected to `node` over `osp/social/0`.
 /// Returns its endpoint too, since dropping that closes the connection.
-async fn stranger(node: &EndpointAddr) -> (Endpoint, iroh::endpoint::Connection) {
+async fn stranger(node: &EndpointAddr) -> (Endpoint, Connection) {
     let lookup = MemoryLookup::new();
     lookup.add_endpoint_info(node.clone());
     let endpoint = Endpoint::builder(presets::Minimal)
@@ -199,7 +244,7 @@ async fn stranger(node: &EndpointAddr) -> (Endpoint, iroh::endpoint::Connection)
     (endpoint, conn)
 }
 
-async fn ask(conn: &iroh::endpoint::Connection, req: &SocialRequest) -> SocialResponse {
+async fn ask(conn: &Connection, req: &SocialRequest) -> SocialResponse {
     let (mut send, mut recv) = conn.open_bi().await.unwrap();
     write_frame(&mut send, req).await.unwrap();
     send.finish().unwrap();
@@ -356,6 +401,10 @@ async fn a_move_needs_a_newer_profile_that_lists_the_sender() {
         peer.addr(),
     );
     refused(ask(&conn, &req).await, "older");
+    // It can't be dated ahead of Bob's clock, or no later move could replace it.
+    let ahead = from_now(Duration::from_secs(60 * 60));
+    let req = moved(profile(&key, vec![peer.id()], &ahead), peer.addr());
+    refused(ask(&conn, &req).await, "ahead of our clock");
     // Only identities Bob follows can move him.
     let stranger_key = SecretKey::generate();
     let req = moved(profile(&stranger_key, vec![peer.id()], &now), peer.addr());
@@ -374,6 +423,65 @@ async fn a_move_needs_a_newer_profile_that_lists_the_sender() {
     let follows = following(&bob).await;
     assert_eq!(follows[0].cursor, 0);
     assert!(follows[0].last_sync.is_none());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_thief_cant_date_a_profile_so_late_that_the_owner_cant_answer() {
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter("osp_node=debug,warn")
+        .with_test_writer()
+        .try_init();
+    let dir = tempfile::tempdir().unwrap();
+    let alice = start(dir.path(), "Alice").await;
+    let bob = start(dir.path(), "Bob").await;
+    follow(&bob, &alice).await;
+    feed_texts(&bob).await;
+
+    // Someone steals Alice's key and moves Bob's follow to their own node,
+    // which then serves him her profile dated thousands of years ahead.
+    let key = read_key(&dir.path().join("alice").join("identity.key"));
+    let (endpoint, conn) = stranger(&bob.addr().await).await;
+    let far_ahead = Payload::Person(Person {
+        actor: key.public(),
+        name: "Not Alice".into(),
+        summary: None,
+        nodes: vec![endpoint.id()],
+        published: "9999-01-01T00:00:00Z".into(),
+    });
+    let profile_far_ahead = SignedObject::sign(&key, &far_ahead).unwrap();
+    let req = SocialRequest::Moved {
+        profile: profile(&key, vec![endpoint.id()], &osp_proto::now_rfc3339()),
+        addr: endpoint.addr(),
+    };
+    let _thief = Router::builder(endpoint)
+        .accept(
+            SOCIAL_ALPN,
+            Thief {
+                profile: profile_far_ahead,
+            },
+        )
+        .spawn();
+    assert!(matches!(ask(&conn, &req).await, SocialResponse::Ok));
+
+    // Bob syncs from the thief's node, but keeps the profile from the move.
+    wait_until("Bob to sync from the thief's node", async || {
+        call(&bob, ClientRequest::Sync).await;
+        following(&bob).await[0].last_sync.is_some()
+    })
+    .await;
+    assert_eq!(following(&bob).await[0].name.as_deref(), Some("Alice"));
+
+    // So Alice, on a new node, can still answer with a newer move. Her
+    // clock being two minutes ahead of Bob's doesn't matter.
+    let (new_node, conn) = stranger(&bob.addr().await).await;
+    let soon = from_now(Duration::from_secs(2 * 60));
+    let req = SocialRequest::Moved {
+        profile: profile(&key, vec![new_node.id()], &soon),
+        addr: new_node.addr(),
+    };
+    assert!(matches!(ask(&conn, &req).await, SocialResponse::Ok));
+    let follows = following(&bob).await;
+    assert!(follows[0].last_sync.is_none(), "the follow didn't move");
 }
 
 #[tokio::test(flavor = "multi_thread")]
