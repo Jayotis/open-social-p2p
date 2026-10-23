@@ -1,6 +1,6 @@
 # ADR 0010: Signing keys, and taking a stolen one back
 
-**Status:** Accepted (2026-10-22). Built so far: objects signed by certified keys, and readers checking them against what they know of each identity's keys, on `osp/social/1`; nodes keeping a signing key and a backup key instead of the identity key, `osp keys check`, and `osp keys protect`; `osp keys replace`, retiring or revoking on a restore, and a node signing its posts again when its key changes (key changes run with the node stopped, and take effect when it starts). Still to build: what a reader does with stored objects once it learns of a revocation (`GetObjects`).
+**Status:** Accepted (2026-10-22). Built (2026-10-23), on `osp/social/1`: objects signed by certified keys, and readers checking them against what they know of each identity's keys; nodes keeping a signing key and a backup key instead of the identity key, `osp keys check`, and `osp keys protect`; `osp keys replace`, retiring or revoking on a restore, and a node signing its posts again when its key changes (key changes run with the node stopped, and take effect when it starts); readers dropping what a revoked key signed and fetching followed identities' posts again (`GetObjects`).
 
 ## Context
 
@@ -73,7 +73,7 @@ Keys option (b). For objects signed by a stolen key, option (ii), but only when 
 
 So news of a revocation travels with anything the new key signs. A thief holding the signing key but not the words can't make a certificate. Once a reader has seen a revoking certificate, it refuses everything the thief signs, including a `Moved` back.
 
-**When a reader learns of a revocation**, it deletes the objects it holds that the revoked keys signed. If it follows the identity, it first asks the identity's node for copies signed by the new key: a new request in `osp/social`, `GetObjects { ids }`, at most 100 IDs at a time, answered from the node's own posts and reshares. A copy that comes back replaces the old one under the same ID. What doesn't come back, such as posts the thief made, is gone.
+**When a reader learns of a revocation**, it deletes the objects it holds that the revoked keys signed, and the identity's profile if one of them signed it, so a profile a thief dated a little ahead can't outrank the owner's. If it follows the identity, it remembers what it deleted, and at its next sync asks the identity's node for copies signed by the new key: a new request in `osp/social`, `GetObjects { ids }`, at most 50 IDs at a time, answered from the node's own outbox (the largest object is about 172 KiB once encoded, so 50 always fit in one reply). A copy that comes back takes the old one's place under the same ID, keeping when the old one arrived, so it doesn't count against the day's limit on new objects. What doesn't come back, such as posts the thief made, is gone. A reader that doesn't follow the identity just deletes. A node never deletes its own identity's objects: it signs them again itself when its key changes.
 
 **Commands.**
 
@@ -100,7 +100,7 @@ So news of a revocation travels with anything the new key signs. A thief holding
 - **The words are shown once, and the node can't show them again.** Losing them means the identity can't be restored, and a copied key can't be revoked. `osp init` checks they were written down; `osp keys check` checks the paper copy later. The words belong on paper, not on the computer they protect.
 - **The words are still everything.** Whoever has them can certify their own key and revoke the owner's. This is the same as ADR 0009, and the answer is still a new identity.
 - **Revoking costs history**: posts not in the backup file are lost along with the thief's. Retiring keeps every post, including any a thief made with the old key. The owner chooses, and the restore says so in plain words.
-- **Followers fetch the person's posts again after a revocation**, up to 100 per request. An identity with a long history means a few seconds of extra syncing.
+- **Followers fetch the person's posts again after a revocation**, up to 50 per request. An identity with a long history means a few seconds of extra syncing.
 - **Objects are about 500 bytes bigger.**
 - **Every test node is updated at once.** Nodes on `osp/social/0` and `osp/social/1` can't talk. Stage 1 nodes are all test nodes ([ADR 0006](0006-desktop-first-always-on-node.md)), so they are simply updated.
 - **Readers store a little more**: one row per identity they've seen, for its key state (a database migration).
