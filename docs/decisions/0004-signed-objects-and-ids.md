@@ -1,6 +1,6 @@
 # ADR 0004: Signed objects and content identifiers
 
-**Status:** Accepted (2026-10-21)
+**Status:** Accepted (2026-10-21). [ADR 0010](0010-signing-keys-and-revocation.md) changes who signs: the identity key no longer lives on the node, and objects are signed by a signing key it certifies, carried in a new `key` field. Object IDs and the rest of the format are unchanged.
 
 ## Context
 

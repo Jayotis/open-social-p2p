@@ -1,6 +1,6 @@
 # ADR 0009: Identity backup and recovery
 
-**Status:** Accepted (2026-10-22), and built. Still to decide before any public release ([ADR 0006](0006-desktop-first-always-on-node.md)): whether to add a second, offline key that can replace a stolen one (below).
+**Status:** Accepted (2026-10-22), and built. Theft (below) is decided in [ADR 0010](0010-signing-keys-and-revocation.md): two levels of keys. It also takes the identity key off the node, so the node can no longer show the words again, and changes the key the backup file is encrypted with.
 
 ## Context
 
