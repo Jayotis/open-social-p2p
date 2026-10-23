@@ -60,7 +60,8 @@ Backup option (b), theft option (a) for now.
 
 - it follows that identity;
 - the profile is valid under the object rules (ADR 0004) and its `nodes` list includes the sending node (the connection proves the sender holds that node's key);
-- the profile is newer (`published` later) than the one it already has for that identity, so an old profile can't be replayed to point it back.
+- the profile is newer (`published` later) than the one it already has for that identity, so an old profile can't be replayed to point it back;
+- the profile is dated no more than 5 minutes ahead of the receiving node's clock. Otherwise a profile dated years ahead could never be replaced by a later one. For the same reason, a node syncing from a followed node keeps the profile it has when the one offered is dated further ahead.
 
 It then points the follow at the sending node's address, stores the new profile and subscribes to the new node.
 
@@ -71,7 +72,7 @@ A node knows it has taken an identity over when the profile it has stored lists 
 **Lost or stolen.**
 
 - **Words lost and no working node:** the identity is gone. The person starts a new identity, and followers follow the new one. Copies of the old posts stay signed by the old identity.
-- **Key or words stolen:** whoever has them can sign as the person, including a `Moved` that points followers at their own node. The owner can answer with a newer `Moved`, but can't lock the thief out. The response is a new identity, announced to followers by other means. Until then, the key file stays readable only by its owner, the words are shown only in the node's terminal, and the backup file is encrypted.
+- **Key or words stolen:** whoever has them can sign as the person, including a `Moved` that points followers at their own node. The owner can answer with a newer `Moved` (neither side can date one far ahead to have the last word), but can't lock the thief out. The response is a new identity, announced to followers by other means. Until then, the key file stays readable only by its owner, the words are shown only in the node's terminal, and the backup file is encrypted.
 - **Before any public release**, decide whether to add two levels of keys (theft option b). Changing how objects are signed is cheapest while nobody outside the project depends on the format.
 
 ## Consequences
@@ -88,6 +89,6 @@ A node knows it has taken an identity over when the profile it has stored lists 
 
 ## Validation and revisit conditions
 
-- Tests: words to key and back; a wrong or missing word is refused; an export and import keep posts in order with the same IDs, with and without media; a file made for another identity is refused; a follower moves to the new node on `Moved` and restarts the follow, and refuses a `Moved` with an older profile, a profile that doesn't list the sender, or one for an identity it doesn't follow; following again with a code for a different node restarts the follow.
+- Tests: words to key and back; a wrong or missing word is refused; an export and import keep posts in order with the same IDs, with and without media; a file made for another identity is refused; a follower moves to the new node on `Moved` and restarts the follow, and refuses a `Moved` with an older profile, a profile dated too far ahead, a profile that doesn't list the sender, or one for an identity it doesn't follow; a profile dated far ahead, served by a node a thief moved the follow to, doesn't stop the owner's next `Moved`; following again with a code for a different node restarts the follow.
 - On test nodes: restore one node's identity onto a fresh home with a new node key, check its followers move to it and receive its new posts, and pair a phone with it.
 - Revisit before any public release (two levels of keys); if people often restore from stale files or lose them (make backups automatic); if followers who joined after a backup are often left behind (let a node ask the nodes it follows where an identity moved).
