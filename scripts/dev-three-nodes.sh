@@ -27,7 +27,9 @@ done
 step() { printf '\n\033[1m== %s\033[0m\n' "$*"; }
 
 cargo build --quiet --bin osp
-OSP="$PWD/target/debug/osp"
+# Ask cargo where it builds, since a local config or CARGO_TARGET_DIR can move it.
+TARGET_DIR="$(cargo metadata --format-version 1 --no-deps | sed 's/.*"target_directory":"\([^"]*\)".*/\1/')"
+OSP="$TARGET_DIR/debug/osp"
 osp() { local who=$1; shift; "$OSP" --home "$DEV/$who" "$@"; }
 
 rm -rf "$DEV"
