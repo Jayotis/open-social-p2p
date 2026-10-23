@@ -17,7 +17,7 @@ use iroh::{EndpointId, PublicKey};
 use n0_future::{BufferedStreamExt, StreamExt, stream};
 use osp_proto::{
     BlobHash, Note, ObjectId, Payload,
-    social::{MAX_OUTBOX_PAGE, SocialRequest, SocialResponse},
+    social::{MAX_GET_OBJECTS, MAX_OUTBOX_PAGE, SocialRequest, SocialResponse},
 };
 use tracing::{debug, info, warn};
 
@@ -153,6 +153,11 @@ impl Core {
             }
             _ => bail!("unexpected reply to GetProfile"),
         }
+        // What was dropped after a revocation comes back before new posts.
+        // If asking fails, the rest is asked for at the next sync.
+        if let Err(e) = self.refetch_revoked(follow).await {
+            warn!(%actor, "fetching posts again after a revocation failed: {e:#}");
+        }
 
         let mut cursor = follow.cursor;
         if !follow.synced {
@@ -262,6 +267,11 @@ impl Core {
             }
 
             for (object, payload) in checked {
+                // A later entry in the page may have revoked the key that signed this one.
+                if self.db.signed_by_revoked_key(&object)? {
+                    warn!(%actor, "skipping an outbox entry signed by a key revoked since");
+                    continue;
+                }
                 let is_new = self.db.insert_object(&object, &payload)?;
                 if is_new {
                     new_objects += 1;
@@ -303,6 +313,52 @@ impl Core {
         }
         self.subscribe_if_due(follow).await;
         Ok((new_objects, blobs))
+    }
+
+    /// Asks a followed node again for the objects we dropped when its
+    /// identity revoked a key (ADR 0010), `MAX_GET_OBJECTS` at a time. A copy
+    /// is kept if it's one we asked for (its ID is the hash of its payload,
+    /// which names its author) and passes `verify_received`, so one still
+    /// signed by a revoked key isn't. It takes the place of the one dropped,
+    /// keeping when that arrived, so it isn't counted against today's limit.
+    /// What doesn't come back, such as posts made by whoever had the revoked
+    /// key, stays gone.
+    async fn refetch_revoked(&self, follow: &Follow) -> Result<()> {
+        let actor = follow.actor.fmt_short();
+        loop {
+            let due = self.db.refetch_due(&follow.actor, MAX_GET_OBJECTS)?;
+            if due.is_empty() {
+                return Ok(());
+            }
+            let ids: Vec<ObjectId> = due.iter().map(|(id, _)| *id).collect();
+            let req = SocialRequest::GetObjects { ids: ids.clone() };
+            let SocialResponse::Objects { objects } =
+                self.social_request(&follow.addr, &req).await?
+            else {
+                bail!("unexpected reply to GetObjects");
+            };
+            let received: HashMap<ObjectId, i64> = due.into_iter().collect();
+            let mut restored = 0;
+            for obj in objects {
+                let Some(&received_ms) = received.get(&obj.id()) else {
+                    warn!(%actor, "skipping an object we didn't ask for");
+                    continue;
+                };
+                match self.verify_received(&obj) {
+                    Ok(payload) => {
+                        if self
+                            .db
+                            .insert_object_received(&obj, &payload, received_ms)?
+                        {
+                            restored += 1;
+                        }
+                    }
+                    Err(e) => warn!(%actor, "skipping an invalid object: {e:#}"),
+                }
+            }
+            self.db.refetch_done(&ids)?;
+            info!(%actor, asked = ids.len(), restored, "fetched posts again after a revocation");
+        }
     }
 
     /// Asks a followed node to notify us of new posts: after following,

@@ -99,6 +99,14 @@ const MIGRATIONS: &[&str] = &[
         cert_ms           INTEGER NOT NULL,
         revoked_before_ms INTEGER
     )",
+    // 5: objects of followed identities dropped because a key that signed
+    // them was revoked, to ask their node for again (ADR 0010), with when
+    // each first arrived.
+    "CREATE TABLE refetch (
+        id          TEXT PRIMARY KEY,
+        actor       TEXT NOT NULL,
+        received_ms INTEGER NOT NULL
+    )",
 ];
 
 /// Hosts remembered per blob. More than enough to find a copy; a peer
@@ -189,7 +197,18 @@ impl Db {
 
     /// Stores a verified object. Returns false if we already had it.
     pub fn insert_object(&self, obj: &SignedObject, payload: &Payload) -> Result<bool> {
-        let received = now_ms();
+        self.insert_object_received(obj, payload, now_ms())
+    }
+
+    /// Like `insert_object`, for an object that first arrived at `received`:
+    /// a copy fetched again after a revocation takes the place of the one
+    /// that was dropped, so it doesn't count as new today (ADR 0010).
+    pub fn insert_object_received(
+        &self,
+        obj: &SignedObject,
+        payload: &Payload,
+        received: i64,
+    ) -> Result<bool> {
         // Clamp author-claimed time so a future-dated post can't pin itself to the top.
         let published = osp_proto::parse_rfc3339_ms(payload.published())
             .unwrap_or(received)
@@ -296,6 +315,22 @@ impl Db {
         .collect()
     }
 
+    /// An object in our own outbox, by ID.
+    pub fn outbox_object(&self, id: &ObjectId) -> Result<Option<SignedObject>> {
+        let json: Option<String> = self
+            .conn()
+            .query_row(
+                "SELECT objects.signed FROM outbox
+                 JOIN objects ON objects.id = outbox.id
+                 WHERE outbox.id = ?1",
+                params![id.to_string()],
+                |row| row.get(0),
+            )
+            .optional()?;
+        json.map(|j| serde_json::from_str(&j).context("corrupt stored object"))
+            .transpose()
+    }
+
     pub fn outbox_latest(&self) -> Result<u64> {
         let seq: Option<i64> = self
             .conn()
@@ -334,11 +369,20 @@ impl Db {
         Ok(())
     }
 
+    /// Stops following `actor`, and forgets what was still to be fetched
+    /// again from its node.
     pub fn remove_follow(&self, actor: &PublicKey) -> Result<bool> {
-        let n = self.conn().execute(
+        let conn = self.conn();
+        let tx = conn.unchecked_transaction()?;
+        let n = tx.execute(
             "DELETE FROM follows WHERE actor = ?1",
             params![actor.to_string()],
         )?;
+        tx.execute(
+            "DELETE FROM refetch WHERE actor = ?1",
+            params![actor.to_string()],
+        )?;
+        tx.commit()?;
         Ok(n > 0)
     }
 
@@ -536,6 +580,104 @@ impl Db {
             params![actor, serde_json::to_string(cert)?, cert_ms, revoked_before],
         )?;
         Ok(revokes)
+    }
+
+    /// Whether `obj` was signed by a key its identity has since revoked.
+    pub fn signed_by_revoked_key(&self, obj: &SignedObject) -> Result<bool> {
+        let before: Option<Option<i64>> = self
+            .conn()
+            .query_row(
+                "SELECT revoked_before_ms FROM identity_keys WHERE actor = ?1",
+                params![obj.signer().to_string()],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(before
+            .flatten()
+            .is_some_and(|before| signed_before(obj, before)))
+    }
+
+    /// Deletes the stored objects of `actor` signed by keys certified before
+    /// `before_ms`, which a newer certificate revoked (ADR 0010), and its
+    /// stored profile if one of those keys signed it. With `refetch`, keeps
+    /// each deleted object's ID and when it arrived, to ask the identity's
+    /// node for a copy signed by its new key. Returns how many it deleted.
+    pub fn drop_revoked(&self, actor: &PublicKey, before_ms: i64, refetch: bool) -> Result<usize> {
+        let conn = self.conn();
+        let tx = conn.unchecked_transaction()?;
+        let mut dropped = Vec::new();
+        {
+            let mut stmt =
+                tx.prepare("SELECT id, received_ms, signed FROM objects WHERE actor = ?1")?;
+            let rows = stmt.query_map(params![actor.to_string()], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })?;
+            for row in rows {
+                let (id, received, json) = row?;
+                let obj: SignedObject =
+                    serde_json::from_str(&json).context("corrupt stored object")?;
+                if signed_before(&obj, before_ms) {
+                    dropped.push((id, received));
+                }
+            }
+        }
+        for (id, received) in &dropped {
+            tx.execute("DELETE FROM objects WHERE id = ?1", params![id])?;
+            if refetch {
+                tx.execute(
+                    "INSERT OR IGNORE INTO refetch (id, actor, received_ms) VALUES (?1, ?2, ?3)",
+                    params![id, actor.to_string(), received],
+                )?;
+            }
+        }
+        let profile: Option<String> = tx
+            .query_row(
+                "SELECT signed FROM profiles WHERE actor = ?1",
+                params![actor.to_string()],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if let Some(json) = profile
+            && signed_before(&serde_json::from_str(&json)?, before_ms)
+        {
+            tx.execute(
+                "DELETE FROM profiles WHERE actor = ?1",
+                params![actor.to_string()],
+            )?;
+        }
+        tx.commit()?;
+        Ok(dropped.len())
+    }
+
+    /// Up to `limit` objects of `actor` still to ask its node for again,
+    /// with when each first arrived.
+    pub fn refetch_due(&self, actor: &PublicKey, limit: usize) -> Result<Vec<(ObjectId, i64)>> {
+        let conn = self.conn();
+        let mut stmt =
+            conn.prepare("SELECT id, received_ms FROM refetch WHERE actor = ?1 LIMIT ?2")?;
+        let rows = stmt.query_map(params![actor.to_string(), limit as i64], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        })?;
+        rows.map(|r| {
+            let (id, received) = r?;
+            Ok((id.parse()?, received))
+        })
+        .collect()
+    }
+
+    /// Forgets objects that were asked for again, whether they came back or not.
+    pub fn refetch_done(&self, ids: &[ObjectId]) -> Result<()> {
+        let conn = self.conn();
+        let tx = conn.unchecked_transaction()?;
+        for id in ids {
+            tx.execute("DELETE FROM refetch WHERE id = ?1", params![id.to_string()])?;
+        }
+        tx.commit()?;
+        Ok(())
     }
 
     // ---- profiles ----
@@ -821,6 +963,20 @@ fn migrate(conn: &Connection) -> Result<()> {
         tx.commit()?;
     }
     Ok(())
+}
+
+/// Whether a key certified before `before_ms` signed `obj`. Never true of
+/// an object the identity key signed itself: that key is never revoked.
+fn signed_before(obj: &SignedObject, before_ms: i64) -> bool {
+    let Some(cert) = obj.certificate() else {
+        return false;
+    };
+    match cert.verify() {
+        Ok(Payload::Key(key)) => {
+            osp_proto::parse_rfc3339_ms(&key.published).is_some_and(|cert_ms| cert_ms < before_ms)
+        }
+        _ => false,
+    }
 }
 
 /// Records the sizes a post declares for its media and thumbnails.

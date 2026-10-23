@@ -8,6 +8,7 @@
 //! loopback with relays and DNS lookup off.
 
 use std::{
+    collections::HashSet,
     net::SocketAddr,
     path::Path,
     sync::{Arc, Mutex},
@@ -22,12 +23,13 @@ use iroh::{
 };
 use osp_node::{Config, Home, Node, backup};
 use osp_proto::{
-    Announce, CertifiedKey, EarlierKeys, FollowTicket, Note, Payload, Person, SOCIAL_ALPN,
-    SecretKey, SignedObject,
+    Announce, CertifiedKey, EarlierKeys, FollowTicket, Note, ObjectId, Payload, Person,
+    SOCIAL_ALPN, SecretKey, SignedObject,
     framing::{read_frame, write_frame},
     rpc::{ClientRequest, ClientResponse, FollowInfo},
-    social::{OutboxEntry, SocialRequest, SocialResponse},
+    social::{MAX_GET_OBJECTS, OutboxEntry, SocialRequest, SocialResponse},
 };
+use rusqlite::OptionalExtension;
 
 async fn start(root: &Path, name: &str) -> Node {
     let home = root.join(name.to_lowercase());
@@ -99,11 +101,15 @@ fn signed(key: &CertifiedKey, payload: &Payload) -> SignedObject {
 }
 
 /// What a test-run node serves: a profile, and an outbox of posts, each
-/// with the objects bundled with it (what a reshare points at).
+/// with the objects bundled with it (what a reshare points at). It answers
+/// `GetObjects` from `objects`, or, until a test sets them, as a node that
+/// doesn't know the request. `asked` records the IDs each `GetObjects` named.
 #[derive(Default)]
 struct Served {
     profile: Option<SignedObject>,
     posts: Vec<(SignedObject, Vec<SignedObject>)>,
+    objects: Option<Vec<SignedObject>>,
+    asked: Vec<Vec<ObjectId>>,
 }
 
 /// A node run by the test for an identity. It serves whatever is in `served`.
@@ -133,8 +139,19 @@ impl ProtocolHandler for Author {
 
 impl Author {
     fn answer(&self, req: SocialRequest) -> SocialResponse {
-        let served = self.served.lock().unwrap();
+        let mut served = self.served.lock().unwrap();
         match req {
+            SocialRequest::GetObjects { ids } => {
+                served.asked.push(ids.clone());
+                match &served.objects {
+                    Some(objects) => SocialResponse::Objects {
+                        objects: objects.clone(),
+                    },
+                    None => SocialResponse::Error {
+                        message: "unknown request".into(),
+                    },
+                }
+            }
             SocialRequest::GetProfile => SocialResponse::Profile {
                 profile: served.profile.clone().expect("a profile to serve"),
             },
@@ -166,6 +183,16 @@ impl Author {
 
     fn post(&self, post: SignedObject) {
         self.served.lock().unwrap().posts.push((post, vec![]));
+    }
+
+    /// Answers every `GetObjects` with `objects`, whatever it asks for.
+    fn serve_objects(&self, objects: Vec<SignedObject>) {
+        self.served.lock().unwrap().objects = Some(objects);
+    }
+
+    /// The IDs each `GetObjects` so far asked for.
+    fn asked(&self) -> Vec<Vec<ObjectId>> {
+        self.served.lock().unwrap().asked.clone()
     }
 
     /// Reshares `post`, signed by `resharer` itself, bundling the post.
@@ -278,6 +305,8 @@ async fn a_revoked_key_is_refused_and_a_retired_one_isnt() {
     let feed = feed_texts(&bob).await;
     assert!(feed.contains(&"second key".to_string()), "{feed:?}");
     assert!(!feed.iter().any(|t| t.contains("thief")), "{feed:?}");
+    // What the identity key signed itself stays: it is never revoked.
+    assert!(feed.contains(&"identity key".to_string()), "{feed:?}");
 
     // Later she only retires the second key: what it signs stays valid.
     let third = certify(&alice, -3600, EarlierKeys::Retired);
@@ -339,10 +368,12 @@ async fn after_a_revocation_a_thief_cant_move_followers_back() {
     follow(&bob, &alice, &home_node).await;
     feed_texts(&bob).await;
 
-    // Someone copies her signing key and moves Bob's follow to their node.
+    // Someone copies her signing key and moves Bob's follow to their node,
+    // with a profile dated four minutes ahead, as far as Bob allows, so that
+    // it would outrank one she makes now.
     let thiefs_profile = signed(
         &stolen,
-        &profile(&alice, vec![thief_node.endpoint().id()], -60),
+        &profile(&alice, vec![thief_node.endpoint().id()], 4 * 60),
     );
     thiefs.set_profile(thiefs_profile.clone());
     thiefs.post(signed(&stolen, &note(&alice, "posted by the thief")));
@@ -358,7 +389,8 @@ async fn after_a_revocation_a_thief_cant_move_followers_back() {
     assert_eq!(feed_texts(&bob).await, ["posted by the thief"]);
 
     // Alice takes her identity back with her words: a new key that revokes
-    // the stolen one, on a new node.
+    // the stolen one, on a new node. Bob drops the profile the stolen key
+    // signed, so hers isn't refused as older.
     let taken_back = certify(&alice, 0, EarlierKeys::Revoked);
     let new_profile = signed(
         &taken_back,
@@ -371,11 +403,8 @@ async fn after_a_revocation_a_thief_cant_move_followers_back() {
         ask(&new_node, &bob_addr, &req).await,
         SocialResponse::Ok
     ));
-    assert!(
-        feed_texts(&bob)
-            .await
-            .contains(&"it's really me".to_string())
-    );
+    // The thief's post is gone with it.
+    assert_eq!(feed_texts(&bob).await, ["it's really me"]);
 
     // The thief answers with a newer profile, signed with the stolen key.
     // Bob refuses it and stays with Alice's new node.
@@ -445,6 +474,163 @@ async fn news_of_a_revocation_travels_with_a_reshare() {
     carols.reshare(&carol, &signed(&old, &note(&alice, "old key")));
     let feed = feed_texts(&bob).await;
     assert!(!feed.contains(&"old key".to_string()), "{feed:?}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_follower_keeps_only_valid_copies_of_what_it_dropped() {
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter("osp_node=debug,warn")
+        .with_test_writer()
+        .try_init();
+    let dir = tempfile::tempdir().unwrap();
+    let bob = start(dir.path(), "Bob").await;
+    let alice = SecretKey::generate();
+    let author = Author::default();
+    let node = serve(author.clone(), &bob.addr().await).await;
+    let first = certify(&alice, -3600, EarlierKeys::Retired);
+    author.set_profile(signed(
+        &first,
+        &profile(&alice, vec![node.endpoint().id()], -3600),
+    ));
+    let one = signed(&first, &note(&alice, "one"));
+    let two = signed(&first, &note(&alice, "two"));
+    author.post(one.clone());
+    author.post(two.clone());
+    follow(&bob, &alice, &node).await;
+    let mut feed = feed_texts(&bob).await;
+    feed.sort();
+    assert_eq!(feed, ["one", "two"]);
+
+    // She revokes the first key. Bob drops both posts and asks her node for
+    // them again, but it doesn't know how to answer yet.
+    let second = certify(&alice, 0, EarlierKeys::Revoked);
+    author.set_profile(signed(
+        &second,
+        &profile(&alice, vec![node.endpoint().id()], 0),
+    ));
+    assert!(feed_texts(&bob).await.is_empty());
+    assert!(!author.asked().is_empty());
+    let dropped = HashSet::from([one.id(), two.id()]);
+    for ids in author.asked() {
+        assert_eq!(ids.into_iter().collect::<HashSet<_>>(), dropped);
+    }
+
+    // Now it answers, at the next sync: with "one" signed by the new key,
+    // "two" still signed by the revoked one, and a post Bob didn't ask for.
+    author.serve_objects(vec![
+        one.signed_again(&second).unwrap(),
+        two.clone(),
+        signed(&second, &note(&alice, "not asked for")),
+    ]);
+    assert_eq!(feed_texts(&bob).await, ["one"]);
+    // What was asked for is forgotten, whether it came back or not.
+    let asked = author.asked().len();
+    feed_texts(&bob).await;
+    assert_eq!(author.asked().len(), asked);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn unfollowing_forgets_what_was_to_be_fetched_again() {
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter("osp_node=debug,warn")
+        .with_test_writer()
+        .try_init();
+    let dir = tempfile::tempdir().unwrap();
+    let bob = start(dir.path(), "Bob").await;
+    let alice = SecretKey::generate();
+    let author = Author::default();
+    let node = serve(author.clone(), &bob.addr().await).await;
+    let first = certify(&alice, -3600, EarlierKeys::Retired);
+    author.set_profile(signed(
+        &first,
+        &profile(&alice, vec![node.endpoint().id()], -3600),
+    ));
+    let one = signed(&first, &note(&alice, "one"));
+    author.post(one.clone());
+    follow(&bob, &alice, &node).await;
+    assert_eq!(feed_texts(&bob).await, ["one"]);
+
+    // She revokes the first key; her node can't answer `GetObjects` yet.
+    let second = certify(&alice, 0, EarlierKeys::Revoked);
+    author.set_profile(signed(
+        &second,
+        &profile(&alice, vec![node.endpoint().id()], 0),
+    ));
+    assert!(feed_texts(&bob).await.is_empty());
+
+    // Bob unfollows, then follows again: the post he dropped isn't asked for.
+    let actor = alice.public();
+    call(&bob, ClientRequest::Unfollow { actor }).await;
+    author.serve_objects(vec![one.signed_again(&second).unwrap()]);
+    let asked = author.asked().len();
+    follow(&bob, &alice, &node).await;
+    assert!(feed_texts(&bob).await.is_empty());
+    assert_eq!(author.asked().len(), asked);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_reader_that_doesnt_follow_just_drops_what_a_revoked_key_signed() {
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter("osp_node=debug,warn")
+        .with_test_writer()
+        .try_init();
+    let dir = tempfile::tempdir().unwrap();
+    let bob = start(dir.path(), "Bob").await;
+    let bob_addr = bob.addr().await;
+    let (alice, carol) = (SecretKey::generate(), SecretKey::generate());
+    let (alices, carols) = (Author::default(), Author::default());
+    let alice_node = serve(alices.clone(), &bob_addr).await;
+    let carol_node = serve(carols.clone(), &bob_addr).await;
+    let carols_profile = profile(&carol, vec![carol_node.endpoint().id()], -3600);
+    carols.set_profile(SignedObject::sign(&carol, &carols_profile).unwrap());
+    follow(&bob, &carol, &carol_node).await;
+
+    // Bob follows only Carol, who reshares Alice's posts.
+    let old = certify(&alice, -3600, EarlierKeys::Retired);
+    carols.reshare(&carol, &signed(&old, &note(&alice, "old key")));
+    assert_eq!(feed_texts(&bob).await, ["old key"]);
+    let new = certify(&alice, 0, EarlierKeys::Revoked);
+    carols.reshare(&carol, &signed(&new, &note(&alice, "new key")));
+    assert_eq!(feed_texts(&bob).await, ["new key"]);
+
+    // He didn't follow her, so nothing was kept to ask her node for, even
+    // once he does.
+    alices.set_profile(signed(
+        &new,
+        &profile(&alice, vec![alice_node.endpoint().id()], 0),
+    ));
+    alices.serve_objects(vec![]);
+    follow(&bob, &alice, &alice_node).await;
+    feed_texts(&bob).await;
+    assert!(alices.asked().is_empty(), "{:?}", alices.asked());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_post_before_news_of_a_revocation_in_the_same_page_is_dropped() {
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter("osp_node=debug,warn")
+        .with_test_writer()
+        .try_init();
+    let dir = tempfile::tempdir().unwrap();
+    let bob = start(dir.path(), "Bob").await;
+    let alice = SecretKey::generate();
+    let author = Author::default();
+    let node = serve(author.clone(), &bob.addr().await).await;
+    let first = certify(&alice, -3600, EarlierKeys::Retired);
+    author.set_profile(signed(
+        &first,
+        &profile(&alice, vec![node.endpoint().id()], -3600),
+    ));
+    follow(&bob, &alice, &node).await;
+    feed_texts(&bob).await;
+
+    // One page brings a post signed with the first key, then one signed
+    // with a key that revokes it. The first passes its check before Bob
+    // learns of the revocation from the second.
+    let second = certify(&alice, 0, EarlierKeys::Revoked);
+    author.post(signed(&first, &note(&alice, "slipped in")));
+    author.post(signed(&second, &note(&alice, "the news")));
+    assert_eq!(feed_texts(&bob).await, ["the news"]);
 }
 
 async fn post(node: &Node, text: &str) {
@@ -624,7 +810,7 @@ async fn an_older_node_works_until_protect_takes_its_identity_key_off() {
         *shown.borrow_mut() = words.join(" ");
         anyhow::bail!("not written down")
     });
-    assert!(not_written.is_err());
+    assert_eq!(not_written.unwrap_err().to_string(), "not written down");
     assert_eq!(*shown.borrow(), words);
     assert!(files.identity_key().exists());
     assert!(!files.signing_key().exists());
@@ -681,15 +867,17 @@ async fn an_older_node_works_until_protect_takes_its_identity_key_off() {
     }
 }
 
-/// Checks `ready` every 100 ms, for up to 20 s.
+/// Checks `ready` every 100 ms, for up to 60 s in all. A check can take a
+/// while itself (a sync waits up to 20 s for a node that's gone), so the
+/// limit is on the time, not the number of checks.
 async fn wait_until(what: &str, mut ready: impl AsyncFnMut() -> bool) {
-    for _ in 0..200 {
-        if ready().await {
-            return;
+    let waited = tokio::time::timeout(Duration::from_secs(60), async {
+        while !ready().await {
+            tokio::time::sleep(Duration::from_millis(100)).await;
         }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-    panic!("gave up waiting for {what}");
+    })
+    .await;
+    assert!(waited.is_ok(), "gave up waiting for {what}");
 }
 
 /// The signing key in a home's files, as someone who copied them has it.
@@ -779,6 +967,36 @@ async fn feed_has(node: &Node, text: &str) -> bool {
     feed_texts(node).await.contains(&text.to_string())
 }
 
+/// Syncs, then returns the IDs and texts in the feed, newest first.
+async fn feed_items(node: &Node) -> Vec<(ObjectId, String)> {
+    call(node, ClientRequest::Sync).await;
+    match call(node, ClientRequest::Feed { limit: 100 }).await {
+        ClientResponse::Feed { items } => items.into_iter().map(|i| (i.id, i.content)).collect(),
+        other => panic!("unexpected {other:?}"),
+    }
+}
+
+/// What a node's database keeps of an object: when it arrived, and the
+/// signing key of its copy (`None` if the identity key signed it).
+fn stored(home: &Path, id: &ObjectId) -> Option<(i64, Option<iroh::PublicKey>)> {
+    let db = rusqlite::Connection::open(Home::new(home).db()).unwrap();
+    let row: Option<(i64, String)> = db
+        .query_row(
+            "SELECT received_ms, signed FROM objects WHERE id = ?1",
+            [id.to_string()],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()
+        .unwrap();
+    row.map(|(received, json)| {
+        let obj: SignedObject = serde_json::from_str(&json).unwrap();
+        (
+            received,
+            obj.verify_with_key().unwrap().1.map(|key| key.key),
+        )
+    })
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn replacing_a_copied_key_keeps_the_owners_posts_and_shuts_the_copy_out() {
     let _ = tracing_subscriber::fmt()
@@ -801,6 +1019,7 @@ async fn replacing_a_copied_key_keeps_the_owners_posts_and_shuts_the_copy_out() 
     let bob = Node::spawn(&bob_home).await.unwrap();
     follow_node(&bob, &alice).await;
     assert_eq!(feed_texts(&bob).await, ["before"]);
+    let (first_received, _) = stored(&bob_home, &before[0].id()).unwrap();
 
     // Someone copies her node's files and runs them as a node of their own,
     // which moves Bob's follow there.
@@ -855,6 +1074,18 @@ async fn replacing_a_copied_key_keeps_the_owners_posts_and_shuts_the_copy_out() 
     })
     .await;
 
+    // Bob dropped what the copied key signed, so the thief's post is gone.
+    // Hers came back from her node, signed with the new key, keeping its
+    // ID, its place in the feed and when it first arrived.
+    let feed = feed_items(&bob).await;
+    let texts: Vec<&str> = feed.iter().map(|(_, text)| text.as_str()).collect();
+    assert_eq!(texts, ["after", "before"]);
+    assert_eq!(feed[1].0, before[0].id());
+    assert_eq!(
+        stored(&bob_home, &before[0].id()),
+        Some((first_received, Some(new_cert.key)))
+    );
+
     // Whoever holds the copied key can't move Bob again.
     refused(move_as(&copied, &bob).await, "revoked");
     thief.shutdown().await.unwrap();
@@ -891,6 +1122,8 @@ async fn a_restore_that_revokes_the_old_key_signs_the_backup_again() {
     assert_eq!(feed_texts(&bob).await, ["before"]);
     let file = dir.path().join("alice.ospbackup");
     export(&alice, &file).await;
+    post(&alice, "after the backup").await;
+    assert!(feed_has(&bob, "after the backup").await);
 
     // Her computer is stolen: whoever has it can run her node.
     let copied = copied_signing_key(&home);
@@ -931,9 +1164,187 @@ async fn a_restore_that_revokes_the_old_key_signs_the_backup_again() {
     })
     .await;
     refused(move_as(&copied, &bob).await, "revoked");
+    // The old key signed her post after the backup too. Her new node can't
+    // sign it again, since the backup doesn't have it, so Bob loses it.
+    assert_eq!(feed_texts(&bob).await, ["on the new computer", "before"]);
 
     // When nobody else can have the old key, a restore retires it instead.
     let retired = dir.path().join("alice-retired");
     Node::restore(&retired, &config, &words, Some(&file), EarlierKeys::Retired).unwrap();
     assert_eq!(certificate_in(&retired).earlier_keys, EarlierKeys::Retired);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_restore_that_retires_the_old_key_keeps_what_it_signed() {
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter("osp_node=debug,warn")
+        .with_test_writer()
+        .try_init();
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("alice");
+    let words = Node::init(&home, &Config::local_test("Alice"))
+        .unwrap()
+        .join(" ");
+    let alice = Node::spawn(&home).await.unwrap();
+    post(&alice, "before").await;
+    let bob_home = dir.path().join("bob");
+    Node::init(&bob_home, &Config::local_test("Bob")).unwrap();
+    let bob = Node::spawn(&bob_home).await.unwrap();
+    follow_node(&bob, &alice).await;
+    // Bob's first sync subscribes him, so the backup lists him as a
+    // follower to tell of the move.
+    assert_eq!(feed_texts(&bob).await, ["before"]);
+    let file = dir.path().join("alice.ospbackup");
+    export(&alice, &file).await;
+    post(&alice, "after the backup").await;
+    assert!(feed_has(&bob, "after the backup").await);
+    alice.shutdown().await.unwrap();
+
+    // Her old computer died; nobody else has it. She restores and retires
+    // the old key, so what it signed stays valid, even what the backup missed.
+    let new_home = dir.path().join("alice-new");
+    let config = Config::local_test("Alice");
+    Node::restore(
+        &new_home,
+        &config,
+        &words,
+        Some(&file),
+        EarlierKeys::Retired,
+    )
+    .unwrap();
+    let alice = Node::spawn(&new_home).await.unwrap();
+    post(&alice, "on the new computer").await;
+    wait_until("Bob to follow the new node", async || {
+        feed_has(&bob, "on the new computer").await
+    })
+    .await;
+    assert_eq!(
+        feed_texts(&bob).await,
+        ["on the new computer", "after the backup", "before"]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_follower_fetches_the_posts_again_after_a_key_is_replaced() {
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter("osp_node=debug,warn")
+        .with_test_writer()
+        .try_init();
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("alice");
+    let words = Node::init(&home, &Config::local_test("Alice"))
+        .unwrap()
+        .join(" ");
+    let alice = Node::spawn(&home).await.unwrap();
+    // More than one `GetObjects` can ask for, dated apart so the feed's
+    // order is clear.
+    for i in 0..MAX_GET_OBJECTS + 5 {
+        post(&alice, &format!("post {i}")).await;
+        tokio::time::sleep(Duration::from_millis(2)).await;
+    }
+    let bob_home = dir.path().join("bob");
+    Node::init(&bob_home, &Config::local_test("Bob")).unwrap();
+    let bob = Node::spawn(&bob_home).await.unwrap();
+    follow_node(&bob, &alice).await;
+    let before = feed_items(&bob).await;
+    assert_eq!(before.len(), MAX_GET_OBJECTS + 5);
+    let first_received: Vec<i64> = before
+        .iter()
+        .map(|(id, _)| stored(&bob_home, id).unwrap().0)
+        .collect();
+    // Following also started a sync in the background, at least 5 s after
+    // the one before it. Let it finish, so that only news of the revocation
+    // starts Bob's next sync: his regular one is an hour away.
+    tokio::time::sleep(Duration::from_secs(6)).await;
+
+    // She replaces her key, on the same node, in case its files were copied.
+    alice.shutdown().await.unwrap();
+    Node::replace_keys(&home, || Ok(words.clone())).unwrap();
+    let new_key = certificate_in(&home).key;
+    let _alice = Node::spawn(&home).await.unwrap();
+
+    // Bob's follow stays where it was, past all her posts. He drops them
+    // and fetches them again from her node, signed with the new key.
+    wait_until("Bob to fetch her posts again", async || {
+        before
+            .iter()
+            .all(|(id, _)| stored(&bob_home, id).is_some_and(|(_, key)| key == Some(new_key)))
+    })
+    .await;
+    assert_eq!(feed_items(&bob).await, before);
+    for ((id, _), received) in before.iter().zip(first_received) {
+        assert_eq!(stored(&bob_home, id).unwrap().0, received);
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn get_objects_serves_only_the_nodes_own_posts_and_at_most_50() {
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter("osp_node=debug,warn")
+        .with_test_writer()
+        .try_init();
+    let dir = tempfile::tempdir().unwrap();
+    let alice = start(dir.path(), "Alice").await;
+    let bob = start(dir.path(), "Bob").await;
+    post(&alice, "Alice's").await;
+    post(&bob, "Bob's").await;
+    // Alice's node keeps Bob's post too.
+    follow_node(&alice, &bob).await;
+    assert!(feed_has(&alice, "Bob's").await);
+    let alices = outbox(&alice).await.remove(0);
+    let bobs = outbox(&bob).await.remove(0);
+
+    let unknown = ObjectId::of(b"nothing");
+    let req = SocialRequest::GetObjects {
+        ids: vec![bobs.id(), unknown, alices.id()],
+    };
+    match ask_node(&alice, &req).await {
+        SocialResponse::Objects { objects } => {
+            assert_eq!(objects.len(), 1);
+            assert_eq!(objects[0], alices);
+        }
+        other => panic!("unexpected {other:?}"),
+    }
+    let req = SocialRequest::GetObjects {
+        ids: vec![alices.id(); MAX_GET_OBJECTS],
+    };
+    match ask_node(&alice, &req).await {
+        SocialResponse::Objects { objects } => assert_eq!(objects.len(), MAX_GET_OBJECTS),
+        other => panic!("unexpected {other:?}"),
+    }
+    let req = SocialRequest::GetObjects {
+        ids: vec![alices.id(); MAX_GET_OBJECTS + 1],
+    };
+    refused(ask_node(&alice, &req).await, "at most 50");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_node_keeps_its_own_posts_when_it_hears_its_key_was_revoked() {
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter("osp_node=debug,warn")
+        .with_test_writer()
+        .try_init();
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("alice");
+    let words = Node::init(&home, &Config::local_test("Alice"))
+        .unwrap()
+        .join(" ");
+    let alice = Node::spawn(&home).await.unwrap();
+    post(&alice, "mine").await;
+
+    // Its owner revoked its key elsewhere, and Carol, whom this node
+    // follows, reshares a post signed with the new key.
+    let identity = backup::identity_from_words(&words).unwrap();
+    let carol = SecretKey::generate();
+    let carols = Author::default();
+    let carol_node = serve(carols.clone(), &alice.addr().await).await;
+    let carols_profile = profile(&carol, vec![carol_node.endpoint().id()], -60);
+    carols.set_profile(SignedObject::sign(&carol, &carols_profile).unwrap());
+    follow(&alice, &carol, &carol_node).await;
+    let new = certify(&identity, 60, EarlierKeys::Revoked);
+    carols.reshare(&carol, &signed(&new, &note(&identity, "from the new key")));
+    assert!(feed_has(&alice, "from the new key").await);
+
+    // What this node published stays in its outbox.
+    assert_eq!(outbox(&alice).await.len(), 1);
 }

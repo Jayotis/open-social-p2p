@@ -6,10 +6,17 @@
 use iroh_base::{EndpointAddr, PublicKey};
 use serde::{Deserialize, Serialize};
 
-use crate::{object::SignedObject, types::BlobHash};
+use crate::{
+    object::{ObjectId, SignedObject},
+    types::BlobHash,
+};
 
 /// Largest outbox page a node will return.
 pub const MAX_OUTBOX_PAGE: u32 = 100;
+
+/// Most objects one `GetObjects` may ask for. The largest object is about
+/// 172 KiB once encoded, so this many always fit in one reply frame.
+pub const MAX_GET_OBJECTS: usize = 50;
 
 /// Largest request frame a node reads, in bytes. Every request is small;
 /// replies (outbox pages) may use the full frame size.
@@ -37,6 +44,11 @@ pub enum SocialRequest {
         profile: SignedObject,
         addr: EndpointAddr,
     },
+    /// Objects from this node's own outbox, by ID, at most
+    /// [`MAX_GET_OBJECTS`]. A follower asks for them after the identity
+    /// revoked a signing key, for copies signed by the new key in place of
+    /// the ones it dropped (ADR 0010). IDs the node doesn't have are skipped.
+    GetObjects { ids: Vec<ObjectId> },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -56,6 +68,9 @@ pub enum SocialResponse {
     Ok,
     Hosts {
         nodes: Vec<EndpointAddr>,
+    },
+    Objects {
+        objects: Vec<SignedObject>,
     },
     Error {
         message: String,
