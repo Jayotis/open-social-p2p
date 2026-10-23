@@ -10,7 +10,7 @@ use iroh::{
     protocol::{AcceptError, ProtocolHandler},
 };
 use osp_proto::{
-    Payload, SOCIAL_ALPN, SignedObject,
+    Payload, Person, SOCIAL_ALPN, SignedObject,
     framing::{read_frame, read_frame_max, write_frame},
     social::{MAX_OUTBOX_PAGE, MAX_REQUEST_LEN, OutboxEntry, SocialRequest, SocialResponse},
 };
@@ -49,6 +49,10 @@ const MAX_NEW_FOLLOWERS_PER_HOUR: usize = 100;
 /// Followers not heard from for this long are forgotten. A live follower's
 /// node subscribes again every day, and answers notifications.
 pub(crate) const FOLLOWER_SILENCE: Duration = Duration::from_secs(30 * 24 * 60 * 60);
+/// How far ahead of our clock a profile may be dated. The newer profile
+/// wins (ADR 0009), so one dated years ahead could never be replaced; this
+/// still lets clocks a few minutes apart work.
+const MAX_PROFILE_AHEAD: Duration = Duration::from_secs(5 * 60);
 
 /// Accepts incoming `osp/social/0` connections.
 #[derive(Clone)]
@@ -230,7 +234,8 @@ impl Core {
     /// Points a follow at the node an identity moved to (ADR 0009). Believed
     /// only with a profile signed by that identity, listing that node, and
     /// newer than the one we have, so an old profile can't be replayed to
-    /// point us back.
+    /// point us back. It mustn't be dated ahead of our clock either
+    /// (`profile_date`), or no later move could replace it.
     fn follow_moved(&self, profile: &SignedObject, addr: &EndpointAddr) -> Result<()> {
         let Payload::Person(person) = profile.verify()? else {
             bail!("not a profile");
@@ -249,8 +254,7 @@ impl Core {
         if follow.addr.id == addr.id {
             return Ok(()); // Told before.
         }
-        let published = osp_proto::parse_rfc3339_ms(&person.published)
-            .context("the profile has no valid date")?;
+        let published = profile_date(&person)?;
         if let Some(stored) = self.db.profile(&actor)?
             && let Ok(Payload::Person(known)) = stored.verify()
             && let Some(known_ms) = osp_proto::parse_rfc3339_ms(&known.published)
@@ -370,6 +374,20 @@ impl Core {
     ) -> std::sync::MutexGuard<'_, std::collections::HashMap<EndpointId, Connection>> {
         self.conns.lock().unwrap_or_else(|e| e.into_inner())
     }
+}
+
+/// A profile's date in Unix milliseconds, if it has one and it isn't
+/// further ahead of our clock than `MAX_PROFILE_AHEAD`.
+pub(crate) fn profile_date(person: &Person) -> Result<i64> {
+    let published =
+        osp_proto::parse_rfc3339_ms(&person.published).context("the profile has no valid date")?;
+    let ahead = Duration::from_millis(published.saturating_sub(now_ms()).max(0) as u64);
+    ensure!(
+        ahead <= MAX_PROFILE_AHEAD,
+        "the profile is dated {} ahead of our clock; is the sender's clock right?",
+        humantime::format_duration(Duration::from_secs(ahead.as_secs()))
+    );
+    Ok(published)
 }
 
 async fn request_on(conn: &Connection, req: &SocialRequest) -> Result<SocialResponse> {

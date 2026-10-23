@@ -24,6 +24,7 @@ use tracing::{debug, info, warn};
 use crate::{
     db::{BlobClass, Follow, now_ms},
     node::{Core, check_addr, remember},
+    social::profile_date,
 };
 
 /// How often we ask each followed node to keep notifying us.
@@ -142,8 +143,13 @@ impl Core {
                     "node {} speaks for a different identity",
                     follow.addr.id.fmt_short()
                 );
-                self.db
-                    .upsert_profile(&person.actor, &person.name, &profile)?;
+                // One dated far ahead would outrank every later move (ADR 0009).
+                match profile_date(&person) {
+                    Ok(_) => self
+                        .db
+                        .upsert_profile(&person.actor, &person.name, &profile)?,
+                    Err(e) => warn!(%actor, "keeping the profile we have: {e:#}"),
+                }
             }
             _ => bail!("unexpected reply to GetProfile"),
         }
