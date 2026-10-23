@@ -1,10 +1,11 @@
-//! Objects signed by certified keys, and what readers do when an identity
-//! retires or revokes a key (ADR 0010).
+//! Signing keys (ADR 0010): how a node keeps its keys, objects signed by
+//! certified keys, and what readers do when an identity retires or revokes
+//! a key.
 //!
-//! The reader is a real node. The identities it follows are played by the
-//! test, with small nodes that serve whatever the test gives them, since a
-//! real node doesn't sign with a certified key yet. Everything runs in this
-//! process on loopback with relays and DNS lookup off.
+//! Where a test needs objects a real node wouldn't sign, the identities a
+//! node follows are played by the test, with small nodes that serve
+//! whatever the test gives them. Everything runs in this process on
+//! loopback with relays and DNS lookup off.
 
 use std::{
     net::SocketAddr,
@@ -19,7 +20,7 @@ use iroh::{
     endpoint::{Connection, presets},
     protocol::{AcceptError, ProtocolHandler, Router},
 };
-use osp_node::{Config, Node};
+use osp_node::{Config, Home, Node, backup};
 use osp_proto::{
     Announce, CertifiedKey, EarlierKeys, FollowTicket, Note, Payload, Person, SOCIAL_ALPN,
     SecretKey, SignedObject,
@@ -444,4 +445,237 @@ async fn news_of_a_revocation_travels_with_a_reshare() {
     carols.reshare(&carol, &signed(&old, &note(&alice, "old key")));
     let feed = feed_texts(&bob).await;
     assert!(!feed.contains(&"old key".to_string()), "{feed:?}");
+}
+
+async fn post(node: &Node, text: &str) {
+    let req = ClientRequest::Post {
+        content: text.into(),
+        attachments: vec![],
+        uploads: vec![],
+    };
+    call(node, req).await;
+}
+
+async fn follow_node(follower: &Node, followed: &Node) {
+    let ClientResponse::Ticket { ticket } = call(followed, ClientRequest::Invite).await else {
+        panic!("no ticket")
+    };
+    call(follower, ClientRequest::Follow { ticket }).await;
+}
+
+async fn problems(node: &Node) -> Vec<String> {
+    match call(node, ClientRequest::Status).await {
+        ClientResponse::Status(status) => status.problems,
+        other => panic!("unexpected {other:?}"),
+    }
+}
+
+/// Writes a backup file, without media. Returns its format version.
+async fn export(node: &Node, path: &Path) -> u8 {
+    let req = ClientRequest::ExportBackup {
+        path: path.into(),
+        media: false,
+    };
+    call(node, req).await;
+    // After the 9 bytes of "OSPBACKUP".
+    std::fs::read(path).unwrap()[9]
+}
+
+/// Asks a real node something over `osp/social/1`, as a node it doesn't know.
+async fn ask_node(node: &Node, req: &SocialRequest) -> SocialResponse {
+    let addr = node.addr().await;
+    let stranger = serve(Author::default(), &addr).await;
+    ask(&stranger, &addr, req).await
+}
+
+async fn profile_of(node: &Node) -> SignedObject {
+    match ask_node(node, &SocialRequest::GetProfile).await {
+        SocialResponse::Profile { profile } => profile,
+        other => panic!("unexpected {other:?}"),
+    }
+}
+
+/// The objects in a node's outbox, oldest first.
+async fn outbox(node: &Node) -> Vec<SignedObject> {
+    let req = SocialRequest::GetOutbox {
+        since: 0,
+        limit: 100,
+    };
+    match ask_node(node, &req).await {
+        SocialResponse::Outbox { entries, .. } => entries.into_iter().map(|e| e.object).collect(),
+        other => panic!("unexpected {other:?}"),
+    }
+}
+
+/// Turns a newly made home into one made before ADR 0010: the identity key
+/// in `identity.key`, and no signing key.
+fn make_old_home(home: &Path, words: &str) {
+    let files = Home::new(home);
+    for file in [
+        files.signing_key(),
+        files.signing_cert(),
+        files.backup_key(),
+    ] {
+        std::fs::remove_file(file).unwrap();
+    }
+    let identity = backup::identity_from_words(words).unwrap();
+    let hex: String = identity
+        .to_bytes()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    std::fs::write(files.identity_key(), hex).unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_new_node_keeps_a_certified_signing_key_and_not_the_identity_key() {
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter("osp_node=debug,warn")
+        .with_test_writer()
+        .try_init();
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("alice");
+    let words = Node::init(&home, &Config::local_test("Alice"))
+        .unwrap()
+        .join(" ");
+    let identity = backup::identity_from_words(&words).unwrap().public();
+
+    // The words are the only copy of the identity key.
+    let files = Home::new(&home);
+    assert!(!files.identity_key().exists());
+    for file in [
+        files.signing_key(),
+        files.signing_cert(),
+        files.backup_key(),
+    ] {
+        assert!(file.exists(), "no {}", file.display());
+    }
+    let err = backup::recovery_words(&home).unwrap_err().to_string();
+    assert!(err.contains("only where you wrote them down"), "{err}");
+    assert!(backup::check_words(&home, &words).unwrap());
+    let others = backup::new_identity_words().join(" ");
+    assert!(!backup::check_words(&home, &others).unwrap());
+
+    // Its profile and posts carry the certificate for its signing key, and
+    // a follower takes them.
+    let alice = Node::spawn(&home).await.unwrap();
+    assert_eq!(alice.identity(), identity);
+    post(&alice, "hello").await;
+    for obj in [profile_of(&alice).await, outbox(&alice).await.remove(0)] {
+        let (_, cert) = obj.verify_with_key().unwrap();
+        assert_eq!(cert.expect("signed by a certified key").actor, identity);
+    }
+    assert!(
+        !problems(&alice)
+            .await
+            .iter()
+            .any(|p| p.contains("identity key"))
+    );
+    let bob_home = dir.path().join("bob");
+    Node::init(&bob_home, &Config::local_test("Bob")).unwrap();
+    let bob = Node::spawn(&bob_home).await.unwrap();
+    follow_node(&bob, &alice).await;
+    assert_eq!(feed_texts(&bob).await, ["hello"]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_older_node_works_until_protect_takes_its_identity_key_off() {
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter("osp_node=debug,warn")
+        .with_test_writer()
+        .try_init();
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("alice");
+    let words = Node::init(&home, &Config::local_test("Alice"))
+        .unwrap()
+        .join(" ");
+    make_old_home(&home, &words);
+    assert_eq!(backup::recovery_words(&home).unwrap().join(" "), words);
+
+    // It signs with the identity key itself, and says it shouldn't keep it.
+    let alice = Node::spawn(&home).await.unwrap();
+    post(&alice, "before").await;
+    let before = outbox(&alice).await;
+    assert!(before[0].certificate().is_none());
+    assert!(
+        problems(&alice)
+            .await
+            .iter()
+            .any(|p| p.contains("identity key"))
+    );
+    let bob_home = dir.path().join("bob");
+    Node::init(&bob_home, &Config::local_test("Bob")).unwrap();
+    let bob = Node::spawn(&bob_home).await.unwrap();
+    follow_node(&bob, &alice).await;
+    assert_eq!(feed_texts(&bob).await, ["before"]);
+    let old_file = dir.path().join("old.ospbackup");
+    assert_eq!(export(&alice, &old_file).await, 1);
+
+    // Not while the node runs.
+    let err = Node::protect_keys(&home, |_| Ok(()))
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("already running"), "{err}");
+    alice.shutdown().await.unwrap();
+    // Nothing changes until the owner shows they have the words.
+    let files = Home::new(&home);
+    let shown = std::cell::RefCell::new(String::new());
+    let not_written = Node::protect_keys(&home, |words| {
+        *shown.borrow_mut() = words.join(" ");
+        anyhow::bail!("not written down")
+    });
+    assert!(not_written.is_err());
+    assert_eq!(*shown.borrow(), words);
+    assert!(files.identity_key().exists());
+    assert!(!files.signing_key().exists());
+    Node::protect_keys(&home, |_| Ok(())).unwrap();
+    assert!(!files.identity_key().exists());
+    for file in [
+        files.signing_key(),
+        files.signing_cert(),
+        files.backup_key(),
+    ] {
+        assert!(file.exists(), "no {}", file.display());
+    }
+    let err = Node::protect_keys(&home, |_| Ok(()))
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("nothing to protect"), "{err}");
+    assert!(backup::check_words(&home, &words).unwrap());
+
+    // Started again, it signs with the new key. What it signed before is
+    // unchanged, and its profile now carries the certificate.
+    let alice = Node::spawn(&home).await.unwrap();
+    assert!(
+        !problems(&alice)
+            .await
+            .iter()
+            .any(|p| p.contains("identity key"))
+    );
+    post(&alice, "after").await;
+    let after = outbox(&alice).await;
+    assert_eq!(after[0], before[0]);
+    assert!(after[1].certificate().is_some());
+    assert!(profile_of(&alice).await.certificate().is_some());
+    let mut feed = feed_texts(&bob).await;
+    feed.sort();
+    assert_eq!(feed, ["after", "before"]);
+
+    // Backup files from before and after both open with the words.
+    let new_file = dir.path().join("new.ospbackup");
+    assert_eq!(export(&alice, &new_file).await, 2);
+    alice.shutdown().await.unwrap();
+    for (name, file) in [("from-old", &old_file), ("from-new", &new_file)] {
+        let restored = Node::restore(
+            &dir.path().join(name),
+            &Config::local_test("Alice"),
+            &words,
+            Some(file),
+        )
+        .unwrap();
+        assert_eq!(
+            restored.from_file.unwrap().posts,
+            if name == "from-old" { 1 } else { 2 }
+        );
+    }
 }

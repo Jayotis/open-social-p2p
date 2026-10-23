@@ -63,6 +63,9 @@ enum Command {
         /// With --restore: also restore posts, follows, followers and media from this backup file
         #[arg(long, requires = "restore")]
         backup: Option<PathBuf>,
+        /// Don't ask for words back to check they were written down (test nodes and scripts)
+        #[arg(long, conflicts_with = "restore")]
+        skip_word_check: bool,
     },
     /// Run the node in the foreground (Ctrl-C to stop)
     Daemon,
@@ -122,15 +125,26 @@ enum Command {
     /// Run the node in the background, starting at boot (systemd user service)
     #[command(subcommand)]
     Service(ServiceCommand),
-    /// Back up your identity
+    /// Back up your posts, follows and followers
     #[command(subcommand)]
     Backup(BackupCommand),
+    /// Check your recovery words, or take the identity key off an older node
+    #[command(subcommand)]
+    Keys(KeysCommand),
+}
+
+#[derive(Subcommand)]
+enum KeysCommand {
+    /// Check that recovery words are this node's: asks for them
+    Check,
+    /// For a node made before identity keys were kept only as words: shows
+    /// the words, checks you wrote them down, and deletes the identity key
+    /// from this computer. Stop the node first.
+    Protect,
 }
 
 #[derive(Subcommand)]
 enum BackupCommand {
-    /// Show your 24 recovery words again
-    Words,
     /// Write an encrypted backup of your posts, follows, followers and media
     Export {
         /// Where to write it. Keep it somewhere other than this computer.
@@ -161,25 +175,24 @@ async fn main() -> Result<()> {
             no_address_lookup,
             restore,
             backup,
+            skip_word_check,
         } => {
             let lookup = !no_address_lookup;
-            return init(
-                &home,
-                name,
-                &relay,
-                bind,
-                lookup,
-                restore,
-                backup.as_deref(),
-            );
+            let config = init_config(name, &relay, bind, lookup, backup.is_some());
+            return init(&home, &config, restore, backup.as_deref(), !skip_word_check);
         }
         Command::Daemon => return daemon(&home).await,
-        // Read from the key file, not asked of the daemon: only someone who
-        // can read the node's files sees them, never a paired phone.
-        Command::Backup(BackupCommand::Words) => {
-            print_words(&osp_node::backup::recovery_words(&home)?);
+        // These read the node's files rather than asking the daemon: only
+        // someone who can read them may, never a paired phone.
+        Command::Keys(KeysCommand::Check) => {
+            if osp_node::backup::check_words(&home, &read_words()?)? {
+                println!("These are your recovery words: they belong to this node's identity.");
+            } else {
+                bail!("these words belong to another identity, not this node's");
+            }
             return Ok(());
         }
+        Command::Keys(KeysCommand::Protect) => return protect(&home),
         // The daemon writes the file, so send an absolute path.
         Command::Backup(BackupCommand::Export { file, no_media }) => ClientRequest::ExportBackup {
             path: std::path::absolute(&file)?,
@@ -232,19 +245,18 @@ fn default_home() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("osp-home"))
 }
 
-fn init(
-    home: &Path,
+/// A new node's config, from the options of `osp init`.
+fn init_config(
     name: Option<String>,
     relay: &str,
     bind: Option<SocketAddr>,
     address_lookup: bool,
-    restore: bool,
-    backup: Option<&Path>,
-) -> Result<()> {
+    from_backup: bool,
+) -> Config {
     let mut config = Config::default();
     if let Some(name) = name {
         config.name = name;
-    } else if backup.is_some() {
+    } else if from_backup {
         config.name = String::new(); // Take the name in the backup.
     }
     config.network.relay = match relay {
@@ -254,8 +266,18 @@ fn init(
     };
     config.network.bind = bind;
     config.network.address_lookup = address_lookup;
+    config
+}
+
+fn init(
+    home: &Path,
+    config: &Config,
+    restore: bool,
+    backup: Option<&Path>,
+    check_words: bool,
+) -> Result<()> {
     if restore {
-        let restored = Node::restore(home, &config, &read_words()?, backup)?;
+        let restored = Node::restore(home, config, &read_words()?, backup)?;
         println!("Restored identity {}", restored.identity);
         println!("on a new node in {}.", home.display());
         if let Some(info) = &restored.from_file {
@@ -274,9 +296,14 @@ fn init(
         println!("- your phone pairs again (`osp pair`);");
         println!("- never start the old node again, or your followers get two nodes for you.");
     } else {
-        Node::init(home, &config)?;
+        let words = osp_node::backup::new_identity_words();
+        print_words(&words);
+        if check_words {
+            check_written_down(&words)?;
+        }
+        Node::init_with_words(home, config, &words.join(" "))?;
+        println!();
         println!("Created a node in {}", home.display());
-        print_words(&osp_node::backup::recovery_words(home)?);
     }
     println!();
     println!("Start it with: osp --home {} daemon", home.display());
@@ -298,10 +325,66 @@ fn print_words(words: &[&str]) {
         println!("  {}", line.join("   ").trim_end());
     }
     println!();
-    println!("These words are your identity. If this computer is lost, `osp init --restore`");
-    println!("brings it back on another one. Anyone who has them can post as you, so never");
-    println!("type them into a website or send them to anyone.");
-    println!("`osp backup words` shows them again.");
+    println!("These words are your identity. If this computer is lost or stolen,");
+    println!("`osp init --restore` brings it back on another one. Anyone who has them can");
+    println!("post as you, so keep them on paper, not on this computer, and never type them");
+    println!("into a website or send them to anyone.");
+    println!();
+    println!("This node won't show them again: it doesn't keep them.");
+}
+
+/// Asks for three of the words back, so a node is never made from words
+/// nobody wrote down. Nothing is created until they're right.
+fn check_written_down(words: &[&str]) -> Result<()> {
+    let mut picks = Vec::new();
+    while picks.len() < 3 {
+        let mut byte = [0];
+        getrandom::fill(&mut byte).map_err(|e| anyhow::anyhow!("no random numbers: {e}"))?;
+        // 240 is the largest multiple of 24 below 256, so each word is equally likely.
+        if byte[0] < 240 && !picks.contains(&(byte[0] as usize % words.len())) {
+            picks.push(byte[0] as usize % words.len());
+        }
+    }
+    picks.sort();
+    println!();
+    println!("To check you have them, type these words from your copy.");
+    for i in picks {
+        loop {
+            print!("Word {}: ", i + 1);
+            std::io::Write::flush(&mut std::io::stdout())?;
+            let mut line = String::new();
+            if std::io::stdin().read_line(&mut line)? == 0 {
+                bail!("stopped before the words were checked; nothing was created");
+            }
+            if line.trim().eq_ignore_ascii_case(words[i]) {
+                break;
+            }
+            println!(
+                "That isn't word {}. Check your copy against the list above.",
+                i + 1
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Takes the identity key off a node made before ADR 0010.
+fn protect(home: &Path) -> Result<()> {
+    Node::protect_keys(home, |words| {
+        println!("This node keeps your identity key in a file, so anyone who copies its files");
+        println!("can be you for good. From now on it keeps a signing key instead, which your");
+        println!("recovery words can replace if it's ever stolen. Your words become the only");
+        println!("copy of your identity key, so write them down now.");
+        print_words(words);
+        check_written_down(words)
+    })?;
+    println!();
+    println!(
+        "Done: {} no longer holds your identity key.",
+        home.display()
+    );
+    println!("Start the node again (`systemctl --user start osp`, or `osp daemon`).");
+    Ok(())
 }
 
 /// Reads recovery words from standard input, over as many lines as it takes.

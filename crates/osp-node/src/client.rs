@@ -234,7 +234,7 @@ impl Core {
         self.db.add_device(&device, &name)?;
         info!(device = %device.fmt_short(), %name, "paired a device");
         Ok(ClientResponse::Paired {
-            identity: self.identity.public(),
+            identity: self.signer.identity(),
             name: self.config.name.clone(),
         })
     }

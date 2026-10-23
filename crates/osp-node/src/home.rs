@@ -22,9 +22,26 @@ impl Home {
         self.root.join("config.toml")
     }
 
-    /// The author key that signs posts (ADR 0004).
+    /// The identity key, on a home made before ADR 0010. Newer homes never
+    /// keep it: it exists only as the recovery words.
     pub fn identity_key(&self) -> PathBuf {
         self.root.join("identity.key")
+    }
+
+    /// The key that signs posts, reshares and the profile (ADR 0010).
+    pub fn signing_key(&self) -> PathBuf {
+        self.root.join("signing.key")
+    }
+
+    /// The certificate the identity key signed for `signing_key`.
+    pub fn signing_cert(&self) -> PathBuf {
+        self.root.join("signing.cert")
+    }
+
+    /// The key backup files are encrypted with, derived from the identity
+    /// key and the signing key, so a restore can derive it from the words.
+    pub fn backup_key(&self) -> PathBuf {
+        self.root.join("backup.key")
     }
 
     /// The transport key that identifies this machine on the network.
@@ -61,6 +78,6 @@ impl Home {
     }
 
     pub fn is_initialized(&self) -> bool {
-        self.config().exists() && self.identity_key().exists()
+        self.config().exists() && (self.signing_key().exists() || self.identity_key().exists())
     }
 }

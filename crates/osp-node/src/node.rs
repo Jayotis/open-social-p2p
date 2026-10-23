@@ -23,7 +23,7 @@ use tokio::{
     sync::{Notify, Semaphore, watch},
     task::JoinHandle,
 };
-use tracing::info;
+use tracing::{info, warn};
 
 /// Most streams a peer may have open on one connection at a time. A phone
 /// loading a feed full of images uses the most; extra streams wait their turn.
@@ -39,7 +39,8 @@ use crate::{
     control::{self, Origin},
     db::{BlobClass, Db},
     home::Home,
-    keys, media,
+    keys::{self, Signer},
+    media,
     network::{self, ConnTracker},
     relays::{self, Checked, RelayPolicy},
     social::SocialProtocol,
@@ -61,7 +62,8 @@ pub struct Node {
 pub(crate) struct Core {
     pub home: Home,
     pub config: Config,
-    pub identity: SecretKey,
+    /// What our objects are signed with (ADR 0010).
+    pub signer: Signer,
     pub endpoint: Endpoint,
     /// Addresses we learned out of band (tickets, subscriptions, WhoHosts),
     /// so peers can be dialled by ID without a lookup service.
@@ -99,9 +101,23 @@ pub(crate) struct Core {
 }
 
 impl Node {
-    /// Creates a new node home: keys, config and database.
-    pub fn init(home: &Path, config: &Config) -> Result<()> {
-        create_home(&Home::new(home), config, &SecretKey::generate())
+    /// Creates a node home for a new identity: keys, config and database.
+    /// Returns the identity's recovery words, the only copy of its key
+    /// (ADR 0010).
+    pub fn init(home: &Path, config: &Config) -> Result<Vec<&'static str>> {
+        let words = backup::new_identity_words();
+        Self::init_with_words(home, config, &words.join(" "))?;
+        Ok(words)
+    }
+
+    /// Creates a node home for the new identity that `words` stand for
+    /// (`backup::new_identity_words`), once its owner has written them down.
+    pub fn init_with_words(home: &Path, config: &Config, words: &str) -> Result<()> {
+        create_home(
+            &Home::new(home),
+            config,
+            &backup::identity_from_words(words)?,
+        )
     }
 
     /// Creates a node home for an existing identity, given its recovery
@@ -145,6 +161,26 @@ impl Node {
         })
     }
 
+    /// Takes the identity key off a home made before ADR 0010: makes a
+    /// signing key and its certificate, then deletes `identity.key`.
+    /// `confirm` gets the recovery words first, to show them and check they
+    /// were written down; if it fails, nothing changes. The node must not be
+    /// running, and can't start until this is done. When it next starts, it
+    /// signs its profile with the new key.
+    pub fn protect_keys(
+        home: &Path,
+        confirm: impl FnOnce(&[&'static str]) -> Result<()>,
+    ) -> Result<()> {
+        let home = Home::new(home);
+        let _lock = lock_home(&home)?;
+        ensure!(
+            home.identity_key().exists(),
+            "this node doesn't keep its identity key; there's nothing to protect"
+        );
+        confirm(&backup::recovery_words(home.root())?)?;
+        keys::protect(&home)
+    }
+
     /// Starts the node stored in `home`.
     pub async fn spawn(home: &Path) -> Result<Self> {
         let home = Home::new(home);
@@ -154,7 +190,7 @@ impl Node {
         let lock = lock_home(&home)?;
         let config = Config::load(&home.config())?;
         check_network_config(&config)?;
-        let identity = keys::load(&home.identity_key())?;
+        let signer = Signer::load(&home)?;
         let node_key = keys::load(&home.node_key())?;
         let db = Arc::new(Db::open(&home.db())?);
         std::fs::create_dir_all(home.work())?;
@@ -179,10 +215,13 @@ impl Node {
         )
         .await?;
         import_restored_media(&home, &store).await?;
-        let profile = own_profile(&identity, &config.name, endpoint.id(), &db)?;
+        let profile = own_profile(&signer, &config.name, endpoint.id(), &db)?;
         let media_tools = media::tools_available(&config.media).await;
+        if matches!(signer, Signer::Identity(_)) {
+            warn!("this node keeps your identity key; run `osp keys protect` (ADR 0010)");
+        }
         info!(
-            identity = %identity.public().fmt_short(),
+            identity = %signer.identity().fmt_short(),
             node = %endpoint.id().fmt_short(),
             "node started"
         );
@@ -190,7 +229,7 @@ impl Node {
         let core = Arc::new(Core {
             home,
             config,
-            identity,
+            signer,
             endpoint: endpoint.clone(),
             lookup,
             relays,
@@ -253,7 +292,7 @@ impl Node {
     }
 
     pub fn identity(&self) -> PublicKey {
-        self.core.identity.public()
+        self.core.signer.identity()
     }
 
     pub fn node_id(&self) -> EndpointId {
@@ -347,7 +386,9 @@ fn remove_new_home(home: &Home, existed: bool) {
     let wal = PathBuf::from(format!("{}-wal", db.display()));
     let shm = PathBuf::from(format!("{}-shm", db.display()));
     for file in [
-        home.identity_key(),
+        home.signing_key(),
+        home.signing_cert(),
+        home.backup_key(),
         home.node_key(),
         home.config(),
         db,
@@ -401,7 +442,7 @@ fn create_home(home: &Home, config: &Config, identity: &SecretKey) -> Result<()>
     std::fs::create_dir_all(home.root())
         .with_context(|| format!("creating {}", home.root().display()))?;
     std::fs::set_permissions(home.root(), std::fs::Permissions::from_mode(0o700))?;
-    keys::save(&home.identity_key(), identity)?;
+    keys::create_signing_key(home, identity)?;
     keys::create(&home.node_key())?;
     config.save(&home.config())?;
     Db::open(&home.db())?;
@@ -513,14 +554,11 @@ async fn bind_endpoint(
 
 /// Reuses the stored profile if nothing changed, so its ID stays stable.
 /// If the stored one lists another node, this node has taken the identity
-/// over (ADR 0009), and every follower is marked to be told.
-fn own_profile(
-    identity: &SecretKey,
-    name: &str,
-    node: EndpointId,
-    db: &Db,
-) -> Result<SignedObject> {
-    let me = identity.public();
+/// over (ADR 0009), and every follower is marked to be told. One signed
+/// with an earlier key is signed again, so it carries the current key's
+/// certificate (ADR 0010).
+fn own_profile(signer: &Signer, name: &str, node: EndpointId, db: &Db) -> Result<SignedObject> {
+    let me = signer.identity();
     let previous = match db.profile(&me)?.map(|obj| (obj.verify(), obj)) {
         Some((Ok(Payload::Person(p)), obj)) => Some((p, obj)),
         _ => None,
@@ -528,6 +566,7 @@ fn own_profile(
     if let Some((p, existing)) = &previous
         && p.name == name
         && p.nodes == [node]
+        && existing.certificate() == signer.certificate()
     {
         return Ok(existing.clone());
     }
@@ -547,7 +586,7 @@ fn own_profile(
         nodes: vec![node],
         published: humantime::format_rfc3339_millis(at).to_string(),
     });
-    let obj = SignedObject::sign(identity, &person)?;
+    let obj = signer.sign(&person)?;
     db.upsert_profile(&me, name, &obj)?;
     if previous.is_some_and(|(p, _)| !p.nodes.contains(&node)) {
         let followers = db.mark_followers_to_tell_moved()?;
