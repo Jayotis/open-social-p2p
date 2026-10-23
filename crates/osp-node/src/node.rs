@@ -16,7 +16,7 @@ use iroh::{
     protocol::Router,
 };
 use osp_proto::{
-    BlobHash, Payload, Person, SignedObject,
+    BlobHash, EarlierKeys, Payload, Person, SignedObject,
     rpc::{BackupInfo, ClientRequest, ClientResponse},
 };
 use tokio::{
@@ -39,7 +39,7 @@ use crate::{
     control::{self, Origin},
     db::{BlobClass, Db},
     home::Home,
-    keys::{self, Signer},
+    keys::{self, NewKey, Signer},
     media,
     network::{self, ConnTracker},
     relays::{self, Checked, RelayPolicy},
@@ -113,10 +113,15 @@ impl Node {
     /// Creates a node home for the new identity that `words` stand for
     /// (`backup::new_identity_words`), once its owner has written them down.
     pub fn init_with_words(home: &Path, config: &Config, words: &str) -> Result<()> {
+        let key = NewKey {
+            published: osp_proto::now_rfc3339(),
+            earlier_keys: EarlierKeys::Retired,
+        };
         create_home(
             &Home::new(home),
             config,
             &backup::identity_from_words(words)?,
+            key,
         )
     }
 
@@ -125,6 +130,12 @@ impl Node {
     /// node key, so the network sees a new node speaking for the same
     /// identity; when it starts, it tells the followers in the backup.
     ///
+    /// It also gets a new signing key (ADR 0010). `earlier_keys` says what
+    /// happens to the old one: `Retired` if nobody else can have it, so
+    /// what it signed stays valid; `Revoked` if someone might, so readers
+    /// refuse it, and the posts in the backup are signed again when the
+    /// node starts. Its certificate is dated after any in the backup.
+    ///
     /// An empty `config.name` takes the name from the backed-up profile.
     /// If restoring the file fails, what was created is removed again.
     pub fn restore(
@@ -132,6 +143,7 @@ impl Node {
         config: &Config,
         words: &str,
         backup_file: Option<&Path>,
+        earlier_keys: EarlierKeys,
     ) -> Result<Restored> {
         let identity = backup::identity_from_words(words)?;
         let home = Home::new(home);
@@ -146,8 +158,14 @@ impl Node {
                 .and_then(|f| f.name())
                 .unwrap_or_else(|| Config::default().name);
         }
+        let key = NewKey {
+            published: keys::certificate_date(
+                file.as_ref().and_then(|f| f.newest_certificate_ms()),
+            ),
+            earlier_keys,
+        };
         let existed = home.root().exists();
-        create_home(&home, &config, &identity)?;
+        create_home(&home, &config, &identity, key)?;
         let from_file = match file.map(|f| f.restore(&home, &identity)).transpose() {
             Ok(info) => info,
             Err(e) => {
@@ -179,6 +197,23 @@ impl Node {
         );
         confirm(&backup::recovery_words(home.root())?)?;
         keys::protect(&home)
+    }
+
+    /// Replaces the signing key, when someone may have copied it but the
+    /// owner still has the node (ADR 0010). `words` is asked for the
+    /// recovery words once the home is known to be stopped. The new key's
+    /// certificate revokes the keys before it. The node can't start until
+    /// this is done; when it next starts, it signs its outbox again with
+    /// the new key, so none of the owner's posts are lost, and tells its
+    /// followers.
+    pub fn replace_keys(home: &Path, words: impl FnOnce() -> Result<String>) -> Result<()> {
+        let home = Home::new(home);
+        let _lock = lock_home(&home)?;
+        ensure!(
+            !home.identity_key().exists(),
+            "this node still keeps its identity key; run `osp keys protect` first"
+        );
+        keys::replace(&home, &backup::identity_from_words(&words()?)?)
     }
 
     /// Starts the node stored in `home`.
@@ -215,6 +250,7 @@ impl Node {
         )
         .await?;
         import_restored_media(&home, &store).await?;
+        resign_own_objects(&signer, &db)?;
         let profile = own_profile(&signer, &config.name, endpoint.id(), &db)?;
         let media_tools = media::tools_available(&config.media).await;
         if matches!(signer, Signer::Identity(_)) {
@@ -435,14 +471,14 @@ async fn import_restored_media(home: &Home, store: &ContentStore) -> Result<()> 
 
 /// Writes a new home's keys, config and database. Refuses to touch a home
 /// that already holds a node.
-fn create_home(home: &Home, config: &Config, identity: &SecretKey) -> Result<()> {
+fn create_home(home: &Home, config: &Config, identity: &SecretKey, key: NewKey) -> Result<()> {
     if home.is_initialized() {
         bail!("{} already holds a node", home.root().display());
     }
     std::fs::create_dir_all(home.root())
         .with_context(|| format!("creating {}", home.root().display()))?;
     std::fs::set_permissions(home.root(), std::fs::Permissions::from_mode(0o700))?;
-    keys::create_signing_key(home, identity)?;
+    keys::create_signing_key(home, identity, key)?;
     keys::create(&home.node_key())?;
     config.save(&home.config())?;
     Db::open(&home.db())?;
@@ -552,11 +588,36 @@ async fn bind_endpoint(
         .context("starting network endpoint")
 }
 
+/// Signs again, with the current signing key, every post and reshare in the
+/// outbox that an earlier signing key signed, keeping their IDs. After a key
+/// change that revoked the earlier keys, followers can then fetch these
+/// copies in place of the ones they drop (ADR 0010). Objects the identity
+/// key signed itself, before ADR 0010, are left alone: that key is never
+/// revoked. Usually there's nothing to sign, so this is quick.
+fn resign_own_objects(signer: &Signer, db: &Db) -> Result<()> {
+    let Signer::Certified(key) = signer else {
+        return Ok(());
+    };
+    let mut signed = 0;
+    for (_, obj) in db.outbox_since(0, u32::MAX)? {
+        match obj.certificate() {
+            Some(cert) if cert != key.certificate() => {}
+            _ => continue,
+        }
+        db.replace_signed(&obj.signed_again(key)?)?;
+        signed += 1;
+    }
+    if signed > 0 {
+        info!(objects = signed, "signed own posts again with the new key");
+    }
+    Ok(())
+}
+
 /// Reuses the stored profile if nothing changed, so its ID stays stable.
 /// If the stored one lists another node, this node has taken the identity
 /// over (ADR 0009), and every follower is marked to be told. One signed
 /// with an earlier key is signed again, so it carries the current key's
-/// certificate (ADR 0010).
+/// certificate, and followers are told of that too (ADR 0010).
 fn own_profile(signer: &Signer, name: &str, node: EndpointId, db: &Db) -> Result<SignedObject> {
     let me = signer.identity();
     let previous = match db.profile(&me)?.map(|obj| (obj.verify(), obj)) {
@@ -588,12 +649,23 @@ fn own_profile(signer: &Signer, name: &str, node: EndpointId, db: &Db) -> Result
     });
     let obj = signer.sign(&person)?;
     db.upsert_profile(&me, name, &obj)?;
-    if previous.is_some_and(|(p, _)| !p.nodes.contains(&node)) {
-        let followers = db.mark_followers_to_tell_moved()?;
-        info!(
-            followers,
-            "this node took over the identity; telling its followers"
-        );
+    if let Some((p, existing)) = &previous {
+        let moved = !p.nodes.contains(&node);
+        let new_key = existing.certificate() != signer.certificate();
+        if moved || new_key {
+            let followers = db.mark_followers_to_tell_moved()?;
+            if moved {
+                info!(
+                    followers,
+                    "this node took over the identity; telling its followers"
+                );
+            } else {
+                info!(
+                    followers,
+                    "this node has a new signing key; telling its followers"
+                );
+            }
+        }
     }
     Ok(obj)
 }

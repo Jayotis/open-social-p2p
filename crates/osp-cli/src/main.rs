@@ -16,7 +16,7 @@ use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use osp_node::{Config, Home, Node, RelayChoice};
 use osp_proto::{
-    EndpointId, ObjectId, PublicKey,
+    EarlierKeys, EndpointId, ObjectId, PublicKey,
     framing::{read_frame, write_frame},
     rpc::{ClientRequest, ClientResponse, DeviceInfo, Direction, FeedItem, StatusInfo},
 };
@@ -63,6 +63,14 @@ enum Command {
         /// With --restore: also restore posts, follows, followers and media from this backup file
         #[arg(long, requires = "restore")]
         backup: Option<PathBuf>,
+        /// With --restore: nobody else can have the old node's key (say, its disk died), so
+        /// what it signed stays valid. Otherwise you're asked.
+        #[arg(long, requires = "restore", conflicts_with = "revoked")]
+        retired: bool,
+        /// With --restore: someone else may have the old node's key (stolen, malware, a disk
+        /// you gave away), so your followers refuse what it signed. Otherwise you're asked.
+        #[arg(long, requires = "restore")]
+        revoked: bool,
         /// Don't ask for words back to check they were written down (test nodes and scripts)
         #[arg(long, conflicts_with = "restore")]
         skip_word_check: bool,
@@ -141,6 +149,9 @@ enum KeysCommand {
     /// the words, checks you wrote them down, and deletes the identity key
     /// from this computer. Stop the node first.
     Protect,
+    /// If someone may have copied this node's files: makes a new signing key
+    /// that revokes the old one. Asks for your words. Stop the node first.
+    Replace,
 }
 
 #[derive(Subcommand)]
@@ -175,11 +186,21 @@ async fn main() -> Result<()> {
             no_address_lookup,
             restore,
             backup,
+            retired,
+            revoked,
             skip_word_check,
         } => {
             let lookup = !no_address_lookup;
             let config = init_config(name, &relay, bind, lookup, backup.is_some());
-            return init(&home, &config, restore, backup.as_deref(), !skip_word_check);
+            if restore {
+                let old_key = match (retired, revoked) {
+                    (true, _) => Some(EarlierKeys::Retired),
+                    (_, true) => Some(EarlierKeys::Revoked),
+                    _ => None,
+                };
+                return restore_node(&home, &config, backup.as_deref(), old_key);
+            }
+            return init(&home, &config, !skip_word_check);
         }
         Command::Daemon => return daemon(&home).await,
         // These read the node's files rather than asking the daemon: only
@@ -193,6 +214,7 @@ async fn main() -> Result<()> {
             return Ok(());
         }
         Command::Keys(KeysCommand::Protect) => return protect(&home),
+        Command::Keys(KeysCommand::Replace) => return replace(&home),
         // The daemon writes the file, so send an absolute path.
         Command::Backup(BackupCommand::Export { file, no_media }) => ClientRequest::ExportBackup {
             path: std::path::absolute(&file)?,
@@ -269,45 +291,85 @@ fn init_config(
     config
 }
 
-fn init(
-    home: &Path,
-    config: &Config,
-    restore: bool,
-    backup: Option<&Path>,
-    check_words: bool,
-) -> Result<()> {
-    if restore {
-        let restored = Node::restore(home, config, &read_words()?, backup)?;
-        println!("Restored identity {}", restored.identity);
-        println!("on a new node in {}.", home.display());
-        if let Some(info) = &restored.from_file {
-            println!(
-                "From the backup: {} posts, {} follows, {} followers and {} media files.",
-                info.posts, info.follows, info.followers, info.media_files
-            );
-        }
-        println!();
-        println!("This is a new node, so:");
-        if restored.from_file.is_some() {
-            println!("- when it starts, it tells your followers that you moved here;");
-        } else {
-            println!("- your followers find it once you give them a new code (`osp invite`);");
-        }
-        println!("- your phone pairs again (`osp pair`);");
-        println!("- never start the old node again, or your followers get two nodes for you.");
-    } else {
-        let words = osp_node::backup::new_identity_words();
-        print_words(&words);
-        if check_words {
-            check_written_down(&words)?;
-        }
-        Node::init_with_words(home, config, &words.join(" "))?;
-        println!();
-        println!("Created a node in {}", home.display());
+fn init(home: &Path, config: &Config, check_words: bool) -> Result<()> {
+    let words = osp_node::backup::new_identity_words();
+    print_words(&words);
+    if check_words {
+        check_written_down(&words)?;
     }
+    Node::init_with_words(home, config, &words.join(" "))?;
+    println!();
+    println!("Created a node in {}", home.display());
     println!();
     println!("Start it with: osp --home {} daemon", home.display());
     Ok(())
+}
+
+fn restore_node(
+    home: &Path,
+    config: &Config,
+    backup: Option<&Path>,
+    old_key: Option<EarlierKeys>,
+) -> Result<()> {
+    let words = read_words()?;
+    let old_key = match old_key {
+        Some(choice) => choice,
+        None => ask_old_key(backup.is_some())?,
+    };
+    let restored = Node::restore(home, config, &words, backup, old_key)?;
+    println!("Restored identity {}", restored.identity);
+    println!("on a new node in {}.", home.display());
+    if let Some(info) = &restored.from_file {
+        println!(
+            "From the backup: {} posts, {} follows, {} followers and {} media files.",
+            info.posts, info.follows, info.followers, info.media_files
+        );
+    }
+    println!();
+    println!("This is a new node, so:");
+    if restored.from_file.is_some() {
+        println!("- when it starts, it tells your followers that you moved here;");
+    } else {
+        println!("- your followers find it once you give them a new code (`osp invite`);");
+    }
+    if old_key == EarlierKeys::Revoked {
+        println!("- your followers refuse anything the old node's key signs from now on;");
+    }
+    println!("- your phone pairs again (`osp pair`);");
+    println!("- never start the old node again, or your followers get two nodes for you.");
+    println!();
+    println!("Start it with: osp --home {} daemon", home.display());
+    Ok(())
+}
+
+/// Asks whether someone else could have the old node's signing key.
+fn ask_old_key(from_backup: bool) -> Result<EarlierKeys> {
+    println!();
+    println!("Could anyone else have a copy of your old node's key? Say yes if the computer");
+    println!("was stolen, malware may have run on it, or its disk went somewhere you don't");
+    println!("control. Say no if, for example, its disk simply died.");
+    println!();
+    println!("- yes: the old key is revoked. Your followers refuse anything it signs, including");
+    if from_backup {
+        println!("  posts someone else made with it. Posts not in your backup file are lost.");
+    } else {
+        println!("  posts someone else made with it. Without a backup file, so are all your");
+        println!("  earlier posts.");
+    }
+    println!("- no: the old key is retired. Every post it signed stays.");
+    loop {
+        print!("Could anyone else have it? (yes / no / not sure): ");
+        std::io::Write::flush(&mut std::io::stdout())?;
+        let mut line = String::new();
+        if std::io::stdin().read_line(&mut line)? == 0 {
+            bail!("no answer; nothing was created (or pass --retired or --revoked)");
+        }
+        match line.trim().to_lowercase().as_str() {
+            "yes" | "y" | "not sure" | "unsure" => return Ok(EarlierKeys::Revoked),
+            "no" | "n" => return Ok(EarlierKeys::Retired),
+            _ => println!("Please answer yes, no or not sure."),
+        }
+    }
 }
 
 /// Prints recovery words numbered in rows of four, so reading them left to
@@ -365,6 +427,22 @@ fn check_written_down(words: &[&str]) -> Result<()> {
             );
         }
     }
+    Ok(())
+}
+
+/// Replaces the node's signing key with one that revokes it.
+fn replace(home: &Path) -> Result<()> {
+    Node::replace_keys(home, || {
+        println!("This gives this node a new signing key and revokes the old one: use it if");
+        println!("someone may have copied this node's files. Your followers refuse anything the");
+        println!("old key signs from then on, and your own posts are signed again with the new");
+        println!("key, so none of them are lost.");
+        println!();
+        read_words()
+    })?;
+    println!();
+    println!("Done. Start the node again (`systemctl --user start osp`, or `osp daemon`):");
+    println!("it signs your posts with the new key and tells your followers.");
     Ok(())
 }
 

@@ -238,6 +238,16 @@ impl Db {
             .transpose()
     }
 
+    /// Stores `obj` in place of the object with its ID: the same payload,
+    /// signed again by a newer key (ADR 0010).
+    pub fn replace_signed(&self, obj: &SignedObject) -> Result<()> {
+        self.conn().execute(
+            "UPDATE objects SET signed = ?2 WHERE id = ?1",
+            params![obj.id().to_string(), serde_json::to_string(obj)?],
+        )?;
+        Ok(())
+    }
+
     /// Posts and reshares by the given identities, newest first.
     pub fn feed(&self, actors: &[PublicKey], limit: u32) -> Result<Vec<SignedObject>> {
         if actors.is_empty() {
