@@ -5,7 +5,7 @@ use std::path::Path;
 
 use anyhow::Result;
 
-use crate::{config::RelayChoice, db::BlobClass, node::Core};
+use crate::{config::RelayChoice, db::BlobClass, keys::Signer, node::Core};
 
 /// Warn when less than this is free on the node's disk.
 pub(crate) const LOW_DISK_BYTES: u64 = 2 << 30;
@@ -48,6 +48,13 @@ impl Core {
             && free < LOW_DISK_BYTES
         {
             problems.push(format!("only {} MB free on the node's disk", free >> 20));
+        }
+        if matches!(self.signer, Signer::Identity(_)) {
+            problems.push(
+                "this node still keeps your identity key, so anyone who copies its files can be you for good; \
+                 stop the node and run `osp keys protect` to keep it only as your recovery words"
+                    .to_string(),
+            );
         }
         // Possible after lowering the quota. Hosted media isn't deleted to fit.
         let hosted = self.db.class_bytes(BlobClass::Replica)?;

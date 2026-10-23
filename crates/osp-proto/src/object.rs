@@ -249,6 +249,11 @@ impl CertifiedKey {
         self.identity
     }
 
+    /// The signing key's public half.
+    pub fn public(&self) -> PublicKey {
+        self.secret.public()
+    }
+
     pub fn certificate(&self) -> &SignedObject {
         &self.cert
     }

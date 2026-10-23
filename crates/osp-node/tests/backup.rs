@@ -24,9 +24,15 @@ use osp_proto::{
 };
 
 async fn start(root: &Path, name: &str) -> Node {
+    start_with_words(root, name).await.0
+}
+
+/// Starts a new node, and returns its recovery words too: the only copy
+/// of its identity key (ADR 0010).
+async fn start_with_words(root: &Path, name: &str) -> (Node, String) {
     let home = root.join(name.to_lowercase());
-    Node::init(&home, &Config::local_test(name)).unwrap();
-    Node::spawn(&home).await.unwrap()
+    let words = Node::init(&home, &Config::local_test(name)).unwrap();
+    (Node::spawn(&home).await.unwrap(), words.join(" "))
 }
 
 async fn call(node: &Node, req: ClientRequest) -> ClientResponse {
@@ -162,16 +168,7 @@ async fn followers(node: &Node) -> usize {
     status(node).await.followers
 }
 
-/// A key file as the node writes it: 32 bytes in hex.
-fn read_key(path: &Path) -> SecretKey {
-    let hex = std::fs::read_to_string(path).unwrap();
-    let bytes: Vec<u8> = (0..64)
-        .step_by(2)
-        .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap())
-        .collect();
-    SecretKey::from_bytes(&bytes.try_into().unwrap())
-}
-
+/// Writes a key file as the node does: 32 bytes in hex.
 fn write_key(path: &Path, key: &SecretKey) {
     let hex: String = key.to_bytes().iter().map(|b| format!("{b:02x}")).collect();
     std::fs::write(path, hex).unwrap();
@@ -271,11 +268,8 @@ async fn a_restored_identity_reaches_followers_who_follow_its_new_node() {
         .with_test_writer()
         .try_init();
     let dir = tempfile::tempdir().unwrap();
-    let alice = start(dir.path(), "Alice").await;
+    let (alice, words) = start_with_words(dir.path(), "Alice").await;
     let bob = start(dir.path(), "Bob").await;
-    let words = backup::recovery_words(&dir.path().join("alice"))
-        .unwrap()
-        .join(" ");
 
     post(&alice, "before the move").await;
     follow(&bob, &alice).await;
@@ -320,15 +314,17 @@ async fn followers_move_to_a_node_that_takes_the_identity_over() {
     assert_eq!(feed_texts(&bob).await, ["before the move"]);
     assert_eq!(followers(&alice).await, 1);
 
-    // Alice's node is replaced: her database and identity key move to a
-    // new home with a new node key, as a restore from a backup file does.
+    // Alice's node is replaced: her database and keys move to a new home
+    // with a new node key, as a restore from a backup file does.
     let old_node = alice.node_id();
     alice.shutdown().await.unwrap();
     let (old, new) = (dir.path().join("alice"), dir.path().join("alice-new"));
     std::fs::create_dir(&new).unwrap();
     for file in [
         "config.toml",
-        "identity.key",
+        "signing.key",
+        "signing.cert",
+        "backup.key",
         "osp.db",
         "osp.db-wal",
         "osp.db-shm",
@@ -373,7 +369,7 @@ async fn a_move_needs_a_newer_profile_that_lists_the_sender() {
         .with_test_writer()
         .try_init();
     let dir = tempfile::tempdir().unwrap();
-    let alice = start(dir.path(), "Alice").await;
+    let (alice, words) = start_with_words(dir.path(), "Alice").await;
     let bob = start(dir.path(), "Bob").await;
     follow(&bob, &alice).await;
     feed_texts(&bob).await;
@@ -383,7 +379,7 @@ async fn a_move_needs_a_newer_profile_that_lists_the_sender() {
     still_followed(following(&bob).await);
 
     // Someone with Alice's key (in a real move, her new node) and someone without.
-    let key = read_key(&dir.path().join("alice").join("identity.key"));
+    let key = backup::identity_from_words(&words).unwrap();
     let (peer, conn) = stranger(&bob.addr().await).await;
     let now = osp_proto::now_rfc3339();
     let moved = |profile, addr| SocialRequest::Moved { profile, addr };
@@ -432,14 +428,14 @@ async fn a_thief_cant_date_a_profile_so_late_that_the_owner_cant_answer() {
         .with_test_writer()
         .try_init();
     let dir = tempfile::tempdir().unwrap();
-    let alice = start(dir.path(), "Alice").await;
+    let (alice, words) = start_with_words(dir.path(), "Alice").await;
     let bob = start(dir.path(), "Bob").await;
     follow(&bob, &alice).await;
     feed_texts(&bob).await;
 
     // Someone steals Alice's key and moves Bob's follow to their own node,
     // which then serves him her profile dated thousands of years ahead.
-    let key = read_key(&dir.path().join("alice").join("identity.key"));
+    let key = backup::identity_from_words(&words).unwrap();
     let (endpoint, conn) = stranger(&bob.addr().await).await;
     let far_ahead = Payload::Person(Person {
         actor: key.public(),
@@ -491,7 +487,7 @@ async fn a_backup_brings_back_posts_follows_followers_and_media() {
         .with_test_writer()
         .try_init();
     let dir = tempfile::tempdir().unwrap();
-    let alice = start(dir.path(), "Alice").await;
+    let (alice, words) = start_with_words(dir.path(), "Alice").await;
     let bob = start(dir.path(), "Bob").await;
     let carol = start(dir.path(), "Carol").await;
 
@@ -521,9 +517,6 @@ async fn a_backup_brings_back_posts_follows_followers_and_media() {
     assert_eq!(info.media_missing, 0);
     assert_eq!(info.bytes, std::fs::metadata(&file).unwrap().len());
     let ids = outbox_ids(&alice).await;
-    let words = backup::recovery_words(&dir.path().join("alice"))
-        .unwrap()
-        .join(" ");
 
     // Alice's computer is lost. She restores from her words and the file,
     // keeping the name in the backup.
@@ -568,17 +561,13 @@ async fn a_backup_brings_back_posts_follows_followers_and_media() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_backup_opens_only_with_its_own_words_and_unchanged() {
     let dir = tempfile::tempdir().unwrap();
-    let alice = start(dir.path(), "Alice").await;
+    let (alice, words) = start_with_words(dir.path(), "Alice").await;
     post(&alice, "hello").await;
     let file = dir.path().join("alice.ospbackup");
     let info = export(&alice, &file, false).await;
     assert_eq!((info.posts, info.media_files), (1, 0));
     alice.shutdown().await.unwrap();
-    let words = backup::recovery_words(&dir.path().join("alice"))
-        .unwrap()
-        .join(" ");
-    Node::init(&dir.path().join("other"), &Config::local_test("Other")).unwrap();
-    let other_words = backup::recovery_words(&dir.path().join("other"))
+    let other_words = Node::init(&dir.path().join("other"), &Config::local_test("Other"))
         .unwrap()
         .join(" ");
 

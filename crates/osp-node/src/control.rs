@@ -79,7 +79,7 @@ impl Core {
             ClientRequest::Status => ClientResponse::Status(self.status().await?),
             ClientRequest::Invite => ClientResponse::Ticket {
                 ticket: FollowTicket {
-                    actor: self.identity.public(),
+                    actor: self.signer.identity(),
                     node: self.shareable_addr().await,
                 }
                 .to_string(),
@@ -176,7 +176,7 @@ impl Core {
         }
         Ok(StatusInfo {
             name: self.config.name.clone(),
-            identity: self.identity.public(),
+            identity: self.signer.identity(),
             node: self.endpoint.id(),
             problems: self.problems(relay.as_deref(), disk_free_bytes)?,
             relay,
@@ -200,7 +200,7 @@ impl Core {
 
     async fn follow(&self, ticket: &FollowTicket) -> Result<()> {
         ensure!(
-            ticket.actor != self.identity.public(),
+            ticket.actor != self.signer.identity(),
             "you can't follow yourself"
         );
         check_addr(&ticket.node)?;
@@ -248,7 +248,7 @@ impl Core {
             attachment.push(self.prepare_media(path).await?);
         }
         self.publish(Payload::Note(Note {
-            actor: self.identity.public(),
+            actor: self.signer.identity(),
             content,
             published: osp_proto::now_rfc3339(),
             attachment,
@@ -303,7 +303,7 @@ impl Core {
             }
         }
         self.publish(Payload::Announce(Announce {
-            actor: self.identity.public(),
+            actor: self.signer.identity(),
             object: note_id,
             object_actor: note.actor,
             published: osp_proto::now_rfc3339(),
@@ -314,7 +314,7 @@ impl Core {
 
     /// Signs, stores and appends to our outbox, then tells followers.
     async fn publish(self: &Arc<Self>, payload: Payload) -> Result<ObjectId> {
-        let obj = SignedObject::sign(&self.identity, &payload)?;
+        let obj = self.signer.sign(&payload)?;
         self.db.insert_object(&obj, &payload)?;
         let seq = self.db.append_outbox(&obj.id())?;
         let core = self.clone();
@@ -378,7 +378,7 @@ impl Core {
         // Followers who don't know we moved would refuse the notice.
         self.tell_moved().await;
         let req = &SocialRequest::Notify {
-            actor: self.identity.public(),
+            actor: self.signer.identity(),
             seq,
         };
         // Several at once, so followers that don't answer don't hold up the rest.
@@ -423,7 +423,7 @@ impl Core {
     }
 
     async fn feed(&self, limit: u32) -> Result<Vec<FeedItem>> {
-        let mut actors = vec![self.identity.public()];
+        let mut actors = vec![self.signer.identity()];
         actors.extend(self.db.follows()?.into_iter().map(|f| f.actor));
         let mut items = Vec::new();
         for obj in self.db.feed(&actors, limit)? {

@@ -4,16 +4,25 @@
 //! BIP39 English list. The words encode the key's 32 bytes directly (BIP39's
 //! entropy encoding, not its seed derivation), so every existing key has
 //! words, and the last word carries a checksum that catches a mistyped word.
+//! Since ADR 0010 the words are the only copy of the identity key: a node
+//! keeps a signing key the identity certified instead.
 //!
 //! **Backup file.** The profile, own posts in outbox order, what own
 //! reshares point at, follows, followers and the media of own posts,
-//! encrypted with a key derived from the identity key, so only the
-//! recovery words open it. The file is a header (magic, format version, the
-//! identity's public key, a random salt), then the contents sealed with
-//! ChaCha20-Poly1305 in chunks of 1 MiB. Each chunk's nonce holds its number
-//! and whether it is the last, so a chunk can't be changed, moved, dropped
-//! or cut off unnoticed. The contents are a manifest (its length in 8 bytes,
-//! then JSON), then each media file's bytes in the manifest's order.
+//! encrypted so that only the recovery words open it. The node keeps a
+//! backup key, derived from the identity key and its signing key's public
+//! half; the file's header names that signing key, so a restore derives the
+//! same backup key from the words. The file is a header (magic, format
+//! version, the identity's public key, the signing key's, a random salt),
+//! then the contents sealed with ChaCha20-Poly1305 in chunks of 1 MiB. Each
+//! chunk's nonce holds its number and whether it is the last, so a chunk
+//! can't be changed, moved, dropped or cut off unnoticed. The contents are a
+//! manifest (its length in 8 bytes, then JSON), then each media file's bytes
+//! in the manifest's order.
+//!
+//! Version 1 files, made before ADR 0010 (and still by a home that keeps its
+//! identity key), have no signing key in the header, and their key comes
+//! from the identity key directly.
 
 use std::{
     fs::{self, File},
@@ -33,16 +42,29 @@ use tracing::warn;
 use crate::{
     db::{BlobClass, Db},
     home::Home,
-    keys,
+    keys::{self, Signer},
     node::Core,
 };
 
 /// 256 bits of key and an 8-bit checksum, at 11 bits per word.
 pub const WORD_COUNT: usize = 24;
 
-/// The recovery words of the identity of the node in `home`.
+/// The recovery words of a home made before ADR 0010, which still keeps
+/// its identity key. Newer homes don't have them.
 pub fn recovery_words(home: &Path) -> Result<Vec<&'static str>> {
-    Ok(words(&keys::load(&Home::new(home).identity_key())?))
+    let home = Home::new(home);
+    ensure!(
+        home.identity_key().exists(),
+        "this node doesn't keep your identity key, so it can't show your recovery words: \
+         they are only where you wrote them down (`osp keys check` checks them)"
+    );
+    Ok(words(&keys::load(&home.identity_key())?))
+}
+
+/// A new identity, as its recovery words. Its key exists nowhere else until
+/// a node is made from them (`Node::init_with_words`).
+pub fn new_identity_words() -> Vec<&'static str> {
+    words(&SecretKey::generate())
 }
 
 fn words(key: &SecretKey) -> Vec<&'static str> {
@@ -52,9 +74,15 @@ fn words(key: &SecretKey) -> Vec<&'static str> {
         .collect()
 }
 
+/// Whether recovery words belong to the identity of the node in `home`.
+pub fn check_words(home: &Path, words: &str) -> Result<bool> {
+    let identity = identity_from_words(words)?;
+    Ok(Signer::load(&Home::new(home))?.identity() == identity.public())
+}
+
 /// The identity key that recovery words stand for. Case, extra spaces and
 /// line breaks don't matter.
-pub(crate) fn identity_from_words(text: &str) -> Result<SecretKey> {
+pub fn identity_from_words(text: &str) -> Result<SecretKey> {
     let typed: Vec<String> = text.split_whitespace().map(str::to_lowercase).collect();
     if typed.len() != WORD_COUNT {
         bail!("expected {WORD_COUNT} recovery words, got {}", typed.len());
@@ -81,14 +109,20 @@ pub(crate) fn identity_from_words(text: &str) -> Result<SecretKey> {
 
 /// Every backup file starts with this, then the format version.
 const MAGIC: &[u8; 9] = b"OSPBACKUP";
-const VERSION: u8 = 1;
-/// Magic, version, the identity's public key and the file's salt.
-const HEADER_LEN: usize = MAGIC.len() + 1 + 32 + 32;
+/// Keyed from the identity key itself. Made before ADR 0010, and still by
+/// a home that keeps its identity key.
+const VERSION_1: u8 = 1;
+/// Keyed from the backup key, which the identity key and the signing key
+/// named in the header give.
+const VERSION_2: u8 = 2;
 /// Plaintext bytes in each sealed chunk. Only the last chunk holds fewer.
 const CHUNK_LEN: usize = 1 << 20;
 const TAG_LEN: usize = 16;
-/// Keeps the backup key apart from every other use of the identity key.
-const KEY_CONTEXT: &str = "open-social-p2p 2026-10-22 backup file v1";
+/// These keep each key derived from the identity key apart from every
+/// other use of it.
+const FILE_KEY_V1_CONTEXT: &str = "open-social-p2p 2026-10-22 backup file v1";
+const BACKUP_KEY_CONTEXT: &str = "open-social-p2p 2026-10-23 backup key";
+const FILE_KEY_V2_CONTEXT: &str = "open-social-p2p 2026-10-23 backup file v2";
 /// Largest manifest a restore reads. A person's posts take far less.
 const MAX_MANIFEST_LEN: u64 = 1 << 30;
 
@@ -120,23 +154,72 @@ struct MediaRecord {
     size: u64,
 }
 
-fn header(identity: &PublicKey, salt: &[u8; 32]) -> [u8; HEADER_LEN] {
-    let mut header = [0; HEADER_LEN];
-    header[..MAGIC.len()].copy_from_slice(MAGIC);
-    header[MAGIC.len()] = VERSION;
-    header[MAGIC.len() + 1..MAGIC.len() + 33].copy_from_slice(identity.as_bytes());
-    header[MAGIC.len() + 33..].copy_from_slice(salt);
-    header
+/// The backup key for a signing key: what a node keeps in `backup.key`,
+/// and what a restore derives again from the words and a file's header.
+pub(crate) fn backup_key(identity: &SecretKey, signing: &[u8; 32]) -> [u8; 32] {
+    derive(BACKUP_KEY_CONTEXT, &identity.to_bytes(), signing)
 }
 
-/// One file's key, from the identity key and the file's random salt, so no
-/// two files share a key (and so no two chunks ever share a key and nonce).
-fn file_key(identity: &SecretKey, salt: &[u8; 32]) -> LessSafeKey {
+/// BLAKE3's key derivation, from two 32-byte inputs.
+fn derive(context: &str, a: &[u8; 32], b: &[u8; 32]) -> [u8; 32] {
     let mut material = [0; 64];
-    material[..32].copy_from_slice(&identity.to_bytes());
-    material[32..].copy_from_slice(salt);
-    let key = blake3::derive_key(KEY_CONTEXT, &material);
-    LessSafeKey::new(UnboundKey::new(&CHACHA20_POLY1305, &key).expect("a 32-byte key"))
+    material[..32].copy_from_slice(a);
+    material[32..].copy_from_slice(b);
+    blake3::derive_key(context, &material)
+}
+
+fn aead(key: &[u8; 32]) -> LessSafeKey {
+    LessSafeKey::new(UnboundKey::new(&CHACHA20_POLY1305, key).expect("a 32-byte key"))
+}
+
+/// What the files a node writes are keyed with.
+enum Keying {
+    /// Version 1: the identity key itself, on a home that still keeps it.
+    Identity(SecretKey),
+    /// Version 2: the backup key the node keeps for its signing key.
+    BackupKey {
+        identity: PublicKey,
+        signing: PublicKey,
+        key: [u8; 32],
+    },
+}
+
+impl Keying {
+    fn load(home: &Home, signer: &Signer) -> Result<Self> {
+        Ok(match signer {
+            Signer::Identity(identity) => Self::Identity(identity.clone()),
+            Signer::Certified(key) => Self::BackupKey {
+                identity: key.identity(),
+                signing: key.public(),
+                key: keys::load_bytes(&home.backup_key())?,
+            },
+        })
+    }
+
+    /// A new file's header, and its key. The random salt gives each file
+    /// its own key, so no two chunks ever share a key and nonce.
+    fn new_file(&self, salt: &[u8; 32]) -> (Vec<u8>, LessSafeKey) {
+        let mut header = MAGIC.to_vec();
+        let key = match self {
+            Self::Identity(identity) => {
+                header.push(VERSION_1);
+                header.extend_from_slice(identity.public().as_bytes());
+                derive(FILE_KEY_V1_CONTEXT, &identity.to_bytes(), salt)
+            }
+            Self::BackupKey {
+                identity,
+                signing,
+                key,
+            } => {
+                header.push(VERSION_2);
+                header.extend_from_slice(identity.as_bytes());
+                header.extend_from_slice(signing.as_bytes());
+                derive(FILE_KEY_V2_CONTEXT, key, salt)
+            }
+        };
+        header.extend_from_slice(salt);
+        (header, aead(&key))
+    }
 }
 
 /// Chunk `n`'s nonce: its number, and whether it is the last.
@@ -152,7 +235,7 @@ fn nonce(n: u64, last: bool) -> Nonce {
 struct Sealer<W> {
     out: W,
     key: LessSafeKey,
-    header: [u8; HEADER_LEN],
+    header: Vec<u8>,
     chunk: Vec<u8>,
     chunk_len: usize,
     sealed: u64,
@@ -161,20 +244,20 @@ struct Sealer<W> {
 }
 
 impl<W: AsyncWrite + Unpin> Sealer<W> {
-    async fn new(mut out: W, identity: &SecretKey, chunk_len: usize) -> Result<Self> {
+    async fn new(mut out: W, keying: &Keying, chunk_len: usize) -> Result<Self> {
         let mut salt = [0; 32];
         getrandom::fill(&mut salt)
             .map_err(|e| anyhow!("no secure random numbers available: {e}"))?;
-        let header = header(&identity.public(), &salt);
+        let (header, key) = keying.new_file(&salt);
         out.write_all(&header).await?;
         Ok(Self {
             out,
-            key: file_key(identity, &salt),
+            key,
+            bytes: header.len() as u64,
             header,
             chunk: Vec::with_capacity(chunk_len + TAG_LEN),
             chunk_len,
             sealed: 0,
-            bytes: HEADER_LEN as u64,
         })
     }
 
@@ -205,7 +288,7 @@ impl<W: AsyncWrite + Unpin> Sealer<W> {
         self.key
             .seal_in_place_append_tag(
                 nonce(self.sealed, last),
-                Aad::from(&self.header),
+                Aad::from(self.header.as_slice()),
                 &mut chunk,
             )
             .map_err(|_| anyhow!("encrypting the backup failed"))?;
@@ -221,7 +304,7 @@ impl<W: AsyncWrite + Unpin> Sealer<W> {
 struct Opener<R> {
     input: R,
     key: LessSafeKey,
-    header: [u8; HEADER_LEN],
+    header: Vec<u8>,
     chunk_len: usize,
     plain: Vec<u8>,
     pos: usize,
@@ -232,27 +315,35 @@ struct Opener<R> {
 impl<R: Read> Opener<R> {
     /// Reads the header, and checks the file belongs to `identity`.
     fn new(mut input: R, identity: &SecretKey, chunk_len: usize) -> Result<Self> {
-        let mut header = [0; HEADER_LEN];
+        let mut header = vec![0; MAGIC.len() + 1];
         input
             .read_exact(&mut header)
             .map_err(|_| anyhow!("this isn't a backup file"))?;
         ensure!(header.starts_with(MAGIC), "this isn't a backup file");
         let version = header[MAGIC.len()];
         ensure!(
-            version == VERSION,
-            "this backup file has format version {version}; this osp reads version {VERSION}"
+            version == VERSION_1 || version == VERSION_2,
+            "this backup file has format version {version}; this osp reads versions \
+             {VERSION_1} and {VERSION_2}"
         );
-        let owner = &header[MAGIC.len() + 1..MAGIC.len() + 33];
-        if owner != identity.public().as_bytes() {
-            let owner = PublicKey::from_bytes(owner.try_into().expect("32 bytes"))
+        let owner = read_32(&mut input, &mut header)?;
+        if owner != *identity.public().as_bytes() {
+            let owner = PublicKey::from_bytes(&owner)
                 .map(|k| k.fmt_short().to_string())
                 .unwrap_or_else(|_| "unknown".into());
             bail!("this backup file belongs to another identity ({owner})");
         }
-        let salt = header[MAGIC.len() + 33..].try_into().expect("32 bytes");
+        let key = if version == VERSION_1 {
+            let salt = read_32(&mut input, &mut header)?;
+            derive(FILE_KEY_V1_CONTEXT, &identity.to_bytes(), &salt)
+        } else {
+            let signing = read_32(&mut input, &mut header)?;
+            let salt = read_32(&mut input, &mut header)?;
+            derive(FILE_KEY_V2_CONTEXT, &backup_key(identity, &signing), &salt)
+        };
         Ok(Self {
             input,
-            key: file_key(identity, salt),
+            key: aead(&key),
             header,
             chunk_len,
             plain: Vec::new(),
@@ -273,7 +364,7 @@ impl<R: Read> Opener<R> {
             .key
             .open_in_place(
                 nonce(self.opened, last),
-                Aad::from(&self.header),
+                Aad::from(self.header.as_slice()),
                 &mut chunk,
             )
             .map_err(|_| anyhow!("the backup file is damaged, or was changed"))?
@@ -302,6 +393,16 @@ impl<R: Read> Read for Opener<R> {
     }
 }
 
+/// Reads the next 32 bytes of a header, adding them to `header`.
+fn read_32(input: &mut impl Read, header: &mut Vec<u8>) -> Result<[u8; 32]> {
+    let mut bytes = [0; 32];
+    input
+        .read_exact(&mut bytes)
+        .map_err(|_| anyhow!("the backup file is cut short"))?;
+    header.extend_from_slice(&bytes);
+    Ok(bytes)
+}
+
 /// Reads until `buf` is full or the input ends. Returns how much was read.
 fn read_up_to(input: &mut impl Read, buf: &mut [u8]) -> io::Result<usize> {
     let mut n = 0;
@@ -321,7 +422,7 @@ impl Core {
     /// media of own posts. It is written beside `path` and then renamed, so
     /// a backup that fails part way never replaces a good one.
     pub(crate) async fn export_backup(&self, path: &Path, media: bool) -> Result<BackupInfo> {
-        let me = self.identity.public();
+        let me = self.signer.identity();
         let mut manifest = Manifest {
             created: osp_proto::now_rfc3339(),
             profile: self.db.profile(&me)?,
@@ -392,7 +493,8 @@ impl Core {
             .open(path)
             .await
             .with_context(|| format!("creating {}", path.display()))?;
-        let mut sealer = Sealer::new(BufWriter::new(file), &self.identity, CHUNK_LEN).await?;
+        let keying = Keying::load(&self.home, &self.signer)?;
+        let mut sealer = Sealer::new(BufWriter::new(file), &keying, CHUNK_LEN).await?;
         let json = serde_json::to_vec(manifest)?;
         sealer.write(&(json.len() as u64).to_be_bytes()).await?;
         sealer.write(&json).await?;
@@ -599,11 +701,45 @@ mod tests {
         assert!(err.to_string().contains("don't add up"), "{err}");
     }
 
+    /// A key change gives a new backup key, so whoever copied the old one
+    /// can't open files made after it (ADR 0010).
+    #[test]
+    fn each_signing_key_has_its_own_backup_key() {
+        let identity = SecretKey::generate();
+        let first = SecretKey::generate().public();
+        let second = SecretKey::generate().public();
+        let key = backup_key(&identity, first.as_bytes());
+        assert_eq!(key, backup_key(&identity, first.as_bytes()));
+        assert_ne!(key, backup_key(&identity, second.as_bytes()));
+        assert_ne!(key, backup_key(&SecretKey::generate(), first.as_bytes()));
+    }
+
     /// Small chunks, so the tests cross many chunk boundaries cheaply.
     const SMALL: usize = 16;
 
-    async fn seal(data: &[u8], key: &SecretKey) -> Vec<u8> {
-        let mut sealer = Sealer::new(Vec::new(), key, SMALL).await.unwrap();
+    /// Both ways a node keys its files: version 2, from the backup key for
+    /// a signing key, and version 1, from the identity key itself.
+    fn keyings(identity: &SecretKey) -> [Keying; 2] {
+        let signing = SecretKey::generate().public();
+        [
+            Keying::BackupKey {
+                identity: identity.public(),
+                signing,
+                key: backup_key(identity, signing.as_bytes()),
+            },
+            Keying::Identity(identity.clone()),
+        ]
+    }
+
+    fn header_len(keying: &Keying) -> usize {
+        match keying {
+            Keying::BackupKey { .. } => MAGIC.len() + 1 + 3 * 32,
+            Keying::Identity(_) => MAGIC.len() + 1 + 2 * 32,
+        }
+    }
+
+    async fn seal(data: &[u8], keying: &Keying) -> Vec<u8> {
+        let mut sealer = Sealer::new(Vec::new(), keying, SMALL).await.unwrap();
         // In odd-sized pieces, so writes straddle chunks.
         for piece in data.chunks(7) {
             sealer.write(piece).await.unwrap();
@@ -628,64 +764,73 @@ mod tests {
     #[tokio::test]
     async fn sealed_contents_open_unchanged_whatever_their_length() {
         let key = SecretKey::generate();
-        for len in [0, 1, SMALL - 1, SMALL, SMALL + 1, 3 * SMALL, 3 * SMALL + 5] {
-            let data: Vec<u8> = (0..len).map(|i| i as u8).collect();
-            let file = seal(&data, &key).await;
-            // Only the last chunk is short, and there always is one.
-            let chunks = len / SMALL + 1;
-            assert_eq!(file.len(), HEADER_LEN + len + chunks * TAG_LEN);
-            assert_eq!(open(&file, &key).unwrap(), data, "{len} bytes");
+        for keying in keyings(&key) {
+            for len in [0, 1, SMALL - 1, SMALL, SMALL + 1, 3 * SMALL, 3 * SMALL + 5] {
+                let data: Vec<u8> = (0..len).map(|i| i as u8).collect();
+                let file = seal(&data, &keying).await;
+                // Only the last chunk is short, and there always is one.
+                let chunks = len / SMALL + 1;
+                assert_eq!(file.len(), header_len(&keying) + len + chunks * TAG_LEN);
+                assert_eq!(open(&file, &key).unwrap(), data, "{len} bytes");
+            }
         }
     }
 
     #[tokio::test]
     async fn any_change_to_a_sealed_file_is_caught() {
         let key = SecretKey::generate();
-        let data = vec![7; 3 * SMALL + 5];
-        let file = seal(&data, &key).await;
+        for keying in keyings(&key) {
+            let data = vec![7; 3 * SMALL + 5];
+            let file = seal(&data, &keying).await;
+            let header = header_len(&keying);
 
-        // Every byte after the header: content, tags, the salt in the header.
-        for i in HEADER_LEN - 32..file.len() {
-            let mut changed = file.clone();
-            changed[i] ^= 1;
-            fails_with(open(&changed, &key), "damaged");
+            // Every byte after the identity: in the header, the signing key
+            // and the salt; then content and tags.
+            for i in MAGIC.len() + 1 + 32..file.len() {
+                let mut changed = file.clone();
+                changed[i] ^= 1;
+                fails_with(open(&changed, &key), "damaged");
+            }
+            // Chunks moved around.
+            let chunk = SMALL + TAG_LEN;
+            let mut swapped = file.clone();
+            let (a, b) = (header, header + chunk);
+            let first: Vec<u8> = swapped[a..a + chunk].to_vec();
+            swapped.copy_within(b..b + chunk, a);
+            swapped[b..b + chunk].copy_from_slice(&first);
+            fails_with(open(&swapped, &key), "damaged");
+            // Cut off after a whole chunk, or within one, or in the header.
+            let after_chunks = header + 3 * chunk;
+            fails_with(open(&file[..after_chunks], &key), "cut short");
+            fails_with(open(&file[..file.len() - 3], &key), "damaged");
+            fails_with(open(&file[..header - 1], &key), "cut short");
+            // Bytes added at the end.
+            let mut longer = file.clone();
+            longer.extend_from_slice(&[0; 9]);
+            fails_with(open(&longer, &key), "damaged");
         }
-        // Chunks moved around.
-        let chunk = SMALL + TAG_LEN;
-        let mut swapped = file.clone();
-        let (a, b) = (HEADER_LEN, HEADER_LEN + chunk);
-        let first: Vec<u8> = swapped[a..a + chunk].to_vec();
-        swapped.copy_within(b..b + chunk, a);
-        swapped[b..b + chunk].copy_from_slice(&first);
-        fails_with(open(&swapped, &key), "damaged");
-        // Cut off after a whole chunk, or within one.
-        let after_chunks = HEADER_LEN + 3 * chunk;
-        fails_with(open(&file[..after_chunks], &key), "cut short");
-        fails_with(open(&file[..file.len() - 3], &key), "damaged");
-        // Bytes added at the end.
-        let mut longer = file.clone();
-        longer.extend_from_slice(&[0; 9]);
-        fails_with(open(&longer, &key), "damaged");
     }
 
     #[tokio::test]
     async fn a_file_opens_only_for_its_own_identity() {
         let key = SecretKey::generate();
-        let file = seal(b"hello", &key).await;
-        fails_with(
-            open(&file, &SecretKey::generate()),
-            "belongs to another identity",
-        );
+        for keying in keyings(&key) {
+            let file = seal(b"hello", &keying).await;
+            fails_with(
+                open(&file, &SecretKey::generate()),
+                "belongs to another identity",
+            );
+            // The same contents sealed twice give different files (fresh salt).
+            assert_ne!(seal(b"hello", &keying).await, file);
+        }
         fails_with(
             open(b"not a backup at all, just text", &key),
             "isn't a backup",
         );
         fails_with(open(b"OSP", &key), "isn't a backup");
-        let mut newer = file.clone();
-        newer[MAGIC.len()] = VERSION + 1;
+        let mut newer = seal(b"hello", &keyings(&key)[0]).await;
+        newer[MAGIC.len()] = VERSION_2 + 1;
         fails_with(open(&newer, &key), "format version");
-        // The same contents sealed twice give different files (fresh salt).
-        assert_ne!(seal(b"hello", &key).await, file);
     }
 
     /// A backup whose contents end exactly at a chunk boundary, so its last
@@ -700,7 +845,8 @@ mod tests {
         let json = serde_json::to_vec(&manifest).unwrap();
         assert_eq!(8 + json.len(), CHUNK_LEN);
 
-        let mut sealer = Sealer::new(Vec::new(), &key, CHUNK_LEN).await.unwrap();
+        let keying = &keyings(&key)[0];
+        let mut sealer = Sealer::new(Vec::new(), keying, CHUNK_LEN).await.unwrap();
         sealer
             .write(&(json.len() as u64).to_be_bytes())
             .await
