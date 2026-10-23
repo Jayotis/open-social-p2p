@@ -84,6 +84,7 @@ pub enum Payload {
     Person(Person),
     Note(Note),
     Announce(Announce),
+    Key(Key),
 }
 
 impl Payload {
@@ -93,15 +94,17 @@ impl Payload {
             Payload::Person(p) => p.actor,
             Payload::Note(n) => n.actor,
             Payload::Announce(a) => a.actor,
+            Payload::Key(k) => k.actor,
         }
     }
 
-    /// The AS2 type name.
+    /// The AS2 type name, or `Key` for a key certificate (not AS2).
     pub fn kind(&self) -> &'static str {
         match self {
             Payload::Person(_) => "Person",
             Payload::Note(_) => "Note",
             Payload::Announce(_) => "Announce",
+            Payload::Key(_) => "Key",
         }
     }
 
@@ -110,6 +113,7 @@ impl Payload {
             Payload::Person(p) => &p.published,
             Payload::Note(n) => &n.published,
             Payload::Announce(a) => &a.published,
+            Payload::Key(k) => &k.published,
         }
     }
 
@@ -146,7 +150,7 @@ impl Payload {
                     a.check_limits()?;
                 }
             }
-            Payload::Announce(_) => {}
+            Payload::Announce(_) | Payload::Key(_) => {}
         }
         Ok(())
     }
@@ -302,4 +306,27 @@ pub struct Announce {
     /// True when the resharer's node keeps a copy of the media and serves it.
     #[serde(default)]
     pub hosting: bool,
+}
+
+/// A key certificate (ADR 0010): the identity names the key that signs its
+/// objects from now on. Only the identity key itself may sign one.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Key {
+    pub actor: PublicKey,
+    /// The signing key this certificate is for.
+    pub key: PublicKey,
+    pub published: String,
+    /// What happens to every key certified before this one.
+    #[serde(rename = "earlierKeys")]
+    pub earlier_keys: EarlierKeys,
+}
+
+/// What a newer key certificate does to the keys certified before it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum EarlierKeys {
+    /// Their owner stopped using them; what they signed stays valid.
+    Retired,
+    /// Someone else may have them: what they signed is no longer valid.
+    Revoked,
 }

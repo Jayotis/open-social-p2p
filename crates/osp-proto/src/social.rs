@@ -1,4 +1,4 @@
-//! Messages of the node-to-node protocol `osp/social/0` (ADR 0003).
+//! Messages of the node-to-node protocol `osp/social/1` (ADR 0003).
 //!
 //! One QUIC bidirectional stream per request: the requester sends one
 //! [`SocialRequest`] frame, the responder answers with one [`SocialResponse`].
