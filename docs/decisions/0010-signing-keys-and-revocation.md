@@ -1,6 +1,6 @@
 # ADR 0010: Signing keys, and taking a stolen one back
 
-**Status:** Accepted (2026-10-22). Built so far: objects signed by certified keys, and readers checking them against what they know of each identity's keys, on `osp/social/1`. Still to build: nodes signing with a signing key, the commands, the backup key, and what a reader does with stored objects once it learns of a revocation.
+**Status:** Accepted (2026-10-22). Built so far: objects signed by certified keys, and readers checking them against what they know of each identity's keys, on `osp/social/1`; nodes keeping a signing key and a backup key instead of the identity key, `osp keys check`, and `osp keys protect` (run with the node stopped). Still to build: `osp keys replace`, retiring or revoking on a restore, and what a reader does with stored objects once it learns of a revocation.
 
 ## Context
 

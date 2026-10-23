@@ -31,7 +31,7 @@ The script starts three daemons (alice, bob, carol), runs the publish → reshar
 ## Running a node by hand
 
 ```sh
-osp init --name "Your name"        # creates ~/.local/share/osp and shows 24 recovery words
+osp init --name "Your name"        # shows 24 recovery words, asks for three back, creates ~/.local/share/osp
 osp daemon                         # leave running, or `osp service install` (see the M2 guide)
 
 # in another terminal
@@ -48,7 +48,9 @@ Use `--home DIR` (or `OSP_HOME=DIR`) to run several nodes on one machine. Add `-
 
 ### Moving or restoring a node
 
-The identity is the key in `identity.key`; the 24 recovery words that `osp init` shows are that key written as words ([ADR 0009](../decisions/0009-identity-backup-and-recovery.md)). `osp backup words` shows them again.
+Your identity is the 24 recovery words that `osp init` shows. They are the only copy of your identity key, and the node can't show them again ([ADR 0010](../decisions/0010-signing-keys-and-revocation.md)). The node keeps a signing key the words certified (`signing.key` and `signing.cert`) and a key for backup files (`backup.key`). `osp keys check` checks your written copy against the node. For test nodes and scripts, `osp init --skip-word-check` doesn't ask for words back.
+
+A node made before this keeps `identity.key`, and `osp status` reports it. Stop the node, run `osp keys protect` (it shows the words, asks for three back, and deletes `identity.key`), then start the node again.
 
 - **Moving to another computer while the old one works:** stop the node, copy its whole home directory to the new computer, and run `osp service install` there. The node keeps its node ID, so followers and phones don't notice. Never run the old copy again.
 - **A backup file:** `osp backup export ~/osp-backup.ospbackup` writes your posts, follows, followers and the media of your posts, encrypted so that only your recovery words open it (`--no-media` for a small file). Keep it somewhere other than this computer, and make a new one now and then.
