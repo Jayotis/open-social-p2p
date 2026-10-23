@@ -2,11 +2,17 @@
 //! what a node signs with: a signing key its identity certified (ADR 0010),
 //! or on a home made before that, the identity key itself.
 
-use std::{fs::OpenOptions, io::Write, os::unix::fs::OpenOptionsExt, path::Path};
+use std::{
+    fs::OpenOptions,
+    io::Write,
+    os::unix::fs::OpenOptionsExt,
+    path::{Path, PathBuf},
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
 
-use anyhow::{Context, Result, ensure};
+use anyhow::{Context, Result, bail, ensure};
 use iroh::{PublicKey, SecretKey};
-use osp_proto::{CertifiedKey, EarlierKeys, Payload, SignedObject};
+use osp_proto::{CertifiedKey, EarlierKeys, Key, Payload, SignedObject};
 
 use crate::{backup, home::Home};
 
@@ -43,6 +49,17 @@ pub(crate) fn load_bytes(path: &Path) -> Result<[u8; 32]> {
         .map_err(|_| anyhow::anyhow!("{} must hold 32 bytes", path.display()))
 }
 
+/// Writes `contents` to `path`, readable only by the owner: beside it first,
+/// then renamed over it, so a reader sees the old file or the new one.
+fn write_over(path: &Path, contents: &[u8]) -> Result<()> {
+    let mut name = path.file_name().context("no file name")?.to_owned();
+    name.push(".new");
+    let new = PathBuf::from(path).with_file_name(name);
+    let _ = std::fs::remove_file(&new);
+    write_new(&new, contents)?;
+    std::fs::rename(&new, path).with_context(|| format!("replacing {}", path.display()))
+}
+
 /// Creates `path`, readable only by the owner, and writes `contents`.
 fn write_new(path: &Path, contents: &[u8]) -> Result<()> {
     let mut file = OpenOptions::new()
@@ -73,12 +90,15 @@ impl Signer {
             return Ok(Self::Identity(load(&home.identity_key())?));
         }
         let secret = load(&home.signing_key())?;
-        let path = home.signing_cert();
-        let cert = std::fs::read_to_string(&path)
-            .with_context(|| format!("reading {}", path.display()))?;
-        let cert: SignedObject = serde_json::from_str(&cert)
-            .with_context(|| format!("{} is not a key certificate", path.display()))?;
-        Ok(Self::Certified(CertifiedKey::new(secret, cert)?))
+        let cert = load_certificate(home)?;
+        let key = CertifiedKey::new(secret, cert).with_context(|| {
+            format!(
+                "{} doesn't match {}; if a key change stopped part way, run `osp keys replace` again",
+                home.signing_cert().display(),
+                home.signing_key().display()
+            )
+        })?;
+        Ok(Self::Certified(key))
     }
 
     /// The identity this node signs for.
@@ -106,27 +126,82 @@ impl Signer {
     }
 }
 
-/// Makes a signing key for `identity` in `home`, with a certificate dated
-/// now, and the backup key that goes with them. Refuses to overwrite any of
-/// them. The identity key itself is not written anywhere.
-pub(crate) fn create_signing_key(home: &Home, identity: &SecretKey) -> Result<()> {
+fn load_certificate(home: &Home) -> Result<SignedObject> {
+    let path = home.signing_cert();
+    let cert =
+        std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
+    serde_json::from_str(&cert)
+        .with_context(|| format!("{} is not a key certificate", path.display()))
+}
+
+/// What the home's key certificate says, checked against its signature.
+pub(crate) fn read_certificate(home: &Home) -> Result<Key> {
+    match load_certificate(home)?.verify()? {
+        Payload::Key(key) => Ok(key),
+        _ => bail!("{} is not a key certificate", home.signing_cert().display()),
+    }
+}
+
+/// The date for a new key certificate: now, or just after `after`, the
+/// newest certificate known for the identity, if this computer's clock is
+/// behind it. Followers take the newer certificate (ADR 0010).
+pub(crate) fn certificate_date(after: Option<i64>) -> String {
+    let mut at = SystemTime::now();
+    if let Some(ms) = after {
+        at = at.max(UNIX_EPOCH + Duration::from_millis(ms.max(0) as u64 + 1));
+    }
+    humantime::format_rfc3339_millis(at).to_string()
+}
+
+/// A new signing key for `identity`, certified with `published` and
+/// `earlier_keys`.
+pub(crate) struct NewKey {
+    pub published: String,
+    pub earlier_keys: EarlierKeys,
+}
+
+/// Makes a signing key for `identity` in `home`, and the backup key that
+/// goes with it. Refuses to overwrite any of them. The identity key itself
+/// is not written anywhere.
+pub(crate) fn create_signing_key(home: &Home, identity: &SecretKey, new: NewKey) -> Result<()> {
+    write_signing_key(home, identity, new, write_new)
+}
+
+fn write_signing_key(
+    home: &Home,
+    identity: &SecretKey,
+    new: NewKey,
+    write: fn(&Path, &[u8]) -> Result<()>,
+) -> Result<()> {
     let secret = SecretKey::generate();
-    let key = CertifiedKey::certify(
-        identity,
-        secret.clone(),
-        osp_proto::now_rfc3339(),
-        EarlierKeys::Retired,
-    )?;
-    save(&home.signing_key(), &secret)?;
-    write_new(
+    let key = CertifiedKey::certify(identity, secret.clone(), new.published, new.earlier_keys)?;
+    let backup_key = backup::backup_key(identity, secret.public().as_bytes());
+    let hex = |bytes: &[u8]| data_encoding::HEXLOWER.encode(bytes).into_bytes();
+    write(&home.backup_key(), &hex(&backup_key))?;
+    // The key and its certificate one straight after the other: a node
+    // that finds them apart refuses to start, and says to run this again.
+    write(&home.signing_key(), &hex(&secret.to_bytes()))?;
+    write(
         &home.signing_cert(),
         &serde_json::to_vec(key.certificate())?,
-    )?;
-    save_bytes(
-        &home.backup_key(),
-        &backup::backup_key(identity, secret.public().as_bytes()),
-    )?;
-    Ok(())
+    )
+}
+
+/// Replaces the home's signing key with a new one, whose certificate
+/// revokes the keys before it and is dated after the current one. The node
+/// must not be running; when it next starts, it signs its outbox again with
+/// the new key and tells its followers.
+pub(crate) fn replace(home: &Home, identity: &SecretKey) -> Result<()> {
+    let current = read_certificate(home)?;
+    ensure!(
+        current.actor == identity.public(),
+        "these recovery words belong to another identity, not this node's"
+    );
+    let new = NewKey {
+        published: certificate_date(osp_proto::parse_rfc3339_ms(&current.published)),
+        earlier_keys: EarlierKeys::Revoked,
+    };
+    write_signing_key(home, identity, new, write_over)
 }
 
 /// Takes the identity key off a home made before ADR 0010: makes a signing
@@ -144,7 +219,11 @@ pub(crate) fn protect(home: &Home) -> Result<()> {
             home.identity_key().display()
         );
     } else {
-        create_signing_key(home, &identity)?;
+        let new = NewKey {
+            published: osp_proto::now_rfc3339(),
+            earlier_keys: EarlierKeys::Retired,
+        };
+        create_signing_key(home, &identity, new)?;
     }
     std::fs::remove_file(home.identity_key())
         .with_context(|| format!("deleting {}", home.identity_key().display()))
@@ -154,6 +233,13 @@ pub(crate) fn protect(home: &Home) -> Result<()> {
 mod tests {
     use super::*;
 
+    fn now_retired() -> NewKey {
+        NewKey {
+            published: osp_proto::now_rfc3339(),
+            earlier_keys: EarlierKeys::Retired,
+        }
+    }
+
     #[test]
     fn protect_finishes_a_run_that_stopped_part_way_but_not_for_another_identity() {
         // A run that made the signing key, then stopped before deleting.
@@ -161,7 +247,7 @@ mod tests {
         let home = Home::new(dir.path());
         let identity = SecretKey::generate();
         save(&home.identity_key(), &identity).unwrap();
-        create_signing_key(&home, &identity).unwrap();
+        create_signing_key(&home, &identity, now_retired()).unwrap();
         protect(&home).unwrap();
         assert!(!home.identity_key().exists());
         assert_eq!(Signer::load(&home).unwrap().identity(), identity.public());
@@ -170,7 +256,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let home = Home::new(dir.path());
         save(&home.identity_key(), &SecretKey::generate()).unwrap();
-        create_signing_key(&home, &SecretKey::generate()).unwrap();
+        create_signing_key(&home, &SecretKey::generate(), now_retired()).unwrap();
         let err = protect(&home).unwrap_err().to_string();
         assert!(err.contains("another identity"), "{err}");
         assert!(home.identity_key().exists());

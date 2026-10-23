@@ -538,6 +538,20 @@ impl BackupFile {
         })
     }
 
+    /// The date of the newest key certificate in the backup, so a restore
+    /// can date its new one later (ADR 0010).
+    pub(crate) fn newest_certificate_ms(&self) -> Option<i64> {
+        let m = &self.manifest;
+        m.profile
+            .iter()
+            .chain(&m.outbox)
+            .filter_map(|obj| match obj.verify_with_key() {
+                Ok((_, Some(key))) => osp_proto::parse_rfc3339_ms(&key.published),
+                _ => None,
+            })
+            .max()
+    }
+
     /// The name in the backed-up profile, if it has one.
     pub(crate) fn name(&self) -> Option<String> {
         match self.manifest.profile.as_ref()?.verify() {
@@ -651,6 +665,7 @@ fn copy_media(input: &mut impl Read, media: &MediaRecord, to: &Path) -> Result<(
 mod tests {
     use super::*;
     use crate::Config;
+    use osp_proto::EarlierKeys;
 
     #[test]
     fn words_and_key_round_trip() {
@@ -862,9 +877,10 @@ mod tests {
         // restore then removes the home it had started, so it can run again.
         let (home, config) = (dir.path().join("home"), Config::local_test("Test"));
         let words = words(&key).join(" ");
-        let err = crate::Node::restore(&home, &config, &words, Some(&cut)).unwrap_err();
+        let err = crate::Node::restore(&home, &config, &words, Some(&cut), EarlierKeys::Retired)
+            .unwrap_err();
         assert!(format!("{err:#}").contains("cut short"), "{err:#}");
         assert!(!home.exists(), "a failed restore left its home behind");
-        crate::Node::restore(&home, &config, &words, Some(&whole)).unwrap();
+        crate::Node::restore(&home, &config, &words, Some(&whole), EarlierKeys::Retired).unwrap();
     }
 }

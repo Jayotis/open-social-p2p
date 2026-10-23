@@ -17,7 +17,7 @@ use iroh::{
 };
 use osp_node::{BlobClass, Config, Node, backup};
 use osp_proto::{
-    BlobHash, ObjectId, Payload, Person, SOCIAL_ALPN, SecretKey, SignedObject,
+    BlobHash, EarlierKeys, ObjectId, Payload, Person, SOCIAL_ALPN, SecretKey, SignedObject,
     framing::{read_frame, write_frame},
     rpc::{BackupInfo, ClientRequest, ClientResponse, FollowInfo, StatusInfo},
     social::{SocialRequest, SocialResponse},
@@ -279,7 +279,14 @@ async fn a_restored_identity_reaches_followers_who_follow_its_new_node() {
     let (identity, old_node) = (alice.identity(), alice.node_id());
     alice.shutdown().await.unwrap();
     let home = dir.path().join("alice-new");
-    let restored = Node::restore(&home, &Config::local_test("Alice"), &words, None).unwrap();
+    let restored = Node::restore(
+        &home,
+        &Config::local_test("Alice"),
+        &words,
+        None,
+        EarlierKeys::Retired,
+    )
+    .unwrap();
     assert_eq!(restored.identity, identity);
     assert!(restored.from_file.is_none());
     let alice = Node::spawn(&home).await.unwrap();
@@ -296,7 +303,14 @@ async fn a_restored_identity_reaches_followers_who_follow_its_new_node() {
     );
 
     // A node isn't restored over an existing one.
-    let err = Node::restore(&home, &Config::local_test("Alice"), &words, None).unwrap_err();
+    let err = Node::restore(
+        &home,
+        &Config::local_test("Alice"),
+        &words,
+        None,
+        EarlierKeys::Retired,
+    )
+    .unwrap_err();
     assert!(err.to_string().contains("already holds a node"), "{err}");
 }
 
@@ -524,7 +538,8 @@ async fn a_backup_brings_back_posts_follows_followers_and_media() {
     let home = dir.path().join("alice-new");
     let mut config = Config::local_test("");
     config.name = String::new();
-    let restored = Node::restore(&home, &config, &words, Some(&file)).unwrap();
+    let restored =
+        Node::restore(&home, &config, &words, Some(&file), EarlierKeys::Retired).unwrap();
     let from_file = restored.from_file.unwrap();
     assert_eq!(
         (from_file.posts, from_file.follows, from_file.followers),
@@ -575,7 +590,8 @@ async fn a_backup_opens_only_with_its_own_words_and_unchanged() {
     let config = Config::local_test("Alice");
     let home = dir.path().join("restored");
     let refused = |words: &str, file: &Path, expected: &str| {
-        let err = Node::restore(&home, &config, words, Some(file)).unwrap_err();
+        let err =
+            Node::restore(&home, &config, words, Some(file), EarlierKeys::Retired).unwrap_err();
         assert!(err.to_string().contains(expected), "{err:#}");
         assert!(!home.exists(), "a failed restore left {}", home.display());
     };
@@ -589,7 +605,8 @@ async fn a_backup_opens_only_with_its_own_words_and_unchanged() {
     std::fs::write(dir.path().join("short"), &bytes[..bytes.len() - 10]).unwrap();
     refused(&words, &dir.path().join("short"), "damaged");
 
-    let restored = Node::restore(&home, &config, &words, Some(&file)).unwrap();
+    let restored =
+        Node::restore(&home, &config, &words, Some(&file), EarlierKeys::Retired).unwrap();
     assert_eq!(restored.from_file.unwrap().posts, 1);
     let alice = Node::spawn(&home).await.unwrap();
     assert_eq!(texts(&alice).await, ["hello"]);

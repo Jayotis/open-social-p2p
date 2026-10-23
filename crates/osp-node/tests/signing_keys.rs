@@ -671,6 +671,7 @@ async fn an_older_node_works_until_protect_takes_its_identity_key_off() {
             &Config::local_test("Alice"),
             &words,
             Some(file),
+            EarlierKeys::Retired,
         )
         .unwrap();
         assert_eq!(
@@ -678,4 +679,261 @@ async fn an_older_node_works_until_protect_takes_its_identity_key_off() {
             if name == "from-old" { 1 } else { 2 }
         );
     }
+}
+
+/// Checks `ready` every 100 ms, for up to 20 s.
+async fn wait_until(what: &str, mut ready: impl AsyncFnMut() -> bool) {
+    for _ in 0..200 {
+        if ready().await {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    panic!("gave up waiting for {what}");
+}
+
+/// The signing key in a home's files, as someone who copied them has it.
+fn copied_signing_key(home: &Path) -> CertifiedKey {
+    let files = Home::new(home);
+    let hex = std::fs::read_to_string(files.signing_key()).unwrap();
+    let bytes: Vec<u8> = (0..64)
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap())
+        .collect();
+    let secret = SecretKey::from_bytes(&bytes.try_into().unwrap());
+    let cert = std::fs::read_to_string(files.signing_cert()).unwrap();
+    CertifiedKey::new(secret, serde_json::from_str(&cert).unwrap()).unwrap()
+}
+
+/// What the certificate in a home's files says.
+fn certificate_in(home: &Path) -> osp_proto::Key {
+    let cert = std::fs::read_to_string(Home::new(home).signing_cert()).unwrap();
+    let cert: SignedObject = serde_json::from_str(&cert).unwrap();
+    match cert.verify().unwrap() {
+        Payload::Key(key) => key,
+        other => panic!("not a certificate: {other:?}"),
+    }
+}
+
+/// Gives a home's signing key a new certificate dated `secs` from now, as
+/// a node whose clock was ahead would have made.
+fn redate_certificate(home: &Path, words: &str, secs: i64) {
+    let identity = backup::identity_from_words(words).unwrap();
+    let copied = copied_signing_key(home);
+    let hex = std::fs::read_to_string(Home::new(home).signing_key()).unwrap();
+    let bytes: Vec<u8> = (0..64)
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap())
+        .collect();
+    let secret = SecretKey::from_bytes(&bytes.try_into().unwrap());
+    assert_eq!(secret.public(), copied.public());
+    let key = CertifiedKey::certify(&identity, secret, at(secs), EarlierKeys::Retired).unwrap();
+    let json = serde_json::to_vec(key.certificate()).unwrap();
+    std::fs::write(Home::new(home).signing_cert(), json).unwrap();
+}
+
+/// Copies a home's files, as someone who copied the computer's disk has
+/// them, into `to` with a node key of its own.
+fn copy_home(from: &Path, to: &Path) {
+    std::fs::create_dir(to).unwrap();
+    for name in [
+        "config.toml",
+        "signing.key",
+        "signing.cert",
+        "backup.key",
+        "osp.db",
+        "osp.db-wal",
+        "osp.db-shm",
+    ] {
+        if from.join(name).exists() {
+            std::fs::copy(from.join(name), to.join(name)).unwrap();
+        }
+    }
+    let hex: String = SecretKey::generate()
+        .to_bytes()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    std::fs::write(to.join("node.key"), hex).unwrap();
+}
+
+/// Sends `Moved` to `to` as someone holding `key`, from a node of their own.
+async fn move_as(key: &CertifiedKey, to: &Node) -> SocialResponse {
+    let addr = to.addr().await;
+    let node = serve(Author::default(), &addr).await;
+    let profile = Payload::Person(Person {
+        actor: key.identity(),
+        name: "Alice".into(),
+        summary: None,
+        nodes: vec![node.endpoint().id()],
+        published: at(60),
+    });
+    let req = SocialRequest::Moved {
+        profile: SignedObject::sign_certified(key, &profile).unwrap(),
+        addr: node.endpoint().addr(),
+    };
+    ask(&node, &addr, &req).await
+}
+
+async fn feed_has(node: &Node, text: &str) -> bool {
+    feed_texts(node).await.contains(&text.to_string())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn replacing_a_copied_key_keeps_the_owners_posts_and_shuts_the_copy_out() {
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter("osp_node=debug,warn")
+        .with_test_writer()
+        .try_init();
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("alice");
+    let words = Node::init(&home, &Config::local_test("Alice"))
+        .unwrap()
+        .join(" ");
+    // Her clock was four minutes ahead when the certificate was made, so the
+    // new one must be dated later than that, not just now.
+    redate_certificate(&home, &words, 4 * 60);
+    let alice = Node::spawn(&home).await.unwrap();
+    post(&alice, "before").await;
+    let before = outbox(&alice).await;
+    let bob_home = dir.path().join("bob");
+    Node::init(&bob_home, &Config::local_test("Bob")).unwrap();
+    let bob = Node::spawn(&bob_home).await.unwrap();
+    follow_node(&bob, &alice).await;
+    assert_eq!(feed_texts(&bob).await, ["before"]);
+
+    // Someone copies her node's files and runs them as a node of their own,
+    // which moves Bob's follow there.
+    let thief_home = dir.path().join("thief");
+    copy_home(&home, &thief_home);
+    let copied = copied_signing_key(&home);
+    let thief = Node::spawn(&thief_home).await.unwrap();
+    post(&thief, "posted by the thief").await;
+    wait_until("Bob to follow the copy", async || {
+        feed_has(&bob, "posted by the thief").await
+    })
+    .await;
+
+    // Not while her node runs, and not with someone else's words.
+    let mut asked = false;
+    let err = Node::replace_keys(&home, || {
+        asked = true;
+        Ok(words.clone())
+    })
+    .unwrap_err();
+    assert!(err.to_string().contains("already running"), "{err}");
+    assert!(
+        !asked,
+        "asked for the words before checking the node was stopped"
+    );
+    alice.shutdown().await.unwrap();
+    let others = backup::new_identity_words().join(" ");
+    let err = Node::replace_keys(&home, || Ok(others)).unwrap_err();
+    assert!(err.to_string().contains("another identity"), "{err}");
+
+    // She replaces her key. The new certificate revokes the old one.
+    let old_cert = certificate_in(&home);
+    Node::replace_keys(&home, || Ok(words.clone())).unwrap();
+    let new_cert = certificate_in(&home);
+    assert_eq!(new_cert.earlier_keys, EarlierKeys::Revoked);
+    let (old_ms, new_ms) = (
+        osp_proto::parse_rfc3339_ms(&old_cert.published).unwrap(),
+        osp_proto::parse_rfc3339_ms(&new_cert.published).unwrap(),
+    );
+    assert!(new_ms > old_ms, "the new certificate isn't newer");
+
+    // Started again, her node signs its posts again with the new key,
+    // keeping their IDs, and tells Bob, who comes back to it.
+    let alice = Node::spawn(&home).await.unwrap();
+    let again = outbox(&alice).await;
+    assert_eq!(again[0].id(), before[0].id());
+    let (_, cert) = again[0].verify_with_key().unwrap();
+    assert_eq!(cert.unwrap().key, new_cert.key);
+    post(&alice, "after").await;
+    wait_until("Bob to come back to Alice's node", async || {
+        feed_has(&bob, "after").await
+    })
+    .await;
+
+    // Whoever holds the copied key can't move Bob again.
+    refused(move_as(&copied, &bob).await, "revoked");
+    thief.shutdown().await.unwrap();
+
+    // A node that still keeps its identity key protects it first.
+    let old_home = dir.path().join("old");
+    let old_words = Node::init(&old_home, &Config::local_test("Old"))
+        .unwrap()
+        .join(" ");
+    make_old_home(&old_home, &old_words);
+    let err = Node::replace_keys(&old_home, || Ok(old_words)).unwrap_err();
+    assert!(err.to_string().contains("protect"), "{err}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_restore_that_revokes_the_old_key_signs_the_backup_again() {
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter("osp_node=debug,warn")
+        .with_test_writer()
+        .try_init();
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("alice");
+    let words = Node::init(&home, &Config::local_test("Alice"))
+        .unwrap()
+        .join(" ");
+    redate_certificate(&home, &words, 4 * 60);
+    let alice = Node::spawn(&home).await.unwrap();
+    post(&alice, "before").await;
+    let before = outbox(&alice).await;
+    let bob_home = dir.path().join("bob");
+    Node::init(&bob_home, &Config::local_test("Bob")).unwrap();
+    let bob = Node::spawn(&bob_home).await.unwrap();
+    follow_node(&bob, &alice).await;
+    assert_eq!(feed_texts(&bob).await, ["before"]);
+    let file = dir.path().join("alice.ospbackup");
+    export(&alice, &file).await;
+
+    // Her computer is stolen: whoever has it can run her node.
+    let copied = copied_signing_key(&home);
+    let old_cert = certificate_in(&home);
+    alice.shutdown().await.unwrap();
+
+    // She restores on a new computer, revoking the old key.
+    let new_home = dir.path().join("alice-new");
+    let config = Config::local_test("Alice");
+    Node::restore(
+        &new_home,
+        &config,
+        &words,
+        Some(&file),
+        EarlierKeys::Revoked,
+    )
+    .unwrap();
+    let new_cert = certificate_in(&new_home);
+    assert_eq!(new_cert.earlier_keys, EarlierKeys::Revoked);
+    let (old_ms, new_ms) = (
+        osp_proto::parse_rfc3339_ms(&old_cert.published).unwrap(),
+        osp_proto::parse_rfc3339_ms(&new_cert.published).unwrap(),
+    );
+    assert!(
+        new_ms > old_ms,
+        "not dated after the certificate in the backup"
+    );
+    let alice = Node::spawn(&new_home).await.unwrap();
+    let again = outbox(&alice).await;
+    assert_eq!(again[0].id(), before[0].id());
+    assert_eq!(
+        again[0].verify_with_key().unwrap().1.unwrap().key,
+        new_cert.key
+    );
+    post(&alice, "on the new computer").await;
+    wait_until("Bob to follow the new node", async || {
+        feed_has(&bob, "on the new computer").await
+    })
+    .await;
+    refused(move_as(&copied, &bob).await, "revoked");
+
+    // When nobody else can have the old key, a restore retires it instead.
+    let retired = dir.path().join("alice-retired");
+    Node::restore(&retired, &config, &words, Some(&file), EarlierKeys::Retired).unwrap();
+    assert_eq!(certificate_in(&retired).earlier_keys, EarlierKeys::Retired);
 }
