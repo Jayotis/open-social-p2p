@@ -5,14 +5,17 @@ use std::{fmt, sync::Arc, time::Duration};
 
 use anyhow::{Context, Result, bail, ensure};
 use iroh::{
-    EndpointAddr, EndpointId,
+    EndpointAddr, EndpointId, PublicKey,
     endpoint::{Connection, RecvStream, SendStream},
     protocol::{AcceptError, ProtocolHandler},
 };
 use osp_proto::{
     Payload, Person, SOCIAL_ALPN, SignedObject,
     framing::{read_frame, read_frame_max, write_frame},
-    social::{MAX_OUTBOX_PAGE, MAX_REQUEST_LEN, OutboxEntry, SocialRequest, SocialResponse},
+    social::{
+        MAX_GET_OBJECTS, MAX_OUTBOX_PAGE, MAX_REQUEST_LEN, OutboxEntry, SocialRequest,
+        SocialResponse,
+    },
 };
 use tokio::sync::Semaphore;
 use tracing::{debug, info};
@@ -228,6 +231,22 @@ impl Core {
                 self.follow_moved(&profile, &addr)?;
                 SocialResponse::Ok
             }
+            SocialRequest::GetObjects { ids } => {
+                ensure!(
+                    ids.len() <= MAX_GET_OBJECTS,
+                    "asked for {} objects; at most {MAX_GET_OBJECTS} at a time",
+                    ids.len()
+                );
+                // From the outbox: our own posts and reshares, never what
+                // we keep of others'.
+                let mut objects = Vec::new();
+                for id in &ids {
+                    if let Some(obj) = self.db.outbox_object(id)? {
+                        objects.push(obj);
+                    }
+                }
+                SocialResponse::Objects { objects }
+            }
         })
     }
 
@@ -296,9 +315,34 @@ impl Core {
                     actor = %key.actor.fmt_short(),
                     "an identity revoked its earlier signing keys"
                 );
+                self.drop_revoked(&key.actor, cert_ms)?;
             }
         }
         Ok(payload)
+    }
+
+    /// Deletes what `actor`'s keys certified before `revoked_before_ms`
+    /// signed, now that they're revoked (ADR 0010). If we follow `actor`, the
+    /// next sync, which this wakes, asks its node for copies signed by the
+    /// new key. Our own identity's objects stay: this node signs them again
+    /// itself when its key changes, and its outbox needs them.
+    fn drop_revoked(&self, actor: &PublicKey, revoked_before_ms: i64) -> Result<()> {
+        if *actor == self.signer.identity() {
+            return Ok(());
+        }
+        let following = self.db.follows()?.iter().any(|f| f.actor == *actor);
+        let dropped = self.db.drop_revoked(actor, revoked_before_ms, following)?;
+        if dropped > 0 {
+            info!(
+                actor = %actor.fmt_short(),
+                dropped,
+                "dropped what the revoked keys signed"
+            );
+        }
+        if following {
+            self.sync_now.notify_one();
+        }
+        Ok(())
     }
 
     /// Records a subscriber. A node we already have just gets its address
