@@ -225,7 +225,7 @@ impl ProtocolHandler for Thief {
     }
 }
 
-/// A node nobody has seen before, connected to `node` over `osp/social/0`.
+/// A node nobody has seen before, connected to `node` over `osp/social/1`.
 /// Returns its endpoint too, since dropping that closes the connection.
 async fn stranger(node: &EndpointAddr) -> (Endpoint, Connection) {
     let lookup = MemoryLookup::new();

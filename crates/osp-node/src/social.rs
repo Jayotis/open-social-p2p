@@ -1,4 +1,4 @@
-//! The node-to-node protocol `osp/social/0` (ADR 0003): serving our profile
+//! The node-to-node protocol `osp/social/1` (ADR 0003): serving our profile
 //! and outbox, and asking other nodes for theirs.
 
 use std::{fmt, sync::Arc, time::Duration};
@@ -49,12 +49,12 @@ const MAX_NEW_FOLLOWERS_PER_HOUR: usize = 100;
 /// Followers not heard from for this long are forgotten. A live follower's
 /// node subscribes again every day, and answers notifications.
 pub(crate) const FOLLOWER_SILENCE: Duration = Duration::from_secs(30 * 24 * 60 * 60);
-/// How far ahead of our clock a profile may be dated. The newer profile
-/// wins (ADR 0009), so one dated years ahead could never be replaced; this
-/// still lets clocks a few minutes apart work.
-const MAX_PROFILE_AHEAD: Duration = Duration::from_secs(5 * 60);
+/// How far ahead of our clock a profile or key certificate may be dated.
+/// The newer one wins (ADR 0009, ADR 0010), so one dated years ahead could
+/// never be replaced; this still lets clocks a few minutes apart work.
+const MAX_DATED_AHEAD: Duration = Duration::from_secs(5 * 60);
 
-/// Accepts incoming `osp/social/0` connections.
+/// Accepts incoming `osp/social/1` connections.
 #[derive(Clone)]
 pub(crate) struct SocialProtocol {
     core: Arc<Core>,
@@ -235,18 +235,20 @@ impl Core {
     /// only with a profile signed by that identity, listing that node, and
     /// newer than the one we have, so an old profile can't be replayed to
     /// point us back. It mustn't be dated ahead of our clock either
-    /// (`profile_date`), or no later move could replace it.
+    /// (`profile_date`), or no later move could replace it, nor signed with a
+    /// key the identity revoked (ADR 0010).
     fn follow_moved(&self, profile: &SignedObject, addr: &EndpointAddr) -> Result<()> {
-        let Payload::Person(person) = profile.verify()? else {
-            bail!("not a profile");
-        };
-        let actor = person.actor;
+        // Who it claims to be, checked by `verify_received` below.
+        let actor = profile.signer();
         let follow = self
             .db
             .follows()?
             .into_iter()
             .find(|f| f.actor == actor)
             .with_context(|| format!("not following {}", actor.fmt_short()))?;
+        let Payload::Person(person) = self.verify_received(profile)? else {
+            bail!("not a profile");
+        };
         ensure!(
             person.nodes.contains(&addr.id),
             "the profile doesn't list your node"
@@ -277,6 +279,26 @@ impl Core {
             "a followed identity moved to another node"
         );
         Ok(())
+    }
+
+    /// Verifies an object another node sent us: its signatures, and that
+    /// the key which signed it hasn't been revoked. Learns of a newer key
+    /// certificate from it (ADR 0010). Call it only for identities we follow
+    /// or objects we keep, so strangers can't fill the key table, and use it
+    /// for everything that arrives; `SignedObject::verify` alone is for what
+    /// we already stored.
+    pub(crate) fn verify_received(&self, obj: &SignedObject) -> Result<Payload> {
+        let (payload, key) = obj.verify_with_key()?;
+        if let (Some(key), Some(cert)) = (key, obj.certificate()) {
+            let cert_ms = dated(&key.published, "key certificate")?;
+            if self.db.check_key(cert, &key, cert_ms)? {
+                info!(
+                    actor = %key.actor.fmt_short(),
+                    "an identity revoked its earlier signing keys"
+                );
+            }
+        }
+        Ok(payload)
     }
 
     /// Records a subscriber. A node we already have just gets its address
@@ -377,14 +399,20 @@ impl Core {
 }
 
 /// A profile's date in Unix milliseconds, if it has one and it isn't
-/// further ahead of our clock than `MAX_PROFILE_AHEAD`.
+/// further ahead of our clock than `MAX_DATED_AHEAD`.
 pub(crate) fn profile_date(person: &Person) -> Result<i64> {
-    let published =
-        osp_proto::parse_rfc3339_ms(&person.published).context("the profile has no valid date")?;
+    dated(&person.published, "profile")
+}
+
+/// A date in Unix milliseconds, if it is one and isn't further ahead of our
+/// clock than `MAX_DATED_AHEAD`. `what` names the object in errors.
+fn dated(published: &str, what: &str) -> Result<i64> {
+    let published = osp_proto::parse_rfc3339_ms(published)
+        .with_context(|| format!("the {what} has no valid date"))?;
     let ahead = Duration::from_millis(published.saturating_sub(now_ms()).max(0) as u64);
     ensure!(
-        ahead <= MAX_PROFILE_AHEAD,
-        "the profile is dated {} ahead of our clock; is the sender's clock right?",
+        ahead <= MAX_DATED_AHEAD,
+        "the {what} is dated {} ahead of our clock; is the sender's clock right?",
         humantime::format_duration(Duration::from_secs(ahead.as_secs()))
     );
     Ok(published)

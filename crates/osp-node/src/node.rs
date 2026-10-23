@@ -72,7 +72,7 @@ pub(crate) struct Core {
     pub store: ContentStore,
     /// Our signed profile, served to anyone who asks.
     pub profile: SignedObject,
-    /// Open `osp/social/0` connections, reused across requests.
+    /// Open `osp/social/1` connections, reused across requests.
     pub conns: Mutex<HashMap<EndpointId, Connection>>,
     /// Every live connection in either direction, for `status`.
     pub tracker: ConnTracker,

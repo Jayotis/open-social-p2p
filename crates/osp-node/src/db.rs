@@ -9,10 +9,10 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, ensure};
 use iroh::{EndpointAddr, EndpointId, PublicKey};
 use osp_proto::{
-    BlobHash, Note, ObjectId, Payload, SignedObject,
+    BlobHash, EarlierKeys, Key, Note, ObjectId, Payload, SignedObject,
     rpc::{FollowInfo, StorageInfo},
 };
 use rusqlite::{Connection, OptionalExtension, params};
@@ -91,6 +91,14 @@ const MIGRATIONS: &[&str] = &[
     "CREATE TABLE declared_sizes (blob TEXT PRIMARY KEY, size INTEGER NOT NULL)",
     // 3: followers still to be told that this identity moved to this node (ADR 0009).
     "ALTER TABLE followers ADD COLUMN tell_moved INTEGER NOT NULL DEFAULT 0",
+    // 4: what we know of each identity's signing keys (ADR 0010): its newest
+    // key certificate, and the date of the newest one that revoked earlier keys.
+    "CREATE TABLE identity_keys (
+        actor             TEXT PRIMARY KEY,
+        cert              TEXT NOT NULL,
+        cert_ms           INTEGER NOT NULL,
+        revoked_before_ms INTEGER
+    )",
 ];
 
 /// Hosts remembered per blob. More than enough to find a copy; a peer
@@ -477,6 +485,47 @@ impl Db {
         let mut stmt = conn.prepare("SELECT node_addr FROM followers")?;
         let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
         rows.map(|r| Ok(serde_json::from_str(&r?)?)).collect()
+    }
+
+    // ---- identity keys (ADR 0010) ----
+
+    /// Checks the key certificate `cert`, dated `cert_ms`, against what we
+    /// know of its identity's keys, and keeps it if it's the newest we've
+    /// seen. Refuses a key that a newer certificate revoked. Returns true
+    /// if this certificate revoked the keys before it.
+    pub fn check_key(&self, cert: &SignedObject, key: &Key, cert_ms: i64) -> Result<bool> {
+        let conn = self.conn();
+        let actor = key.actor.to_string();
+        let known: Option<(i64, Option<i64>)> = conn
+            .query_row(
+                "SELECT cert_ms, revoked_before_ms FROM identity_keys WHERE actor = ?1",
+                params![actor],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        let revoked_before = known.and_then(|(_, before)| before);
+        ensure!(
+            revoked_before.is_none_or(|before| cert_ms >= before),
+            "signed with a key that {} has revoked",
+            key.actor.fmt_short()
+        );
+        if known.is_some_and(|(newest, _)| cert_ms <= newest) {
+            return Ok(false);
+        }
+        let revokes = key.earlier_keys == EarlierKeys::Revoked;
+        let revoked_before = if revokes {
+            Some(cert_ms)
+        } else {
+            revoked_before
+        };
+        conn.execute(
+            "INSERT INTO identity_keys (actor, cert, cert_ms, revoked_before_ms)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(actor) DO UPDATE SET cert = excluded.cert,
+                 cert_ms = excluded.cert_ms, revoked_before_ms = excluded.revoked_before_ms",
+            params![actor, serde_json::to_string(cert)?, cert_ms, revoked_before],
+        )?;
+        Ok(revokes)
     }
 
     // ---- profiles ----

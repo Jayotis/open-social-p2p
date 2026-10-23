@@ -496,6 +496,7 @@ impl Core {
                 Ok((a.object, note))
             }
             Payload::Person(_) => bail!("{id} is a profile, not a post"),
+            Payload::Key(_) => bail!("{id} is a key certificate, not a post"),
         }
     }
 }

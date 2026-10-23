@@ -135,14 +135,14 @@ impl Core {
             .await?
         {
             SocialResponse::Profile { profile } => {
-                let Payload::Person(person) = profile.verify()? else {
-                    bail!("profile is not a Person");
-                };
                 ensure!(
-                    person.actor == follow.actor,
+                    profile.signer() == follow.actor,
                     "node {} speaks for a different identity",
                     follow.addr.id.fmt_short()
                 );
+                let Payload::Person(person) = self.verify_received(&profile)? else {
+                    bail!("profile is not a Person");
+                };
                 // One dated far ahead would outrank every later move (ADR 0009).
                 match profile_date(&person) {
                     Ok(_) => self
@@ -209,11 +209,15 @@ impl Core {
             for entry in entries {
                 ensure!(entry.seq > cursor, "outbox entries are out of order");
                 cursor = entry.seq;
-                match entry.object.verify() {
-                    Ok(payload) if payload.actor() == follow.actor => {
-                        checked.push((entry.object, payload));
+                if entry.object.signer() != follow.actor {
+                    warn!(%actor, "skipping an outbox entry signed by someone else");
+                    continue;
+                }
+                match self.verify_received(&entry.object) {
+                    Ok(Payload::Key(_)) => {
+                        warn!(%actor, "skipping a key certificate; they come inside objects")
                     }
-                    Ok(_) => warn!(%actor, "skipping an outbox entry signed by someone else"),
+                    Ok(payload) => checked.push((entry.object, payload)),
                     Err(e) => warn!(%actor, "skipping an invalid outbox entry: {e:#}"),
                 }
             }
@@ -230,7 +234,13 @@ impl Core {
             }
             let mut notes: HashMap<ObjectId, Note> = HashMap::new();
             for obj in referenced {
-                let Ok(payload) = obj.verify() else {
+                // What it's for comes first, so a page can't make us learn
+                // the keys of identities no reshare names.
+                if !wanted_posts.contains(&obj.id()) && !wanted_authors.contains(&obj.signer()) {
+                    debug!(%actor, "ignoring a referenced object no reshare points at");
+                    continue;
+                }
+                let Ok(payload) = self.verify_received(&obj) else {
                     warn!(%actor, "dropping an invalid referenced object");
                     continue;
                 };
@@ -283,7 +293,7 @@ impl Core {
                             }
                         }
                     }
-                    Payload::Person(_) => {}
+                    Payload::Person(_) | Payload::Key(_) => {}
                 }
             }
             self.db.set_follow_synced(&follow.actor, cursor)?;
