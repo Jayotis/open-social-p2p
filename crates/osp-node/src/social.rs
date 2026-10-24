@@ -1,7 +1,11 @@
 //! The node-to-node protocol `osp/social/1` (ADR 0003): serving our profile
 //! and outbox, and asking other nodes for theirs.
 
-use std::{fmt, sync::Arc, time::Duration};
+use std::{
+    fmt,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use anyhow::{Context, Result, bail, ensure};
 use iroh::{
@@ -23,6 +27,7 @@ use tracing::{debug, info};
 use crate::{
     db::now_ms,
     node::{Core, check_addr, remember},
+    peers::{self, Event},
 };
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
@@ -364,26 +369,48 @@ impl Core {
         self.db.add_follower(addr)
     }
 
-    /// Sends one request to another node, reusing an open connection when we have one.
+    /// Sends one request to another node, reusing an open connection when
+    /// we have one, and records how the node did (ADR 0011). An error reply
+    /// still counts as an answer: the node is up and responding.
     pub(crate) async fn social_request(
         &self,
         addr: &EndpointAddr,
         req: &SocialRequest,
     ) -> Result<SocialResponse> {
-        let conn = self.social_conn(addr).await?;
-        let resp = match request_on(&conn, req).await {
-            Ok(resp) => resp,
-            Err(_) => {
-                // The cached connection may have died quietly; try once on a fresh one.
-                self.forget_conn(&addr.id);
-                let conn = self.social_conn(addr).await?;
-                request_on(&conn, req).await?
-            }
-        };
+        let (reached, result) = self.ask_node(addr, req).await;
+        let took = result.as_ref().ok().map(|(_, took)| *took);
+        peers::record(&self.db, &addr.id, Event::Request { reached, took });
+        let (resp, _) = result?;
         if let SocialResponse::Error { message } = &resp {
             bail!("{} replied: {message}", addr.id.fmt_short());
         }
         Ok(resp)
+    }
+
+    /// Sends a request, and says whether the node could be reached, and how
+    /// long its reply took.
+    async fn ask_node(
+        &self,
+        addr: &EndpointAddr,
+        req: &SocialRequest,
+    ) -> (bool, Result<(SocialResponse, Duration)>) {
+        let conn = match self.social_conn(addr).await {
+            Ok(conn) => conn,
+            Err(e) => return (false, Err(e)),
+        };
+        let started = Instant::now();
+        if let Ok(resp) = request_on(&conn, req).await {
+            return (true, Ok((resp, started.elapsed())));
+        }
+        // The cached connection may have died quietly; try once on a fresh one.
+        self.forget_conn(&addr.id);
+        let conn = match self.social_conn(addr).await {
+            Ok(conn) => conn,
+            Err(e) => return (false, Err(e)),
+        };
+        let started = Instant::now();
+        let result = request_on(&conn, req).await;
+        (true, result.map(|resp| (resp, started.elapsed())))
     }
 
     async fn social_conn(&self, addr: &EndpointAddr) -> Result<Connection> {

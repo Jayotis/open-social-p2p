@@ -18,7 +18,7 @@ use osp_node::{Config, Home, Node, RelayChoice};
 use osp_proto::{
     EarlierKeys, EndpointId, ObjectId, PublicKey,
     framing::{read_frame, write_frame},
-    rpc::{ClientRequest, ClientResponse, DeviceInfo, Direction, FeedItem, StatusInfo},
+    rpc::{ClientRequest, ClientResponse, DeviceInfo, Direction, FeedItem, PeerRecord, StatusInfo},
 };
 use tokio::net::UnixStream;
 
@@ -128,6 +128,8 @@ enum Command {
     },
     /// List paired phones
     Devices,
+    /// Show what this node measured about the nodes it deals with
+    Peers,
     /// Forget a paired phone, by its name or the start of its ID
     Unpair { device: String },
     /// Run the node in the background, starting at boot (systemd user service)
@@ -239,6 +241,7 @@ async fn main() -> Result<()> {
         Command::Unfollow { actor } => ClientRequest::Unfollow { actor },
         Command::Following => ClientRequest::Following,
         Command::Devices => ClientRequest::Devices,
+        Command::Peers => ClientRequest::Peers,
         Command::Post { text, attach } => ClientRequest::Post {
             content: text,
             // The daemon has its own working directory, so send absolute paths.
@@ -658,6 +661,7 @@ fn print(resp: ClientResponse, json: bool) -> Result<()> {
                 println!("    paired {}{connected}", d.paired);
             }
         }
+        ClientResponse::Peers { peers } => print_peers(&peers),
         ClientResponse::Paired { name, .. } => println!("Paired with {name}'s node."),
         ClientResponse::Blob { size: bytes } => println!("{}", size(bytes)),
         ClientResponse::BackedUp { path, info } => {
@@ -725,6 +729,95 @@ fn print_status(s: &StatusInfo) {
     for problem in &s.problems {
         println!("Problem:   {problem}");
     }
+}
+
+fn print_peers(peers: &[PeerRecord]) {
+    if peers.is_empty() {
+        println!("No peers yet: this node hasn't dealt with another node.");
+        return;
+    }
+    println!("What this node saw itself. Counts fade by half every 14 days, so they're");
+    println!("recent weights, rounded. Nothing here leaves this node.");
+    for p in peers {
+        let c = &p.counts;
+        let mut what = Vec::new();
+        if p.followed {
+            what.push("you follow them");
+        }
+        if p.follower {
+            what.push("follows you");
+        }
+        if p.host {
+            what.push("hosts media");
+        }
+        println!();
+        println!(
+            "{}  {}  {}",
+            p.name.as_deref().unwrap_or("(unknown)"),
+            p.node.fmt_short(),
+            what.join(", ")
+        );
+        println!(
+            "  last contact {} ago, first {} ago",
+            uptime(p.last_contact_secs_ago),
+            uptime(p.first_contact_secs_ago)
+        );
+        let mut asked = Vec::new();
+        if c.tries > 0.0 {
+            asked.push(format!(
+                "reached {} of {:.0} tries",
+                percent(c.tries - c.unreached, c.tries),
+                c.tries
+            ));
+        }
+        if c.requests > 0.0 {
+            let mut answers = format!(
+                "answered {} of {:.0} requests",
+                percent(c.answered, c.requests),
+                c.requests
+            );
+            if c.answered > 0.0 {
+                answers += &format!(", in {:.0} ms on average", c.answer_ms / c.answered);
+            }
+            asked.push(answers);
+        }
+        if !asked.is_empty() {
+            println!("  {}", asked.join("; "));
+        }
+        let attempts = c.completed + c.busy + c.not_hosting + c.bad_data + c.failed;
+        if attempts > 0.0 || c.received_bytes > 0.0 {
+            let mut line = format!(
+                "  downloads from it: {:.0} completed, {:.0} busy, {:.0} not hosting, {:.0} bad data, {:.0} failed",
+                c.completed, c.busy, c.not_hosting, c.bad_data, c.failed
+            );
+            if c.received_bytes > 0.0 {
+                line += &format!("; {}", size(c.received_bytes as u64));
+                if c.receive_ms > 0.0 {
+                    let per_sec = c.received_bytes / (c.receive_ms / 1000.0);
+                    line += &format!(" at {}/s", size(per_sec as u64));
+                }
+            }
+            if c.first_bytes > 0.0 {
+                line += &format!(
+                    ", first byte after {:.0} ms",
+                    c.first_byte_ms / c.first_bytes
+                );
+            }
+            println!("{line}");
+        }
+        if c.transfers > 0.0 || c.refused_busy > 0.0 {
+            println!(
+                "  served to it: {:.0} transfers, {}; {:.0} refused as busy",
+                c.transfers,
+                size(c.sent_bytes as u64),
+                c.refused_busy
+            );
+        }
+    }
+}
+
+fn percent(part: f64, whole: f64) -> String {
+    format!("{:.0}%", 100.0 * part / whole)
 }
 
 fn uptime(secs: u64) -> String {

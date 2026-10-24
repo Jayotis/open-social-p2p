@@ -2,6 +2,7 @@
 //! and paired phones (`osp/client/0`, see `client.rs`).
 
 use std::{
+    collections::{HashMap, HashSet},
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
     sync::Arc,
@@ -14,8 +15,8 @@ use osp_proto::{
     Announce, Attachment, BlobRef, FollowTicket, Note, ObjectId, Payload, SignedObject,
     framing::{read_frame, write_frame},
     rpc::{
-        AttachmentInfo, ClientRequest, ClientResponse, FeedItem, FetchedFile, ResharedBy,
-        StatusInfo,
+        AttachmentInfo, ClientRequest, ClientResponse, FeedItem, FetchedFile, PeerRecord,
+        ResharedBy, StatusInfo,
     },
     social::SocialRequest,
     types::{MAX_ATTACHMENTS, MAX_CONTENT_BYTES},
@@ -156,10 +157,49 @@ impl Core {
                     path,
                 }
             }
+            ClientRequest::Peers => ClientResponse::Peers {
+                peers: self.peer_records()?,
+            },
             ClientRequest::Pair { .. } | ClientRequest::ReadBlob { .. } => {
                 bail!("this request is only accepted over osp/client/0")
             }
         })
+    }
+
+    /// What this node measured about its peers (ADR 0011), and what it
+    /// knows of each: whose node it is, and what it is to this one.
+    fn peer_records(&self) -> Result<Vec<PeerRecord>> {
+        let now = now_ms();
+        let mut owners = HashMap::new();
+        for (actor, name, nodes) in self.db.profile_nodes()? {
+            for node in nodes {
+                owners.insert(node, (actor, name.clone()));
+            }
+        }
+        let followed: HashSet<_> = self.db.follows()?.iter().map(|f| f.addr.id).collect();
+        let followers: HashSet<_> = self.db.followers()?.iter().map(|a| a.id).collect();
+        let hosts: HashSet<_> = self.db.host_nodes()?.into_iter().collect();
+        let secs_ago = |ms: i64| ((now - ms) / 1000).max(0) as u64;
+        Ok(self
+            .db
+            .peers(now)?
+            .into_iter()
+            .map(|peer| {
+                let owner = owners.get(&peer.node);
+                PeerRecord {
+                    node: peer.node,
+                    actor: owner.map(|(actor, _)| *actor),
+                    name: owner.map(|(_, name)| name.clone()),
+                    followed: followed.contains(&peer.node),
+                    follower: followers.contains(&peer.node),
+                    host: hosts.contains(&peer.node),
+                    contacted: peer.ours,
+                    first_contact_secs_ago: secs_ago(peer.first_ms),
+                    last_contact_secs_ago: secs_ago(peer.last_ms),
+                    counts: peer.counts,
+                }
+            })
+            .collect())
     }
 
     async fn status(&self) -> Result<StatusInfo> {
