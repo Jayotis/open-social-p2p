@@ -14,7 +14,8 @@ Each record captures one significant decision: the problem, the options consider
 | [0008](0008-device-pairing-and-client-protocol.md) | Device pairing and the client protocol | Accepted |
 | [0009](0009-identity-backup-and-recovery.md) | Identity backup and recovery | Accepted |
 | [0010](0010-signing-keys-and-revocation.md) | Signing keys, and taking a stolen one back | Accepted |
+| [0011](0011-measuring-peers.md) | Measuring peers | Accepted |
 
-Proposals under review that may become ADRs: [peer reciprocity and recognition](../12-peer-reciprocity-and-recognition.md) and [hosting roles and the follower swarm](../13-hosting-roles-and-follower-swarm.md). See the [critical review](../reviews/2026-10-21-review-of-docs-12-and-13.md) for what blocks them.
+Proposals under review that may become ADRs: [peer reciprocity and recognition](../12-peer-reciprocity-and-recognition.md) (its first phase, measuring, is ADR 0011) and [hosting roles and the follower swarm](../13-hosting-roles-and-follower-swarm.md). See the [critical review](../reviews/2026-10-21-review-of-docs-12-and-13.md) for what blocks them.
 
 A record marked *Accepted* can still be superseded. Write a new ADR that links back to it rather than rewriting history.
