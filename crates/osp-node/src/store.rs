@@ -24,11 +24,12 @@ use anyhow::{Context, Result, bail, ensure};
 use iroh::{Endpoint, EndpointId};
 use iroh_blobs::{
     BlobsProtocol, Hash,
-    api::{
-        blobs::BlobStatus,
-        downloader::{DownloadProgressItem, Downloader},
-        proto::ExportRangesItem,
+    api::{blobs::BlobStatus, proto::ExportRangesItem, remote::GetProgressItem},
+    get::{
+        GetError,
+        fsm::{AtBlobHeaderNextError, DecodeError},
     },
+    protocol::{ERR_LIMIT, ERR_PERMISSION, GetRequest},
     provider::events::{
         AbortReason, ConnectMode, EventMask, EventSender, ObserveMode, ProviderMessage,
         RequestMode, ThrottleMode,
@@ -37,6 +38,7 @@ use iroh_blobs::{
         GcConfig, ProtectCb, ProtectOutcome,
         fs::{FsStore, options::Options},
     },
+    util::connection_pool::{self, ConnectionPool},
 };
 use n0_future::StreamExt;
 use osp_proto::BlobHash;
@@ -55,6 +57,10 @@ use crate::{
 
 /// Give up on a download after this long, so a stalled provider can't hang a sync.
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(600);
+/// How long to wait for a connection to a node that may have a blob. Long
+/// enough for a first connection through a relay, so a node that is merely
+/// slow to reach isn't taken for one that can't be reached.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// How often the garbage collector deletes blobs nothing keeps any more:
 /// evicted ones, and the remains of failed downloads.
@@ -92,7 +98,8 @@ const EVENT_MASK: EventMask = EventMask {
 
 pub(crate) struct ContentStore {
     store: FsStore,
-    downloader: Downloader,
+    /// Connections to nodes we download from, reused while they're in use.
+    pool: ConnectionPool,
     db: Arc<Db>,
     /// Where the blobs live, for checking free disk space.
     dir: PathBuf,
@@ -122,10 +129,17 @@ impl ContentStore {
         let store = FsStore::load_with_opts(dir.join("blobs.db"), options)
             .await
             .with_context(|| format!("opening blob store in {}", dir.display()))?;
-        let downloader = Downloader::new(&store, endpoint);
+        let pool = ConnectionPool::new(
+            endpoint.clone(),
+            iroh_blobs::ALPN,
+            connection_pool::Options {
+                connect_timeout: CONNECT_TIMEOUT,
+                ..Default::default()
+            },
+        );
         let this = Self {
             store,
-            downloader,
+            pool,
             db,
             dir: dir.to_path_buf(),
             cache_quota: quotas.cache_quota_mb << 20,
@@ -230,9 +244,8 @@ impl ContentStore {
         // Keeps the collector off the partial blob until it has its tag.
         let _downloading = self.store.tags().temp_tag(h).await?;
         debug!(%hash, ?providers, "downloading");
-        tokio::time::timeout(DOWNLOAD_TIMEOUT, self.fetch(h, providers, declared))
+        self.fetch(h, providers, declared, Instant::now() + DOWNLOAD_TIMEOUT)
             .await
-            .context("download timed out")?
             .map_err(|e| anyhow::anyhow!("download of {} failed: {e:#}", hash.fmt_short()))?;
         let size = self
             .size(h)
@@ -310,23 +323,101 @@ impl ContentStore {
         })
     }
 
-    /// Runs a download, stopping it once more than `declared` bytes have
-    /// arrived. A provider can't send bytes that don't match the hash, but
-    /// the post's author can declare a smaller size than the blob has.
-    async fn fetch(&self, hash: Hash, providers: Vec<EndpointId>, declared: u64) -> Result<()> {
-        let mut progress = self.downloader.download(hash, providers).stream().await?;
-        while let Some(item) = progress.next().await {
-            match item {
-                DownloadProgressItem::Progress(bytes) => ensure!(
-                    bytes <= declared,
-                    "it is bigger than its post says ({declared} bytes), so it was stopped"
-                ),
-                DownloadProgressItem::Error(e) => bail!("{e}"),
-                DownloadProgressItem::DownloadError => bail!("no provider could send it"),
+    /// Asks `providers` in turn for what is still missing of a blob, until
+    /// it is complete or `deadline` passes. Each node is asked only for what
+    /// the ones before it didn't send, and how its attempt ended is logged
+    /// (ADR 0011). Stops once more than `declared` bytes have arrived: a
+    /// provider can't send bytes that don't match the hash, but the post's
+    /// author can declare a smaller size than the blob has.
+    async fn fetch(
+        &self,
+        hash: Hash,
+        providers: Vec<EndpointId>,
+        declared: u64,
+        deadline: Instant,
+    ) -> Result<()> {
+        let request = Arc::new(GetRequest::blob(hash));
+        let remote = self.store.remote();
+        for node in providers {
+            let local = remote.local_for_request(request.clone()).await?;
+            if local.is_complete() {
+                return Ok(());
+            }
+            let attempt = self
+                .attempt(
+                    node,
+                    local.missing(),
+                    local.local_bytes(),
+                    declared,
+                    deadline,
+                )
+                .await;
+            attempt.log(hash);
+            match attempt.outcome {
+                Outcome::Completed => return Ok(()),
+                Outcome::Stopped => {
+                    bail!("it is bigger than its post says ({declared} bytes), so it was stopped")
+                }
+                _ if Instant::now() >= deadline => bail!("it timed out"),
                 _ => {}
             }
         }
-        Ok(())
+        bail!("no provider could send it")
+    }
+
+    /// Asks one node for `request`: what is still missing of a blob, of
+    /// which `local` bytes are already here.
+    async fn attempt(
+        &self,
+        node: EndpointId,
+        request: GetRequest,
+        local: u64,
+        declared: u64,
+        deadline: Instant,
+    ) -> Attempt {
+        let started = Instant::now();
+        let mut attempt = Attempt {
+            node,
+            outcome: Outcome::Failed,
+            bytes: 0,
+            took: Duration::ZERO,
+            first_byte: None,
+        };
+        let left = || deadline.saturating_duration_since(Instant::now());
+        attempt.outcome = match tokio::time::timeout(left(), self.pool.get_or_connect(node)).await {
+            Err(_) => Outcome::Failed,
+            Ok(Err(e)) => {
+                debug!(node = %node.fmt_short(), "couldn't connect: {e}");
+                Outcome::Unreachable
+            }
+            Ok(Ok(conn)) => {
+                let mut progress = self
+                    .store
+                    .remote()
+                    .execute_get(conn.clone(), request)
+                    .stream();
+                loop {
+                    match tokio::time::timeout(left(), progress.next()).await {
+                        // Out of time, or it ended without saying how.
+                        Err(_) | Ok(None) => break Outcome::Failed,
+                        Ok(Some(GetProgressItem::Progress(bytes))) => {
+                            attempt.first_byte.get_or_insert_with(|| started.elapsed());
+                            attempt.bytes = bytes;
+                            if local + bytes > declared {
+                                break Outcome::Stopped;
+                            }
+                        }
+                        Ok(Some(GetProgressItem::Done(_))) => break Outcome::Completed,
+                        Ok(Some(GetProgressItem::Error(e))) => {
+                            debug!(node = %node.fmt_short(), "download attempt failed: {e:#}");
+                            break outcome_of(&e);
+                        }
+                    }
+                }
+            }
+        };
+        attempt.took = started.elapsed();
+        attempt
     }
 
     /// Promises `bytes` of `class` space to a download until the returned
@@ -466,6 +557,88 @@ impl Drop for Reservation<'_> {
         if let Some(n) = self.store.lock_reserved().get_mut(&self.class) {
             *n -= self.bytes;
         }
+    }
+}
+
+/// One node's attempt at sending us (part of) a blob.
+#[derive(Debug)]
+struct Attempt {
+    node: EndpointId,
+    outcome: Outcome,
+    /// Verified payload bytes it sent.
+    bytes: u64,
+    /// From asking to the end of the attempt.
+    took: Duration,
+    /// From asking to the first bytes, if any came.
+    first_byte: Option<Duration>,
+}
+
+/// How an attempt ended (ADR 0011).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Outcome {
+    /// It sent everything we asked for.
+    Completed,
+    /// It refused because it was busy.
+    Busy,
+    /// It doesn't have the blob, or won't serve it to us.
+    NotHosting,
+    /// It sent bytes that don't match the hash.
+    BadData,
+    /// It couldn't be reached.
+    Unreachable,
+    /// Anything else: a dropped connection, an error, or out of time.
+    Failed,
+    /// We stopped it: more arrived than the post says the blob has. That
+    /// says nothing about the node, which can only send the blob the hash names.
+    Stopped,
+}
+
+impl Attempt {
+    fn log(&self, hash: Hash) {
+        let node = self.node.fmt_short();
+        let blob = to_blob_hash(hash).fmt_short();
+        if self.outcome == Outcome::BadData {
+            warn!(%node, %blob, "a node sent data that doesn't match the hash; trying the next");
+        } else {
+            debug!(
+                %node,
+                %blob,
+                outcome = ?self.outcome,
+                bytes = self.bytes,
+                took_ms = self.took.as_millis() as u64,
+                first_byte_ms = self.first_byte.map(|d| d.as_millis() as u64),
+                "download attempt"
+            );
+        }
+    }
+}
+
+/// What a failed request says about the node that was asked. A node refuses
+/// by closing the stream with an error code; one that ends before sending
+/// the whole blob doesn't have it.
+fn outcome_of(e: &GetError) -> Outcome {
+    match e.iroh_error_code() {
+        Some(code) if code == ERR_LIMIT => return Outcome::Busy,
+        Some(code) if code == ERR_PERMISSION => return Outcome::NotHosting,
+        _ => {}
+    }
+    match e {
+        GetError::Decode {
+            source: DecodeError::LeafHashMismatch { .. } | DecodeError::ParentHashMismatch { .. },
+            ..
+        } => Outcome::BadData,
+        GetError::AtBlobHeaderNext {
+            source: AtBlobHeaderNextError::NotFound { .. },
+            ..
+        }
+        | GetError::Decode {
+            source:
+                DecodeError::ChunkNotFound { .. }
+                | DecodeError::ParentNotFound { .. }
+                | DecodeError::LeafNotFound { .. },
+            ..
+        } => Outcome::NotHosting,
+        _ => Outcome::Failed,
     }
 }
 
@@ -698,7 +871,13 @@ fn may_serve(db: &Db, hash: Hash, peer: Option<EndpointId>) -> bool {
 mod tests {
     use std::net::SocketAddr;
 
-    use iroh::{RelayMode, endpoint::presets};
+    use iroh::{
+        RelayMode, SecretKey,
+        address_lookup::MemoryLookup,
+        endpoint::{Connection, presets},
+        protocol::{AcceptError, ProtocolHandler, Router},
+    };
+    use iroh_blobs::store::mem::MemStore;
 
     use super::*;
 
@@ -709,6 +888,8 @@ mod tests {
     struct Fixture {
         dir: tempfile::TempDir,
         endpoint: Endpoint,
+        /// Where the endpoint finds the nodes a test downloads from.
+        lookup: MemoryLookup,
         db: Arc<Db>,
     }
 
@@ -716,15 +897,14 @@ mod tests {
         async fn new() -> Self {
             let dir = tempfile::tempdir().unwrap();
             let db = Arc::new(Db::open(&dir.path().join("node.db")).unwrap());
-            let endpoint = Endpoint::builder(presets::Minimal)
-                .relay_mode(RelayMode::Disabled)
-                .clear_ip_transports()
-                .bind_addr("127.0.0.1:0".parse::<SocketAddr>().unwrap())
-                .unwrap()
-                .bind()
-                .await
-                .unwrap();
-            Self { dir, endpoint, db }
+            let lookup = MemoryLookup::new();
+            let endpoint = local_endpoint(Some(&lookup)).await;
+            Self {
+                dir,
+                endpoint,
+                lookup,
+                db,
+            }
         }
 
         /// Opens the store with quotas of 1 MB each.
@@ -751,6 +931,204 @@ mod tests {
             std::fs::write(&path, vec![fill; size as usize]).unwrap();
             store.import(&path, class).await.unwrap().0
         }
+
+        /// Starts a node that keeps `data`, and refuses every request for
+        /// `refuse` if it is given. Returns its ID and the data's hash.
+        async fn provider(&self, data: &[u8], refuse: Option<AbortReason>) -> (Provider, Hash) {
+            let media = MemStore::new();
+            let hash = media.add_bytes(data.to_vec()).await.unwrap().hash;
+            let events = refuse.map(|reason| {
+                let mask = EventMask {
+                    get: RequestMode::Intercept,
+                    ..EventMask::DEFAULT
+                };
+                let (events, mut rx) = EventSender::channel(8, mask);
+                tokio::spawn(async move {
+                    while let Some(msg) = rx.recv().await {
+                        if let ProviderMessage::GetRequestReceived(msg) = msg {
+                            msg.tx.send(Err(reason)).await.ok();
+                        }
+                    }
+                });
+                events
+            });
+            let blobs = BlobsProtocol::new(&media, events);
+            let provider = self.serve(blobs).await;
+            (
+                Provider {
+                    _media: media,
+                    ..provider
+                },
+                hash,
+            )
+        }
+
+        /// Starts a node answering blob requests with `handler`, and tells
+        /// our endpoint where it is.
+        async fn serve(&self, handler: impl ProtocolHandler) -> Provider {
+            let endpoint = local_endpoint(None).await;
+            self.lookup.add_endpoint_info(endpoint.addr());
+            let router = Router::builder(endpoint)
+                .accept(iroh_blobs::ALPN, handler)
+                .spawn();
+            Provider {
+                router,
+                _media: MemStore::new(),
+            }
+        }
+    }
+
+    /// A node serving blobs, until dropped.
+    struct Provider {
+        router: Router,
+        _media: MemStore,
+    }
+
+    impl Provider {
+        fn id(&self) -> EndpointId {
+            self.router.endpoint().id()
+        }
+    }
+
+    /// Answers every blob request with the same bytes, then ends the stream.
+    #[derive(Debug)]
+    struct Fake(Vec<u8>);
+
+    impl Fake {
+        /// The size of a 1 KB blob, then 1 KB of bytes that don't match its hash.
+        fn liar() -> Self {
+            let mut reply = KB.to_le_bytes().to_vec();
+            reply.extend([0xff; KB as usize]);
+            Self(reply)
+        }
+    }
+
+    impl ProtocolHandler for Fake {
+        async fn accept(&self, conn: Connection) -> Result<(), AcceptError> {
+            while let Ok((mut send, mut recv)) = conn.accept_bi().await {
+                recv.read_to_end(4 * KB as usize).await.ok();
+                send.write_all(&self.0).await.ok();
+                send.finish().ok();
+            }
+            Ok(())
+        }
+    }
+
+    async fn local_endpoint(lookup: Option<&MemoryLookup>) -> Endpoint {
+        let mut builder = Endpoint::builder(presets::Minimal)
+            .secret_key(SecretKey::generate())
+            .relay_mode(RelayMode::Disabled)
+            .clear_ip_transports()
+            .bind_addr("127.0.0.1:0".parse::<SocketAddr>().unwrap())
+            .unwrap();
+        if let Some(lookup) = lookup {
+            builder = builder.address_lookup(lookup.clone());
+        }
+        builder.bind().await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn each_download_attempt_says_how_it_ended() {
+        let f = Fixture::new().await;
+        let store = f.open().await;
+        let data = vec![7; KB as usize];
+        let (honest, hash) = f.provider(&data, None).await;
+        let (busy, _) = f.provider(&data, Some(AbortReason::RateLimited)).await;
+        let (refusing, _) = f.provider(&data, Some(AbortReason::Permission)).await;
+        let (without_it, _) = f.provider(b"something else", None).await;
+        let liar = f.serve(Fake::liar()).await;
+        let silent = f.serve(Fake(Vec::new())).await;
+        let just_the_size = f.serve(Fake(KB.to_le_bytes().to_vec())).await;
+        let nowhere = SecretKey::generate().public();
+
+        let soon = Instant::now() + Duration::from_secs(30);
+        let attempt = async |node: EndpointId, declared: u64| {
+            store
+                .attempt(node, GetRequest::blob(hash), 0, declared, soon)
+                .await
+        };
+        assert_eq!(attempt(busy.id(), KB).await.outcome, Outcome::Busy);
+        assert_eq!(
+            attempt(refusing.id(), KB).await.outcome,
+            Outcome::NotHosting
+        );
+        // Our nodes refuse what they don't keep, as above. iroh-blobs' own
+        // provider says it failed instead.
+        assert_eq!(attempt(without_it.id(), KB).await.outcome, Outcome::Failed);
+        assert_eq!(attempt(liar.id(), KB).await.outcome, Outcome::BadData);
+        // It ended without sending the blob, or all of it.
+        assert_eq!(attempt(silent.id(), KB).await.outcome, Outcome::NotHosting);
+        assert_eq!(
+            attempt(just_the_size.id(), KB).await.outcome,
+            Outcome::NotHosting
+        );
+        assert_eq!(attempt(nowhere, KB).await.outcome, Outcome::Unreachable);
+        assert_eq!(attempt(honest.id(), KB / 2).await.outcome, Outcome::Stopped);
+
+        let done = attempt(honest.id(), KB).await;
+        assert_eq!(done.outcome, Outcome::Completed);
+        assert_eq!(done.bytes, KB);
+        assert!(done.first_byte.is_some_and(|t| t <= done.took), "{done:?}");
+    }
+
+    #[tokio::test]
+    async fn a_download_moves_on_from_nodes_that_cant_send_it() {
+        let f = Fixture::new().await;
+        let store = f.open().await;
+        let data = vec![7; KB as usize];
+        let (honest, hash) = f.provider(&data, None).await;
+        let (busy, _) = f.provider(&data, Some(AbortReason::RateLimited)).await;
+        let liar = f.serve(Fake::liar()).await;
+        let nowhere = SecretKey::generate().public();
+
+        let blob = to_blob_hash(hash);
+        let providers = vec![busy.id(), liar.id(), nowhere, honest.id()];
+        let size = store
+            .download(&blob, providers, BlobClass::Cache, KB)
+            .await
+            .unwrap();
+        assert_eq!(size, KB);
+        assert_eq!(f.db.blob_class(&blob).unwrap(), Some(BlobClass::Cache));
+
+        // None of them could send it.
+        let (other_provider, other) = f.provider(&[8; KB as usize], None).await;
+        let err = store
+            .download(
+                &to_blob_hash(other),
+                vec![busy.id(), liar.id()],
+                BlobClass::Cache,
+                KB,
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            format!("{err:#}").contains("no provider could send it"),
+            "{err:#}"
+        );
+
+        // Bigger than its post says: no other node can send a smaller one.
+        let providers = vec![other_provider.id(), honest.id()];
+        let err = store
+            .fetch(
+                other,
+                providers.clone(),
+                KB / 2,
+                Instant::now() + Duration::from_secs(30),
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            format!("{err:#}").contains("bigger than its post says"),
+            "{err:#}"
+        );
+
+        // Out of time: the next node isn't asked.
+        let (late, unseen) = f.provider(&[9; KB as usize], None).await;
+        let err = store
+            .fetch(unseen, vec![late.id(), late.id()], KB, Instant::now())
+            .await
+            .unwrap_err();
+        assert!(format!("{err:#}").contains("timed out"), "{err:#}");
     }
 
     /// Waits up to five seconds for the collector to delete `hash`.
