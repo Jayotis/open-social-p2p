@@ -317,7 +317,9 @@ impl Node {
             sim,
         });
 
-        let (blobs, serving_rules) = core.store.protocol(&core.config.serving);
+        let (blobs, serving_rules) = core
+            .store
+            .protocol(&core.config.serving, &core.config.swarm);
         let router = Router::builder(endpoint)
             .accept(iroh_blobs::ALPN, blobs)
             .accept(osp_proto::SOCIAL_ALPN, SocialProtocol::new(core.clone()))

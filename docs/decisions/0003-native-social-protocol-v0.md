@@ -45,16 +45,17 @@ Option 2 for Stage 1.
 - **Serving rules** (enforced by the iroh-blobs request hook):
   - `own`: media of my own posts; served to anyone.
   - `replica`: media I chose to host by resharing; served to anyone.
-  - `cache`: media my node prefetched for my phone; served only to my paired devices.
+  - `prefetch`: media my node fetched ahead of time from people I follow, and from the posts they reshared, so my phone loads it quickly. Served only to my paired devices, unless I share prefetched copies (`share_prefetched` under `[swarm]` in `config.toml`), when it is served to anyone. Sharing is the first piece of the follower swarm ([doc 13](../13-hosting-roles-and-follower-swarm.md)), off by default while it is tried out. It shows other nodes that I follow the post's author or a resharer, nothing about what I watched.
+  - `cache`: media my node fetched when my phone opened it; served only to my paired devices, whatever the settings.
   - Anything else is refused.
 - **Serving limits.** Anyone who knows a node's ID can download its public media, so a node limits how much it sends:
   - at most 8 transfers at once, at most 4 of them to strangers (nodes that neither follow me nor are my devices), and at most 2 to any one node. A crowd of strangers then can't crowd out my followers;
   - a request over a limit waits up to 10 seconds for a place, so a burst of requests from one node just takes turns. If no place frees up, it is refused as busy (iroh-blobs' `RateLimited`), and the requester tries the other hosts it knows, then asks the nodes it follows (`WhoHosts`);
   - an optional cap on sending speed for all transfers together: `max_upload_mbps` under `[serving]` in `config.toml`, off by default. About half the home's upload speed leaves room for everything else.
   - My own phone isn't affected: it reads media through its own connection to the node ([ADR 0008](0008-device-pairing-and-client-protocol.md)).
-- **Storage quotas.** Followed nodes decide what their posts link to, so media other people posted has a quota per class, set under `[storage]` in `config.toml`: `cache_quota_mb` (default 5 GB) and `replica_quota_mb` (default 10 GB). Media of my own posts has no quota; it only has to fit on the disk.
+- **Storage quotas.** Followed nodes decide what their posts link to, so media other people posted has a quota, set under `[storage]` in `config.toml`: `cache_quota_mb` (default 5 GB) for `cache` and `prefetch` together, and `replica_quota_mb` (default 10 GB). Media of my own posts has no quota; it only has to fit on the disk.
   - Every download gets the size its post declares, and is stopped once more bytes than that arrive. When the phone asks for a blob, the node uses the largest size any stored post declares for it; a blob no stored post includes isn't downloaded.
-  - Before a download, room is made for the declared size. A full cache evicts what my devices used longest ago. Replicas are never evicted, since hosting is a promise to others, so a reshare with hosting that doesn't fit is refused with a message; a reshare without hosting still works.
+  - Before a download, room is made for the declared size. A full cache evicts what my devices used longest ago: `cache` first, then `prefetch`. Replicas are never evicted, since hosting is a promise to others, so a reshare with hosting that doesn't fit is refused with a message; a reshare without hosting still works.
   - A download must leave at least 2 GiB free on the disk.
   - Evicting a blob removes its database row and its tag in the blob store; the iroh-blobs garbage collector deletes untagged blobs every 10 minutes. At startup the node makes the tags match the database and trims the cache to its quota. Hosted media over a lowered quota isn't deleted; the node reports it as a problem.
 - **Stage 1 is public content only.** Private, followers-only and group content stays out until a reviewed design exists ([doc 05](../05-security-privacy-and-governance.md)).

@@ -15,6 +15,7 @@ pub struct Config {
     pub media: MediaConfig,
     pub storage: StorageConfig,
     pub serving: ServingConfig,
+    pub swarm: SwarmConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -78,9 +79,25 @@ pub struct StorageConfig {
     /// Media you host for others by resharing with hosting. When it's
     /// full, new hosting is refused; nothing is deleted to make room.
     pub replica_quota_mb: u64,
-    /// Media fetched for your own devices. When it's full, what was used
-    /// longest ago is deleted to make room.
+    /// Media fetched for your own devices, and fetched ahead of time from
+    /// people you follow. When it's full, what was used longest ago is
+    /// deleted to make room, media opened on your devices before media
+    /// fetched ahead of time.
     pub cache_quota_mb: u64,
+}
+
+/// The follower swarm (doc 13): sharing what this node fetched ahead of
+/// time, so a popular post doesn't swamp its author's home connection.
+/// Still being tried out, so off by default.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SwarmConfig {
+    /// Serve the media of posts by people you follow, which this node
+    /// fetched ahead of time, to any node that asks. That shows them you
+    /// follow the author, or someone who reshared the post; it says nothing
+    /// about what you watched. Media you open from elsewhere is never
+    /// shared. It counts against `serving.max_upload_mbps`.
+    pub share_prefetched: bool,
 }
 
 /// Sending media to other nodes.
@@ -102,6 +119,7 @@ impl Default for Config {
             media: MediaConfig::default(),
             storage: StorageConfig::default(),
             serving: ServingConfig::default(),
+            swarm: SwarmConfig::default(),
         }
     }
 }
@@ -170,6 +188,7 @@ impl Config {
             },
             storage: StorageConfig::default(),
             serving: ServingConfig::default(),
+            swarm: SwarmConfig::default(),
         }
     }
 

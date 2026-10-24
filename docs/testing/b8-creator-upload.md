@@ -8,7 +8,7 @@ The [critical review](../reviews/2026-10-21-review-of-docs-12-and-13.md#b8-the-f
 
 - The creator's node serves at most 8 transfers at once. A request that finds no free slot within 10 seconds is refused as busy.
 - A follower refused as busy asks the nodes it follows who else hosts the file. Only the creator has it, so the follower gives up. The media is fetched later, from the creator, when someone opens the post.
-- Followers' prefetched copies are private (`cache`), served only to their own phones.
+- Followers' prefetched copies are private, served only to their own phones.
 
 So today a creator with 300 followers sends a few copies at once, and most followers don't get the media ahead of time. If every follower kept trying until it got the file, the creator would send all 300 copies: about 15.7 GB, which takes about **1.7 hours** at 20 Mbit/s.
 

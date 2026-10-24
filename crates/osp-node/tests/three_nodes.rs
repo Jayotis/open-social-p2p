@@ -151,7 +151,7 @@ async fn reshared_media_survives_origin_going_offline() {
         item.attachments[0].local,
         "Bob should have prefetched the video"
     );
-    assert_eq!(bob.blob_class(&video).unwrap(), Some(BlobClass::Cache));
+    assert_eq!(bob.blob_class(&video).unwrap(), Some(BlobClass::Prefetch));
 
     // Bob reshares and offers to host.
     call(
@@ -217,14 +217,15 @@ async fn reshared_media_survives_origin_going_offline() {
     let bytes = std::fs::read(files[0].path.as_ref().unwrap()).unwrap();
     assert_eq!(blake3::hash(&bytes).as_bytes(), video.as_bytes());
 
-    // Serving rules: a stranger may download Bob's replica, but not Carol's cache.
+    // Serving rules: a stranger may download Bob's replica, but not what
+    // Carol prefetched: she doesn't share it.
     let dave = start(dir.path(), "Dave").await;
     let size = files[0].size;
     assert!(
         dave.download_blob_from(&video, size, &[carol.addr().await])
             .await
             .is_err(),
-        "Carol must not serve her cache to strangers"
+        "Carol must not serve her prefetched copy to strangers"
     );
     dave.download_blob_from(&video, size, &[bob.addr().await])
         .await

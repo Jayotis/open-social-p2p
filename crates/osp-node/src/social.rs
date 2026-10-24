@@ -216,7 +216,12 @@ impl Core {
             }
             SocialRequest::WhoHosts { blob } => {
                 let mut nodes = Vec::new();
-                if self.db.blob_class(&blob)?.is_some_and(|c| c.is_public()) {
+                let share = self.config.swarm.share_prefetched;
+                if self
+                    .db
+                    .blob_class(&blob)?
+                    .is_some_and(|c| c.served_to_anyone(share))
+                {
                     nodes.push(self.shareable_addr().await);
                 }
                 nodes.extend(

@@ -672,7 +672,7 @@ async fn a_followed_nodes_media_cant_overfill_the_cache_or_be_bigger_than_declar
     sync_within(&reader, Duration::from_secs(60)).await;
     let cached = honest
         .iter()
-        .filter(|b| reader.blob_class(b).unwrap() == Some(BlobClass::Cache))
+        .filter(|b| reader.blob_class(b).unwrap() == Some(BlobClass::Prefetch))
         .count();
     assert_eq!(
         cached, 2,
@@ -686,8 +686,14 @@ async fn a_followed_nodes_media_cant_overfill_the_cache_or_be_bigger_than_declar
     let ClientResponse::Status(status) = call(&reader, ClientRequest::Status).await else {
         panic!("no status");
     };
-    let cache = status.storage.iter().find(|s| s.class == "cache").unwrap();
-    assert!(cache.bytes <= 1 << 20, "{cache:?}");
+    // Prefetched media counts against the cache quota.
+    let cached: u64 = status
+        .storage
+        .iter()
+        .filter(|s| s.class == "cache" || s.class == "prefetch")
+        .map(|s| s.bytes)
+        .sum();
+    assert!(cached <= 1 << 20, "{:?}", status.storage);
 
     // Hosting needs replica room, and there is none; a plain reshare is fine.
     let ClientResponse::Feed { items } = call(&reader, ClientRequest::Feed { limit: 10 }).await

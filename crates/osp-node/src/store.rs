@@ -50,7 +50,7 @@ use tokio::{
 use tracing::{debug, info, warn};
 
 use crate::{
-    config::{ServingConfig, StorageConfig},
+    config::{ServingConfig, StorageConfig, SwarmConfig},
     db::{BlobClass, Db},
     health,
     peers::{self, Event},
@@ -149,10 +149,7 @@ impl ContentStore {
             reserved: Mutex::new(BTreeMap::new()),
         };
         this.reconcile().await?;
-        let over = this
-            .db
-            .class_bytes(BlobClass::Cache)?
-            .saturating_sub(this.cache_quota);
+        let over = this.db.evictable_bytes()?.saturating_sub(this.cache_quota);
         if over > 0 {
             let evicted = this.db.evict_cache(over)?;
             info!(blobs = evicted.len(), "trimmed the cache to its quota");
@@ -164,7 +161,11 @@ impl ContentStore {
 
     /// A protocol handler that serves blobs by the rules in ADR 0003, plus the
     /// task that applies those rules. Abort the task when shutting down.
-    pub fn protocol(&self, serving: &ServingConfig) -> (BlobsProtocol, JoinHandle<()>) {
+    pub fn protocol(
+        &self,
+        serving: &ServingConfig,
+        swarm: &SwarmConfig,
+    ) -> (BlobsProtocol, JoinHandle<()>) {
         let pacer = (serving.max_upload_mbps > 0).then(|| Pacer::new(serving.max_upload_mbps));
         let mask = EventMask {
             // Then every 16 KiB sent waits for our go-ahead, which costs a
@@ -177,7 +178,12 @@ impl ContentStore {
             ..EVENT_MASK
         };
         let (events, rx) = EventSender::channel(64, mask);
-        let task = tokio::spawn(enforce_serving_rules(rx, self.db.clone(), pacer));
+        let task = tokio::spawn(enforce_serving_rules(
+            rx,
+            self.db.clone(),
+            pacer,
+            swarm.share_prefetched,
+        ));
         (BlobsProtocol::new(&self.store, Some(events)), task)
     }
 
@@ -433,9 +439,10 @@ impl ContentStore {
     }
 
     /// Promises `bytes` of `class` space to a download until the returned
-    /// guard is dropped. If the cache is full, the blobs used longest ago
-    /// make room; replicas are never evicted, so a full replica quota is
-    /// an error. Fails too if the download would leave the disk too full.
+    /// guard is dropped. Cached and prefetched blobs share the cache quota;
+    /// if it is full, they make room (`Db::evict_cache`). Replicas are never
+    /// evicted, so a full replica quota is an error. Fails too if the
+    /// download would leave the disk too full.
     async fn reserve(&self, class: BlobClass, bytes: u64) -> Result<Reservation<'_>> {
         let evicted = {
             let mut reserved = self.lock_reserved();
@@ -449,19 +456,23 @@ impl ContentStore {
                 );
             }
             let evicted = match class {
-                BlobClass::Cache => {
+                BlobClass::Cache | BlobClass::Prefetch => {
                     ensure!(
                         bytes <= self.cache_quota,
                         "{} is more than the whole media cache ({}, storage.cache_quota_mb)",
                         mb(bytes),
                         mb(self.cache_quota)
                     );
-                    let downloading = reserved.get(&class).copied().unwrap_or(0);
+                    let downloading: u64 = reserved
+                        .iter()
+                        .filter(|(c, _)| c.is_evictable())
+                        .map(|(_, n)| n)
+                        .sum();
                     ensure!(
                         downloading + bytes <= self.cache_quota,
                         "the media cache is full of downloads in progress; try again shortly"
                     );
-                    let stored = self.db.class_bytes(class)?;
+                    let stored = self.db.evictable_bytes()?;
                     let over = (stored + downloading + bytes).saturating_sub(self.cache_quota);
                     self.db.evict_cache(over)?
                 }
@@ -685,6 +696,8 @@ fn to_blob_hash(hash: Hash) -> BlobHash {
 /// Answers the provider's "may I serve this?" questions.
 ///
 /// - `own` and `replica` blobs: anyone.
+/// - `prefetch` blobs: anyone if `share_prefetched`, otherwise only my
+///   paired devices.
 /// - `cache` blobs: only my paired devices.
 /// - anything else, and any request that would walk a blob as a list of
 ///   child hashes: refused. (Without that last rule, a crafted request could
@@ -698,6 +711,7 @@ async fn enforce_serving_rules(
     mut rx: mpsc::Receiver<ProviderMessage>,
     db: Arc<Db>,
     mut pacer: Option<Pacer>,
+    share_prefetched: bool,
 ) {
     let mut peers: HashMap<u64, Option<EndpointId>> = HashMap::new();
     let mut places = Places::new();
@@ -708,7 +722,8 @@ async fn enforce_serving_rules(
             ProviderMessage::GetRequestReceived(msg) => {
                 let peer = peers.get(&msg.inner.connection_id).copied().flatten();
                 let request = &msg.inner.request;
-                let ok = request.ranges.is_blob() && may_serve(&db, request.hash, peer);
+                let ok = request.ranges.is_blob()
+                    && may_serve(&db, request.hash, peer, share_prefetched);
                 (peer, ok, msg.tx, msg.rx)
             }
             ProviderMessage::GetManyRequestReceived(msg) => {
@@ -718,7 +733,7 @@ async fn enforce_serving_rules(
                     .request
                     .hashes
                     .iter()
-                    .all(|h| may_serve(&db, *h, peer));
+                    .all(|h| may_serve(&db, *h, peer, share_prefetched));
                 (peer, ok, msg.tx, msg.rx)
             }
             ProviderMessage::ClientConnected(msg) => {
@@ -732,7 +747,7 @@ async fn enforce_serving_rules(
             }
             ProviderMessage::ObserveRequestReceived(msg) => {
                 let peer = peers.get(&msg.inner.connection_id).copied().flatten();
-                let ok = may_serve(&db, msg.inner.request.hash, peer);
+                let ok = may_serve(&db, msg.inner.request.hash, peer, share_prefetched);
                 msg.tx.send(verdict(ok)).await.ok();
                 continue;
             }
@@ -876,7 +891,7 @@ fn verdict(ok: bool) -> Result<(), AbortReason> {
     }
 }
 
-fn may_serve(db: &Db, hash: Hash, peer: Option<EndpointId>) -> bool {
+fn may_serve(db: &Db, hash: Hash, peer: Option<EndpointId>, share_prefetched: bool) -> bool {
     let class = match db.blob_class(&to_blob_hash(hash)) {
         Ok(class) => class,
         Err(e) => {
@@ -885,8 +900,10 @@ fn may_serve(db: &Db, hash: Hash, peer: Option<EndpointId>) -> bool {
         }
     };
     let allowed = match class {
-        Some(class) if class.is_public() => true,
-        Some(BlobClass::Cache) => peer.is_some_and(|p| db.is_device(&p).unwrap_or(false)),
+        Some(class) if class.served_to_anyone(share_prefetched) => true,
+        Some(BlobClass::Cache | BlobClass::Prefetch) => {
+            peer.is_some_and(|p| db.is_device(&p).unwrap_or(false))
+        }
         _ => false,
     };
     if !allowed {
@@ -1187,6 +1204,45 @@ mod tests {
         assert!(store.has(&recent).await.unwrap());
         assert!(store.has(&own).await.unwrap(), "own media is never evicted");
         assert_eq!(f.db.blob_class(&own).unwrap(), Some(BlobClass::Own));
+    }
+
+    #[tokio::test]
+    async fn prefetched_and_cached_media_share_the_cache_quota() {
+        let f = Fixture::new().await;
+        let store = f.open().await;
+        let prefetched = f.add(&store, 1, 400 * KB, BlobClass::Prefetch).await;
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        let cached = f.add(&store, 2, 400 * KB, BlobClass::Cache).await;
+
+        // Room for another 400 KB: the cached blob goes first, though newer.
+        let room = store.reserve(BlobClass::Prefetch, 400 * KB).await.unwrap();
+        assert_eq!(f.db.blob_class(&cached).unwrap(), None);
+        assert!(collected(&store, &cached).await);
+        assert_eq!(
+            f.db.blob_class(&prefetched).unwrap(),
+            Some(BlobClass::Prefetch)
+        );
+
+        // Downloads in progress of either kind count against the quota.
+        let err = store
+            .reserve(BlobClass::Cache, 700 * KB)
+            .await
+            .err()
+            .unwrap();
+        assert!(format!("{err:#}").contains("in progress"), "{err:#}");
+        drop(room);
+        store.reserve(BlobClass::Cache, 700 * KB).await.unwrap();
+        assert_eq!(f.db.blob_class(&prefetched).unwrap(), None);
+
+        // Over the quota at startup, as after lowering it: trimmed to fit.
+        let older = f.add(&store, 3, 700 * KB, BlobClass::Prefetch).await;
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        let newer = f.add(&store, 4, 500 * KB, BlobClass::Prefetch).await;
+        store.store.shutdown().await.unwrap();
+        drop(store);
+        f.open().await;
+        assert_eq!(f.db.blob_class(&older).unwrap(), None);
+        assert_eq!(f.db.blob_class(&newer).unwrap(), Some(BlobClass::Prefetch));
     }
 
     #[tokio::test]
