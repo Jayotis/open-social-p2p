@@ -7,6 +7,7 @@
 //! [B8 test plan]: ../../docs/testing/b8-creator-upload.md
 
 use std::{
+    collections::{HashMap, HashSet},
     fmt::Write as _,
     path::{Path, PathBuf},
     time::{Duration, Instant},
@@ -16,7 +17,7 @@ use anyhow::{Context, Result, bail, ensure};
 use n0_future::{BufferedStreamExt, StreamExt, join_all, stream};
 use osp_node::{Config, Node, SimSettings, config::SyncConfig};
 use osp_proto::{
-    BlobHash, ObjectId,
+    BlobHash, EndpointId, ObjectId,
     rpc::{ClientRequest, ClientResponse, PeerRecord},
 };
 use serde::Serialize;
@@ -36,6 +37,9 @@ const SUBSCRIBE_TIMEOUT: Duration = Duration::from_secs(120);
 /// after the other side has it, so the harness waits this long before
 /// reading the final counts.
 const SETTLE: Duration = Duration::from_secs(2);
+/// The follower that reshares the post to the strangers, by its place in
+/// follower order. It never drops out.
+const RESHARER: usize = 0;
 
 /// One run: who takes part, the video, and how fast each node can upload.
 #[derive(Debug, Clone)]
@@ -56,8 +60,18 @@ pub struct Scenario {
     /// Followers in the swarm spread their fetches of the video over up to
     /// this long. A real node uses `SimSettings::default().prefetch_spread`.
     pub prefetch_spread: Duration,
-    /// The run ends when every follower holds the video, or this long after
-    /// posting.
+    /// Followers that stop this long after posting, the last of each group
+    /// of `followers / drop_out` in follower order, so they have every
+    /// upload speed. The times until 50%, 95% and all count only the
+    /// followers that stay.
+    pub drop_out: usize,
+    pub drop_out_after: Duration,
+    /// Nodes that don't follow the creator, only the first follower, which
+    /// reshares the post, hosting its media, as soon as it holds the video.
+    /// They upload at the followers' speeds, given in turn.
+    pub strangers: usize,
+    /// The run ends when every follower that stays and every stranger holds
+    /// the video, or this long after posting.
     pub time_limit: Duration,
     /// How often to note the creator's upload so far.
     pub sample: Duration,
@@ -95,10 +109,26 @@ pub struct Report {
     /// Media bytes each follower sent to any node, in follower order.
     pub follower_sent_bytes: Vec<f64>,
     /// Media bytes the followers received from the creator, by their own
-    /// records. It should match `creator_sent_bytes`.
+    /// records. With the strangers', it should match `creator_sent_bytes`.
     pub received_from_creator: f64,
     /// The followers' download attempts, from any node, by how they ended.
     pub downloads: Outcomes,
+    /// Followers that stopped partway through, by their place in follower
+    /// order, and when they were due to. None stop if the run ends first.
+    pub dropped_out: Vec<usize>,
+    pub drop_out_after_secs: f64,
+    /// Nodes that followed only the resharer, the first follower, and when
+    /// it reshared the post, if it did.
+    pub strangers: usize,
+    pub reshared_after_secs: Option<f64>,
+    /// The same as for followers, for the strangers.
+    pub stranger_held_after_secs: Vec<Option<f64>>,
+    pub stranger_sent_bytes: Vec<f64>,
+    pub stranger_downloads: Outcomes,
+    /// Media bytes the creator sent to strangers, part of
+    /// `creator_sent_bytes`, and what the strangers' records say came from it.
+    pub creator_sent_to_strangers: f64,
+    pub strangers_received_from_creator: f64,
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -108,6 +138,8 @@ pub struct Outcomes {
     pub not_hosting: f64,
     pub bad_data: f64,
     pub failed: f64,
+    /// Times a node couldn't connect to another, to download or to ask.
+    pub unreached: f64,
 }
 
 /// The B8 pass marks: whether this run met each.
@@ -125,6 +157,10 @@ pub struct Marks {
 pub async fn run(s: &Scenario) -> Result<Report> {
     ensure!(s.followers > 0, "a run needs followers");
     ensure!(!s.follower_mbps.is_empty(), "followers need upload speeds");
+    ensure!(
+        s.drop_out < s.followers,
+        "at least one follower has to stay"
+    );
     ensure!(
         !s.dir.exists() || s.dir.read_dir()?.next().is_none(),
         "{} isn't empty",
@@ -150,36 +186,26 @@ pub async fn run(s: &Scenario) -> Result<Report> {
     .await?;
     let spread = SimSettings {
         prefetch_spread: s.prefetch_spread,
+        // The resharer gathered its followers over time too.
+        new_followers_per_hour: s
+            .strangers
+            .max(SimSettings::default().new_followers_per_hour),
         ..SimSettings::default()
     };
-    let followers: Vec<Node> = stream::iter(0..s.followers)
-        .map(|i| {
-            let home = s.dir.join(format!("f{i:04}"));
-            let mbps = s.follower_mbps[i % s.follower_mbps.len()];
-            let sim = spread.clone();
-            async move { start(&home, &format!("F{i}"), mbps, s.swarm, sim).await }
-        })
-        .buffered_ordered(STARTING_AT_ONCE)
-        .collect::<Vec<_>>()
-        .await
-        .into_iter()
-        .collect::<Result<_>>()?;
-    info!(followers = followers.len(), "nodes started");
+    let followers = start_all(s, "f", "F", s.followers, &spread).await?;
+    let strangers = start_all(s, "s", "S", s.strangers, &spread).await?;
+    info!(
+        followers = followers.len(),
+        strangers = strangers.len(),
+        "nodes started"
+    );
 
-    let ClientResponse::Ticket { ticket } = call(&creator, ClientRequest::Invite).await? else {
-        bail!("no ticket");
-    };
-    for follower in &followers {
-        call(
-            follower,
-            ClientRequest::Follow {
-                ticket: ticket.clone(),
-            },
-        )
-        .await?;
-    }
-    wait_for_followers(&creator, s.followers).await?;
+    follow_all(&creator, &followers).await?;
     info!("every follower subscribed");
+    if !strangers.is_empty() {
+        follow_all(&followers[RESHARER], &strangers).await?;
+        info!("every stranger subscribed to the resharer");
+    }
 
     let ClientResponse::Posted { id: post } = call(
         &creator,
@@ -208,37 +234,92 @@ pub async fn run(s: &Scenario) -> Result<Report> {
     let media_bytes = video_bytes + attachment.thumbnail.as_ref().map_or(0, |t| t.size);
     info!(video_bytes, "posted");
 
-    let mut held: Vec<Option<f64>> = vec![None; followers.len()];
+    let dropping: Vec<usize> = (0..s.followers)
+        .filter(|&i| drops_out(i, s.drop_out, s.followers))
+        .collect();
+    // `None` once stopped; what a stopped follower measured is kept.
+    let mut followers: Vec<Option<Node>> = followers.into_iter().map(Some).collect();
+    let mut stopped: HashMap<usize, Vec<PeerRecord>> = HashMap::new();
+    let mut held: Vec<Option<f64>> = vec![None; s.followers];
+    let mut stranger_held: Vec<Option<f64>> = vec![None; s.strangers];
+    let mut reshared_after_secs = None;
     let mut so_far = Vec::new();
     loop {
-        let checks = join_all(
-            followers
-                .iter()
-                .zip(&held)
-                .filter(|(_, held)| held.is_none())
-                .map(|(node, _)| holds(node, post, video)),
+        note_holders(
+            followers.iter().map(Option::as_ref),
+            &mut held,
+            post,
+            video,
+            posted,
         )
-        .await;
+        .await?;
+        note_holders(
+            strangers.iter().map(Some),
+            &mut stranger_held,
+            post,
+            video,
+            posted,
+        )
+        .await?;
         let now = posted.elapsed();
-        let waiting = held.iter_mut().filter(|h| h.is_none());
-        for (slot, check) in waiting.zip(checks) {
-            if check? {
-                *slot = Some(now.as_secs_f64());
-            }
+
+        if !strangers.is_empty() && reshared_after_secs.is_none() && held[RESHARER].is_some() {
+            let resharer = followers[RESHARER]
+                .as_ref()
+                .context("the resharer stopped")?;
+            call(
+                resharer,
+                ClientRequest::Reshare {
+                    id: post,
+                    host: true,
+                },
+            )
+            .await?;
+            reshared_after_secs = Some(posted.elapsed().as_secs_f64());
+            info!(secs = now.as_secs(), "the first follower reshared the post");
         }
+        if now >= s.drop_out_after && stopped.len() < dropping.len() {
+            let leaving: Vec<(usize, Node)> = dropping
+                .iter()
+                .filter_map(|&i| Some((i, followers[i].take()?)))
+                .collect();
+            // All at once, each keeping what it measured.
+            let left = join_all(leaving.into_iter().map(|(i, node)| async move {
+                let seen = peers(&node).await;
+                node.shutdown().await?;
+                Ok::<_, anyhow::Error>((i, seen?))
+            }))
+            .await;
+            for result in left {
+                let (i, seen) = result?;
+                stopped.insert(i, seen);
+            }
+            info!(
+                secs = now.as_secs(),
+                followers = dropping.len(),
+                "followers stopped"
+            );
+        }
+
         let periods = (now.as_secs_f64() / s.sample.as_secs_f64()) as usize;
         if so_far.len() < periods {
             let sent = sent(&peers(&creator).await?);
             so_far.resize(periods, sent);
-            let holding = held.iter().flatten().count();
             info!(
                 secs = now.as_secs(),
-                holding,
+                holding = held.iter().flatten().count(),
+                strangers_holding = stranger_held.iter().flatten().count(),
                 creator_copies = format!("{:.1}", sent / media_bytes as f64),
                 "progress"
             );
         }
-        if held.iter().all(Option::is_some) || now >= s.time_limit {
+        // Followers due to stop count until they have.
+        let all_held = held
+            .iter()
+            .enumerate()
+            .all(|(i, h)| h.is_some() || stopped.contains_key(&i))
+            && stranger_held.iter().all(Option::is_some);
+        if all_held || now >= s.time_limit {
             break;
         }
         tokio::time::sleep(TICK).await;
@@ -246,28 +327,33 @@ pub async fn run(s: &Scenario) -> Result<Report> {
     let ended_secs = posted.elapsed().as_secs_f64();
     tokio::time::sleep(SETTLE).await;
 
+    let mut dropped_out: Vec<usize> = stopped.keys().copied().collect();
+    dropped_out.sort();
     let creator_seen = peers(&creator).await?;
-    let mut follower_sent_bytes = Vec::new();
-    let mut received_from_creator = 0.0;
-    let mut downloads = Outcomes::default();
-    for follower in &followers {
-        let seen = peers(follower).await?;
-        follower_sent_bytes.push(sent(&seen));
-        for p in &seen {
-            let c = &p.counts;
-            if p.node == creator.node_id() {
-                received_from_creator += c.received_bytes;
-            }
-            downloads.completed += c.completed;
-            downloads.busy += c.busy;
-            downloads.not_hosting += c.not_hosting;
-            downloads.bad_data += c.bad_data;
-            downloads.failed += c.failed;
-        }
+    let mut follower_records = Vec::new();
+    for (i, node) in followers.iter().enumerate() {
+        follower_records.push(match node {
+            Some(node) => peers(node).await?,
+            None => stopped.remove(&i).context("a stopped follower's record")?,
+        });
     }
+    let mut stranger_records = Vec::new();
+    for node in &strangers {
+        stranger_records.push(peers(node).await?);
+    }
+    let from_followers = tally(&follower_records, creator.node_id());
+    let from_strangers = tally(&stranger_records, creator.node_id());
+    let stranger_ids: HashSet<EndpointId> = strangers.iter().map(Node::node_id).collect();
+    let creator_sent_to_strangers = total(
+        creator_seen
+            .iter()
+            .filter(|p| stranger_ids.contains(&p.node))
+            .map(|p| p.counts.sent_bytes),
+    );
 
-    for stopped in join_all(followers.into_iter().map(Node::shutdown)).await {
-        stopped?;
+    let running = followers.into_iter().flatten().chain(strangers);
+    for result in join_all(running.map(Node::shutdown)).await {
+        result?;
     }
     creator.shutdown().await?;
 
@@ -287,25 +373,45 @@ pub async fn run(s: &Scenario) -> Result<Report> {
         creator_sent_bytes: sent(&creator_seen),
         sample_secs: s.sample.as_secs_f64(),
         creator_sent_so_far: so_far,
-        creator_refused_busy: creator_seen.iter().map(|p| p.counts.refused_busy).sum(),
-        follower_sent_bytes,
-        received_from_creator,
-        downloads,
+        creator_refused_busy: total(creator_seen.iter().map(|p| p.counts.refused_busy)),
+        follower_sent_bytes: from_followers.sent,
+        received_from_creator: from_followers.from_creator,
+        downloads: from_followers.downloads,
+        dropped_out,
+        drop_out_after_secs: s.drop_out_after.as_secs_f64(),
+        strangers: s.strangers,
+        reshared_after_secs,
+        stranger_held_after_secs: stranger_held,
+        stranger_sent_bytes: from_strangers.sent,
+        stranger_downloads: from_strangers.downloads,
+        creator_sent_to_strangers,
+        strangers_received_from_creator: from_strangers.from_creator,
     })
 }
 
 impl Report {
-    /// How many followers held the video by the end.
-    pub fn holding(&self) -> usize {
-        self.held_after_secs.iter().flatten().count()
+    /// When each follower that stayed held the video.
+    fn stayed(&self) -> Vec<Option<f64>> {
+        let held = self.held_after_secs.iter().enumerate();
+        held.filter(|(i, _)| !self.dropped_out.contains(i))
+            .map(|(_, h)| *h)
+            .collect()
     }
 
-    /// When `percent` of the followers held the video, if they ever did.
+    /// How many followers that stayed held the video by the end.
+    pub fn holding(&self) -> usize {
+        self.stayed().iter().flatten().count()
+    }
+
+    /// When `percent` of the followers that stayed held the video, if they
+    /// ever did.
     pub fn time_until(&self, percent: usize) -> Option<f64> {
-        let needed = (self.followers * percent).div_ceil(100).max(1);
-        let mut times: Vec<f64> = self.held_after_secs.iter().flatten().copied().collect();
-        times.sort_by(f64::total_cmp);
-        times.get(needed - 1).copied()
+        time_until(&self.stayed(), percent)
+    }
+
+    /// The same, for the strangers.
+    pub fn stranger_time_until(&self, percent: usize) -> Option<f64> {
+        time_until(&self.stranger_held_after_secs, percent)
     }
 
     /// The creator's upload, in copies of the post's media.
@@ -325,18 +431,29 @@ impl Report {
     /// A few lines for people to read.
     pub fn summary(&self) -> String {
         let copies = |bytes: f64| bytes / self.media_bytes as f64;
-        let time = |percent| match self.time_until(percent) {
+        let time = |t: Option<f64>| match t {
             Some(t) => format!("{t:.0} s"),
             None => "not reached".to_string(),
         };
-        let mut sent = self.follower_sent_bytes.clone();
-        sent.sort_by(f64::total_cmp);
-        let most = sent.last().copied().unwrap_or(0.0);
-        let median = sent.get(sent.len() / 2).copied().unwrap_or(0.0);
-        let none = sent.iter().filter(|b| **b < 1.0).count();
-        let d = &self.downloads;
+        // Most, median, and how many sent nothing.
+        let spread = |sent: &[f64]| {
+            let mut sent = sent.to_vec();
+            sent.sort_by(f64::total_cmp);
+            let most = sent.last().copied().unwrap_or(0.0);
+            let median = sent.get(sent.len() / 2).copied().unwrap_or(0.0);
+            let none = sent.iter().filter(|b| **b < 1.0).count();
+            (copies(most), copies(median), none)
+        };
+        let outcomes = |d: &Outcomes| {
+            format!(
+                "{:.0} completed, {:.0} busy, {:.0} not hosting, {:.0} bad data, {:.0} failed; couldn't connect {:.0} times",
+                d.completed, d.busy, d.not_hosting, d.bad_data, d.failed, d.unreached,
+            )
+        };
         let marks = self.marks();
         let yes = |ok| if ok { "met" } else { "missed" };
+        let (most, median, none) = spread(&self.follower_sent_bytes);
+        let stayed = self.followers - self.dropped_out.len();
 
         let swarm = if self.swarm {
             format!(
@@ -359,15 +476,25 @@ impl Report {
                 .collect::<Vec<_>>()
                 .join("/"),
         );
+        if !self.dropped_out.is_empty() {
+            let had_it = self.dropped_out.iter();
+            let had_it = had_it.filter(|i| self.held_after_secs[**i].is_some());
+            let _ = writeln!(
+                out,
+                "{} followers stopped at {:.0} s, {} of them holding the video; the rest of this counts only the {stayed} that stayed",
+                self.dropped_out.len(),
+                self.drop_out_after_secs,
+                had_it.count(),
+            );
+        }
         let _ = writeln!(
             out,
-            "held the video: {} of {} when the run ended at {:.0} s; 50% at {}, 95% at {}, all at {}",
+            "held the video: {} of {stayed} when the run ended at {:.0} s; 50% at {}, 95% at {}, all at {}",
             self.holding(),
-            self.followers,
             self.ended_secs,
-            time(50),
-            time(95),
-            time(100),
+            time(self.time_until(50)),
+            time(self.time_until(95)),
+            time(self.time_until(100)),
         );
         let _ = writeln!(
             out,
@@ -389,16 +516,39 @@ impl Report {
         );
         let _ = writeln!(
             out,
-            "followers sent: most {:.1} copies, median {:.1}; {} sent nothing",
-            copies(most),
-            copies(median),
-            none,
+            "followers sent: most {most:.1} copies, median {median:.1}; {none} sent nothing",
         );
-        let _ = writeln!(
-            out,
-            "followers' downloads: {:.0} completed, {:.0} busy, {:.0} not hosting, {:.0} bad data, {:.0} failed",
-            d.completed, d.busy, d.not_hosting, d.bad_data, d.failed,
-        );
+        let _ = writeln!(out, "followers' downloads: {}", outcomes(&self.downloads));
+        if self.strangers > 0 {
+            let within = |percent, secs: f64| {
+                yes(self.stranger_time_until(percent).is_some_and(|t| t <= secs))
+            };
+            let _ = writeln!(
+                out,
+                "strangers: the first follower reshared at {} and sent {:.1} copies; {} of {} strangers held the video; 50% at {}, 95% at {}, all at {}",
+                time(self.reshared_after_secs),
+                copies(self.follower_sent_bytes[RESHARER]),
+                self.stranger_held_after_secs.iter().flatten().count(),
+                self.strangers,
+                time(self.stranger_time_until(50)),
+                time(self.stranger_time_until(95)),
+                time(self.stranger_time_until(100)),
+            );
+            let (most, median, none) = spread(&self.stranger_sent_bytes);
+            let _ = writeln!(
+                out,
+                "the creator sent strangers {:.1} copies, and their records say {:.1}; strangers sent: most {most:.1} copies, median {median:.1}; {none} sent nothing",
+                copies(self.creator_sent_to_strangers),
+                copies(self.strangers_received_from_creator),
+            );
+            let _ = writeln!(
+                out,
+                "strangers' downloads: {}; 95% within 15 min {}; all within 30 min {}",
+                outcomes(&self.stranger_downloads),
+                within(95, 15.0 * 60.0),
+                within(100, 30.0 * 60.0),
+            );
+        }
         let _ = writeln!(
             out,
             "pass marks: creator at most {:.0} copies {}; 95% within 15 min {}; all within 30 min {}",
@@ -494,7 +644,126 @@ async fn peers(node: &Node) -> Result<Vec<PeerRecord>> {
 
 /// Media bytes sent to every peer together.
 fn sent(peers: &[PeerRecord]) -> f64 {
-    peers.iter().map(|p| p.counts.sent_bytes).sum()
+    total(peers.iter().map(|p| p.counts.sent_bytes))
+}
+
+/// Adds numbers up. Unlike `sum`, which makes -0.0 of nothing, this makes 0.
+fn total(numbers: impl Iterator<Item = f64>) -> f64 {
+    numbers.fold(0.0, |sum, n| sum + n)
+}
+
+/// When `percent` of a group held the video, if they ever did. Counts whole
+/// nodes, rounding up.
+fn time_until(held: &[Option<f64>], percent: usize) -> Option<f64> {
+    let needed = (held.len() * percent).div_ceil(100).max(1);
+    let mut times: Vec<f64> = held.iter().flatten().copied().collect();
+    times.sort_by(f64::total_cmp);
+    times.get(needed - 1).copied()
+}
+
+/// Whether follower `i` of `followers` is one of the `drop_out` that stop:
+/// the last of each group of `followers / drop_out`.
+fn drops_out(i: usize, drop_out: usize, followers: usize) -> bool {
+    (i + 1) * drop_out / followers > i * drop_out / followers
+}
+
+/// Starts `count` nodes at the followers' upload speeds, given in turn, with
+/// homes `{dir}0000`, `{dir}0001` and so on.
+async fn start_all(
+    s: &Scenario,
+    dir: &str,
+    name: &str,
+    count: usize,
+    sim: &SimSettings,
+) -> Result<Vec<Node>> {
+    stream::iter(0..count)
+        .map(|i| {
+            let home = s.dir.join(format!("{dir}{i:04}"));
+            let mbps = s.follower_mbps[i % s.follower_mbps.len()];
+            let sim = sim.clone();
+            async move { start(&home, &format!("{name}{i}"), mbps, s.swarm, sim).await }
+        })
+        .buffered_ordered(STARTING_AT_ONCE)
+        .collect::<Vec<_>>()
+        .await
+        .into_iter()
+        .collect()
+}
+
+/// Has every node in `nodes` follow `followed`, and waits until all have
+/// subscribed.
+async fn follow_all(followed: &Node, nodes: &[Node]) -> Result<()> {
+    let ClientResponse::Ticket { ticket } = call(followed, ClientRequest::Invite).await? else {
+        bail!("no ticket");
+    };
+    for node in nodes {
+        call(
+            node,
+            ClientRequest::Follow {
+                ticket: ticket.clone(),
+            },
+        )
+        .await?;
+    }
+    wait_for_followers(followed, nodes.len()).await
+}
+
+/// Notes the time since `posted` for each running node that has come to
+/// hold the video. `held` is in the same order as `nodes`.
+async fn note_holders<'a>(
+    nodes: impl Iterator<Item = Option<&'a Node>>,
+    held: &mut [Option<f64>],
+    post: ObjectId,
+    video: BlobHash,
+    posted: Instant,
+) -> Result<()> {
+    let waiting: Vec<(usize, &Node)> = nodes
+        .enumerate()
+        .filter(|(i, _)| held[*i].is_none())
+        .filter_map(|(i, node)| Some((i, node?)))
+        .collect();
+    let checks = join_all(waiting.iter().map(|(_, node)| holds(node, post, video))).await;
+    let now = posted.elapsed().as_secs_f64();
+    for ((i, _), check) in waiting.iter().zip(checks) {
+        if check? {
+            held[*i] = Some(now);
+        }
+    }
+    Ok(())
+}
+
+/// What a group of nodes sent and received, by their own records.
+struct Tally {
+    /// Media bytes each sent to any node, in order.
+    sent: Vec<f64>,
+    /// Media bytes they received from the creator, together.
+    from_creator: f64,
+    downloads: Outcomes,
+}
+
+fn tally(records: &[Vec<PeerRecord>], creator: EndpointId) -> Tally {
+    let mut t = Tally {
+        sent: Vec::new(),
+        from_creator: 0.0,
+        downloads: Outcomes::default(),
+    };
+    for seen in records {
+        t.sent.push(sent(seen));
+        for p in seen {
+            let c = &p.counts;
+            if p.node == creator {
+                t.from_creator += c.received_bytes;
+            }
+            let d = &mut t.downloads;
+            d.completed += c.completed;
+            d.busy += c.busy;
+            d.not_hosting += c.not_hosting;
+            d.bad_data += c.bad_data;
+            d.failed += c.failed;
+            d.unreached += c.unreached;
+        }
+    }
+    t
 }
 
 #[cfg(test)]
@@ -564,5 +833,73 @@ mod tests {
         assert!(!r.marks().all_within_30_min);
         r.held_after_secs[299] = None;
         assert!(!r.marks().all_within_30_min);
+    }
+
+    #[test]
+    fn followers_dropping_out_are_spread_through_the_order() {
+        let dropping = |n, f| (0..f).filter(|i| drops_out(*i, n, f)).collect::<Vec<_>>();
+        assert_eq!(dropping(3, 12), [3, 7, 11]);
+        assert_eq!(dropping(60, 300).len(), 60);
+        assert_eq!(dropping(60, 300)[..3], [4, 9, 14]);
+        assert_eq!(dropping(2, 7), [3, 6]);
+        assert_eq!(dropping(0, 300), [] as [usize; 0]);
+        // The resharer, the first, stays unless everyone goes.
+        assert!(!(1..300).any(|n| drops_out(RESHARER, n, 300)));
+
+        // Only those that stayed are counted.
+        let mut r = report(4, 0);
+        r.dropped_out = vec![3];
+        r.held_after_secs[3] = None;
+        assert_eq!((r.holding(), r.time_until(100)), (3, Some(3.0)));
+    }
+
+    #[test]
+    fn a_tally_adds_up_each_nodes_record() {
+        let creator = osp_proto::SecretKey::generate().public();
+        let other = osp_proto::SecretKey::generate().public();
+        let record = |node, sent_bytes, received_bytes| PeerRecord {
+            node,
+            actor: None,
+            name: None,
+            followed: false,
+            follower: false,
+            host: false,
+            contacted: true,
+            first_contact_secs_ago: 0,
+            last_contact_secs_ago: 0,
+            counts: osp_proto::rpc::PeerCounts {
+                sent_bytes,
+                received_bytes,
+                completed: 1.0,
+                busy: 2.0,
+                not_hosting: 3.0,
+                bad_data: 4.0,
+                failed: 5.0,
+                unreached: 6.0,
+                ..Default::default()
+            },
+        };
+        let t = tally(
+            &[
+                vec![record(creator, 10.0, 100.0), record(other, 1.0, 1000.0)],
+                vec![record(other, 5.0, 0.0)],
+            ],
+            creator,
+        );
+        assert_eq!(t.sent, [11.0, 5.0]);
+        assert!(sent(&[]).is_sign_positive(), "0, not -0");
+        assert_eq!(t.from_creator, 100.0);
+        let d = t.downloads;
+        assert_eq!(
+            [
+                d.completed,
+                d.busy,
+                d.not_hosting,
+                d.bad_data,
+                d.failed,
+                d.unreached
+            ],
+            [3.0, 6.0, 9.0, 12.0, 15.0, 18.0]
+        );
     }
 }

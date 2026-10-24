@@ -18,6 +18,9 @@ async fn a_small_run_measures_the_creators_upload() {
         follower_mbps: vec![5, 10, 20],
         swarm: false,
         prefetch_spread: Duration::ZERO,
+        drop_out: 0,
+        drop_out_after: Duration::ZERO,
+        strangers: 0,
         time_limit: Duration::from_secs(90),
         sample: Duration::from_secs(1),
         label: "test".into(),
@@ -83,22 +86,31 @@ async fn a_small_run_measures_the_creators_upload() {
     assert!(err.to_string().contains("isn't empty"), "{err:#}");
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn a_small_run_with_the_swarm_on() {
-    let dir = tempfile::tempdir().unwrap();
-    // Over 1 MiB, so the followers fetch it through the swarm.
-    let scenario = Scenario {
-        dir: dir.path().join("run"),
+/// A small run with the swarm on: 12 followers spreading their fetches of
+/// a video over 10 seconds.
+fn with_the_swarm(dir: &Path) -> Scenario {
+    Scenario {
+        dir: dir.join("run"),
         followers: 12,
+        // Over 1 MiB, so the followers fetch it through the swarm.
         video_bytes: 2_000_000,
         creator_mbps: 20,
         follower_mbps: vec![5, 10, 20],
         swarm: true,
         prefetch_spread: Duration::from_secs(10),
+        drop_out: 0,
+        drop_out_after: Duration::ZERO,
+        strangers: 0,
         time_limit: Duration::from_secs(90),
         sample: Duration::from_secs(1),
         label: "test".into(),
-    };
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_small_run_with_the_swarm_on() {
+    let dir = tempfile::tempdir().unwrap();
+    let scenario = with_the_swarm(dir.path());
     let report = osp_sim::run(&scenario).await.unwrap();
     println!("{}", report.summary());
     assert!(
@@ -113,6 +125,88 @@ async fn a_small_run_with_the_swarm_on() {
     let sharing = report.follower_sent_bytes.iter().filter(|b| **b >= video);
     assert!(sharing.count() >= 1, "{}", report.summary());
     assert!(report.creator_copies() < 11.0, "{}", report.summary());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn followers_that_stop_are_left_out_of_the_times() {
+    let dir = tempfile::tempdir().unwrap();
+    let scenario = Scenario {
+        drop_out: 3,
+        drop_out_after: Duration::from_secs(8),
+        time_limit: Duration::from_secs(120),
+        ..with_the_swarm(dir.path())
+    };
+    let report = osp_sim::run(&scenario).await.unwrap();
+    let summary = report.summary();
+    println!("{summary}");
+
+    // The last of each group of four, so every upload speed.
+    assert_eq!(report.dropped_out, [3, 7, 11]);
+    assert!(summary.contains("3 followers stopped at 8 s"), "{summary}");
+    // The 9 that stayed got the video anyway, and only they are counted.
+    assert_eq!(report.holding(), 9, "{summary}");
+    assert!(summary.contains("held the video: 9 of 9"), "{summary}");
+    assert!(report.ended_secs < 120.0, "ended once those 9 held it");
+    let stayed: Vec<f64> = [0, 1, 2, 4, 5, 6, 8, 9, 10]
+        .iter()
+        .map(|i| report.held_after_secs[*i].expect("held"))
+        .collect();
+    let slowest = stayed.iter().copied().fold(0.0, f64::max);
+    assert_eq!(report.time_until(100), Some(slowest));
+    // What the stopped followers measured is kept.
+    assert_eq!(report.follower_sent_bytes.len(), 12);
+    let copies = report.received_from_creator / report.media_bytes as f64;
+    assert!(copies >= 1.0, "{summary}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn strangers_get_a_reshared_video_from_the_resharer_and_creator() {
+    let dir = tempfile::tempdir().unwrap();
+    let scenario = Scenario {
+        strangers: 12,
+        time_limit: Duration::from_secs(120),
+        ..with_the_swarm(dir.path())
+    };
+    let report = osp_sim::run(&scenario).await.unwrap();
+    let summary = report.summary();
+    println!("{summary}");
+
+    // The first follower reshared as soon as it held the video, and every
+    // stranger got it after that.
+    let reshared = report.reshared_after_secs.expect("reshared");
+    assert!(reshared >= report.held_after_secs[0].unwrap(), "{summary}");
+    assert_eq!(report.stranger_held_after_secs.len(), 12);
+    for held in &report.stranger_held_after_secs {
+        assert!(held.is_some_and(|t| t >= reshared), "{summary}");
+    }
+    assert!(
+        summary.contains("12 of 12 strangers held the video"),
+        "{summary}"
+    );
+    assert_eq!(report.holding(), 12, "{summary}");
+
+    // Nobody names strangers as hosts, so none served the video.
+    let video = report.video_bytes as f64;
+    assert!(
+        report.stranger_sent_bytes.iter().all(|b| *b < video),
+        "{summary}"
+    );
+    // 12 strangers at once fill the resharer's 8 places, so the rest are
+    // refused as busy and go to the creator. What it sent them is counted,
+    // the same on both sides.
+    let copies = |bytes: f64| bytes / report.media_bytes as f64;
+    let to_strangers = copies(report.creator_sent_to_strangers);
+    let by_strangers = copies(report.strangers_received_from_creator);
+    assert!(to_strangers >= 1.0, "{summary}");
+    assert!(
+        (to_strangers - by_strangers).abs() < 0.1,
+        "{to_strangers} vs {by_strangers}"
+    );
+    let received = copies(report.received_from_creator) + by_strangers;
+    assert!(
+        (report.creator_copies() - received).abs() < 0.1,
+        "{summary}"
+    );
 }
 
 async fn start(root: &Path, name: &str, sim: Option<SimSettings>) -> Node {

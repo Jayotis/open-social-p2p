@@ -36,8 +36,21 @@ struct Cli {
     /// to this many seconds. The default is a real node's.
     #[arg(long)]
     spread_secs: Option<u64>,
-    /// End this many minutes after posting, if not every follower holds
-    /// the video by then.
+    /// This many followers stop partway through: the last of each group of
+    /// `followers / drop-out`.
+    #[arg(long, default_value_t = 0)]
+    drop_out: usize,
+    /// When they stop, in seconds after posting. By default, when about 40%
+    /// held the video in the B8 swarm run, and the creator had sent all it
+    /// would.
+    #[arg(long, default_value_t = 480)]
+    drop_out_secs: u64,
+    /// Also run this many nodes that follow only the first follower, which
+    /// reshares the post, hosting its media, as soon as it holds the video.
+    #[arg(long, default_value_t = 0)]
+    strangers: usize,
+    /// End this many minutes after posting, if not every follower and
+    /// stranger holds the video by then.
     #[arg(long, default_value_t = 60)]
     minutes: u64,
     /// Write the full report here, as JSON.
@@ -79,6 +92,9 @@ async fn main() -> Result<()> {
             || SimSettings::default().prefetch_spread,
             Duration::from_secs,
         ),
+        drop_out: cli.drop_out,
+        drop_out_after: Duration::from_secs(cli.drop_out_secs),
+        strangers: cli.strangers,
         time_limit: Duration::from_secs(cli.minutes * 60),
         sample: Duration::from_secs(60),
         label: cli.label,
