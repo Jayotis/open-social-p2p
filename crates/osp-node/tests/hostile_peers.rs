@@ -20,7 +20,7 @@ use iroh::{
     protocol::{AcceptError, ProtocolHandler, Router},
 };
 use iroh_blobs::{BlobsProtocol, Hash, get, protocol::GetRequest, store::mem::MemStore};
-use osp_node::{BlobClass, Config, Node};
+use osp_node::{BlobClass, Config, Node, SimSettings};
 use osp_proto::{
     Attachment, BlobHash, CLIENT_ALPN, FollowTicket, MediaKind, Note, ObjectId, Payload, Person,
     SOCIAL_ALPN, SignedObject,
@@ -844,6 +844,41 @@ async fn media_transfers_take_turns_and_strangers_get_only_some_places() {
     node.shutdown().await.unwrap();
 }
 
+/// Strangers and followers take every place, downloading `blob`, until
+/// what this returns is dropped. The transfers come first, so they're
+/// dropped first: dropping one ends it only while its connection is open.
+async fn take_every_place(
+    addr: &EndpointAddr,
+    blob: BlobHash,
+) -> (Vec<get::fsm::ConnectedNext>, Vec<Stranger>) {
+    let mut peers = Vec::new();
+    let mut held = Vec::new();
+    for _ in 0..STRANGER_TRANSFER_LIMIT / TRANSFER_LIMIT_PER_NODE {
+        let peer = stranger(addr, iroh_blobs::ALPN).await;
+        for _ in 0..TRANSFER_LIMIT_PER_NODE {
+            held.push(hold(&peer, blob).await);
+        }
+        peers.push(peer);
+    }
+    for _ in 0..(TRANSFER_LIMIT - STRANGER_TRANSFER_LIMIT) / TRANSFER_LIMIT_PER_NODE {
+        let (follower, conn) = follower_downloading(addr).await;
+        for _ in 0..TRANSFER_LIMIT_PER_NODE {
+            held.push(hold(&conn, blob).await);
+        }
+        peers.push(follower);
+    }
+    (held, peers)
+}
+
+/// The thumbnail of the post `node` made last.
+async fn last_thumbnail(node: &Node) -> BlobHash {
+    let ClientResponse::Feed { items } = call(node, ClientRequest::Feed { limit: 1 }).await else {
+        panic!("no feed");
+    };
+    let thumb = &items[0].attachments[0].attachment.thumbnail;
+    thumb.as_ref().expect("a thumbnail").blob
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_node_with_every_place_taken_sends_downloads_to_another_host() {
     let dir = tempfile::tempdir().unwrap();
@@ -881,27 +916,17 @@ async fn a_node_with_every_place_taken_sends_downloads_to_another_host() {
         .accept(iroh_blobs::ALPN, BlobsProtocol::new(&media, None))
         .spawn();
 
-    // Strangers and followers take every place.
-    let mut peers = Vec::new();
-    let mut held = Vec::new();
-    for _ in 0..STRANGER_TRANSFER_LIMIT / TRANSFER_LIMIT_PER_NODE {
-        let peer = stranger(&addr, iroh_blobs::ALPN).await;
-        for _ in 0..TRANSFER_LIMIT_PER_NODE {
-            held.push(hold(&peer, blob).await);
-        }
-        peers.push(peer);
-    }
-    for _ in 0..(TRANSFER_LIMIT - STRANGER_TRANSFER_LIMIT) / TRANSFER_LIMIT_PER_NODE {
-        let (follower, conn) = follower_downloading(&addr).await;
-        for _ in 0..TRANSFER_LIMIT_PER_NODE {
-            held.push(hold(&conn, blob).await);
-        }
-        peers.push(follower);
-    }
+    let held = take_every_place(&addr, blob).await;
 
     // Even a follower is refused now, after waiting.
     let (_late, conn) = follower_downloading(&addr).await;
     let refused = tokio::spawn(async move { fetch(&conn, blob).await });
+
+    // A thumbnail still goes out at once: small blobs have places of their own.
+    let thumb = last_thumbnail(&node).await;
+    let peer = stranger(&addr, iroh_blobs::ALPN).await;
+    let (ok, took) = fetch(&peer, thumb).await;
+    assert!(ok && took < PROMPTLY, "the thumbnail took {took:?}");
 
     // A node downloading the photo is refused too, and moves on to the
     // other host.
@@ -957,6 +982,58 @@ async fn a_node_with_every_place_taken_sends_downloads_to_another_host() {
     );
 
     drop(held);
+    reader.shutdown().await.unwrap();
+    node.shutdown().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_prefetch_refused_as_busy_is_tried_again_later() {
+    let dir = tempfile::tempdir().unwrap();
+    let node = start(dir.path(), "Quinn").await;
+    let addr = node.addr().await;
+    let (_, photo, _) = post_noise_photo(&node, dir.path()).await;
+    let thumb = last_thumbnail(&node).await;
+    let held = take_every_place(&addr, photo).await;
+
+    // A follower fetching the post ahead of time gets the thumbnail, but
+    // the photo is refused as busy.
+    let home = dir.path().join("rae");
+    Node::init(&home, &Config::local_test("Rae")).unwrap();
+    let sim = SimSettings {
+        first_retry_wait: Duration::from_millis(500),
+        ..SimSettings::default()
+    };
+    let reader = Node::spawn_sim(&home, sim).await.unwrap();
+    let ClientResponse::Ticket { ticket } = call(&node, ClientRequest::Invite).await else {
+        panic!("no ticket");
+    };
+    call(&reader, ClientRequest::Follow { ticket }).await;
+    sync_within(&reader, Duration::from_secs(60)).await;
+    assert_eq!(
+        reader.blob_class(&thumb).unwrap(),
+        Some(BlobClass::Prefetch)
+    );
+    assert_eq!(reader.blob_class(&photo).unwrap(), None, "refused as busy");
+
+    // It is tried again soon, and refused again while every place is
+    // still taken: the node asks twice, before and after asking who else
+    // hosts it. Once places free up, it is tried again and arrives.
+    tokio::time::sleep(BUSY_WAIT * 2 + Duration::from_secs(3)).await;
+    assert_eq!(reader.blob_class(&photo).unwrap(), None);
+    drop(held);
+    let started = Instant::now();
+    while reader.blob_class(&photo).unwrap().is_none() {
+        assert!(
+            started.elapsed() < BUSY_WAIT * 3,
+            "not fetched again in time"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(
+        reader.blob_class(&photo).unwrap(),
+        Some(BlobClass::Prefetch)
+    );
+
     reader.shutdown().await.unwrap();
     node.shutdown().await.unwrap();
 }

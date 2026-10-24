@@ -131,6 +131,7 @@ pub async fn run(s: &Scenario) -> Result<Report> {
         new_followers_per_hour: s
             .followers
             .max(SimSettings::default().new_followers_per_hour),
+        ..SimSettings::default()
     };
     let creator = start(&s.dir.join("creator"), "Creator", s.creator_mbps, lifted).await?;
     let followers: Vec<Node> = stream::iter(0..s.followers)

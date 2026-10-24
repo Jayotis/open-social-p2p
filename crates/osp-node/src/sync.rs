@@ -1,5 +1,6 @@
-//! Gathering: syncing followed outboxes, prefetching their media, and finding
-//! nodes that can serve a blob.
+//! Gathering: syncing followed outboxes, prefetching their media (and trying
+//! again later when the nodes with it are busy), and finding nodes that can
+//! serve a blob.
 //!
 //! A followed node decides what its outbox says, so everything it sends is
 //! checked and bounded: each page must move our position forward, a sync
@@ -19,12 +20,14 @@ use osp_proto::{
     BlobHash, Note, ObjectId, Payload,
     social::{MAX_GET_OBJECTS, MAX_OUTBOX_PAGE, SocialRequest, SocialResponse},
 };
+use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
 use crate::{
     db::{BlobClass, Follow, now_ms},
     node::{Core, check_addr, remember},
     social::profile_date,
+    store,
 };
 
 /// How often we ask each followed node to keep notifying us.
@@ -51,6 +54,17 @@ const MAX_PREFETCH_BYTES: u64 = 256 << 20;
 /// Most files, and bytes, prefetched per sync.
 const MAX_PREFETCH_FILES_PER_SYNC: usize = 200;
 const MAX_PREFETCH_BYTES_PER_SYNC: u64 = 1 << 30;
+/// How long a prefetch refused as busy waits before it is tried again. Each
+/// later wait is twice as long, up to `MAX_RETRY_WAIT`, and each is varied
+/// by up to half either way, so followers refused together don't come back
+/// together.
+pub(crate) const FIRST_RETRY_WAIT: Duration = Duration::from_secs(60);
+const MAX_RETRY_WAIT: Duration = Duration::from_secs(15 * 60);
+/// Tries again before giving up: about 45 minutes with the waits above.
+/// The media is then fetched when it's opened.
+const MAX_RETRIES: u32 = 6;
+/// Prefetches waiting to be tried again, at most; more are dropped.
+pub(crate) const MAX_RETRIES_WAITING: usize = 1_000;
 
 /// Polls followed nodes on the configured interval, or sooner when woken.
 pub(crate) async fn run_loop(core: Arc<Core>) {
@@ -390,16 +404,27 @@ impl Core {
         self.subscribed.lock().unwrap_or_else(|e| e.into_inner())
     }
 
+    /// Fetches media ahead of time, one file at a time. One refused as busy
+    /// is tried again later (`retry_loop`).
     async fn prefetch(&self, blobs: Vec<(BlobHash, u64)>) {
         for (blob, size) in blobs {
-            if let Err(e) = self.ensure_blob(&blob, BlobClass::Prefetch, size).await {
-                warn!(blob = %blob.fmt_short(), "prefetch failed: {e:#}");
+            match self.ensure_blob(&blob, BlobClass::Prefetch, size).await {
+                Ok(_) => {}
+                Err(e) if store::is_busy(&e) => {
+                    info!(blob = %blob.fmt_short(), "the nodes with this media are busy; trying again later");
+                    if self.prefetch_retries.try_send((blob, size)).is_err() {
+                        warn!(blob = %blob.fmt_short(), "too many prefetches waiting; this one is fetched when it's opened");
+                    }
+                }
+                Err(e) => warn!(blob = %blob.fmt_short(), "prefetch failed: {e:#}"),
             }
         }
     }
 
     /// Makes sure a blob is stored locally, downloading at most `declared`
-    /// bytes of it if needed, and records it under at least `class`.
+    /// bytes of it if needed, and records it under at least `class`. If the
+    /// last try failed because a node with it was busy, the error says so
+    /// (`store::is_busy`).
     pub(crate) async fn ensure_blob(
         &self,
         blob: &BlobHash,
@@ -499,6 +524,78 @@ impl Core {
     }
 }
 
+/// Tries again, one at a time, the prefetches that `prefetch` sends here
+/// because the nodes with the media were busy, waiting longer each time
+/// (`FIRST_RETRY_WAIT`). Runs until the node stops.
+pub(crate) async fn retry_loop(core: Arc<Core>, mut busy: mpsc::Receiver<(BlobHash, u64)>) {
+    // Each waiting blob: its declared size, the tries so far, and when it's due.
+    let mut waiting: HashMap<BlobHash, (u64, u32, Instant)> = HashMap::new();
+    let wait = |tries| jitter(retry_wait(core.sim.first_retry_wait, tries));
+    loop {
+        let next = waiting.values().map(|(_, _, due)| *due).min();
+        tokio::select! {
+            got = busy.recv() => {
+                let Some((blob, size)) = got else { return };
+                if waiting.len() < MAX_RETRIES_WAITING {
+                    waiting
+                        .entry(blob)
+                        .or_insert_with(|| (size, 0, Instant::now() + wait(0)));
+                }
+            }
+            _ = sleep_until(next) => {
+                let now = Instant::now();
+                let due: Vec<BlobHash> = waiting
+                    .iter()
+                    .filter(|(_, (_, _, at))| *at <= now)
+                    .map(|(blob, _)| *blob)
+                    .collect();
+                for blob in due {
+                    let Some((size, tries, _)) = waiting.remove(&blob) else {
+                        continue;
+                    };
+                    let tries = tries + 1;
+                    match core.ensure_blob(&blob, BlobClass::Prefetch, size).await {
+                        Ok(_) => info!(blob = %blob.fmt_short(), tries, "prefetched after the nodes with it were busy"),
+                        Err(e) if store::is_busy(&e) && tries < MAX_RETRIES => {
+                            waiting.insert(blob, (size, tries, Instant::now() + wait(tries)));
+                        }
+                        Err(e) => warn!(
+                            blob = %blob.fmt_short(),
+                            tries,
+                            "prefetch failed; it's fetched when it's opened: {e:#}"
+                        ),
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// How long to wait before trying again a prefetch already tried `tries`
+/// times since it was refused, before `jitter`.
+fn retry_wait(first: Duration, tries: u32) -> Duration {
+    first.saturating_mul(1 << tries.min(16)).min(MAX_RETRY_WAIT)
+}
+
+/// Waits until `at`, or forever if there's nothing to wait for.
+async fn sleep_until(at: Option<Instant>) {
+    match at {
+        Some(at) => tokio::time::sleep_until(at.into()).await,
+        None => std::future::pending().await,
+    }
+}
+
+/// `d` varied at random by up to half either way.
+pub(crate) fn jitter(d: Duration) -> Duration {
+    let mut bytes = [0; 8];
+    // Without random numbers, not varying it is as good as anything.
+    let fraction = match getrandom::fill(&mut bytes) {
+        Ok(()) => u64::from_le_bytes(bytes) as f64 / u64::MAX as f64,
+        Err(_) => 0.5,
+    };
+    d.mul_f64(0.5 + fraction)
+}
+
 /// A post's media worth fetching ahead of time, with declared sizes:
 /// thumbnails always, media files up to `MAX_PREFETCH_BYTES`.
 fn prefetchable(note: &Note) -> Vec<(BlobHash, u64)> {
@@ -514,10 +611,12 @@ fn prefetchable(note: &Note) -> Vec<(BlobHash, u64)> {
     blobs
 }
 
-/// Picks what one sync prefetches, within the per-sync limits.
+/// Picks what one sync prefetches, within the per-sync limits, smallest
+/// first, so thumbnails aren't held up behind videos.
 fn choose_prefetch(mut candidates: Vec<(BlobHash, u64)>) -> Vec<(BlobHash, u64)> {
     candidates.sort();
     candidates.dedup_by_key(|(blob, _)| *blob);
+    candidates.sort_by_key(|(_, size)| *size);
     let mut chosen = Vec::new();
     let mut bytes = 0;
     for (blob, size) in candidates {
@@ -531,4 +630,39 @@ fn choose_prefetch(mut candidates: Vec<(BlobHash, u64)>) -> Vec<(BlobHash, u64)>
         chosen.push((blob, size));
     }
     chosen
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn prefetches_go_smallest_first_each_once() {
+        let [video, thumb, photo] = [1u8, 2, 3].map(|b| BlobHash::from_bytes([b; 32]));
+        let chosen = choose_prefetch(vec![
+            (video, 50 << 20),
+            (thumb, 37 << 10),
+            (video, 50 << 20),
+            (photo, 2 << 20),
+        ]);
+        assert_eq!(
+            chosen,
+            vec![(thumb, 37 << 10), (photo, 2 << 20), (video, 50 << 20)]
+        );
+    }
+
+    #[test]
+    fn retries_wait_longer_each_time_up_to_a_limit() {
+        let minute = Duration::from_secs(60);
+        let waits: Vec<_> = (0..MAX_RETRIES).map(|t| retry_wait(minute, t)).collect();
+        assert_eq!(waits, [1, 2, 4, 8, 15, 15].map(|m| minute * m));
+        assert_eq!(retry_wait(minute, u32::MAX), MAX_RETRY_WAIT);
+        for _ in 0..100 {
+            let varied = jitter(minute);
+            assert!(
+                varied >= minute / 2 && varied <= minute * 3 / 2,
+                "{varied:?}"
+            );
+        }
+    }
 }

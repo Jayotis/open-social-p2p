@@ -12,6 +12,7 @@
 
 use std::{
     collections::{BTreeMap, HashMap},
+    fmt,
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex, MutexGuard,
@@ -84,6 +85,11 @@ const MAX_TRANSFERS_PER_NODE: usize = 2;
 /// How long a request over one of those limits waits for a place. After
 /// that it is refused as busy, and the requester tries another host.
 const BUSY_WAIT: Duration = Duration::from_secs(10);
+/// Blobs this small, such as thumbnails, have places of their own, so they
+/// aren't held up behind videos. Each takes a moment to send.
+const SMALL_BLOB: u64 = 1 << 20;
+/// Most small transfers at once. They don't count toward `MAX_TRANSFERS`.
+const MAX_SMALL_TRANSFERS: usize = 8;
 
 /// Which provider events we want to see. Every data request is intercepted so
 /// the serving rules can refuse it, with news of its transfer, which says how
@@ -254,7 +260,7 @@ impl ContentStore {
         debug!(%hash, ?providers, "downloading");
         self.fetch(h, providers, declared, Instant::now() + DOWNLOAD_TIMEOUT)
             .await
-            .map_err(|e| anyhow::anyhow!("download of {} failed: {e:#}", hash.fmt_short()))?;
+            .with_context(|| format!("download of {} failed", hash.fmt_short()))?;
         let size = self
             .size(h)
             .await?
@@ -336,7 +342,8 @@ impl ContentStore {
     /// the ones before it didn't send, and how its attempt ended is logged
     /// (ADR 0011). Stops once more than `declared` bytes have arrived: a
     /// provider can't send bytes that don't match the hash, but the post's
-    /// author can declare a smaller size than the blob has.
+    /// author can declare a smaller size than the blob has. Fails with
+    /// [`Busy`] if one of them refused as busy.
     async fn fetch(
         &self,
         hash: Hash,
@@ -346,6 +353,7 @@ impl ContentStore {
     ) -> Result<()> {
         let request = Arc::new(GetRequest::blob(hash));
         let remote = self.store.remote();
+        let mut busy = false;
         for node in providers {
             let local = remote.local_for_request(request.clone()).await?;
             if local.is_complete() {
@@ -376,9 +384,15 @@ impl ContentStore {
                 Outcome::Stopped => {
                     bail!("it is bigger than its post says ({declared} bytes), so it was stopped")
                 }
-                _ if Instant::now() >= deadline => bail!("it timed out"),
+                Outcome::Busy => busy = true,
                 _ => {}
             }
+            if Instant::now() >= deadline {
+                bail!("it timed out");
+            }
+        }
+        if busy {
+            return Err(Busy.into());
         }
         bail!("no provider could send it")
     }
@@ -636,6 +650,24 @@ impl Attempt {
     }
 }
 
+/// Why a download failed when a node that has the blob refused as busy:
+/// asking again later may work.
+#[derive(Debug)]
+pub(crate) struct Busy;
+
+impl fmt::Display for Busy {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("no provider could send it, and one that has it is busy")
+    }
+}
+
+impl std::error::Error for Busy {}
+
+/// Whether a download failed because a node that has the blob was busy.
+pub(crate) fn is_busy(e: &anyhow::Error) -> bool {
+    e.chain().any(|cause| cause.is::<Busy>())
+}
+
 /// What a failed request says about the node that was asked. A node refuses
 /// by closing the stream with an error code; one that ends before sending
 /// the whole blob doesn't have it.
@@ -705,8 +737,9 @@ fn to_blob_hash(hash: Hash) -> BlobHash {
 ///   revealing what this node has viewed.)
 ///
 /// A request that may be served still waits for a place within the
-/// transfer limits, and is refused as busy if none frees up in time. With
-/// an upload cap, `pacer` spaces out what is sent.
+/// transfer limits, and is refused as busy if none frees up in time. A
+/// small blob needs only a small place (`SMALL_BLOB`). With an upload cap,
+/// `pacer` spaces out what is sent.
 async fn enforce_serving_rules(
     mut rx: mpsc::Receiver<ProviderMessage>,
     db: Arc<Db>,
@@ -716,15 +749,20 @@ async fn enforce_serving_rules(
     let mut peers: HashMap<u64, Option<EndpointId>> = HashMap::new();
     let mut places = Places::new();
     while let Some(msg) = rx.recv().await {
-        // Requests for data: who asked, whether the rules allow it, and the
-        // channels for the answer and for news of the transfer.
-        let (peer, allowed, answer, updates) = match msg {
+        // Requests for data: who asked, whether the rules allow it, whether
+        // it is small, and the channels for the answer and for news of the
+        // transfer.
+        let (peer, allowed, small, answer, updates) = match msg {
             ProviderMessage::GetRequestReceived(msg) => {
                 let peer = peers.get(&msg.inner.connection_id).copied().flatten();
                 let request = &msg.inner.request;
-                let ok = request.ranges.is_blob()
-                    && may_serve(&db, request.hash, peer, share_prefetched);
-                (peer, ok, msg.tx, msg.rx)
+                let size = request
+                    .ranges
+                    .is_blob()
+                    .then(|| may_serve(&db, request.hash, peer, share_prefetched))
+                    .flatten();
+                let small = size.is_some_and(|s| s <= SMALL_BLOB);
+                (peer, size.is_some(), small, msg.tx, msg.rx)
             }
             ProviderMessage::GetManyRequestReceived(msg) => {
                 let peer = peers.get(&msg.inner.connection_id).copied().flatten();
@@ -733,8 +771,8 @@ async fn enforce_serving_rules(
                     .request
                     .hashes
                     .iter()
-                    .all(|h| may_serve(&db, *h, peer, share_prefetched));
-                (peer, ok, msg.tx, msg.rx)
+                    .all(|h| may_serve(&db, *h, peer, share_prefetched).is_some());
+                (peer, ok, false, msg.tx, msg.rx)
             }
             ProviderMessage::ClientConnected(msg) => {
                 peers.insert(msg.inner.connection_id, msg.inner.endpoint_id);
@@ -747,7 +785,7 @@ async fn enforce_serving_rules(
             }
             ProviderMessage::ObserveRequestReceived(msg) => {
                 let peer = peers.get(&msg.inner.connection_id).copied().flatten();
-                let ok = may_serve(&db, msg.inner.request.hash, peer, share_prefetched);
+                let ok = may_serve(&db, msg.inner.request.hash, peer, share_prefetched).is_some();
                 msg.tx.send(verdict(ok)).await.ok();
                 continue;
             }
@@ -774,7 +812,7 @@ async fn enforce_serving_rules(
             answer.send(verdict(false)).await.ok();
             continue;
         }
-        let needed = places.needed(peer, &db);
+        let needed = places.needed(peer, small, &db);
         let db = db.clone();
         tokio::spawn(async move {
             let Some(_held) = take_places(needed).await else {
@@ -811,6 +849,7 @@ async fn enforce_serving_rules(
 struct Places {
     all: Arc<Semaphore>,
     strangers: Arc<Semaphore>,
+    small: Arc<Semaphore>,
     per_node: HashMap<Option<EndpointId>, Arc<Semaphore>>,
 }
 
@@ -819,13 +858,14 @@ impl Places {
         Self {
             all: Arc::new(Semaphore::new(MAX_TRANSFERS)),
             strangers: Arc::new(Semaphore::new(MAX_STRANGER_TRANSFERS)),
+            small: Arc::new(Semaphore::new(MAX_SMALL_TRANSFERS)),
             per_node: HashMap::new(),
         }
     }
 
     /// The limits a request from `peer` needs a place in, in the order to
-    /// take them.
-    fn needed(&mut self, peer: Option<EndpointId>, db: &Db) -> Vec<Arc<Semaphore>> {
+    /// take them. A `small` one needs only a small place, besides its node's.
+    fn needed(&mut self, peer: Option<EndpointId>, small: bool, db: &Db) -> Vec<Arc<Semaphore>> {
         // Forget nodes with nothing in progress or waiting.
         self.per_node
             .retain(|_, limit| Arc::strong_count(limit) > 1);
@@ -834,6 +874,10 @@ impl Places {
             .entry(peer)
             .or_insert_with(|| Arc::new(Semaphore::new(MAX_TRANSFERS_PER_NODE)));
         let mut needed = vec![own.clone()];
+        if small {
+            needed.push(self.small.clone());
+            return needed;
+        }
         if !is_follower_or_device(db, peer) {
             needed.push(self.strangers.clone());
         }
@@ -891,12 +935,14 @@ fn verdict(ok: bool) -> Result<(), AbortReason> {
     }
 }
 
-fn may_serve(db: &Db, hash: Hash, peer: Option<EndpointId>, share_prefetched: bool) -> bool {
-    let class = match db.blob_class(&to_blob_hash(hash)) {
-        Ok(class) => class,
+/// The blob's size, if `peer` may download it.
+fn may_serve(db: &Db, hash: Hash, peer: Option<EndpointId>, share_prefetched: bool) -> Option<u64> {
+    let (class, size) = match db.blob(&to_blob_hash(hash)) {
+        Ok(Some((class, size))) => (Some(class), size),
+        Ok(None) => (None, 0),
         Err(e) => {
             warn!("serving check failed: {e:#}");
-            return false;
+            return None;
         }
     };
     let allowed = match class {
@@ -909,7 +955,7 @@ fn may_serve(db: &Db, hash: Hash, peer: Option<EndpointId>, share_prefetched: bo
     if !allowed {
         debug!(hash = %hash.fmt_short(), ?peer, ?class, "refused blob request");
     }
-    allowed
+    allowed.then_some(size)
 }
 
 #[cfg(test)]
@@ -1135,11 +1181,13 @@ mod tests {
         assert_eq!(size, KB);
         assert_eq!(f.db.blob_class(&blob).unwrap(), Some(BlobClass::Cache));
 
-        // None of them could send it.
+        // None of them could send it. One was only busy, so it's worth
+        // trying again later.
         let (other_provider, other) = f.provider(&[8; KB as usize], None).await;
+        let other_blob = to_blob_hash(other);
         let err = store
             .download(
-                &to_blob_hash(other),
+                &other_blob,
                 vec![busy.id(), liar.id()],
                 BlobClass::Cache,
                 KB,
@@ -1150,6 +1198,12 @@ mod tests {
             format!("{err:#}").contains("no provider could send it"),
             "{err:#}"
         );
+        assert!(is_busy(&err), "{err:#}");
+        let err = store
+            .download(&other_blob, vec![liar.id(), nowhere], BlobClass::Cache, KB)
+            .await
+            .unwrap_err();
+        assert!(!is_busy(&err), "{err:#}");
 
         // Bigger than its post says: no other node can send a smaller one.
         let providers = vec![other_provider.id(), honest.id()];
