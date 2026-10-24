@@ -1,6 +1,6 @@
 # Hosting Roles, the Follower Swarm and Expiry
 
-**Status: Proposal, second draft. Nothing here is implemented.** The first draft ("Segment hosting, random assignment and content expiry") was taken apart in a [critical review](reviews/2026-10-21-review-of-docs-12-and-13.md); this draft responds to it. It becomes a decision record once its blocking findings are resolved.
+**Status: Proposal, second draft.** Phase 1 is being built behind a switch that is off by default, so that it can be measured ([B8](testing/b8-creator-upload.md)) before this is accepted. Built so far: the `prefetch` class, and sharing it when `share_prefetched` under `[swarm]` is on. The first draft ("Segment hosting, random assignment and content expiry") was taken apart in a [critical review](reviews/2026-10-21-review-of-docs-12-and-13.md); this draft responds to it. It becomes a decision record once its blocking findings are resolved.
 
 ## Summary
 

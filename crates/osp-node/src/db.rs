@@ -56,7 +56,7 @@ CREATE TABLE IF NOT EXISTS profiles (
     signed TEXT NOT NULL
 );
 
--- Why we keep each blob: own > replica > cache (ADR 0003).
+-- Why we keep each blob: own > replica > prefetch > cache (ADR 0003).
 CREATE TABLE IF NOT EXISTS blobs (
     hash        TEXT PRIMARY KEY,
     class       TEXT NOT NULL,
@@ -134,8 +134,14 @@ const TOUCH_EVERY_MS: i64 = 60_000;
 /// Why a blob is kept, which decides who it is served to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum BlobClass {
-    /// Prefetched for my own devices. Served only to them; evicted first.
+    /// Fetched when one of my devices opened it. Served only to them;
+    /// evicted first.
     Cache,
+    /// Fetched ahead of time because I follow its author or a resharer
+    /// (doc 13). Served to anyone if I share prefetched copies
+    /// (`swarm.share_prefetched`), otherwise only to my devices. Evicted
+    /// after `Cache`.
+    Prefetch,
     /// Media I chose to host by resharing. Served to anyone.
     Replica,
     /// Media of my own posts. Served to anyone; never evicted.
@@ -146,6 +152,7 @@ impl BlobClass {
     pub fn as_str(&self) -> &'static str {
         match self {
             BlobClass::Cache => "cache",
+            BlobClass::Prefetch => "prefetch",
             BlobClass::Replica => "replica",
             BlobClass::Own => "own",
         }
@@ -154,15 +161,28 @@ impl BlobClass {
     fn parse(s: &str) -> Result<Self> {
         Ok(match s {
             "cache" => BlobClass::Cache,
+            "prefetch" => BlobClass::Prefetch,
             "replica" => BlobClass::Replica,
             "own" => BlobClass::Own,
             other => anyhow::bail!("unknown blob class {other}"),
         })
     }
 
-    /// Whether anyone (not just my own devices) may download it.
+    /// Whether anyone (not just my own devices) may download it, whatever
+    /// the settings: hosting it is a promise.
     pub fn is_public(&self) -> bool {
         matches!(self, BlobClass::Own | BlobClass::Replica)
+    }
+
+    /// Whether anyone may download it now. Prefetched copies may be when
+    /// the owner chose to share them.
+    pub fn served_to_anyone(&self, share_prefetched: bool) -> bool {
+        self.is_public() || (*self == BlobClass::Prefetch && share_prefetched)
+    }
+
+    /// Whether it counts against the cache quota and is evicted to make room.
+    pub fn is_evictable(&self) -> bool {
+        matches!(self, BlobClass::Cache | BlobClass::Prefetch)
     }
 }
 
@@ -755,7 +775,7 @@ impl Db {
     }
 
     /// Records that we hold a blob. A blob's class only ever moves up
-    /// (cache -> replica -> own), never down.
+    /// (cache -> prefetch -> replica -> own), never down.
     pub fn put_blob(&self, hash: &BlobHash, class: BlobClass, size: u64) -> Result<()> {
         let conn = self.conn();
         let current: Option<String> = conn
@@ -811,6 +831,16 @@ impl Db {
         Ok(n as u64)
     }
 
+    /// Total size of the blobs under the cache quota: cached and prefetched.
+    pub fn evictable_bytes(&self) -> Result<u64> {
+        let n: i64 = self.conn().query_row(
+            "SELECT COALESCE(SUM(size), 0) FROM blobs WHERE class IN ('cache', 'prefetch')",
+            [],
+            |row| row.get(0),
+        )?;
+        Ok(n as u64)
+    }
+
     /// Notes that one of my devices just used a blob, so the cache keeps
     /// it longer.
     pub fn touch_blob(&self, hash: &BlobHash) -> Result<()> {
@@ -822,16 +852,18 @@ impl Db {
         Ok(())
     }
 
-    /// Forgets the cache blobs used longest ago until at least `bytes`
-    /// are freed, or the cache is empty. Returns them, so their data can
-    /// be released. Never touches other classes.
+    /// Forgets cached blobs, then prefetched ones, each in the order they
+    /// were used, longest ago first, until at least `bytes` are freed or
+    /// none are left (doc 13). Returns them, so their data can be released.
+    /// Never touches other classes.
     pub fn evict_cache(&self, bytes: u64) -> Result<Vec<BlobHash>> {
         let conn = self.conn();
         let mut evicted = Vec::new();
         let mut freed = 0;
         {
             let mut stmt = conn.prepare(
-                "SELECT hash, size FROM blobs WHERE class = 'cache' ORDER BY accessed_ms, added_ms",
+                "SELECT hash, size FROM blobs WHERE class IN ('cache', 'prefetch')
+                 ORDER BY class = 'prefetch', accessed_ms, added_ms",
             )?;
             let mut rows = stmt.query([])?;
             while freed < bytes
@@ -1179,9 +1211,13 @@ mod tests {
         let h = BlobHash::from_bytes([7; 32]);
         db.put_blob(&h, BlobClass::Cache, 10).unwrap();
         assert_eq!(db.blob_class(&h).unwrap(), Some(BlobClass::Cache));
+        db.put_blob(&h, BlobClass::Prefetch, 10).unwrap();
+        assert_eq!(db.blob_class(&h).unwrap(), Some(BlobClass::Prefetch));
+        db.put_blob(&h, BlobClass::Cache, 10).unwrap();
+        assert_eq!(db.blob_class(&h).unwrap(), Some(BlobClass::Prefetch));
         db.put_blob(&h, BlobClass::Replica, 10).unwrap();
         assert_eq!(db.blob_class(&h).unwrap(), Some(BlobClass::Replica));
-        db.put_blob(&h, BlobClass::Cache, 10).unwrap();
+        db.put_blob(&h, BlobClass::Prefetch, 10).unwrap();
         assert_eq!(db.blob_class(&h).unwrap(), Some(BlobClass::Replica));
     }
 
@@ -1472,23 +1508,38 @@ mod tests {
     fn eviction_takes_cache_blobs_used_longest_ago_and_nothing_else() {
         let dir = tempfile::tempdir().unwrap();
         let db = Db::open(&dir.path().join("t.db")).unwrap();
-        let [own, replica, stale, recent] = [1u8, 2, 3, 4].map(|b| BlobHash::from_bytes([b; 32]));
+        let [own, replica, stale, recent, prefetched, prefetched_later] =
+            [1u8, 2, 3, 4, 5, 6].map(|b| BlobHash::from_bytes([b; 32]));
         db.put_blob(&own, BlobClass::Own, 100).unwrap();
         db.put_blob(&replica, BlobClass::Replica, 100).unwrap();
         db.put_blob(&stale, BlobClass::Cache, 100).unwrap();
         db.put_blob(&recent, BlobClass::Cache, 100).unwrap();
+        db.put_blob(&prefetched, BlobClass::Prefetch, 100).unwrap();
+        db.put_blob(&prefetched_later, BlobClass::Prefetch, 100)
+            .unwrap();
         db.conn()
             .execute("UPDATE blobs SET accessed_ms = 1", [])
             .unwrap();
+        // Used longest ago, but prefetched copies go after cached ones.
+        db.conn()
+            .execute(
+                "UPDATE blobs SET accessed_ms = 0 WHERE class = 'prefetch'",
+                [],
+            )
+            .unwrap();
         db.touch_blob(&recent).unwrap();
+        db.touch_blob(&prefetched_later).unwrap();
         assert_eq!(db.class_bytes(BlobClass::Cache).unwrap(), 200);
+        assert_eq!(db.evictable_bytes().unwrap(), 400);
 
         assert_eq!(db.evict_cache(0).unwrap(), vec![]);
         assert_eq!(db.evict_cache(1).unwrap(), vec![stale]);
         assert_eq!(db.blob_class(&stale).unwrap(), None);
+        assert_eq!(db.evict_cache(1).unwrap(), vec![recent]);
+        assert_eq!(db.evict_cache(1).unwrap(), vec![prefetched]);
         // Asking for more than the cache holds empties the cache, no more.
-        assert_eq!(db.evict_cache(1 << 30).unwrap(), vec![recent]);
-        assert_eq!(db.class_bytes(BlobClass::Cache).unwrap(), 0);
+        assert_eq!(db.evict_cache(1 << 30).unwrap(), vec![prefetched_later]);
+        assert_eq!(db.evictable_bytes().unwrap(), 0);
         assert_eq!(db.blob_class(&own).unwrap(), Some(BlobClass::Own));
         assert_eq!(db.blob_class(&replica).unwrap(), Some(BlobClass::Replica));
     }

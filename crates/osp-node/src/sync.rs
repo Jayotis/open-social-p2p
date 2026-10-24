@@ -392,7 +392,7 @@ impl Core {
 
     async fn prefetch(&self, blobs: Vec<(BlobHash, u64)>) {
         for (blob, size) in blobs {
-            if let Err(e) = self.ensure_blob(&blob, BlobClass::Cache, size).await {
+            if let Err(e) = self.ensure_blob(&blob, BlobClass::Prefetch, size).await {
                 warn!(blob = %blob.fmt_short(), "prefetch failed: {e:#}");
             }
         }
