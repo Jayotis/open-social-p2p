@@ -121,11 +121,25 @@ const MIGRATIONS: &[&str] = &[
         counts   TEXT NOT NULL
     );
     CREATE INDEX peers_by_contact ON peers(ours, last_ms);",
+    // 7: the follower swarm (doc 13): whether each follower serves what it
+    // fetches ahead of time to anyone, and which followers told us they
+    // hold a copy of one of our blobs, last when.
+    "ALTER TABLE followers ADD COLUMN shares INTEGER NOT NULL DEFAULT 0;
+    CREATE TABLE swarm (
+        blob    TEXT NOT NULL,
+        node    TEXT NOT NULL,
+        seen_ms INTEGER NOT NULL,
+        PRIMARY KEY (blob, node)
+    );",
 ];
 
 /// Hosts remembered per blob. More than enough to find a copy; a peer
 /// can't grow the table without bound by naming hosts.
 const MAX_HOSTS_PER_BLOB: i64 = 20;
+
+/// Followers remembered as holding a copy of one of our blobs, the most
+/// recent first. Plenty to pick a few from.
+const MAX_SWARM_PER_BLOB: i64 = 100;
 
 /// A blob's `accessed_ms` is updated at most this often, so a phone
 /// seeking through a video doesn't write to the database on every request.
@@ -506,14 +520,32 @@ impl Db {
     /// Records a follower, or updates the address of one we have. Either
     /// way it counts as heard from now. A follower subscribing here knows
     /// where we are, so it needn't be told we moved.
-    pub fn add_follower(&self, addr: &EndpointAddr) -> Result<()> {
+    pub fn add_follower(&self, addr: &EndpointAddr, shares: bool) -> Result<()> {
         self.conn().execute(
-            "INSERT INTO followers (node, node_addr, since, seen_ms) VALUES (?1, ?2, ?3, ?3)
+            "INSERT INTO followers (node, node_addr, since, seen_ms, shares) VALUES (?1, ?2, ?3, ?3, ?4)
              ON CONFLICT(node) DO UPDATE SET node_addr = excluded.node_addr,
-                 seen_ms = excluded.seen_ms, tell_moved = 0",
-            params![addr.id.to_string(), serde_json::to_string(addr)?, now_ms()],
+                 seen_ms = excluded.seen_ms, tell_moved = 0, shares = excluded.shares",
+            params![
+                addr.id.to_string(),
+                serde_json::to_string(addr)?,
+                now_ms(),
+                shares
+            ],
         )?;
         Ok(())
+    }
+
+    /// Whether a follower said it shares what it fetches ahead of time.
+    pub fn follower_shares(&self, node: &EndpointId) -> Result<bool> {
+        let shares: Option<bool> = self
+            .conn()
+            .query_row(
+                "SELECT shares FROM followers WHERE node = ?1",
+                params![node.to_string()],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(shares == Some(true))
     }
 
     /// Marks every follower as still to be told that we moved (ADR 0009).
@@ -961,6 +993,46 @@ impl Db {
         rows.map(|r| Ok(serde_json::from_str(&r?)?)).collect()
     }
 
+    // ---- the follower swarm (doc 13) ----
+
+    /// Notes that a follower holds a copy of `blob`, keeping only the most
+    /// recent few for each blob.
+    pub fn add_swarm_member(&self, blob: &BlobHash, node: &EndpointId) -> Result<()> {
+        let conn = self.conn();
+        conn.execute(
+            "INSERT INTO swarm (blob, node, seen_ms) VALUES (?1, ?2, ?3)
+             ON CONFLICT(blob, node) DO UPDATE SET seen_ms = excluded.seen_ms",
+            params![blob.to_string(), node.to_string(), now_ms()],
+        )?;
+        conn.execute(
+            "DELETE FROM swarm WHERE blob = ?1 AND node NOT IN
+             (SELECT node FROM swarm WHERE blob = ?1 ORDER BY seen_ms DESC LIMIT ?2)",
+            params![blob.to_string(), MAX_SWARM_PER_BLOB],
+        )?;
+        Ok(())
+    }
+
+    /// Up to `n` followers, other than `except`, picked at random from those
+    /// that hold a copy of `blob` and still say they share.
+    pub fn swarm_sample(
+        &self,
+        blob: &BlobHash,
+        except: &EndpointId,
+        n: usize,
+    ) -> Result<Vec<EndpointAddr>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT f.node_addr FROM swarm s JOIN followers f ON f.node = s.node
+             WHERE s.blob = ?1 AND f.shares = 1 AND s.node != ?2
+             ORDER BY RANDOM() LIMIT ?3",
+        )?;
+        let rows = stmt.query_map(
+            params![blob.to_string(), except.to_string(), n as i64],
+            |row| row.get::<_, String>(0),
+        )?;
+        rows.map(|r| Ok(serde_json::from_str(&r?)?)).collect()
+    }
+
     // ---- devices ----
 
     /// Records a paired device, or renames one paired before.
@@ -1227,6 +1299,51 @@ mod tests {
         assert_eq!(db.blob_class(&h).unwrap(), Some(BlobClass::Replica));
     }
 
+    #[test]
+    fn the_swarm_is_sampled_from_followers_that_share_and_capped() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(&dir.path().join("t.db")).unwrap();
+        let blob = BlobHash::from_bytes([5; 32]);
+        let sharing: Vec<EndpointAddr> = (0..3).map(|_| some_addr()).collect();
+        for addr in &sharing {
+            db.add_follower(addr, true).unwrap();
+            db.add_swarm_member(&blob, &addr.id).unwrap();
+        }
+        // One that doesn't share, and one that isn't a follower any more.
+        let quiet = some_addr();
+        db.add_follower(&quiet, false).unwrap();
+        let gone = some_addr();
+        for node in [quiet.id, gone.id] {
+            db.add_swarm_member(&blob, &node).unwrap();
+        }
+        assert!(db.follower_shares(&sharing[0].id).unwrap());
+        assert!(!db.follower_shares(&quiet.id).unwrap());
+        assert!(!db.follower_shares(&gone.id).unwrap());
+
+        let sampled: Vec<EndpointId> = db
+            .swarm_sample(&blob, &sharing[0].id, 10)
+            .unwrap()
+            .into_iter()
+            .map(|a| a.id)
+            .collect();
+        assert_eq!(sampled.len(), 2, "{sampled:?}");
+        assert!(sampled.contains(&sharing[1].id) && sampled.contains(&sharing[2].id));
+        assert_eq!(db.swarm_sample(&blob, &quiet.id, 1).unwrap().len(), 1);
+        let other = BlobHash::from_bytes([6; 32]);
+        assert!(db.swarm_sample(&other, &quiet.id, 10).unwrap().is_empty());
+
+        for _ in 0..MAX_SWARM_PER_BLOB + 5 {
+            let addr = some_addr();
+            db.add_follower(&addr, true).unwrap();
+            db.add_swarm_member(&blob, &addr.id).unwrap();
+        }
+        let kept: i64 = db
+            .conn()
+            .query_row("SELECT COUNT(*) FROM swarm", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(kept, MAX_SWARM_PER_BLOB);
+    }
+
     fn some_addr() -> EndpointAddr {
         EndpointAddr::new(iroh::SecretKey::generate().public())
     }
@@ -1379,8 +1496,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let db = Db::open(&dir.path().join("t.db")).unwrap();
         let (quiet, chatty) = (some_addr(), some_addr());
-        db.add_follower(&quiet).unwrap();
-        db.add_follower(&chatty).unwrap();
+        db.add_follower(&quiet, false).unwrap();
+        db.add_follower(&chatty, false).unwrap();
         let start = now_ms();
         assert_eq!(db.new_followers_since(start - 60_000).unwrap(), 2);
         // Only the quiet one was last heard from long ago.
@@ -1402,13 +1519,13 @@ mod tests {
         let db = Db::open(&dir.path().join("t.db")).unwrap();
         let (a, b, c) = (some_addr(), some_addr(), some_addr());
         for f in [&a, &b, &c] {
-            db.add_follower(f).unwrap();
+            db.add_follower(f, false).unwrap();
         }
         assert!(db.followers_to_tell_moved().unwrap().is_empty());
         assert_eq!(db.mark_followers_to_tell_moved().unwrap(), 3);
         db.told_moved(&a.id).unwrap();
         // Subscribing to this node means b already knows where we are.
-        db.add_follower(&b).unwrap();
+        db.add_follower(&b, false).unwrap();
         let left: Vec<_> = db.followers_to_tell_moved().unwrap();
         assert_eq!(left.iter().map(|f| f.id).collect::<Vec<_>>(), [c.id]);
     }

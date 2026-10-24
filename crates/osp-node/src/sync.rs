@@ -1,6 +1,6 @@
-//! Gathering: syncing followed outboxes, prefetching their media (and trying
-//! again later when the nodes with it are busy), and finding nodes that can
-//! serve a blob.
+//! Gathering: syncing followed outboxes, prefetching their media (spread
+//! out if this node joins the follower swarm, and tried again later when
+//! the nodes with it are busy), and finding nodes that can serve a blob.
 //!
 //! A followed node decides what its outbox says, so everything it sends is
 //! checked and bounded: each page must move our position forward, a sync
@@ -14,7 +14,7 @@ use std::{
 };
 
 use anyhow::{Result, anyhow, bail, ensure};
-use iroh::{EndpointId, PublicKey};
+use iroh::{EndpointAddr, EndpointId, PublicKey};
 use n0_future::{BufferedStreamExt, StreamExt, stream};
 use osp_proto::{
     BlobHash, Note, ObjectId, Payload,
@@ -63,8 +63,13 @@ const MAX_RETRY_WAIT: Duration = Duration::from_secs(15 * 60);
 /// Tries again before giving up: about 45 minutes with the waits above.
 /// The media is then fetched when it's opened.
 const MAX_RETRIES: u32 = 6;
-/// Prefetches waiting to be tried again, at most; more are dropped.
-pub(crate) const MAX_RETRIES_WAITING: usize = 1_000;
+/// A node in the follower swarm waits a random while, up to this long,
+/// before fetching a large file, so followers' fetches spread out and the
+/// early ones can serve the rest (doc 13).
+pub(crate) const PREFETCH_SPREAD: Duration = Duration::from_secs(10 * 60);
+/// Prefetches waiting, spread out or to be tried again, at most; more are
+/// dropped and fetched when they're opened.
+pub(crate) const MAX_WAITING: usize = 1_000;
 
 /// Polls followed nodes on the configured interval, or sooner when woken.
 pub(crate) async fn run_loop(core: Arc<Core>) {
@@ -140,8 +145,8 @@ impl Core {
     }
 
     /// Fetches new outbox entries from one followed node. Returns the number
-    /// of new objects, and the media worth prefetching with declared sizes.
-    async fn sync_follow(&self, follow: &Follow) -> Result<(usize, Vec<(BlobHash, u64)>)> {
+    /// of new objects, and the media worth prefetching.
+    async fn sync_follow(&self, follow: &Follow) -> Result<(usize, Vec<Wanted>)> {
         let actor = follow.actor.fmt_short();
         // The profile gives us a display name and proves the node speaks for this identity.
         match self
@@ -298,7 +303,7 @@ impl Core {
                             self.db.add_host(&blob, &follow.addr)?;
                         }
                         if is_new {
-                            blobs.extend(prefetchable(note));
+                            blobs.extend(prefetchable(note, Some(&follow.addr)));
                         }
                     }
                     Payload::Announce(announce) => {
@@ -313,7 +318,7 @@ impl Core {
                                 }
                             }
                             if is_new {
-                                blobs.extend(prefetchable(&note));
+                                blobs.extend(prefetchable(&note, None));
                             }
                         }
                     }
@@ -393,7 +398,13 @@ impl Core {
         }
         let me = self.shareable_addr().await;
         if let Err(e) = self
-            .social_request(&follow.addr, &SocialRequest::Subscribe { addr: me })
+            .social_request(
+                &follow.addr,
+                &SocialRequest::Subscribe {
+                    addr: me,
+                    shares_prefetched: self.config.swarm.share_prefetched,
+                },
+            )
             .await
         {
             warn!(actor = %follow.actor.fmt_short(), "subscribing failed: {e:#}");
@@ -404,21 +415,123 @@ impl Core {
         self.subscribed.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// Fetches media ahead of time, one file at a time. One refused as busy
-    /// is tried again later (`retry_loop`).
-    async fn prefetch(&self, blobs: Vec<(BlobHash, u64)>) {
-        for (blob, size) in blobs {
-            match self.ensure_blob(&blob, BlobClass::Prefetch, size).await {
-                Ok(_) => {}
-                Err(e) if store::is_busy(&e) => {
-                    info!(blob = %blob.fmt_short(), "the nodes with this media are busy; trying again later");
-                    if self.prefetch_retries.try_send((blob, size)).is_err() {
-                        warn!(blob = %blob.fmt_short(), "too many prefetches waiting; this one is fetched when it's opened");
-                    }
-                }
-                Err(e) => warn!(blob = %blob.fmt_short(), "prefetch failed: {e:#}"),
+    /// Fetches media ahead of time, one file at a time, in the order given.
+    /// A large file this node gets through the follower swarm waits a
+    /// random while first (`PREFETCH_SPREAD`), and one refused as busy is
+    /// tried again later, both in `later_loop`.
+    async fn prefetch(&self, wanted: Vec<Wanted>) {
+        for wanted in wanted {
+            if self.joins_swarm(&wanted) {
+                let wait = self.sim.prefetch_spread.mul_f64(random_fraction());
+                self.fetch_later(Later {
+                    wanted,
+                    due: Instant::now() + wait,
+                    refusals: 0,
+                });
+            } else if let Some(later) = self.fetch_ahead(wanted, 0).await {
+                self.fetch_later(later);
             }
         }
+    }
+
+    /// Whether this node gets `wanted` through the follower swarm: it shares
+    /// what it prefetches, the file is large, and its author's node, which
+    /// knows the followers holding a copy, is one we follow.
+    fn joins_swarm(&self, wanted: &Wanted) -> bool {
+        self.config.swarm.share_prefetched
+            && wanted.size > store::SMALL_BLOB
+            && wanted.author.is_some()
+    }
+
+    /// Fetches one file ahead of time, refused as busy `refusals` times so
+    /// far. If the nodes with it are busy again, says when to try again,
+    /// unless that has happened `MAX_RETRIES` times.
+    async fn fetch_ahead(&self, wanted: Wanted, refusals: u32) -> Option<Later> {
+        let blob = wanted.blob.fmt_short();
+        let fetched = match &wanted.author {
+            Some(author) if self.joins_swarm(&wanted) => {
+                self.fetch_from_swarm(&wanted.blob, wanted.size, author)
+                    .await
+            }
+            _ => {
+                self.ensure_blob(&wanted.blob, BlobClass::Prefetch, wanted.size)
+                    .await
+            }
+        };
+        match fetched {
+            Ok(_) => {
+                if refusals > 0 {
+                    info!(%blob, refusals, "prefetched after the nodes with it were busy");
+                }
+                None
+            }
+            Err(e) if store::is_busy(&e) && refusals < MAX_RETRIES => {
+                info!(%blob, "the nodes with this media are busy; trying again later");
+                let wait = jitter(retry_wait(self.sim.first_retry_wait, refusals));
+                Some(Later {
+                    wanted,
+                    due: Instant::now() + wait,
+                    refusals: refusals + 1,
+                })
+            }
+            Err(e) => {
+                warn!(%blob, "prefetch failed; it's fetched when it's opened: {e:#}");
+                None
+            }
+        }
+    }
+
+    fn fetch_later(&self, later: Later) {
+        if self.prefetch_later.try_send(later).is_err() {
+            warn!("too many prefetches waiting; the rest are fetched when they're opened");
+        }
+    }
+
+    /// Fetches a large file through the follower swarm (doc 13): asks the
+    /// author's node who holds a copy, tries the followers it names first
+    /// and the nodes known to host it, the author's among them, last, then
+    /// tells the author's node that this one holds a copy too.
+    async fn fetch_from_swarm(
+        &self,
+        blob: &BlobHash,
+        declared: u64,
+        author: &EndpointAddr,
+    ) -> Result<u64> {
+        let mut providers = Vec::new();
+        if self.store.stored_size(blob).await?.is_none() {
+            let me = self.endpoint.id();
+            let req = SocialRequest::WhoHosts { blob: *blob };
+            if let Ok(SocialResponse::Hosts { nodes }) = self.social_request(author, &req).await {
+                let others = nodes
+                    .iter()
+                    .filter(|a| a.id != me && a.id != author.id && check_addr(a).is_ok())
+                    .take(MAX_HOSTS_PER_REPLY);
+                for addr in others {
+                    // For this download only (see `ask_who_hosts`).
+                    remember(&self.lookup, addr);
+                    if !providers.contains(&addr.id) {
+                        providers.push(addr.id);
+                    }
+                }
+            }
+            // A crowd asks these first, so they come last.
+            for id in self.known_providers(blob)?.into_iter().chain([author.id]) {
+                if !providers.contains(&id) {
+                    providers.push(id);
+                }
+            }
+        }
+        let size = self
+            .store
+            .download(blob, providers, BlobClass::Prefetch, declared)
+            .await?;
+        let told = self
+            .social_request(author, &SocialRequest::Hosting { blob: *blob })
+            .await;
+        if let Err(e) = told {
+            debug!(blob = %blob.fmt_short(), "couldn't tell the author's node we hold a copy: {e:#}");
+        }
+        Ok(size)
     }
 
     /// Makes sure a blob is stored locally, downloading at most `declared`
@@ -493,8 +606,15 @@ impl Core {
         Ok(ids)
     }
 
+    /// Asks the nodes we follow who else hosts `blob`. Returns the nodes they
+    /// name, then those that answered and those we knew of, which were
+    /// likely asked already. What they name is used for this download only,
+    /// not remembered: an author's node names followers holding a copy only
+    /// to its followers (doc 13), and we mustn't pass them on.
     async fn ask_who_hosts(&self, blob: &BlobHash) -> Vec<EndpointId> {
         let me = self.endpoint.id();
+        let mut found = Vec::new();
+        let mut answered = Vec::new();
         for follow in self.db.follows().unwrap_or_default() {
             let req = SocialRequest::WhoHosts { blob: *blob };
             if let Ok(SocialResponse::Hosts { nodes }) =
@@ -505,11 +625,25 @@ impl Core {
                     .filter(|a| a.id != me && check_addr(a).is_ok())
                     .take(MAX_HOSTS_PER_REPLY);
                 for addr in usable {
-                    self.db.add_host(blob, addr).ok();
+                    remember(&self.lookup, addr);
+                    let list = if addr.id == follow.addr.id {
+                        &mut answered
+                    } else {
+                        &mut found
+                    };
+                    if !list.contains(&addr.id) {
+                        list.push(addr.id);
+                    }
                 }
             }
         }
-        self.known_providers(blob).unwrap_or_default()
+        let known = self.known_providers(blob).unwrap_or_default();
+        for id in answered.into_iter().chain(known) {
+            if !found.contains(&id) {
+                found.push(id);
+            }
+        }
+        found
     }
 
     /// A Note we have stored, verified.
@@ -524,46 +658,52 @@ impl Core {
     }
 }
 
-/// Tries again, one at a time, the prefetches that `prefetch` sends here
-/// because the nodes with the media were busy, waiting longer each time
-/// (`FIRST_RETRY_WAIT`). Runs until the node stops.
-pub(crate) async fn retry_loop(core: Arc<Core>, mut busy: mpsc::Receiver<(BlobHash, u64)>) {
-    // Each waiting blob: its declared size, the tries so far, and when it's due.
-    let mut waiting: HashMap<BlobHash, (u64, u32, Instant)> = HashMap::new();
-    let wait = |tries| jitter(retry_wait(core.sim.first_retry_wait, tries));
+/// Media of a new post worth fetching ahead of time.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Wanted {
+    blob: BlobHash,
+    /// The size its post declares.
+    size: u64,
+    /// The node of the post's author, when the post came from their outbox:
+    /// it knows which followers hold a copy (doc 13).
+    author: Option<EndpointAddr>,
+}
+
+/// A file to fetch ahead of time once it's `due`: spread out, or refused as
+/// busy `refusals` times so far.
+#[derive(Debug)]
+pub(crate) struct Later {
+    wanted: Wanted,
+    due: Instant,
+    refusals: u32,
+}
+
+/// Fetches, one at a time, the files `prefetch` puts off until later.
+/// Runs until the node stops.
+pub(crate) async fn later_loop(core: Arc<Core>, mut later: mpsc::Receiver<Later>) {
+    let mut waiting: HashMap<BlobHash, Later> = HashMap::new();
     loop {
-        let next = waiting.values().map(|(_, _, due)| *due).min();
+        let next = waiting.values().map(|l| l.due).min();
         tokio::select! {
-            got = busy.recv() => {
-                let Some((blob, size)) = got else { return };
-                if waiting.len() < MAX_RETRIES_WAITING {
-                    waiting
-                        .entry(blob)
-                        .or_insert_with(|| (size, 0, Instant::now() + wait(0)));
+            got = later.recv() => {
+                let Some(l) = got else { return };
+                if waiting.len() < MAX_WAITING {
+                    waiting.entry(l.wanted.blob).or_insert(l);
                 }
             }
             _ = sleep_until(next) => {
                 let now = Instant::now();
                 let due: Vec<BlobHash> = waiting
                     .iter()
-                    .filter(|(_, (_, _, at))| *at <= now)
+                    .filter(|(_, l)| l.due <= now)
                     .map(|(blob, _)| *blob)
                     .collect();
                 for blob in due {
-                    let Some((size, tries, _)) = waiting.remove(&blob) else {
+                    let Some(l) = waiting.remove(&blob) else {
                         continue;
                     };
-                    let tries = tries + 1;
-                    match core.ensure_blob(&blob, BlobClass::Prefetch, size).await {
-                        Ok(_) => info!(blob = %blob.fmt_short(), tries, "prefetched after the nodes with it were busy"),
-                        Err(e) if store::is_busy(&e) && tries < MAX_RETRIES => {
-                            waiting.insert(blob, (size, tries, Instant::now() + wait(tries)));
-                        }
-                        Err(e) => warn!(
-                            blob = %blob.fmt_short(),
-                            tries,
-                            "prefetch failed; it's fetched when it's opened: {e:#}"
-                        ),
+                    if let Some(again) = core.fetch_ahead(l.wanted, l.refusals).await {
+                        waiting.insert(blob, again);
                     }
                 }
             }
@@ -571,10 +711,12 @@ pub(crate) async fn retry_loop(core: Arc<Core>, mut busy: mpsc::Receiver<(BlobHa
     }
 }
 
-/// How long to wait before trying again a prefetch already tried `tries`
-/// times since it was refused, before `jitter`.
-fn retry_wait(first: Duration, tries: u32) -> Duration {
-    first.saturating_mul(1 << tries.min(16)).min(MAX_RETRY_WAIT)
+/// How long to wait before trying again a prefetch refused as busy
+/// `refusals` times before this one, before `jitter`.
+fn retry_wait(first: Duration, refusals: u32) -> Duration {
+    first
+        .saturating_mul(1 << refusals.min(16))
+        .min(MAX_RETRY_WAIT)
 }
 
 /// Waits until `at`, or forever if there's nothing to wait for.
@@ -586,48 +728,66 @@ async fn sleep_until(at: Option<Instant>) {
 }
 
 /// `d` varied at random by up to half either way.
-pub(crate) fn jitter(d: Duration) -> Duration {
-    let mut bytes = [0; 8];
-    // Without random numbers, not varying it is as good as anything.
-    let fraction = match getrandom::fill(&mut bytes) {
-        Ok(()) => u64::from_le_bytes(bytes) as f64 / u64::MAX as f64,
-        Err(_) => 0.5,
-    };
-    d.mul_f64(0.5 + fraction)
+fn jitter(d: Duration) -> Duration {
+    d.mul_f64(0.5 + random_fraction())
 }
 
-/// A post's media worth fetching ahead of time, with declared sizes:
-/// thumbnails always, media files up to `MAX_PREFETCH_BYTES`.
-fn prefetchable(note: &Note) -> Vec<(BlobHash, u64)> {
-    let mut blobs = Vec::new();
+/// A random number from 0 to 1.
+fn random_fraction() -> f64 {
+    let mut bytes = [0; 8];
+    // Without random numbers, the middle is as good as anything.
+    match getrandom::fill(&mut bytes) {
+        Ok(()) => u64::from_le_bytes(bytes) as f64 / u64::MAX as f64,
+        Err(_) => 0.5,
+    }
+}
+
+/// A post's media worth fetching ahead of time: thumbnails always, media
+/// files up to `MAX_PREFETCH_BYTES`. `author` is the author's node, if the
+/// post came from their outbox.
+fn prefetchable(note: &Note, author: Option<&EndpointAddr>) -> Vec<Wanted> {
+    let mut wanted = Vec::new();
+    let mut add = |blob, size| {
+        wanted.push(Wanted {
+            blob,
+            size,
+            author: author.cloned(),
+        })
+    };
     for a in &note.attachment {
         if a.size <= MAX_PREFETCH_BYTES {
-            blobs.push((a.blob, a.size));
+            add(a.blob, a.size);
         }
         if let Some(thumb) = &a.thumbnail {
-            blobs.push((thumb.blob, thumb.size));
+            add(thumb.blob, thumb.size);
         }
     }
-    blobs
+    wanted
 }
 
 /// Picks what one sync prefetches, within the per-sync limits, smallest
-/// first, so thumbnails aren't held up behind videos.
-fn choose_prefetch(mut candidates: Vec<(BlobHash, u64)>) -> Vec<(BlobHash, u64)> {
-    candidates.sort();
-    candidates.dedup_by_key(|(blob, _)| *blob);
-    candidates.sort_by_key(|(_, size)| *size);
+/// first, so thumbnails aren't held up behind videos. A file wanted twice,
+/// as when a followed author's post is also reshared, is kept once, with
+/// the author's node if either knows it.
+fn choose_prefetch(mut candidates: Vec<Wanted>) -> Vec<Wanted> {
+    candidates.sort_by(|a, b| {
+        a.blob
+            .cmp(&b.blob)
+            .then(b.author.is_some().cmp(&a.author.is_some()))
+    });
+    candidates.dedup_by_key(|w| w.blob);
+    candidates.sort_by_key(|w| w.size);
     let mut chosen = Vec::new();
     let mut bytes = 0;
-    for (blob, size) in candidates {
+    for wanted in candidates {
         if chosen.len() == MAX_PREFETCH_FILES_PER_SYNC {
             break;
         }
-        if bytes + size > MAX_PREFETCH_BYTES_PER_SYNC {
+        if bytes + wanted.size > MAX_PREFETCH_BYTES_PER_SYNC {
             continue;
         }
-        bytes += size;
-        chosen.push((blob, size));
+        bytes += wanted.size;
+        chosen.push(wanted);
     }
     chosen
 }
@@ -639,15 +799,26 @@ mod tests {
     #[test]
     fn prefetches_go_smallest_first_each_once() {
         let [video, thumb, photo] = [1u8, 2, 3].map(|b| BlobHash::from_bytes([b; 32]));
+        let author = EndpointAddr::new(iroh::SecretKey::generate().public());
+        let wanted = |blob, size, author: Option<&EndpointAddr>| Wanted {
+            blob,
+            size,
+            author: author.cloned(),
+        };
         let chosen = choose_prefetch(vec![
-            (video, 50 << 20),
-            (thumb, 37 << 10),
-            (video, 50 << 20),
-            (photo, 2 << 20),
+            // Reshared, so whose node it is isn't known; then the author's own post.
+            wanted(video, 50 << 20, None),
+            wanted(thumb, 37 << 10, Some(&author)),
+            wanted(video, 50 << 20, Some(&author)),
+            wanted(photo, 2 << 20, None),
         ]);
         assert_eq!(
             chosen,
-            vec![(thumb, 37 << 10), (photo, 2 << 20), (video, 50 << 20)]
+            vec![
+                wanted(thumb, 37 << 10, Some(&author)),
+                wanted(photo, 2 << 20, None),
+                wanted(video, 50 << 20, Some(&author)),
+            ]
         );
     }
 

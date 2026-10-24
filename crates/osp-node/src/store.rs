@@ -87,7 +87,7 @@ const MAX_TRANSFERS_PER_NODE: usize = 2;
 const BUSY_WAIT: Duration = Duration::from_secs(10);
 /// Blobs this small, such as thumbnails, have places of their own, so they
 /// aren't held up behind videos. Each takes a moment to send.
-const SMALL_BLOB: u64 = 1 << 20;
+pub(crate) const SMALL_BLOB: u64 = 1 << 20;
 /// Most small transfers at once. They don't count toward `MAX_TRANSFERS`.
 const MAX_SMALL_TRANSFERS: usize = 8;
 

@@ -30,12 +30,24 @@ pub enum SocialRequest {
     /// Outbox entries with a sequence number greater than `since`.
     GetOutbox { since: u64, limit: u32 },
     /// "I follow you; notify me of new posts." `addr` is how to reach the
-    /// subscriber; it must belong to the connecting node.
-    Subscribe { addr: EndpointAddr },
+    /// subscriber; it must belong to the connecting node. `shares_prefetched`
+    /// says whether it serves what it fetches ahead of time to anyone, so
+    /// may be named as a host of your media (the follower swarm, doc 13).
+    Subscribe {
+        addr: EndpointAddr,
+        #[serde(default)]
+        shares_prefetched: bool,
+    },
     /// Push hint from a followed node: `actor` has published up to `seq`.
     Notify { actor: PublicKey, seq: u64 },
-    /// Which nodes this node knows to be serving `blob`.
+    /// Which nodes this node knows to be serving `blob`. To its followers,
+    /// the node of the post's author also names a few followers that hold
+    /// a copy (doc 13).
     WhoHosts { blob: BlobHash },
+    /// "I hold a verified copy of `blob`, media of one of your posts, and
+    /// serve it to anyone." From a follower that subscribed with
+    /// `shares_prefetched`, so the author's node can name it in `WhoHosts`.
+    Hosting { blob: BlobHash },
     /// "The identity you follow now lives on this node" (ADR 0009). Sent to
     /// followers when a node takes over an identity. `profile` is its signed
     /// profile listing the sending node; `addr` is how to reach that node and

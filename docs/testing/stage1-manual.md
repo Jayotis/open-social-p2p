@@ -75,7 +75,7 @@ A node made before this keeps `identity.key`, and `osp status` reports it. Stop 
 7. On B and C: `osp status`. Note whether each peer shows `direct` or `relay`, and the `NAT:` line. A public address that varies by destination usually means other nodes connect through the relay.
 8. On each: `osp peers`. B should show A's requests answered and its media downloaded, and media served to C; C should show B. The counts fade by half every 14 days, and stay on the node ([ADR 0011](../decisions/0011-measuring-peers.md)).
 
-To time a transfer, run `follow` and `sync` together, e.g. `time (osp follow <ticket> && osp sync)`. `sync` waits until prefetched media has finished downloading, so `osp fetch` afterwards only copies the file out.
+To time a transfer, run `follow` and `sync` together, e.g. `time (osp follow <ticket> && osp sync)`. `sync` waits until prefetched media has finished downloading, so `osp fetch` afterwards only copies the file out. A node that shares what it prefetches (`share_prefetched` under `[swarm]`) spreads files over 1 MiB out over up to 10 minutes, and `sync` doesn't wait for those.
 
 The RTT in `status` is QUIC's smoothed estimate. It climbs while a transfer runs and takes a minute or two to settle afterwards, so read it before or well after a big download. Through n0's public relays each uploading node gets about 1 MB/s (October 2026: two uploads from different nodes at once each held that rate, so the limit is per node, not the uplink). A queue builds behind that limit and adds close to a second of delay to everything else on the connection until the transfer ends. Direct connections bypass it, and a self-hosted relay can lift it.
 

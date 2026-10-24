@@ -59,6 +59,9 @@ pub struct SimSettings {
     /// How long a prefetch refused as busy waits before it is tried again;
     /// later waits are longer. Tests shorten it.
     pub first_retry_wait: Duration,
+    /// A node in the follower swarm waits a random while, up to this long,
+    /// before fetching a large file. Tests shorten it.
+    pub prefetch_spread: Duration,
 }
 
 impl Default for SimSettings {
@@ -66,6 +69,7 @@ impl Default for SimSettings {
         Self {
             new_followers_per_hour: social::MAX_NEW_FOLLOWERS_PER_HOUR,
             first_retry_wait: sync::FIRST_RETRY_WAIT,
+            prefetch_spread: sync::PREFETCH_SPREAD,
         }
     }
 }
@@ -106,12 +110,15 @@ pub(crate) struct Core {
     pub sync_now: Notify,
     /// Number of prefetch jobs still downloading, so `Sync` can wait for them.
     pub prefetch_jobs: watch::Sender<usize>,
-    /// Prefetches refused as busy, for `sync::retry_loop` to try again.
-    pub prefetch_retries: mpsc::Sender<(BlobHash, u64)>,
+    /// Prefetches put off, for `sync::later_loop`.
+    pub prefetch_later: mpsc::Sender<sync::Later>,
     /// Pairing secrets handed out and not used yet. Kept in memory only.
     pub pairings: Mutex<Vec<PendingPairing>>,
     /// When we last asked each followed identity's node to notify us.
     pub subscribed: Mutex<HashMap<PublicKey, Instant>>,
+    /// Followers given samples of the swarm (`WhoHosts`): since when, and
+    /// how many, this hour.
+    pub swarm_samples: Mutex<HashMap<EndpointId, (Instant, u32)>>,
     /// Followers are told we moved by one task at a time.
     pub tell_moved_lock: tokio::sync::Mutex<()>,
     pub started: Instant,
@@ -298,7 +305,7 @@ impl Node {
             "node started"
         );
 
-        let (prefetch_retries, busy) = mpsc::channel(sync::MAX_RETRIES_WAITING);
+        let (prefetch_later, later) = mpsc::channel(sync::MAX_WAITING);
         let core = Arc::new(Core {
             home,
             config,
@@ -314,9 +321,10 @@ impl Node {
             sync_lock: tokio::sync::Mutex::new(()),
             sync_now: Notify::new(),
             prefetch_jobs: watch::Sender::new(0),
-            prefetch_retries,
+            prefetch_later,
             pairings: Mutex::new(Vec::new()),
             subscribed: Mutex::new(HashMap::new()),
+            swarm_samples: Mutex::new(HashMap::new()),
             tell_moved_lock: tokio::sync::Mutex::new(()),
             started: Instant::now(),
             media_tools,
@@ -334,13 +342,13 @@ impl Node {
             .accept(osp_proto::CLIENT_ALPN, ClientProtocol::new(core.clone()))
             .spawn();
         let sync_loop = tokio::spawn(sync::run_loop(core.clone()));
-        let retries = tokio::spawn(sync::retry_loop(core.clone(), busy));
+        let later = tokio::spawn(sync::later_loop(core.clone(), later));
         let tell_moved = tokio::spawn(control::tell_moved_loop(core.clone()));
         let replicas = {
             let core = core.clone();
             tokio::spawn(async move { core.refetch_replicas().await })
         };
-        let mut tasks = vec![serving_rules, sync_loop, retries, tell_moved, replicas];
+        let mut tasks = vec![serving_rules, sync_loop, later, tell_moved, replicas];
         if core.config.network.relay != RelayChoice::Disabled {
             tasks.push(tokio::spawn(network::log_nat_changes(
                 core.endpoint.clone(),
