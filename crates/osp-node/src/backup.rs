@@ -601,7 +601,8 @@ impl BackupFile {
         // Each counts as heard from now, so it has the usual 30 days to
         // hear that we moved before it's forgotten as silent.
         for addr in &m.followers {
-            db.add_follower(addr)?;
+            // Each says again whether it shares when it next subscribes.
+            db.add_follower(addr, false)?;
         }
         let dir = home.restored_media();
         fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;

@@ -1,6 +1,6 @@
 # Hosting Roles, the Follower Swarm and Expiry
 
-**Status: Proposal, second draft.** Phase 1 is being built behind a switch that is off by default, so that it can be measured ([B8](testing/b8-creator-upload.md)) before this is accepted. Built so far: the `prefetch` class, and sharing it when `share_prefetched` under `[swarm]` is on. The first draft ("Segment hosting, random assignment and content expiry") was taken apart in a [critical review](reviews/2026-10-21-review-of-docs-12-and-13.md); this draft responds to it. It becomes a decision record once its blocking findings are resolved.
+**Status: Proposal, second draft.** Phase 1 is being built behind a switch that is off by default, so that it can be measured ([B8](testing/b8-creator-upload.md)) before this is accepted. With `share_prefetched` under `[swarm]` on, a node shares its `prefetch` copies, spreads its prefetches out, tells the author's node when it holds a copy, and fetches from the followers that node names first. The author's node names them only to its followers, whether or not they share; any follower refused as busy is sent to them too. Not built yet: a freshness time per host in `WhoHosts`, choosing sources by peer assessment, and the consent question at setup. The first draft ("Segment hosting, random assignment and content expiry") was taken apart in a [critical review](reviews/2026-10-21-review-of-docs-12-and-13.md); this draft responds to it. It becomes a decision record once its blocking findings are resolved.
 
 ## Summary
 
@@ -66,9 +66,9 @@ During setup the node asks whether to share copies of posts from people the owne
 
 1. **Notify.** The creator publishes and notifies followers' nodes (already implemented).
 2. **Stagger.** Each follower's node waits a random delay before fetching (0–10 minutes as a starting point, longer for creators with many followers), so fetches spread out.
-3. **Ask who has it.** Before fetching, a node asks the creator's node `WhoHosts`. The creator's node already knows which followers have fetched the full file, and lists them alongside itself. The node picks sources using its peer assessment ([doc 12](12-peer-reciprocity-and-recognition.md)).
+3. **Ask who has it.** Before fetching, a node asks the creator's node `WhoHosts`. The creator's node lists the followers that hold the full file alongside itself, and the node tries them before the creator. Followers that share tell the creator's node when they hold a verified copy (`Hosting`): it can't see downloads from other followers. The node picks sources using its peer assessment ([doc 12](12-peer-reciprocity-and-recognition.md)); for now, at random.
 4. **Download from several sources.** A large file can be fetched in parallel byte ranges from several whole-file holders. Every piece is verified against the hash in the signed post.
-5. **Redirect when busy.** Once the creator's node hits its upload limit, it answers "busy" (`RateLimited`) together with the list of followers who have the file, and the requester moves to them.
+5. **Redirect when busy.** Once the creator's node hits its upload limit, it answers "busy" (`RateLimited`). The requester then asks `WhoHosts`, and moves to the followers who have the file. A refusal can't carry the list itself: it's only an error code.
 
 Early fetchers become sources for later ones, so the creator's upload grows with a handful of copies rather than with follower count.
 
@@ -123,7 +123,7 @@ If the same hosts each hold every segment, availability equals the whole-file co
 ## Data and protocol changes
 
 - **Blob classes:** add `prefetch` and `preserve`; prefetches move out of `cache`.
-- **Creator's node:** records which nodes completed a download of each of its blobs, to answer `WhoHosts`.
+- **Creator's node:** records which followers say they hold a copy of each of its blobs (`Hosting`), to answer `WhoHosts`, and whether each follower shares (`Subscribe`).
 - **`WhoHosts` replies:** gain a freshness time per host.
 - **Busy redirect:** a `RateLimited` refusal is followed by a `WhoHosts` lookup on the requester's side.
 - **Sync:** random prefetch delay.

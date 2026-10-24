@@ -2,8 +2,9 @@
 //! and outbox, and asking other nodes for theirs.
 
 use std::{
+    collections::HashMap,
     fmt,
-    sync::Arc,
+    sync::{Arc, MutexGuard},
     time::{Duration, Instant},
 };
 
@@ -25,7 +26,7 @@ use tokio::sync::Semaphore;
 use tracing::{debug, info};
 
 use crate::{
-    db::now_ms,
+    db::{BlobClass, now_ms},
     node::{Core, check_addr, remember},
     peers::{self, Event},
 };
@@ -57,6 +58,13 @@ pub(crate) const MAX_NEW_FOLLOWERS_PER_HOUR: usize = 100;
 /// Followers not heard from for this long are forgotten. A live follower's
 /// node subscribes again every day, and answers notifications.
 pub(crate) const FOLLOWER_SILENCE: Duration = Duration::from_secs(30 * 24 * 60 * 60);
+/// Followers holding a copy that one `WhoHosts` reply names, at most. A
+/// small sample: it says who follows us (doc 13).
+const SWARM_SAMPLE: usize = 6;
+/// Samples one follower gets per hour. More asks get only the hosts anyone
+/// may know: this node, and resharers that host.
+const MAX_SWARM_SAMPLES_PER_HOUR: u32 = 60;
+const HOUR: Duration = Duration::from_secs(60 * 60);
 /// How far ahead of our clock a profile or key certificate may be dated.
 /// The newer one wins (ADR 0009, ADR 0010), so one dated years ahead could
 /// never be replaced; this still lets clocks a few minutes apart work.
@@ -194,10 +202,13 @@ impl Core {
                     latest: self.db.outbox_latest()?,
                 }
             }
-            SocialRequest::Subscribe { addr } => {
+            SocialRequest::Subscribe {
+                addr,
+                shares_prefetched,
+            } => {
                 ensure!(addr.id == remote, "can only subscribe on your own behalf");
                 check_addr(&addr)?;
-                self.accept_follower(&addr)?;
+                self.accept_follower(&addr, shares_prefetched)?;
                 remember(&self.lookup, &addr);
                 SocialResponse::Ok
             }
@@ -216,21 +227,38 @@ impl Core {
             }
             SocialRequest::WhoHosts { blob } => {
                 let mut nodes = Vec::new();
+                let class = self.db.blob_class(&blob)?;
                 let share = self.config.swarm.share_prefetched;
-                if self
-                    .db
-                    .blob_class(&blob)?
-                    .is_some_and(|c| c.served_to_anyone(share))
-                {
+                if class.is_some_and(|c| c.served_to_anyone(share)) {
                     nodes.push(self.shareable_addr().await);
                 }
-                nodes.extend(
-                    self.db
-                        .hosts(&blob)?
-                        .into_iter()
-                        .filter(|a| a.id != remote && a.id != self.endpoint.id()),
-                );
+                // Followers with a copy of our own media, only to followers.
+                if class == Some(BlobClass::Own)
+                    && self.db.is_follower(&remote)?
+                    && self.may_sample_swarm(remote)
+                {
+                    nodes.extend(self.db.swarm_sample(&blob, &remote, SWARM_SAMPLE)?);
+                }
+                for addr in self.db.hosts(&blob)? {
+                    let known = nodes.iter().any(|a| a.id == addr.id);
+                    if !known && addr.id != remote && addr.id != self.endpoint.id() {
+                        nodes.push(addr);
+                    }
+                }
                 SocialResponse::Hosts { nodes }
+            }
+            SocialRequest::Hosting { blob } => {
+                ensure!(
+                    self.db.follower_shares(&remote)?,
+                    "only a follower that shares what it prefetches can host this node's media"
+                );
+                ensure!(
+                    self.db.blob_class(&blob)? == Some(BlobClass::Own),
+                    "{} isn't media of this node's posts",
+                    blob.fmt_short()
+                );
+                self.db.add_swarm_member(&blob, &remote)?;
+                SocialResponse::Ok
             }
             SocialRequest::Moved { profile, addr } => {
                 ensure!(
@@ -355,9 +383,30 @@ impl Core {
         Ok(())
     }
 
-    /// Records a subscriber. A node we already have just gets its address
-    /// refreshed; a new one must fit within the limits on followers.
-    fn accept_follower(&self, addr: &EndpointAddr) -> Result<()> {
+    /// Whether `node` may have another sample of the followers holding a
+    /// copy, within `MAX_SWARM_SAMPLES_PER_HOUR`.
+    fn may_sample_swarm(&self, node: EndpointId) -> bool {
+        let mut samples = self.lock_swarm_samples();
+        let now = Instant::now();
+        if samples.len() >= MAX_FOLLOWERS {
+            samples.retain(|_, (since, _)| now.duration_since(*since) < HOUR);
+        }
+        let (since, count) = samples.entry(node).or_insert((now, 0));
+        if now.duration_since(*since) >= HOUR {
+            (*since, *count) = (now, 0);
+        }
+        *count += 1;
+        *count <= MAX_SWARM_SAMPLES_PER_HOUR
+    }
+
+    fn lock_swarm_samples(&self) -> MutexGuard<'_, HashMap<EndpointId, (Instant, u32)>> {
+        self.swarm_samples.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Records a subscriber, and whether it shares what it prefetches. A
+    /// node we already have just gets these refreshed; a new one must fit
+    /// within the limits on followers.
+    fn accept_follower(&self, addr: &EndpointAddr, shares: bool) -> Result<()> {
         if !self.db.is_follower(&addr.id)? {
             let now = now_ms();
             self.db
@@ -372,7 +421,7 @@ impl Core {
                 "this node is busy with new followers; try again later"
             );
         }
-        self.db.add_follower(addr)
+        self.db.add_follower(addr, shares)
     }
 
     /// Sends one request to another node, reusing an open connection when

@@ -111,7 +111,11 @@ async fn follower_count(node: &Node) -> usize {
 }
 
 async fn subscribe(peer: &Stranger) -> SocialResponse {
-    ask(peer, &SocialRequest::Subscribe { addr: peer.addr() }).await
+    let req = SocialRequest::Subscribe {
+        addr: peer.addr(),
+        shares_prefetched: false,
+    };
+    ask(peer, &req).await
 }
 
 /// Starts a request that never finishes: announces 100 bytes and sends 10.
@@ -274,7 +278,11 @@ async fn subscribers_need_a_short_address_and_arrive_at_a_limited_rate() {
     for port in 1..=20 {
         padded = padded.with_ip_addr(SocketAddr::from(([10, 0, 0, 1], port)));
     }
-    let resp = ask(&padder, &SocialRequest::Subscribe { addr: padded }).await;
+    let req = SocialRequest::Subscribe {
+        addr: padded,
+        shares_prefetched: false,
+    };
+    let resp = ask(&padder, &req).await;
     assert!(
         matches!(&resp, SocialResponse::Error { message } if message.contains("at most")),
         "{resp:?}"
@@ -1036,6 +1044,85 @@ async fn a_prefetch_refused_as_busy_is_tried_again_later() {
 
     reader.shutdown().await.unwrap();
     node.shutdown().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_follower_refused_as_busy_is_sent_to_a_follower_with_a_copy() {
+    let dir = tempfile::tempdir().unwrap();
+    let node = start(dir.path(), "Sven").await;
+    let addr = node.addr().await;
+    let (_, photo, size) = post_noise_photo(&node, dir.path()).await;
+    let ClientResponse::Ticket { ticket } = call(&node, ClientRequest::Invite).await else {
+        panic!("no ticket");
+    };
+
+    // A follower that shares what it prefetches gets the photo and says so.
+    let home = dir.path().join("tara");
+    let mut config = Config::local_test("Tara");
+    config.swarm.share_prefetched = true;
+    Node::init(&home, &config).unwrap();
+    let sim = SimSettings {
+        prefetch_spread: Duration::ZERO,
+        ..SimSettings::default()
+    };
+    let sharing = Node::spawn_sim(&home, sim).await.unwrap();
+    let follow = ClientRequest::Follow {
+        ticket: ticket.clone(),
+    };
+    call(&sharing, follow).await;
+    let (watcher, _) = follower_downloading(&addr).await;
+    let started = Instant::now();
+    loop {
+        let SocialResponse::Hosts { nodes } =
+            ask(&watcher, &SocialRequest::WhoHosts { blob: photo }).await
+        else {
+            panic!("no hosts");
+        };
+        if nodes.iter().any(|a| a.id == sharing.node_id()) {
+            break;
+        }
+        assert!(started.elapsed() < BUSY_WAIT * 3, "never named");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    // With every place taken, a follower that doesn't share is refused,
+    // asks who else has it, and gets it from the one that does.
+    let held = take_every_place(&addr, photo).await;
+    let reader = start(dir.path(), "Ulla").await;
+    call(&reader, ClientRequest::Follow { ticket }).await;
+    sync_within(&reader, Duration::from_secs(60)).await;
+    assert_eq!(
+        reader.blob_class(&photo).unwrap(),
+        Some(BlobClass::Prefetch)
+    );
+    let ClientResponse::Peers { peers } = call(&reader, ClientRequest::Peers).await else {
+        panic!("no peers");
+    };
+    let from = peers
+        .iter()
+        .find(|p| p.node == sharing.node_id())
+        .expect("the follower with a copy");
+    assert!(
+        from.counts.received_bytes.round() >= size as f64,
+        "{from:?}"
+    );
+    // It didn't go back to the busy node first.
+    let busy = peers.iter().find(|p| p.node == addr.id).expect("the node");
+    assert_eq!(busy.counts.busy.round(), 1.0, "{busy:?}");
+
+    // Nor does it name the follower to others: it was named to followers only.
+    let other = stranger(&reader.addr().await, SOCIAL_ALPN).await;
+    let SocialResponse::Hosts { nodes } =
+        ask(&other, &SocialRequest::WhoHosts { blob: photo }).await
+    else {
+        panic!("no hosts");
+    };
+    assert!(nodes.iter().all(|a| a.id != sharing.node_id()), "{nodes:?}");
+
+    drop(held);
+    for node in [reader, sharing, node] {
+        node.shutdown().await.unwrap();
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]
