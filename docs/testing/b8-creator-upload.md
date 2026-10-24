@@ -22,8 +22,20 @@ So today a creator with 300 followers sends a few copies at once, and most follo
   - the bytes the creator sent, taken from its own peer record ([ADR 0011](../decisions/0011-measuring-peers.md)): "served to it", summed over all peers;
   - when each follower holds the whole verified file, found by checking each follower's feed once a second;
   - each follower's bytes sent, busy refusals and failed downloads, from the same records.
-- **Output:** one JSON file per run, and a summary table to copy into [Results](#results) below.
-- **In CI:** a small run (20 followers, 1 MB) as a test, so the harness keeps working. The full runs below are started by hand: they take up to an hour and about 16 GB of disk.
+- **The video** is random noise, made with ffmpeg and posted through the creator's node like any other. Noise can't be compressed, so the node's encoder runs at its 1.5 Mbit/s ceiling and the size comes out as planned.
+- **Output:** a summary for people to read, and optionally the full report as JSON. Copy the summary into [Results](#results) below.
+- **In CI:** a small run (12 followers, 1 MB) as a test, so the harness keeps working. That's few enough that the creator's transfer limits never turn a follower away, which keeps the test steady. The full runs below are started by hand: they take up to an hour and about 16 GB of disk.
+
+### Running it
+
+Use a directory on a real disk: on many systems `/tmp` is held in memory. The directory must be empty or not exist yet, and is deleted afterwards (`--keep` keeps it).
+
+```sh
+cargo run --release -p osp-sim -- --dir /path/on/disk/b8-run \
+  --label "$(git rev-parse --short HEAD)" --out b8-run.json
+```
+
+The defaults are the scenario below; `osp-sim --help` lists the options (followers, video size, upload speeds, time limit). Progress is logged every minute.
 
 What loopback can't show: real delay and loss, NAT and relays. Those belong to the slow and flaky network harness, a later M3 item.
 

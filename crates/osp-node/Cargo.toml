@@ -7,6 +7,11 @@ rust-version.workspace = true
 license-file.workspace = true
 repository.workspace = true
 
+[features]
+# `Node::spawn_sim`, for the simulated network harness (`osp-sim`) only.
+# Nothing in `config.toml` or the CLI reaches it.
+sim = []
+
 [dependencies]
 osp-proto.workspace = true
 anyhow.workspace = true

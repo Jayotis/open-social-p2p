@@ -25,4 +25,6 @@ mod sync;
 pub use config::{Config, RelayChoice};
 pub use db::BlobClass;
 pub use home::Home;
+#[cfg(feature = "sim")]
+pub use node::SimSettings;
 pub use node::{Node, Restored};

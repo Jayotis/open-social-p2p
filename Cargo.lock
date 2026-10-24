@@ -2996,6 +2996,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "osp-sim"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "n0-future",
+ "osp-node",
+ "osp-proto",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "osp_mobile"
 version = "0.1.0"
 dependencies = [

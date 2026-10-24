@@ -43,10 +43,28 @@ use crate::{
     media,
     network::{self, ConnTracker},
     relays::{self, Checked, RelayPolicy},
-    social::SocialProtocol,
+    social::{self, SocialProtocol},
     store::{self, ContentStore},
     sync,
 };
+
+/// Limits that only the simulated network harness (`osp-sim`) changes,
+/// through `Node::spawn_sim`. A real node always has the defaults: nothing
+/// in `config.toml` or the CLI sets them.
+#[derive(Debug, Clone)]
+pub struct SimSettings {
+    /// New followers accepted per hour. The harness starts a creator with
+    /// hundreds of followers at once, as if they had come over months.
+    pub new_followers_per_hour: usize,
+}
+
+impl Default for SimSettings {
+    fn default() -> Self {
+        Self {
+            new_followers_per_hour: social::MAX_NEW_FOLLOWERS_PER_HOUR,
+        }
+    }
+}
 
 /// A running home node.
 pub struct Node {
@@ -98,6 +116,7 @@ pub(crate) struct Core {
     /// Only one transcode runs at a time, so many posts at once can't start
     /// many ffmpegs. Posts waiting for it take their turn in order.
     pub transcode_lock: tokio::sync::Mutex<()>,
+    pub sim: SimSettings,
 }
 
 impl Node {
@@ -218,6 +237,17 @@ impl Node {
 
     /// Starts the node stored in `home`.
     pub async fn spawn(home: &Path) -> Result<Self> {
+        Self::start(home, SimSettings::default()).await
+    }
+
+    /// Starts the node stored in `home` with limits changed for the
+    /// simulated network harness.
+    #[cfg(feature = "sim")]
+    pub async fn spawn_sim(home: &Path, sim: SimSettings) -> Result<Self> {
+        Self::start(home, sim).await
+    }
+
+    async fn start(home: &Path, sim: SimSettings) -> Result<Self> {
         let home = Home::new(home);
         if !home.is_initialized() {
             bail!("no node in {}; run `osp init` first", home.root().display());
@@ -284,6 +314,7 @@ impl Node {
             media_tools,
             media_posts: Semaphore::new(control::MAX_MEDIA_POSTS),
             transcode_lock: tokio::sync::Mutex::new(()),
+            sim,
         });
 
         let (blobs, serving_rules) = core.store.protocol(&core.config.serving);
