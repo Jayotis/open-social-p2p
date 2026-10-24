@@ -26,7 +26,7 @@ So today a creator with 300 followers sends a few copies at once, and most follo
   - each follower's bytes sent, busy refusals and failed downloads, from the same records.
 - **The video** is random noise, made with ffmpeg and posted through the creator's node like any other. Noise can't be compressed, so the node's encoder runs at its 1.5 Mbit/s ceiling and the size comes out as planned.
 - **Output:** a summary for people to read, and optionally the full report as JSON. Copy the summary into [Results](#results) below.
-- **In CI:** a small run (12 followers, 1 MB) as a test, so the harness keeps working. That's few enough that the creator's transfer limits never turn a follower away, which keeps the test steady. A second small run (12 followers, 2 MB, fetches spread over 10 seconds) has the swarm on. The full runs below are started by hand: they take up to an hour and about 16 GB of disk.
+- **In CI:** a small run (12 followers, 1 MB) as a test, so the harness keeps working. That's few enough that the creator's transfer limits never turn a follower away, which keeps the test steady. A second small run (12 followers, 2 MB, fetches spread over 10 seconds) has the swarm on, and two more add to it a quarter of the followers stopping, and 12 strangers after a reshare. The full runs below are started by hand: they take up to an hour and about 16 GB of disk, 26 GB with the strangers.
 
 ### Running it
 
@@ -37,7 +37,11 @@ cargo run --release -p osp-sim -- --dir /path/on/disk/b8-run \
   --label "$(git rev-parse --short HEAD)" --out b8-run.json
 ```
 
-The defaults are the scenario below; `osp-sim --help` lists the options (followers, video size, upload speeds, time limit). Progress is logged every minute. Add `--swarm` for the swarm runs: followers then share what they prefetch, and spread their fetches of the video over up to 10 minutes, as a real node with `share_prefetched` on does (`--spread-secs` changes that).
+The defaults are the scenario below; `osp-sim --help` lists the options (followers, video size, upload speeds, time limit). Progress is logged every minute. Add `--swarm` for the swarm runs: followers then share what they prefetch, and spread their fetches of the video over up to 10 minutes, as a real node with `share_prefetched` on does (`--spread-secs` changes that). For the other runs below:
+
+- **Fewer followers:** `--followers 100`.
+- **Followers dropping out:** `--drop-out 60` stops 60 followers, the last of each group of five, so every upload speed loses some. By default they stop 8 minutes after posting (`--drop-out-secs`), when about 40% of followers held the video in the swarm run and the creator had sent all it would. The times count only the followers that stayed.
+- **Strangers after a reshare:** `--strangers 200` adds 200 nodes that follow only the first follower. It reshares the post, hosting its media, as soon as it holds the video. The summary gives the strangers' times, what the resharer sent, and how many copies the creator sent strangers.
 
 What loopback can't show: real delay and loss, NAT and relays. Those belong to the slow and flaky network harness, a later M3 item.
 
