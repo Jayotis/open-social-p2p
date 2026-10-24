@@ -16,7 +16,7 @@ use iroh::{
     protocol::Router,
 };
 use osp_proto::{
-    BlobHash, EarlierKeys, Payload, Person, SignedObject,
+    BlobHash, EarlierKeys, ObjectId, Payload, Person, SignedObject,
     rpc::{BackupInfo, ClientRequest, ClientResponse},
 };
 use tokio::{
@@ -62,6 +62,9 @@ pub struct SimSettings {
     /// A node in the follower swarm waits a random while, up to this long,
     /// before fetching a large file. Tests shorten it.
     pub prefetch_spread: Duration,
+    /// Longest a post is held back from the feed while its media is on its
+    /// way. Tests shorten it.
+    pub max_hold: Duration,
 }
 
 impl Default for SimSettings {
@@ -70,6 +73,7 @@ impl Default for SimSettings {
             new_followers_per_hour: social::MAX_NEW_FOLLOWERS_PER_HOUR,
             first_retry_wait: sync::FIRST_RETRY_WAIT,
             prefetch_spread: sync::PREFETCH_SPREAD,
+            max_hold: sync::MAX_HOLD,
         }
     }
 }
@@ -112,6 +116,8 @@ pub(crate) struct Core {
     pub prefetch_jobs: watch::Sender<usize>,
     /// Prefetches put off, for `sync::later_loop`.
     pub prefetch_later: mpsc::Sender<sync::Later>,
+    /// Posts held back from the feed while their media is on its way.
+    pub holds: Mutex<HashMap<ObjectId, sync::Hold>>,
     /// Pairing secrets handed out and not used yet. Kept in memory only.
     pub pairings: Mutex<Vec<PendingPairing>>,
     /// When we last asked each followed identity's node to notify us.
@@ -271,6 +277,9 @@ impl Node {
         let signer = Signer::load(&home)?;
         let node_key = keys::load(&home.node_key())?;
         let db = Arc::new(Db::open(&home.db())?);
+        // Posts held back from the feed waited for prefetches the last run
+        // planned, which are forgotten now: show them.
+        db.show_all_held()?;
         std::fs::create_dir_all(home.work())?;
 
         let lookup = MemoryLookup::new();
@@ -322,6 +331,7 @@ impl Node {
             sync_now: Notify::new(),
             prefetch_jobs: watch::Sender::new(0),
             prefetch_later,
+            holds: Mutex::new(HashMap::new()),
             pairings: Mutex::new(Vec::new()),
             subscribed: Mutex::new(HashMap::new()),
             swarm_samples: Mutex::new(HashMap::new()),

@@ -1,6 +1,7 @@
 //! Gathering: syncing followed outboxes, prefetching their media (spread
 //! out if this node joins the follower swarm, and tried again later when
-//! the nodes with it are busy), and finding nodes that can serve a blob.
+//! the nodes with it are busy), holding new posts out of the feed until
+//! their media is here, and finding nodes that can serve a blob.
 //!
 //! A followed node decides what its outbox says, so everything it sends is
 //! checked and bounded: each page must move our position forward, a sync
@@ -17,7 +18,7 @@ use anyhow::{Result, anyhow, bail, ensure};
 use iroh::{EndpointAddr, EndpointId, PublicKey};
 use n0_future::{BufferedStreamExt, StreamExt, stream};
 use osp_proto::{
-    BlobHash, Note, ObjectId, Payload,
+    BlobHash, Note, ObjectId, Payload, SignedObject,
     social::{MAX_GET_OBJECTS, MAX_OUTBOX_PAGE, SocialRequest, SocialResponse},
 };
 use tokio::sync::mpsc;
@@ -70,6 +71,11 @@ pub(crate) const PREFETCH_SPREAD: Duration = Duration::from_secs(10 * 60);
 /// Prefetches waiting, spread out or to be tried again, at most; more are
 /// dropped and fetched when they're opened.
 pub(crate) const MAX_WAITING: usize = 1_000;
+/// A new post from someone we follow is kept out of the feed until its
+/// large media is on this node, so the person never taps a video that
+/// isn't here yet, but at most this long. Long enough for a spread-out
+/// prefetch and its download.
+pub(crate) const MAX_HOLD: Duration = Duration::from_secs(20 * 60);
 
 /// Polls followed nodes on the configured interval, or sooner when woken.
 pub(crate) async fn run_loop(core: Arc<Core>) {
@@ -123,6 +129,7 @@ impl Core {
                 }
             }
             let to_prefetch = choose_prefetch(candidates);
+            self.plan_holds(&to_prefetch)?;
             if self.config.sync.prefetch && !to_prefetch.is_empty() {
                 // Counted while still holding the sync lock, so a waiting
                 // `Sync` that runs next is guaranteed to see this job.
@@ -191,6 +198,9 @@ impl Core {
             cursor = latest.saturating_sub(BACKFILL);
         }
 
+        // Posts from before the follow aren't held back: they'd all land on
+        // top as their media came in.
+        let hold = follow.synced && self.config.sync.prefetch;
         let day_ago = now_ms() - 24 * 60 * 60 * 1000;
         let mut budget =
             MAX_NEW_PER_DAY.saturating_sub(self.db.objects_received_since(&follow.actor, day_ago)?);
@@ -276,7 +286,7 @@ impl Core {
                         }
                     }
                     Payload::Note(note) if wanted_posts.contains(&obj.id()) => {
-                        if self.db.insert_object(&obj, &payload)? {
+                        if self.store_object(&obj, &payload, Some(note), hold).await? {
                             new_objects += 1;
                         }
                         notes.insert(obj.id(), note.clone());
@@ -291,7 +301,19 @@ impl Core {
                     warn!(%actor, "skipping an outbox entry signed by a key revoked since");
                     continue;
                 }
-                let is_new = self.db.insert_object(&object, &payload)?;
+                // The post a reshare points at, sent with this page or stored before.
+                let reshared = match &payload {
+                    Payload::Announce(announce) => match notes.get(&announce.object) {
+                        Some(note) => Some(note.clone()),
+                        None => self.stored_note(&announce.object)?,
+                    },
+                    _ => None,
+                };
+                let note = match &payload {
+                    Payload::Note(note) => Some(note),
+                    _ => reshared.as_ref(),
+                };
+                let is_new = self.store_object(&object, &payload, note, hold).await?;
                 if is_new {
                     new_objects += 1;
                     budget = budget.saturating_sub(1);
@@ -307,11 +329,7 @@ impl Core {
                         }
                     }
                     Payload::Announce(announce) => {
-                        let note = match notes.get(&announce.object) {
-                            Some(note) => Some(note.clone()),
-                            None => self.stored_note(&announce.object)?,
-                        };
-                        if let Some(note) = note {
+                        if let Some(note) = reshared {
                             if announce.hosting {
                                 for blob in note.blobs() {
                                     self.db.add_host(&blob, &follow.addr)?;
@@ -415,6 +433,59 @@ impl Core {
         self.subscribed.lock().unwrap_or_else(|e| e.into_inner())
     }
 
+    fn lock_holds(&self) -> MutexGuard<'_, HashMap<ObjectId, Hold>> {
+        self.holds.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Stores a post or reshare from a followed node; `note` is the post.
+    /// If `hold`, a new one whose large media isn't here yet is kept out of
+    /// the feed until it is. Returns false if we already had it.
+    async fn store_object(
+        &self,
+        obj: &SignedObject,
+        payload: &Payload,
+        note: Option<&Note>,
+        hold: bool,
+    ) -> Result<bool> {
+        let mut waiting = HashSet::new();
+        if hold && let Some(note) = note {
+            for blob in worth_holding_for(note) {
+                if !self.store.has(&blob).await? {
+                    waiting.insert(blob);
+                }
+            }
+        }
+        if waiting.is_empty() {
+            return self.db.insert_object(obj, payload);
+        }
+        let until = now_ms() + self.sim.max_hold.as_millis() as i64;
+        let is_new = self.db.insert_object_held(obj, payload, until)?;
+        if is_new {
+            let hold = Hold {
+                waiting,
+                planned: false,
+            };
+            self.lock_holds().insert(obj.id(), hold);
+        }
+        Ok(is_new)
+    }
+
+    /// Once a sync has chosen what to prefetch, shows the posts it held
+    /// back that wait for nothing else (see `plan_holds`).
+    fn plan_holds(&self, to_prefetch: &[Wanted]) -> Result<()> {
+        let ready = plan_holds(&mut self.lock_holds(), to_prefetch);
+        self.db.show_held(&ready)
+    }
+
+    /// A file fetched ahead of time is on this node, or won't be: shows
+    /// the posts held back that waited only for it.
+    fn prefetch_done(&self, blob: &BlobHash) {
+        let ready = blob_done(&mut self.lock_holds(), blob);
+        if let Err(e) = self.db.show_held(&ready) {
+            warn!("couldn't show posts held back for their media: {e:#}");
+        }
+    }
+
     /// Fetches media ahead of time, one file at a time, in the order given.
     /// A large file this node gets through the follower swarm waits a
     /// random while first (`PREFETCH_SPREAD`), and one refused as busy is
@@ -445,8 +516,18 @@ impl Core {
 
     /// Fetches one file ahead of time, refused as busy `refusals` times so
     /// far. If the nodes with it are busy again, says when to try again,
-    /// unless that has happened `MAX_RETRIES` times.
+    /// unless that has happened `MAX_RETRIES` times. Otherwise the file is
+    /// here or won't be, and posts held back for it are shown.
     async fn fetch_ahead(&self, wanted: Wanted, refusals: u32) -> Option<Later> {
+        let hash = wanted.blob;
+        let later = self.try_fetch_ahead(wanted, refusals).await;
+        if later.is_none() {
+            self.prefetch_done(&hash);
+        }
+        later
+    }
+
+    async fn try_fetch_ahead(&self, wanted: Wanted, refusals: u32) -> Option<Later> {
         let blob = wanted.blob.fmt_short();
         let fetched = match &wanted.author {
             Some(author) if self.joins_swarm(&wanted) => {
@@ -482,8 +563,9 @@ impl Core {
     }
 
     fn fetch_later(&self, later: Later) {
-        if self.prefetch_later.try_send(later).is_err() {
+        if let Err(e) = self.prefetch_later.try_send(later) {
             warn!("too many prefetches waiting; the rest are fetched when they're opened");
+            self.prefetch_done(&e.into_inner().wanted.blob);
         }
     }
 
@@ -669,6 +751,50 @@ pub(crate) struct Wanted {
     author: Option<EndpointAddr>,
 }
 
+/// A post held back from the feed (`Db::insert_object_held`) until the
+/// files it waits for are on this node, or won't be.
+#[derive(Debug)]
+pub(crate) struct Hold {
+    waiting: HashSet<BlobHash>,
+    /// Whether the sync it came with has chosen what to prefetch. Until
+    /// then, `waiting` may hold files that won't be.
+    planned: bool,
+}
+
+/// Stops holding back the posts a sync brought for files it won't
+/// prefetch: over the limits of `choose_prefetch`, or from a followed node
+/// whose sync failed partway. Returns the posts that wait for nothing else.
+fn plan_holds(holds: &mut HashMap<ObjectId, Hold>, to_prefetch: &[Wanted]) -> Vec<ObjectId> {
+    let chosen: HashSet<BlobHash> = to_prefetch.iter().map(|w| w.blob).collect();
+    for hold in holds.values_mut().filter(|hold| !hold.planned) {
+        hold.waiting.retain(|blob| chosen.contains(blob));
+        hold.planned = true;
+    }
+    take_ready(holds)
+}
+
+/// Stops holding back posts for `blob`, which is here or won't be.
+/// Returns the posts that wait for nothing else.
+fn blob_done(holds: &mut HashMap<ObjectId, Hold>, blob: &BlobHash) -> Vec<ObjectId> {
+    for hold in holds.values_mut() {
+        hold.waiting.remove(blob);
+    }
+    take_ready(holds)
+}
+
+/// Takes the posts held back that wait for nothing any more.
+fn take_ready(holds: &mut HashMap<ObjectId, Hold>) -> Vec<ObjectId> {
+    let ready: Vec<ObjectId> = holds
+        .iter()
+        .filter(|(_, hold)| hold.waiting.is_empty())
+        .map(|(id, _)| *id)
+        .collect();
+    for id in &ready {
+        holds.remove(id);
+    }
+    ready
+}
+
 /// A file to fetch ahead of time once it's `due`: spread out, or refused as
 /// busy `refusals` times so far.
 #[derive(Debug)]
@@ -687,8 +813,12 @@ pub(crate) async fn later_loop(core: Arc<Core>, mut later: mpsc::Receiver<Later>
         tokio::select! {
             got = later.recv() => {
                 let Some(l) = got else { return };
+                let blob = l.wanted.blob;
                 if waiting.len() < MAX_WAITING {
-                    waiting.entry(l.wanted.blob).or_insert(l);
+                    waiting.entry(blob).or_insert(l);
+                } else if !waiting.contains_key(&blob) {
+                    // Dropped: it's fetched when it's opened.
+                    core.prefetch_done(&blob);
                 }
             }
             _ = sleep_until(next) => {
@@ -765,6 +895,16 @@ fn prefetchable(note: &Note, author: Option<&EndpointAddr>) -> Vec<Wanted> {
     wanted
 }
 
+/// The files of a post worth holding it back from the feed for: large ones
+/// fetched ahead of time. Small files come within seconds, not spread out.
+fn worth_holding_for(note: &Note) -> Vec<BlobHash> {
+    prefetchable(note, None)
+        .into_iter()
+        .filter(|wanted| wanted.size > store::SMALL_BLOB)
+        .map(|wanted| wanted.blob)
+        .collect()
+}
+
 /// Picks what one sync prefetches, within the per-sync limits, smallest
 /// first, so thumbnails aren't held up behind videos. A file wanted twice,
 /// as when a followed author's post is also reshared, is kept once, with
@@ -794,6 +934,8 @@ fn choose_prefetch(mut candidates: Vec<Wanted>) -> Vec<Wanted> {
 
 #[cfg(test)]
 mod tests {
+    use osp_proto::{Attachment, BlobRef, MediaKind};
+
     use super::*;
 
     #[test]
@@ -820,6 +962,68 @@ mod tests {
                 wanted(video, 50 << 20, Some(&author)),
             ]
         );
+    }
+
+    #[test]
+    fn held_posts_wait_only_for_large_files_fetched_ahead_of_time() {
+        let [video, thumb, photo, huge] = [1u8, 2, 3, 4].map(|b| BlobHash::from_bytes([b; 32]));
+        let attachment = |blob, size, thumbnail: Option<(BlobHash, u64)>| Attachment {
+            kind: MediaKind::Video,
+            media_type: "video/mp4".into(),
+            blob,
+            size,
+            width: 1,
+            height: 1,
+            duration_ms: None,
+            name: None,
+            thumbnail: thumbnail.map(|(blob, size)| BlobRef {
+                blob,
+                size,
+                media_type: "image/webp".into(),
+            }),
+            profile: "v1-720p".into(),
+        };
+        let note = Note {
+            actor: iroh::SecretKey::generate().public(),
+            content: String::new(),
+            published: osp_proto::now_rfc3339(),
+            attachment: vec![
+                attachment(video, 50 << 20, Some((thumb, 37 << 10))),
+                attachment(photo, 1 << 20, None),
+                // Not prefetched: fetched when it's opened.
+                attachment(huge, MAX_PREFETCH_BYTES + 1, None),
+            ],
+            in_reply_to: None,
+        };
+        assert_eq!(worth_holding_for(&note), vec![video]);
+    }
+
+    #[test]
+    fn held_posts_wait_only_for_files_still_to_be_prefetched() {
+        let [video, photo, skipped] = [1u8, 2, 3].map(|b| BlobHash::from_bytes([b; 32]));
+        let [earlier, both, too_big] = [b"a", b"b", b"c"].map(|p| ObjectId::of(p));
+        let hold = |files: &[BlobHash], planned| Hold {
+            waiting: files.iter().copied().collect(),
+            planned,
+        };
+        let mut holds = HashMap::from([
+            (earlier, hold(&[video], true)),
+            (both, hold(&[video, photo], false)),
+            (too_big, hold(&[skipped], false)),
+        ]);
+        // One of a post's files is done; it still waits for the other.
+        assert_eq!(blob_done(&mut holds, &photo), vec![]);
+        // The sync chose the video (waiting since an earlier sync too) and
+        // the photo, but not the third file.
+        let chosen = [video, photo].map(|blob| Wanted {
+            blob,
+            size: 2 << 20,
+            author: None,
+        });
+        assert_eq!(plan_holds(&mut holds, &chosen), vec![too_big]);
+        let ready: HashSet<ObjectId> = blob_done(&mut holds, &video).into_iter().collect();
+        assert_eq!(ready, HashSet::from([earlier, both]));
+        assert!(holds.is_empty());
     }
 
     #[test]
