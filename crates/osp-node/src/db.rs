@@ -131,6 +131,11 @@ const MIGRATIONS: &[&str] = &[
         seen_ms INTEGER NOT NULL,
         PRIMARY KEY (blob, node)
     );",
+    // 8: where each object sits in the feed: when it was published, except
+    // for a followed author's post held back while its media is on its way
+    // (`insert_object_held`), which takes its place when it's shown.
+    "ALTER TABLE objects ADD COLUMN feed_ms INTEGER NOT NULL DEFAULT 0;
+    UPDATE objects SET feed_ms = published_ms;",
 ];
 
 /// Hosts remembered per blob. More than enough to find a copy; a peer
@@ -256,7 +261,7 @@ impl Db {
 
     /// Stores a verified object. Returns false if we already had it.
     pub fn insert_object(&self, obj: &SignedObject, payload: &Payload) -> Result<bool> {
-        self.insert_object_received(obj, payload, now_ms())
+        self.insert(obj, payload, now_ms(), None)
     }
 
     /// Like `insert_object`, for an object that first arrived at `received`:
@@ -268,21 +273,45 @@ impl Db {
         payload: &Payload,
         received: i64,
     ) -> Result<bool> {
+        self.insert(obj, payload, received, None)
+    }
+
+    /// Like `insert_object`, for a post kept out of the feed until
+    /// `until_ms`, or until `show_held` is called for it, while its media
+    /// is on its way.
+    pub fn insert_object_held(
+        &self,
+        obj: &SignedObject,
+        payload: &Payload,
+        until_ms: i64,
+    ) -> Result<bool> {
+        self.insert(obj, payload, now_ms(), Some(until_ms))
+    }
+
+    fn insert(
+        &self,
+        obj: &SignedObject,
+        payload: &Payload,
+        received: i64,
+        held_until: Option<i64>,
+    ) -> Result<bool> {
         // Clamp author-claimed time so a future-dated post can't pin itself to the top.
         let published = osp_proto::parse_rfc3339_ms(payload.published())
             .unwrap_or(received)
             .min(received);
         let conn = self.conn();
         let n = conn.execute(
-            "INSERT OR IGNORE INTO objects (id, actor, kind, published_ms, received_ms, signed)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            "INSERT OR IGNORE INTO objects
+                 (id, actor, kind, published_ms, received_ms, signed, feed_ms)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             params![
                 obj.id().to_string(),
                 payload.actor().to_string(),
                 payload.kind(),
                 published,
                 received,
-                serde_json::to_string(obj)?
+                serde_json::to_string(obj)?,
+                held_until.unwrap_or(published)
             ],
         )?;
         if n > 0
@@ -326,16 +355,19 @@ impl Db {
         Ok(())
     }
 
-    /// Posts and reshares by the given identities, newest first.
+    /// Posts and reshares by the given identities, newest first: by when
+    /// they were published, or, for one that was held back, when it was
+    /// shown, so it lands above what the person may have scrolled past.
     pub fn feed(&self, actors: &[PublicKey], limit: u32) -> Result<Vec<SignedObject>> {
         if actors.is_empty() {
             return Ok(vec![]);
         }
         let placeholders = vec!["?"; actors.len()].join(",");
+        let now = now_ms();
         let sql = format!(
             "SELECT signed FROM objects
-             WHERE kind IN ('Note', 'Announce') AND actor IN ({placeholders})
-             ORDER BY published_ms DESC LIMIT {limit}"
+             WHERE kind IN ('Note', 'Announce') AND actor IN ({placeholders}) AND feed_ms <= {now}
+             ORDER BY feed_ms DESC LIMIT {limit}"
         );
         let conn = self.conn();
         let mut stmt = conn.prepare(&sql)?;
@@ -344,6 +376,28 @@ impl Db {
             row.get::<_, String>(0)
         })?;
         rows.map(|r| Ok(serde_json::from_str(&r?)?)).collect()
+    }
+
+    /// Shows posts held back from the feed now, at the top: their media
+    /// arrived, or won't. One shown already stays where it is.
+    pub fn show_held(&self, ids: &[ObjectId]) -> Result<()> {
+        let now = now_ms();
+        let conn = self.conn();
+        for id in ids {
+            conn.execute(
+                "UPDATE objects SET feed_ms = ?2 WHERE id = ?1 AND feed_ms > ?2",
+                params![id.to_string(), now],
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Shows every post held back from the feed now. Returns how many.
+    pub fn show_all_held(&self) -> Result<usize> {
+        Ok(self.conn().execute(
+            "UPDATE objects SET feed_ms = ?1 WHERE feed_ms > ?1",
+            params![now_ms()],
+        )?)
     }
 
     // ---- our outbox ----
@@ -1625,6 +1679,59 @@ mod tests {
         db.insert_object(&obj, &payload).unwrap();
         assert_eq!(db.declared_size(&new).unwrap(), Some(300));
         assert_eq!(db.declared_size(&old).unwrap(), Some(900));
+    }
+
+    #[test]
+    fn held_posts_join_the_feed_on_top_when_shown_or_when_their_time_is_up() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(&dir.path().join("t.db")).unwrap();
+        let key = iroh::SecretKey::generate();
+        let ids = |db: &Db| -> Vec<ObjectId> {
+            let feed = db.feed(&[key.public()], 10).unwrap();
+            feed.iter().map(|o| o.id()).collect()
+        };
+        let post = |text: &str| {
+            let payload = Payload::Note(Note {
+                actor: key.public(),
+                content: text.into(),
+                published: osp_proto::now_rfc3339(),
+                attachment: vec![],
+                in_reply_to: None,
+            });
+            (SignedObject::sign(&key, &payload).unwrap(), payload)
+        };
+        // Times are in milliseconds; keep steps that must be ordered apart.
+        let pause = || std::thread::sleep(std::time::Duration::from_millis(5));
+        let far = now_ms() + DAY_MS;
+        let (first, payload) = post("first");
+        assert!(db.insert_object_held(&first, &payload, far).unwrap());
+        let (second, payload) = post("second");
+        db.insert_object(&second, &payload).unwrap();
+        assert_eq!(ids(&db), vec![second.id()]);
+
+        // Shown above the post that came after it, and only moved once.
+        pause();
+        db.show_held(&[first.id()]).unwrap();
+        assert_eq!(ids(&db), vec![first.id(), second.id()]);
+        pause();
+        let (third, payload) = post("third");
+        db.insert_object(&third, &payload).unwrap();
+        db.show_held(&[first.id()]).unwrap();
+        assert_eq!(ids(&db), vec![third.id(), first.id(), second.id()]);
+
+        // One whose time is up is shown without being asked.
+        let (fourth, payload) = post("fourth");
+        db.insert_object_held(&fourth, &payload, now_ms() + 50)
+            .unwrap();
+        assert_eq!(ids(&db).len(), 3);
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        assert_eq!(ids(&db)[0], fourth.id());
+
+        // And a restart shows them all.
+        let (fifth, payload) = post("fifth");
+        db.insert_object_held(&fifth, &payload, far).unwrap();
+        assert_eq!(db.show_all_held().unwrap(), 1);
+        assert_eq!(ids(&db)[0], fifth.id());
     }
 
     #[test]

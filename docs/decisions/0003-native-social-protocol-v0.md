@@ -42,6 +42,7 @@ Option 2 for Stage 1.
   - a node syncs at most every 5 seconds, however often it's notified;
   - media over 256 MiB isn't prefetched, and one sync prefetches at most 200 files and 1 GiB, smallest first, so thumbnails come before videos;
   - a prefetch refused as busy is tried again later, one file at a time, after about 1, 2, 4, 8, 15 and 15 minutes, each wait varied by up to half either way so followers refused together don't return together. After that the media is fetched when it's opened;
+  - a new post or reshare whose media has a file over 1 MiB to prefetch is kept out of the feed until that file is on the node, so the person never taps a video that isn't there yet. It's shown anyway once the file won't come (the prefetch gave up, didn't fit the cache quota, or wasn't chosen in that sync), after 20 minutes, or when the node restarts. It then takes its place in the feed as of when it was shown, above posts that came meanwhile, not as of when it was published. Posts from before a follow, and the owner's own posts, are shown at once;
   - a node serving its outbox keeps each page under about 8 MiB of objects.
 - **Follow tickets:** to follow someone you need their identity key and an address for their home node, encoded as a short string or QR code. There is no global directory yet.
 - **Reshare and host:** an `Announce` of someone's post carries `hosting: true` when the resharer's node keeps a replica. Anyone who sees the `Announce` learns another provider for that media.
