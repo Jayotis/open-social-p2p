@@ -140,7 +140,7 @@ If the same hosts each hold every segment, availability equals the whole-file co
 
 On the test machines, then in simulation:
 
-- One creator, a few hundred simulated followers: measure the creator's total upload with and without the swarm.
+- One creator, a few hundred simulated followers: measure the creator's total upload with and without the swarm. The [plan and pass marks](testing/b8-creator-upload.md) were fixed before measuring.
 - A sudden stranger spike after a reshare.
 - Followers going offline mid-spread.
 - Expiry under shrinking demand: confirm copies don't all vanish at once.
