@@ -108,6 +108,7 @@ async fn spawn_sim_changes_the_new_follower_limit() {
     let dir = tempfile::tempdir().unwrap();
     let sim = SimSettings {
         new_followers_per_hour: 2,
+        ..SimSettings::default()
     };
     let limited = start(dir.path(), "limited", Some(sim)).await;
     let usual = start(dir.path(), "usual", None).await;

@@ -10,6 +10,8 @@ The [critical review](../reviews/2026-10-21-review-of-docs-12-and-13.md#b8-the-f
 - A follower refused as busy asks the nodes it follows who else hosts the file. Only the creator has it, so the follower gives up. The media is fetched later, from the creator, when someone opens the post.
 - Followers' prefetched copies are private, served only to their own phones.
 
+Since the baseline was measured, a prefetch refused as busy is tried again later, waiting longer each time, and small files such as thumbnails have serving places of their own ([ADR 0003](../decisions/0003-native-social-protocol-v0.md)). Both apply whether or not the swarm is switched on.
+
 So today a creator with 300 followers sends a few copies at once, and most followers don't get the media ahead of time. If every follower kept trying until it got the file, the creator would send all 300 copies: about 15.7 GB, which takes about **1.7 hours** at 20 Mbit/s.
 
 ## The harness

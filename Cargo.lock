@@ -2967,6 +2967,7 @@ dependencies = [
  "iroh-blobs",
  "iroh-relay",
  "n0-future",
+ "osp-node",
  "osp-proto",
  "ring",
  "rusqlite",

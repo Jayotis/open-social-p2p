@@ -763,15 +763,21 @@ impl Db {
     // ---- blobs ----
 
     pub fn blob_class(&self, hash: &BlobHash) -> Result<Option<BlobClass>> {
-        let class: Option<String> = self
+        Ok(self.blob(hash)?.map(|(class, _)| class))
+    }
+
+    /// A blob's class and size, if we hold it.
+    pub fn blob(&self, hash: &BlobHash) -> Result<Option<(BlobClass, u64)>> {
+        let row: Option<(String, i64)> = self
             .conn()
             .query_row(
-                "SELECT class FROM blobs WHERE hash = ?1",
+                "SELECT class, size FROM blobs WHERE hash = ?1",
                 params![hash.to_string()],
-                |row| row.get(0),
+                |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .optional()?;
-        class.map(|c| BlobClass::parse(&c)).transpose()
+        row.map(|(class, size)| Ok((BlobClass::parse(&class)?, size as u64)))
+            .transpose()
     }
 
     /// Records that we hold a blob. A blob's class only ever moves up

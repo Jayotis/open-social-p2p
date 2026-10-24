@@ -38,7 +38,8 @@ Option 2 for Stage 1.
   - one sync takes at most 10 pages from a followed node, within 2 minutes, with 4 followed nodes synced at once;
   - a reader takes at most 500 new objects a day from one followed identity; the rest waits. A new follow starts with the latest 100 entries, not the whole history;
   - a node syncs at most every 5 seconds, however often it's notified;
-  - media over 256 MiB isn't prefetched, and one sync prefetches at most 200 files and 1 GiB;
+  - media over 256 MiB isn't prefetched, and one sync prefetches at most 200 files and 1 GiB, smallest first, so thumbnails come before videos;
+  - a prefetch refused as busy is tried again later, one file at a time, after about 1, 2, 4, 8, 15 and 15 minutes, each wait varied by up to half either way so followers refused together don't return together. After that the media is fetched when it's opened;
   - a node serving its outbox keeps each page under about 8 MiB of objects.
 - **Follow tickets:** to follow someone you need their identity key and an address for their home node, encoded as a short string or QR code. There is no global directory yet.
 - **Reshare and host:** an `Announce` of someone's post carries `hosting: true` when the resharer's node keeps a replica. Anyone who sees the `Announce` learns another provider for that media.
@@ -50,6 +51,7 @@ Option 2 for Stage 1.
   - Anything else is refused.
 - **Serving limits.** Anyone who knows a node's ID can download its public media, so a node limits how much it sends:
   - at most 8 transfers at once, at most 4 of them to strangers (nodes that neither follow me nor are my devices), and at most 2 to any one node. A crowd of strangers then can't crowd out my followers;
+  - files of 1 MiB or less, such as thumbnails, have 8 places of their own outside those limits, apart from the 2 per node, so they aren't held up behind videos;
   - a request over a limit waits up to 10 seconds for a place, so a burst of requests from one node just takes turns. If no place frees up, it is refused as busy (iroh-blobs' `RateLimited`), and the requester tries the other hosts it knows, then asks the nodes it follows (`WhoHosts`);
   - an optional cap on sending speed for all transfers together: `max_upload_mbps` under `[serving]` in `config.toml`, off by default. About half the home's upload speed leaves room for everything else.
   - My own phone isn't affected: it reads media through its own connection to the node ([ADR 0008](0008-device-pairing-and-client-protocol.md)).

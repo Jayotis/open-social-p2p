@@ -20,7 +20,7 @@ use osp_proto::{
     rpc::{BackupInfo, ClientRequest, ClientResponse},
 };
 use tokio::{
-    sync::{Notify, Semaphore, watch},
+    sync::{Notify, Semaphore, mpsc, watch},
     task::JoinHandle,
 };
 use tracing::{info, warn};
@@ -56,12 +56,16 @@ pub struct SimSettings {
     /// New followers accepted per hour. The harness starts a creator with
     /// hundreds of followers at once, as if they had come over months.
     pub new_followers_per_hour: usize,
+    /// How long a prefetch refused as busy waits before it is tried again;
+    /// later waits are longer. Tests shorten it.
+    pub first_retry_wait: Duration,
 }
 
 impl Default for SimSettings {
     fn default() -> Self {
         Self {
             new_followers_per_hour: social::MAX_NEW_FOLLOWERS_PER_HOUR,
+            first_retry_wait: sync::FIRST_RETRY_WAIT,
         }
     }
 }
@@ -102,6 +106,8 @@ pub(crate) struct Core {
     pub sync_now: Notify,
     /// Number of prefetch jobs still downloading, so `Sync` can wait for them.
     pub prefetch_jobs: watch::Sender<usize>,
+    /// Prefetches refused as busy, for `sync::retry_loop` to try again.
+    pub prefetch_retries: mpsc::Sender<(BlobHash, u64)>,
     /// Pairing secrets handed out and not used yet. Kept in memory only.
     pub pairings: Mutex<Vec<PendingPairing>>,
     /// When we last asked each followed identity's node to notify us.
@@ -292,6 +298,7 @@ impl Node {
             "node started"
         );
 
+        let (prefetch_retries, busy) = mpsc::channel(sync::MAX_RETRIES_WAITING);
         let core = Arc::new(Core {
             home,
             config,
@@ -307,6 +314,7 @@ impl Node {
             sync_lock: tokio::sync::Mutex::new(()),
             sync_now: Notify::new(),
             prefetch_jobs: watch::Sender::new(0),
+            prefetch_retries,
             pairings: Mutex::new(Vec::new()),
             subscribed: Mutex::new(HashMap::new()),
             tell_moved_lock: tokio::sync::Mutex::new(()),
@@ -326,12 +334,13 @@ impl Node {
             .accept(osp_proto::CLIENT_ALPN, ClientProtocol::new(core.clone()))
             .spawn();
         let sync_loop = tokio::spawn(sync::run_loop(core.clone()));
+        let retries = tokio::spawn(sync::retry_loop(core.clone(), busy));
         let tell_moved = tokio::spawn(control::tell_moved_loop(core.clone()));
         let replicas = {
             let core = core.clone();
             tokio::spawn(async move { core.refetch_replicas().await })
         };
-        let mut tasks = vec![serving_rules, sync_loop, tell_moved, replicas];
+        let mut tasks = vec![serving_rules, sync_loop, retries, tell_moved, replicas];
         if core.config.network.relay != RelayChoice::Disabled {
             tasks.push(tokio::spawn(network::log_nat_changes(
                 core.endpoint.clone(),
