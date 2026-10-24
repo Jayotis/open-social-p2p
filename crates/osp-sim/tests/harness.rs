@@ -16,6 +16,8 @@ async fn a_small_run_measures_the_creators_upload() {
         video_bytes: 1_000_000,
         creator_mbps: 20,
         follower_mbps: vec![5, 10, 20],
+        swarm: false,
+        prefetch_spread: Duration::ZERO,
         time_limit: Duration::from_secs(90),
         sample: Duration::from_secs(1),
         label: "test".into(),
@@ -24,6 +26,7 @@ async fn a_small_run_measures_the_creators_upload() {
     println!("{}", report.summary());
 
     assert_eq!((report.followers, report.label.as_str()), (12, "test"));
+    assert!(report.summary().contains("swarm off"));
     assert!(
         (600_000..1_400_000).contains(&report.video_bytes),
         "{}",
@@ -78,6 +81,38 @@ async fn a_small_run_measures_the_creators_upload() {
     assert!(scenario.dir.join("creator").exists());
     let err = osp_sim::run(&scenario).await.unwrap_err();
     assert!(err.to_string().contains("isn't empty"), "{err:#}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_small_run_with_the_swarm_on() {
+    let dir = tempfile::tempdir().unwrap();
+    // Over 1 MiB, so the followers fetch it through the swarm.
+    let scenario = Scenario {
+        dir: dir.path().join("run"),
+        followers: 12,
+        video_bytes: 2_000_000,
+        creator_mbps: 20,
+        follower_mbps: vec![5, 10, 20],
+        swarm: true,
+        prefetch_spread: Duration::from_secs(10),
+        time_limit: Duration::from_secs(90),
+        sample: Duration::from_secs(1),
+        label: "test".into(),
+    };
+    let report = osp_sim::run(&scenario).await.unwrap();
+    println!("{}", report.summary());
+    assert!(
+        report
+            .summary()
+            .contains("swarm on, fetches spread over 10 s")
+    );
+    assert_eq!(report.holding(), 12, "{}", report.summary());
+
+    // Followers fetching later got it from followers fetching earlier.
+    let video = report.video_bytes as f64;
+    let sharing = report.follower_sent_bytes.iter().filter(|b| **b >= video);
+    assert!(sharing.count() >= 1, "{}", report.summary());
+    assert!(report.creator_copies() < 11.0, "{}", report.summary());
 }
 
 async fn start(root: &Path, name: &str, sim: Option<SimSettings>) -> Node {

@@ -51,6 +51,11 @@ pub struct Scenario {
     pub creator_mbps: u64,
     /// Followers' upload speeds, given to followers in turn.
     pub follower_mbps: Vec<u64>,
+    /// Whether followers join the follower swarm (`swarm.share_prefetched`).
+    pub swarm: bool,
+    /// Followers in the swarm spread their fetches of the video over up to
+    /// this long. A real node uses `SimSettings::default().prefetch_spread`.
+    pub prefetch_spread: Duration,
     /// The run ends when every follower holds the video, or this long after
     /// posting.
     pub time_limit: Duration,
@@ -68,6 +73,8 @@ pub struct Report {
     pub followers: usize,
     pub creator_mbps: u64,
     pub follower_mbps: Vec<u64>,
+    pub swarm: bool,
+    pub prefetch_spread_secs: f64,
     pub time_limit_secs: u64,
     /// The video, and its media altogether (the video and its thumbnail).
     pub video_bytes: u64,
@@ -133,12 +140,24 @@ pub async fn run(s: &Scenario) -> Result<Report> {
             .max(SimSettings::default().new_followers_per_hour),
         ..SimSettings::default()
     };
-    let creator = start(&s.dir.join("creator"), "Creator", s.creator_mbps, lifted).await?;
+    let creator = start(
+        &s.dir.join("creator"),
+        "Creator",
+        s.creator_mbps,
+        false,
+        lifted,
+    )
+    .await?;
+    let spread = SimSettings {
+        prefetch_spread: s.prefetch_spread,
+        ..SimSettings::default()
+    };
     let followers: Vec<Node> = stream::iter(0..s.followers)
         .map(|i| {
             let home = s.dir.join(format!("f{i:04}"));
             let mbps = s.follower_mbps[i % s.follower_mbps.len()];
-            async move { start(&home, &format!("F{i}"), mbps, SimSettings::default()).await }
+            let sim = spread.clone();
+            async move { start(&home, &format!("F{i}"), mbps, s.swarm, sim).await }
         })
         .buffered_ordered(STARTING_AT_ONCE)
         .collect::<Vec<_>>()
@@ -258,6 +277,8 @@ pub async fn run(s: &Scenario) -> Result<Report> {
         followers: s.followers,
         creator_mbps: s.creator_mbps,
         follower_mbps: s.follower_mbps.clone(),
+        swarm: s.swarm,
+        prefetch_spread_secs: s.prefetch_spread.as_secs_f64(),
         time_limit_secs: s.time_limit.as_secs(),
         video_bytes,
         media_bytes,
@@ -317,10 +338,18 @@ impl Report {
         let marks = self.marks();
         let yes = |ok| if ok { "met" } else { "missed" };
 
+        let swarm = if self.swarm {
+            format!(
+                "swarm on, fetches spread over {:.0} s",
+                self.prefetch_spread_secs
+            )
+        } else {
+            "swarm off".to_string()
+        };
         let mut out = String::new();
         let _ = writeln!(
             out,
-            "{} followers, {:.1} MB video, creator {} Mbit/s, followers {} Mbit/s",
+            "{} followers, {:.1} MB video, creator {} Mbit/s, followers {} Mbit/s, {swarm}",
             self.followers,
             self.video_bytes as f64 / 1e6,
             self.creator_mbps,
@@ -403,11 +432,12 @@ async fn make_video(dir: &Path, bytes: u64) -> Result<PathBuf> {
     Ok(out)
 }
 
-async fn start(home: &Path, name: &str, mbps: u64, sim: SimSettings) -> Result<Node> {
+async fn start(home: &Path, name: &str, mbps: u64, swarm: bool, sim: SimSettings) -> Result<Node> {
     let mut config = Config::local_test(name);
     // Poll like a real node; test nodes poll only hourly.
     config.sync.interval_secs = SyncConfig::default().interval_secs;
     config.serving.max_upload_mbps = mbps;
+    config.swarm.share_prefetched = swarm;
     // Noise always reaches the bitrate ceiling, so the preset changes only
     // how long encoding takes, not the size.
     config.media.x264_preset = "ultrafast".into();
