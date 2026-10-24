@@ -1,6 +1,6 @@
 # ADR 0011: Measuring peers
 
-**Status:** Accepted (2026-10-23). Not built yet.
+**Status:** Accepted (2026-10-23). Built (2026-10-23): media downloads in our own loop, each attempt ending in one of the outcomes below; the `peers` table (database migration 6), filled in by requests, downloads and media served; `osp peers` and the `Peers` client request. Served media is counted from iroh-blobs' transfer events, which the serving rules now ask for.
 
 ## Context
 
