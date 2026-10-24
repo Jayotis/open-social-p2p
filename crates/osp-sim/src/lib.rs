@@ -145,12 +145,16 @@ pub struct Outcomes {
 /// The B8 pass marks: whether this run met each.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Marks {
-    /// The creator sent at most a tenth as many copies as there are followers.
+    /// The creator sent at most a tenth as many copies as there are nodes
+    /// that get the video: followers, and strangers if there are any.
     pub creator_copies: bool,
     /// 95% of followers held the video within 15 minutes.
     pub most_within_15_min: bool,
     /// Every follower held it within 30 minutes.
     pub all_within_30_min: bool,
+    /// With strangers, the same two for them, counted from the reshare.
+    pub strangers_most_within_15_min: Option<bool>,
+    pub strangers_all_within_30_min: Option<bool>,
 }
 
 /// Runs a scenario from start to finish, then stops every node.
@@ -414,17 +418,35 @@ impl Report {
         time_until(&self.stranger_held_after_secs, percent)
     }
 
+    /// When `percent` of the strangers held the video, counted from the
+    /// reshare: they couldn't start before it.
+    pub fn stranger_time_after_reshare(&self, percent: usize) -> Option<f64> {
+        Some(self.stranger_time_until(percent)? - self.reshared_after_secs?)
+    }
+
     /// The creator's upload, in copies of the post's media.
     pub fn creator_copies(&self) -> f64 {
         self.creator_sent_bytes / self.media_bytes as f64
     }
 
+    /// The most copies the creator may send: a tenth of the nodes that get
+    /// the video.
+    pub fn creator_allowance(&self) -> f64 {
+        (self.followers + self.strangers) as f64 / 10.0
+    }
+
     pub fn marks(&self) -> Marks {
         let within = |percent, secs| self.time_until(percent).is_some_and(|t| t <= secs);
+        let strangers_within = |percent, secs| {
+            let met = self.stranger_time_after_reshare(percent);
+            (self.strangers > 0).then_some(met.is_some_and(|t| t <= secs))
+        };
         Marks {
-            creator_copies: self.creator_copies() <= self.followers as f64 / 10.0,
+            creator_copies: self.creator_copies() <= self.creator_allowance(),
             most_within_15_min: within(95, 15.0 * 60.0),
             all_within_30_min: within(100, 30.0 * 60.0),
+            strangers_most_within_15_min: strangers_within(95, 15.0 * 60.0),
+            strangers_all_within_30_min: strangers_within(100, 30.0 * 60.0),
         }
     }
 
@@ -520,12 +542,9 @@ impl Report {
         );
         let _ = writeln!(out, "followers' downloads: {}", outcomes(&self.downloads));
         if self.strangers > 0 {
-            let within = |percent, secs: f64| {
-                yes(self.stranger_time_until(percent).is_some_and(|t| t <= secs))
-            };
             let _ = writeln!(
                 out,
-                "strangers: the first follower reshared at {} and sent {:.1} copies; {} of {} strangers held the video; 50% at {}, 95% at {}, all at {}",
+                "strangers: the first follower reshared at {} and sent {:.1} copies; {} of {} strangers held the video; 50% at {}, 95% at {}, all at {}; after the reshare: {}, {}, {}",
                 time(self.reshared_after_secs),
                 copies(self.follower_sent_bytes[RESHARER]),
                 self.stranger_held_after_secs.iter().flatten().count(),
@@ -533,6 +552,9 @@ impl Report {
                 time(self.stranger_time_until(50)),
                 time(self.stranger_time_until(95)),
                 time(self.stranger_time_until(100)),
+                time(self.stranger_time_after_reshare(50)),
+                time(self.stranger_time_after_reshare(95)),
+                time(self.stranger_time_after_reshare(100)),
             );
             let (most, median, none) = spread(&self.stranger_sent_bytes);
             let _ = writeln!(
@@ -543,20 +565,30 @@ impl Report {
             );
             let _ = writeln!(
                 out,
-                "strangers' downloads: {}; 95% within 15 min {}; all within 30 min {}",
+                "strangers' downloads: {}",
                 outcomes(&self.stranger_downloads),
-                within(95, 15.0 * 60.0),
-                within(100, 30.0 * 60.0),
             );
         }
-        let _ = writeln!(
+        let _ = write!(
             out,
             "pass marks: creator at most {:.0} copies {}; 95% within 15 min {}; all within 30 min {}",
-            self.followers as f64 / 10.0,
+            self.creator_allowance(),
             yes(marks.creator_copies),
             yes(marks.most_within_15_min),
             yes(marks.all_within_30_min),
         );
+        if let (Some(most), Some(all)) = (
+            marks.strangers_most_within_15_min,
+            marks.strangers_all_within_30_min,
+        ) {
+            let _ = write!(
+                out,
+                "; strangers 95% within 15 min of the reshare {}; all within 30 min of it {}",
+                yes(most),
+                yes(all),
+            );
+        }
+        out.push('\n');
         out
     }
 }
@@ -813,6 +845,8 @@ mod tests {
                 creator_copies: true,
                 most_within_15_min: true,
                 all_within_30_min: true,
+                strangers_most_within_15_min: None,
+                strangers_all_within_30_min: None,
             }
         );
         r.creator_sent_bytes = 30.1 * 1_000.0;
@@ -833,6 +867,39 @@ mod tests {
         assert!(!r.marks().all_within_30_min);
         r.held_after_secs[299] = None;
         assert!(!r.marks().all_within_30_min);
+    }
+
+    #[test]
+    fn strangers_count_toward_the_creator_and_from_the_reshare() {
+        let mut r = report(300, 0);
+        r.follower_sent_bytes = vec![0.0; 300];
+        r.strangers = 200;
+        r.reshared_after_secs = Some(600.0);
+        // 190 strangers at 15 minutes after the reshare, the last 10 at 30.
+        r.stranger_held_after_secs = (0..200)
+            .map(|i| Some(if i < 190 { 1500.0 } else { 2400.0 }))
+            .collect();
+        r.creator_sent_bytes = 50.0 * 1_000.0;
+        let marks = r.marks();
+        assert!(marks.creator_copies, "a tenth of 500 nodes");
+        assert_eq!(marks.strangers_most_within_15_min, Some(true));
+        assert_eq!(marks.strangers_all_within_30_min, Some(true));
+        assert!(
+            r.summary()
+                .contains("of the reshare met; all within 30 min of it met")
+        );
+
+        r.creator_sent_bytes = 50.1 * 1_000.0;
+        r.stranger_held_after_secs[199] = Some(2401.0);
+        let marks = r.marks();
+        assert!(!marks.creator_copies);
+        assert_eq!(marks.strangers_most_within_15_min, Some(true));
+        assert_eq!(marks.strangers_all_within_30_min, Some(false));
+        r.stranger_held_after_secs[1] = Some(1501.0);
+        assert_eq!(r.marks().strangers_most_within_15_min, Some(false));
+        // Without a reshare, no stranger could start.
+        r.reshared_after_secs = None;
+        assert_eq!(r.marks().strangers_all_within_30_min, Some(false));
     }
 
     #[test]

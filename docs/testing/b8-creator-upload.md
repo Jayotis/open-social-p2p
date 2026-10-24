@@ -41,7 +41,7 @@ The defaults are the scenario below; `osp-sim --help` lists the options (followe
 
 - **Fewer followers:** `--followers 100`.
 - **Followers dropping out:** `--drop-out 60` stops 60 followers, the last of each group of five, so every upload speed loses some. By default they stop 8 minutes after posting (`--drop-out-secs`), when about 40% of followers held the video in the swarm run and the creator had sent all it would. The times count only the followers that stayed.
-- **Strangers after a reshare:** `--strangers 200` adds 200 nodes that follow only the first follower. It reshares the post, hosting its media, as soon as it holds the video. The summary gives the strangers' times, what the resharer sent, and how many copies the creator sent strangers.
+- **Strangers after a reshare:** `--strangers 200` adds 200 nodes that follow only the first follower. It reshares the post, hosting its media, as soon as it holds the video. The summary gives the strangers' times, from posting and from the reshare, what the resharer sent, how many copies the creator sent strangers, and the strangers' [marks](#strangers-once-resharers-keep-track-of-copies).
 
 What loopback can't show: real delay and loss, NAT and relays. Those belong to the slow and flaky network harness, a later M3 item.
 
