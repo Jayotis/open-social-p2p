@@ -251,9 +251,21 @@ async fn unknown_devices_get_only_a_few_places() {
     for _ in 0..UNKNOWN_LIMIT {
         stalled.push(stall(&prober).await);
     }
-    // Over the limit the node doesn't even read the request.
+    // Over the limit the node doesn't even read the request. The node takes
+    // a connection's requests in the order they were opened, so once the
+    // prober's next one is turned away, its stalled ones hold every place.
+    assert_unread(&prober).await;
+    // The limit is shared: another device is turned away too.
     let other = stranger(&addr, CLIENT_ALPN).await;
-    let (mut send, mut recv) = other.open_bi().await.unwrap();
+    assert_unread(&other).await;
+
+    node.shutdown().await.unwrap();
+}
+
+/// Sends a complete client request. The node must end the stream promptly
+/// without replying.
+async fn assert_unread(conn: &Connection) {
+    let (mut send, mut recv) = conn.open_bi().await.unwrap();
     write_frame(&mut send, &ClientRequest::Status)
         .await
         .unwrap();
@@ -262,8 +274,6 @@ async fn unknown_devices_get_only_a_few_places() {
         .await
         .expect("the node should end the stream promptly");
     assert!(reply.is_err(), "no reply is expected, got {reply:?}");
-
-    node.shutdown().await.unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread")]
