@@ -1,7 +1,8 @@
 //! The follower swarm (doc 13): what a follower's node fetched ahead of time
 //! is served to anyone only if its owner chose to share it; the author's
-//! node names followers holding a copy, to its followers only; and a node
-//! in the swarm spreads out its fetches and tries other followers first.
+//! node, and a resharer's that hosts the media, names followers holding a
+//! copy, to its followers only; and a node in the swarm spreads out its
+//! fetches and tries other followers first.
 //!
 //! All nodes run in this process on loopback with relays and DNS lookup off.
 //! Requires ffmpeg.
@@ -363,6 +364,71 @@ async fn a_node_in_the_swarm_fetches_from_other_followers_first() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_resharer_that_hosts_names_its_followers_with_a_copy() {
+    let dir = tempfile::tempdir().unwrap();
+    let alice = start(dir.path(), "Alice", false).await;
+    let photo = post_photo(&alice, dir.path(), false).await;
+    let received = async |node: &Node, from: &Node| {
+        let record = peer(node, from.node_id()).await;
+        record.map_or(0.0, |r| r.counts.received_bytes.round())
+    };
+
+    // Bob follows Alice and reshares her photo, hosting it.
+    let bob = start(dir.path(), "Bob", false).await;
+    follow(&bob, &alice).await;
+    let ClientResponse::Feed { items } = call(&bob, ClientRequest::Feed { limit: 1 }).await else {
+        panic!("no feed");
+    };
+    let reshare = ClientRequest::Reshare {
+        id: items[0].id,
+        host: true,
+    };
+    call(&bob, reshare).await;
+    let addr = bob.addr().await;
+
+    // Carol follows only Bob. Bob's node names Alice's as a host too, but
+    // hers comes last: Carol gets the photo from Bob.
+    let carol = start(dir.path(), "Carol", true).await;
+    follow(&carol, &bob).await;
+    prefetched(&carol, &photo.blob).await;
+    assert!(received(&carol, &bob).await >= photo.size as f64);
+    assert!(received(&carol, &alice).await < photo.size as f64);
+
+    // Carol told Bob's node she holds a copy. It names her to its followers,
+    // not to strangers.
+    let follower = Peer::follower(&addr, false).await;
+    follower.wait_for_host(photo.blob, carol.node_id()).await;
+    let stranger = Peer::new(&addr).await;
+    let hosts = stranger.who_hosts(photo.blob).await;
+    assert!(!hosts.contains(&carol.node_id()), "{hosts:?}");
+
+    // Dave, following only Bob too, gets it from Carol.
+    let dave = start(dir.path(), "Dave", true).await;
+    follow(&dave, &bob).await;
+    prefetched(&dave, &photo.blob).await;
+    assert!(received(&dave, &carol).await >= photo.size as f64);
+    assert!(received(&dave, &bob).await < photo.size as f64);
+    assert!(received(&dave, &alice).await < photo.size as f64);
+
+    // Bob's node keeps track only of media it hosts, not of what it just
+    // fetched ahead of time.
+    let other = post_photo(&alice, dir.path(), true).await;
+    call(&bob, ClientRequest::Sync).await;
+    prefetched(&bob, &other.blob).await;
+    let sharing = Peer::follower(&addr, true).await;
+    let resp = sharing.hosting(other.blob).await;
+    assert!(matches!(resp, SocialResponse::Error { .. }), "{resp:?}");
+    assert!(matches!(
+        sharing.hosting(photo.blob).await,
+        SocialResponse::Ok
+    ));
+
+    for node in [alice, bob, carol, dave] {
+        node.shutdown().await.unwrap();
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn media_opened_before_it_was_prefetched_comes_from_a_follower_with_a_copy() {
     let dir = tempfile::tempdir().unwrap();
     let alice = start(dir.path(), "Alice", false).await;
@@ -445,17 +511,18 @@ async fn a_node_in_the_swarm_spreads_out_large_fetches() {
         Some(BlobClass::Prefetch)
     );
 
-    // So does one that shares, for a reshared post whose author's node it
-    // doesn't follow: there's no node to ask who holds a copy.
+    // So does one that shares, for a post reshared without hosting by a
+    // node it follows, whose author's node it doesn't follow: there's no
+    // node to ask who holds a copy.
     let ClientResponse::Feed { items } = call(&alice, ClientRequest::Feed { limit: 1 }).await
     else {
         panic!("no feed");
     };
-    let reshare = ClientRequest::Reshare {
+    let reshare = |host| ClientRequest::Reshare {
         id: items[0].id,
-        host: false,
+        host,
     };
-    call(&carol, reshare).await;
+    call(&carol, reshare(false)).await;
     let dave = start_spread(dir.path(), "Dave", true, hour).await;
     follow(&dave, &carol).await;
     assert_eq!(
@@ -463,7 +530,22 @@ async fn a_node_in_the_swarm_spreads_out_large_fetches() {
         Some(BlobClass::Prefetch)
     );
 
-    for node in [alice, bob, carol, dave] {
+    // Reshared with hosting, the resharer's node knows, so the fetch waits.
+    let erin = start(dir.path(), "Erin", false).await;
+    follow(&erin, &alice).await;
+    call(&erin, reshare(true)).await;
+    let frank = start_spread(dir.path(), "Frank", true, hour).await;
+    follow(&frank, &erin).await;
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    assert_eq!(frank.blob_class(&photo.blob).unwrap(), None);
+    // Dave already has it, so he tells Erin's node at once.
+    follow(&dave, &erin).await;
+    Peer::follower(&erin.addr().await, false)
+        .await
+        .wait_for_host(photo.blob, dave.node_id())
+        .await;
+
+    for node in [alice, bob, carol, dave, erin, frank] {
         node.shutdown().await.unwrap();
     }
 }

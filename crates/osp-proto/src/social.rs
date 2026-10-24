@@ -41,12 +41,13 @@ pub enum SocialRequest {
     /// Push hint from a followed node: `actor` has published up to `seq`.
     Notify { actor: PublicKey, seq: u64 },
     /// Which nodes this node knows to be serving `blob`. To its followers,
-    /// the node of the post's author also names a few followers that hold
-    /// a copy (doc 13).
+    /// the node of the post's author, or of a resharer that hosts it, also
+    /// names a few followers that hold a copy (doc 13).
     WhoHosts { blob: BlobHash },
-    /// "I hold a verified copy of `blob`, media of one of your posts, and
-    /// serve it to anyone." From a follower that subscribed with
-    /// `shares_prefetched`, so the author's node can name it in `WhoHosts`.
+    /// "I hold a verified copy of `blob`, media of one of your posts or of
+    /// a post you reshared and host, and serve it to anyone." From a
+    /// follower that subscribed with `shares_prefetched`, so your node can
+    /// name it in `WhoHosts`.
     Hosting { blob: BlobHash },
     /// "The identity you follow now lives on this node" (ADR 0009). Sent to
     /// followers when a node takes over an identity. `profile` is its signed
