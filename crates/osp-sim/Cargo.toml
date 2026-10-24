@@ -1,0 +1,24 @@
+[package]
+name = "osp-sim"
+description = "Open Social P2P simulated network harness: many real nodes in one process, for measuring how media spreads"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license-file.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+osp-proto.workspace = true
+osp-node = { workspace = true, features = ["sim"] }
+anyhow.workspace = true
+clap.workspace = true
+n0-future.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

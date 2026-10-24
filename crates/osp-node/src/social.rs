@@ -53,7 +53,7 @@ const MAX_FOLLOWERS: usize = 10_000;
 /// identities are free, so this stops a flood of them. Someone refused
 /// still sees new posts, by polling; they only miss the push notification
 /// until they try again (nodes do once a day).
-const MAX_NEW_FOLLOWERS_PER_HOUR: usize = 100;
+pub(crate) const MAX_NEW_FOLLOWERS_PER_HOUR: usize = 100;
 /// Followers not heard from for this long are forgotten. A live follower's
 /// node subscribes again every day, and answers notifications.
 pub(crate) const FOLLOWER_SILENCE: Duration = Duration::from_secs(30 * 24 * 60 * 60);
@@ -362,7 +362,8 @@ impl Core {
                 "this node has as many followers as it can notify"
             );
             ensure!(
-                self.db.new_followers_since(now - 60 * 60 * 1000)? < MAX_NEW_FOLLOWERS_PER_HOUR,
+                self.db.new_followers_since(now - 60 * 60 * 1000)?
+                    < self.sim.new_followers_per_hour,
                 "this node is busy with new followers; try again later"
             );
         }
