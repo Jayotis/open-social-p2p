@@ -74,4 +74,14 @@ Only the swarm run is judged. The others are compared with the same marks, and r
 
 ## Results
 
-None yet.
+| Date | Run | Code | Followers holding the video | 50% / 95% / all | Creator sent | Pass marks |
+| --- | --- | --- | --- | --- | --- | --- |
+| 2026-10-24 | Baseline | `e61641f` | 8 of 300 after an hour | not reached | 8 copies (418 MB), all in the first 3 minutes; 1,130 requests refused as busy | creator met; 95% and all missed |
+
+**Baseline.** 300 followers subscribed in 5 seconds; the video came out at 52.2 MB.
+
+- The 8 followers that got one of the creator's 8 transfer places shared its 20 Mbit/s and had the video at 171 s.
+- Every other follower was refused as busy, asked who else hosts the video, was refused again, and gave up. Nothing tried again during the hour, so the creator's upload sat idle for the remaining 57 minutes while 292 followers didn't have the video.
+- 274 followers didn't get the thumbnail either: all 8 places were taken by videos, so the thumbnails, 37 KB each, were refused too.
+- Followers sent nothing, since their prefetched copies are private.
+- The creator's pass mark is met only because almost nothing was delivered. That's why the swarm run has to meet both marks.
