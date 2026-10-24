@@ -75,11 +75,18 @@ const MIN_FREE_DISK: u64 = health::LOW_DISK_BYTES;
 /// Names of the tags that keep our blobs from the garbage collector.
 const TAG_PREFIX: &str = "osp/";
 
-/// Most media transfers served to other nodes at once.
-const MAX_TRANSFERS: usize = 8;
-/// Most of those for strangers: nodes that neither follow us nor are our
+/// Most media transfers served to other nodes at once. Half of them, rounded
+/// up, may go to strangers: nodes that neither follow us nor are our
 /// devices. A crowd of strangers then can't crowd out our followers.
-const MAX_STRANGER_TRANSFERS: usize = 4;
+const MAX_TRANSFERS: usize = 8;
+/// With an upload cap, one transfer place for each this many megabits a
+/// second: the v1-720p video bitrate (ADR 0005). Each transfer then goes
+/// fast enough to finish a video in minutes, and early copies become
+/// sources for others sooner, rather than every transfer crawling along
+/// together until they time out.
+const MBPS_PER_TRANSFER: f64 = 1.5;
+/// Fewest transfer places, however slow the upload.
+const MIN_TRANSFERS: usize = 2;
 /// Most at once for any one node.
 const MAX_TRANSFERS_PER_NODE: usize = 2;
 /// How long a request over one of those limits waits for a place. After
@@ -188,6 +195,7 @@ impl ContentStore {
             rx,
             self.db.clone(),
             pacer,
+            Places::new(serving.max_upload_mbps),
             swarm.share_prefetched,
         ));
         (BlobsProtocol::new(&self.store, Some(events)), task)
@@ -744,10 +752,10 @@ async fn enforce_serving_rules(
     mut rx: mpsc::Receiver<ProviderMessage>,
     db: Arc<Db>,
     mut pacer: Option<Pacer>,
+    mut places: Places,
     share_prefetched: bool,
 ) {
     let mut peers: HashMap<u64, Option<EndpointId>> = HashMap::new();
-    let mut places = Places::new();
     while let Some(msg) = rx.recv().await {
         // Requests for data: who asked, whether the rules allow it, whether
         // it is small, and the channels for the answer and for news of the
@@ -854,10 +862,12 @@ struct Places {
 }
 
 impl Places {
-    fn new() -> Self {
+    /// The limits for an upload cap of `max_upload_mbps`, 0 for none.
+    fn new(max_upload_mbps: u64) -> Self {
+        let all = transfer_places(max_upload_mbps);
         Self {
-            all: Arc::new(Semaphore::new(MAX_TRANSFERS)),
-            strangers: Arc::new(Semaphore::new(MAX_STRANGER_TRANSFERS)),
+            all: Arc::new(Semaphore::new(all)),
+            strangers: Arc::new(Semaphore::new(all.div_ceil(2))),
             small: Arc::new(Semaphore::new(MAX_SMALL_TRANSFERS)),
             per_node: HashMap::new(),
         }
@@ -884,6 +894,15 @@ impl Places {
         needed.push(self.all.clone());
         needed
     }
+}
+
+/// Media transfers served at once with an upload cap of `mbps`, 0 for none.
+fn transfer_places(mbps: u64) -> usize {
+    if mbps == 0 {
+        return MAX_TRANSFERS;
+    }
+    let places = (mbps as f64 / MBPS_PER_TRANSFER) as usize;
+    places.clamp(MIN_TRANSFERS, MAX_TRANSFERS)
 }
 
 /// Waits up to `BUSY_WAIT` for a place in each limit. `None` if one stayed
@@ -975,6 +994,23 @@ mod tests {
     const KB: u64 = 1 << 10;
     /// Short, so a test sees the collector run.
     const GC_SOON: Duration = Duration::from_millis(100);
+
+    #[test]
+    fn a_slow_upload_offers_fewer_transfers_at_once() {
+        let places = |mbps| {
+            let p = Places::new(mbps);
+            (p.all.available_permits(), p.strangers.available_permits())
+        };
+        // No cap: as many as ever. A cap: one per 1.5 Mbit/s, within limits.
+        assert_eq!(places(0), (8, 4));
+        assert_eq!(places(1), (2, 1));
+        assert_eq!(places(5), (3, 2));
+        assert_eq!(places(10), (6, 3));
+        assert_eq!(places(12), (8, 4));
+        assert_eq!(places(1000), (8, 4));
+        // Small files keep their own places.
+        assert_eq!(Places::new(1).small.available_permits(), 8);
+    }
 
     struct Fixture {
         dir: tempfile::TempDir,
