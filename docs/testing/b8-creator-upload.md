@@ -1,6 +1,6 @@
 # B8: the creator's upload, with and without the follower swarm
 
-**Status:** Plan. The pass marks below were fixed on 2026-10-24, before anything was measured. Changing one later needs a dated note here saying what changed and why.
+**Status:** The swarm run passed both marks on 2026-10-24 ([results](#results)). The pass marks below were fixed that day, before anything was measured. Changing one later needs a dated note here saying what changed and why.
 
 The [critical review](../reviews/2026-10-21-review-of-docs-12-and-13.md#b8-the-first-wave-still-hits-the-creator-serious) found that when someone posts, every follower's node fetches the media at once, so a home connection is swamped by the first wave (finding B8). The follower swarm ([doc 13](../13-hosting-roles-and-follower-swarm.md)) is meant to fix this: fetches are spread out, and early fetchers serve later ones. Doc 13 can't be accepted until this test shows that it works. The review requires the numbers to be written down first, so that results can't be read to fit afterwards.
 
@@ -79,6 +79,7 @@ Only the swarm run is judged. The others are compared with the same marks, and r
 | Date | Run | Code | Followers holding the video | 50% / 95% / all | Creator sent | Pass marks |
 | --- | --- | --- | --- | --- | --- | --- |
 | 2026-10-24 | Baseline | `e61641f` | 8 of 300 after an hour | not reached | 8 copies (418 MB), all in the first 3 minutes; 1,130 requests refused as busy | creator met; 95% and all missed |
+| 2026-10-24 | **Swarm** | `9d9c982` | 300 of 300 after 14 minutes | 509 s / 671 s / 843 s | 20.2 copies (1,055 MB), all in the first 8 minutes; 117 requests refused as busy | **all met** |
 
 **Baseline.** 300 followers subscribed in 5 seconds; the video came out at 52.2 MB.
 
@@ -87,3 +88,12 @@ Only the swarm run is judged. The others are compared with the same marks, and r
 - 274 followers didn't get the thumbnail either: all 8 places were taken by videos, so the thumbnails, 37 KB each, were refused too.
 - Followers sent nothing, since their prefetched copies are private.
 - The creator's pass mark is met only because almost nothing was delivered. That's why the swarm run has to meet both marks.
+
+**Swarm.** The same scenario with `--swarm`: followers share what they prefetch, and each waited a random 0 to 10 minutes before fetching the video.
+
+- The creator sent 20 copies of the video, and the thumbnail to every follower: 20.2 copies of the media, two thirds of what the mark allows. The followers sent the other 280 copies between them.
+- The first followers held the video at 161 s. The creator's copies rose from 8 at 3 minutes to 20 at 8 minutes, then stayed at 20 while the rest of the followers fetched from each other.
+- Half the followers held it at 8½ minutes, 95% at 11 minutes, and all 300 at 14 minutes. The spread of up to 10 minutes accounts for most of that.
+- 119 followers sent something; the busiest sent 11 copies, and 181 sent nothing. Followers at 5, 10 and 20 Mbit/s sent 99, 76 and 105 copies: slow followers served about as much as fast ones, each copy just taking longer.
+- Followers' downloads: 600 completed, 515 refused as busy, none failed or sent bad data. Each busy refusal cost the requester up to 10 seconds of waiting before it moved on to the next host. That cost was paid without missing a mark here, but it is the first thing to look at if a later run is slow.
+- Loopback adds no delay or loss, every follower stayed online, and none were strangers. The other runs in the table above test those.
