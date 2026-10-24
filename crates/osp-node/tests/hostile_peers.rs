@@ -1092,7 +1092,10 @@ async fn a_follower_refused_as_busy_is_sent_to_a_follower_with_a_copy() {
             break;
         }
         assert!(started.elapsed() < BUSY_WAIT * 3, "never named");
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        // Each reply counts against the watcher's samples of the followers
+        // with a copy, 60 an hour: asking faster would use them all up
+        // before the follower says it holds one.
+        tokio::time::sleep(Duration::from_secs(1)).await;
     }
 
     // With every place taken, a follower that doesn't share is refused,
