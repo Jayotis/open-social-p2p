@@ -1,6 +1,6 @@
 # B8: the creator's upload, with and without the follower swarm
 
-**Status:** The swarm run passed both marks on 2026-10-24, and the other three runs were measured the same day ([results](#results)). The pass marks below were fixed that day, before anything was measured. Changing one later needs a dated note here saying what changed and why.
+**Status:** The swarm run passed both marks on 2026-10-24, and the other three runs were measured the same day ([results](#results)). The pass marks below were fixed that day, before anything was measured. Changing one later needs a dated note here saying what changed and why. Marks for repeating the strangers run once resharers keep track of copies were added on 2026-10-24, also before that run ([below](#strangers-once-resharers-keep-track-of-copies)).
 
 The [critical review](../reviews/2026-10-21-review-of-docs-12-and-13.md#b8-the-first-wave-still-hits-the-creator-serious) found that when someone posts, every follower's node fetches the media at once, so a home connection is swamped by the first wave (finding B8). The follower swarm ([doc 13](../13-hosting-roles-and-follower-swarm.md)) is meant to fix this: fetches are spread out, and early fetchers serve later ones. Doc 13 can't be accepted until this test shows that it works. The review requires the numbers to be written down first, so that results can't be read to fit afterwards.
 
@@ -66,6 +66,14 @@ Recorded too, without a pass mark:
 - what each follower sent: most, median, and how many sent nothing;
 - busy refusals and failed downloads.
 
+### Strangers, once resharers keep track of copies
+
+Fixed on 2026-10-24, before the run was repeated. The first strangers run (below) was only compared with the marks. Once a resharer that hosts keeps track of which of its followers hold a copy ([doc 13](../13-hosting-roles-and-follower-swarm.md#strangers-arriving-from-outside) phase 2), the strangers run is repeated and judged. It passes when **all** of these hold:
+
+1. **The creator's upload stays low:** it sends at most **50 copies** in total. That is the same rule as above, a tenth of the nodes that get the video, now 300 followers and 200 strangers. The first strangers run sent 160.
+2. **Strangers get the media promptly:** 95% of strangers hold the verified file within **15 minutes of the reshare**, and every stranger within **30 minutes of it**. Strangers can't start before the reshare exists, so their clock starts then.
+3. **Followers still meet their marks:** 95% within 15 minutes of posting and all within 30.
+
 ## Runs
 
 | Run | Code | What it shows |
@@ -75,8 +83,9 @@ Recorded too, without a pass mark:
 | Fewer followers | swarm, 100 followers | whether the creator's upload grows with the number of followers |
 | Followers dropping out | swarm, a fifth of the followers stop partway through | whether the spread recovers when sources disappear |
 | Strangers after a reshare | swarm, plus 200 nodes that don't follow the creator fetching the post through a reshare | the cost of `WhoHosts` pointing strangers only at the creator and resharers (doc 13) |
+| Strangers, resharers' swarms | the same, with doc 13 phase 2 | whether strangers that follow a resharer can get the video from each other; judged on the [marks above](#strangers-once-resharers-keep-track-of-copies) |
 
-Only the swarm run is judged. The others are compared with the same marks, and reported either way.
+Only the swarm run and the second strangers run are judged. The others are compared with the same marks, and reported either way.
 
 ## Results
 
