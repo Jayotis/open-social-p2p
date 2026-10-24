@@ -35,6 +35,10 @@ use crate::{
 const RESUBSCRIBE_EVERY: Duration = Duration::from_secs(24 * 60 * 60);
 /// Hosts taken from one "who hosts" reply. Enough to find a copy.
 const MAX_HOSTS_PER_REPLY: usize = 20;
+/// How long media someone opened waits for a followed node to name other
+/// hosts before the download starts without them. Nodes that are up answer
+/// in milliseconds.
+const ASK_FIRST_WAIT: Duration = Duration::from_secs(3);
 /// However often followed nodes notify us, we sync at most this often.
 const MIN_SYNC_GAP: Duration = Duration::from_secs(5);
 /// Followed nodes synced at once.
@@ -581,21 +585,7 @@ impl Core {
     ) -> Result<u64> {
         let mut providers = Vec::new();
         if self.store.stored_size(blob).await?.is_none() {
-            let me = self.endpoint.id();
-            let req = SocialRequest::WhoHosts { blob: *blob };
-            if let Ok(SocialResponse::Hosts { nodes }) = self.social_request(author, &req).await {
-                let others = nodes
-                    .iter()
-                    .filter(|a| a.id != me && a.id != author.id && check_addr(a).is_ok())
-                    .take(MAX_HOSTS_PER_REPLY);
-                for addr in others {
-                    // For this download only (see `ask_who_hosts`).
-                    remember(&self.lookup, addr);
-                    if !providers.contains(&addr.id) {
-                        providers.push(addr.id);
-                    }
-                }
-            }
+            providers = self.named_hosts(author, blob).await;
             // A crowd asks these first, so they come last.
             for id in self.known_providers(blob)?.into_iter().chain([author.id]) {
                 if !providers.contains(&id) {
@@ -616,6 +606,29 @@ impl Core {
         Ok(size)
     }
 
+    /// The nodes `node` names as hosts of `blob`, other than itself and
+    /// this node. An author's node names followers holding a copy to its
+    /// followers (doc 13); they're used for this download only (see
+    /// `ask_who_hosts`).
+    async fn named_hosts(&self, node: &EndpointAddr, blob: &BlobHash) -> Vec<EndpointId> {
+        let mut named = Vec::new();
+        let req = SocialRequest::WhoHosts { blob: *blob };
+        if let Ok(SocialResponse::Hosts { nodes }) = self.social_request(node, &req).await {
+            let me = self.endpoint.id();
+            let others = nodes
+                .iter()
+                .filter(|a| a.id != me && a.id != node.id && check_addr(a).is_ok())
+                .take(MAX_HOSTS_PER_REPLY);
+            for addr in others {
+                remember(&self.lookup, addr);
+                if !named.contains(&addr.id) {
+                    named.push(addr.id);
+                }
+            }
+        }
+        named
+    }
+
     /// Makes sure a blob is stored locally, downloading at most `declared`
     /// bytes of it if needed, and records it under at least `class`. If the
     /// last try failed because a node with it was busy, the error says so
@@ -628,6 +641,9 @@ impl Core {
     ) -> Result<u64> {
         let providers = if self.store.has(blob).await? {
             Vec::new()
+        } else if class == BlobClass::Cache {
+            // Opened on demand, on one of our devices or with `osp fetch`.
+            self.providers_asking_first(blob).await?
         } else {
             self.known_providers(blob)?
         };
@@ -672,6 +688,35 @@ impl Core {
                 }
             }
         }
+    }
+
+    /// Nodes to fetch media opened on demand from, when it wasn't fetched
+    /// ahead of time: first the hosts named by the nodes we follow
+    /// among those known to serve it, such as its author's, which may name
+    /// followers with a copy, as a prefetch through the swarm does; then
+    /// the nodes known to serve it. So everyone who opens a post doesn't go
+    /// to its author.
+    async fn providers_asking_first(&self, blob: &BlobHash) -> Result<Vec<EndpointId>> {
+        let known = self.known_providers(blob)?;
+        let mut providers = Vec::new();
+        for follow in self.db.follows()? {
+            if !known.contains(&follow.addr.id) {
+                continue;
+            }
+            // Someone is waiting: a node that doesn't answer at once is
+            // only tried for the download, with the rest.
+            let ask = self.named_hosts(&follow.addr, blob);
+            let named = tokio::time::timeout(ASK_FIRST_WAIT, ask)
+                .await
+                .unwrap_or_default();
+            for id in named {
+                if !known.contains(&id) && !providers.contains(&id) {
+                    providers.push(id);
+                }
+            }
+        }
+        providers.extend(known);
+        Ok(providers)
     }
 
     /// Nodes believed to serve `blob`, most recently seen first.
