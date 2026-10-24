@@ -1,6 +1,6 @@
 # Hosting Roles, the Follower Swarm and Expiry
 
-**Status: Proposal, second draft.** Phase 1 is built behind a switch that is off by default, and passed the [B8](testing/b8-creator-upload.md#results) swarm run on 2026-10-24: with 300 followers, the creator sent 20 copies of a new video instead of 300, and every follower had it within 14 minutes. With `share_prefetched` under `[swarm]` on, a node shares its `prefetch` copies, spreads its prefetches out, tells the author's node when it holds a copy, and fetches from the followers that node names first. The author's node names them only to its followers, whether or not they share; any follower refused as busy is sent to them too. Not built yet: a freshness time per host in `WhoHosts`, choosing sources by peer assessment, and the consent question at setup. The first draft ("Segment hosting, random assignment and content expiry") was taken apart in a [critical review](reviews/2026-10-21-review-of-docs-12-and-13.md); this draft responds to it. It becomes a decision record once its blocking findings are resolved.
+**Status: Phase 1 accepted (2026-10-24); phases 2 to 4 are proposals.** Phase 1 is built behind a switch that is off by default, and passed the [B8](testing/b8-creator-upload.md#results) swarm run on 2026-10-24: with 300 followers, the creator sent 20 copies of a new video instead of 300, and every follower had it within 14 minutes. With 100 followers, or with a fifth of them stopping partway, the marks held too. Strangers arriving through a reshare are the weak spot: the creator sent 200 of them 136 copies in an hour ([below](#strangers-arriving-from-outside)). With `share_prefetched` under `[swarm]` on, a node shares its `prefetch` copies, spreads its prefetches out, tells the author's node when it holds a copy, and fetches from the followers that node names first. The author's node names them only to its followers, whether or not they share; any follower refused as busy is sent to them too. Not built yet: a freshness time per host in `WhoHosts`, choosing sources by peer assessment, and the consent question at setup. The first draft ("Segment hosting, random assignment and content expiry") was taken apart in a [critical review](reviews/2026-10-21-review-of-docs-12-and-13.md); this draft responds to it. Phase 1's gates are met: B8 passed, and a test checks that followers with a copy are named only to followers (`WhoHosts` [reveals the follower list](#whohosts-reveals-the-follower-list)). A short decision record will follow when `share_prefetched` is to be on by default, or recommended at setup, since that changes a privacy default.
 
 ## Summary
 
@@ -74,7 +74,11 @@ Early fetchers become sources for later ones, so the creator's upload grows with
 
 ### Strangers arriving from outside
 
-Someone who doesn't follow the creator (for example arriving through a reshared link) asks the creator's node or the resharer's node `WhoHosts`, gets the same list of swarm members and resharer hosts, and downloads from them.
+Someone who doesn't follow the creator, for example someone who follows a resharer, asks the creator's node or the resharer's node `WhoHosts`. Under the interim rules above, the creator's node names them only hosts that are public by choice, such as the resharer.
+
+B8 measured what that costs ([strangers after a reshare](testing/b8-creator-upload.md#results)): 200 nodes that follow only a resharer uploading at 5 Mbit/s. Half of them held the video after 44 minutes, and the creator sent them 136 copies in the hour, against 24 for its 300 followers. They sent each other nothing: the resharer's node doesn't keep track of which of its followers hold a reshared post's media, and their nodes fetch a reshared post's media at once instead of spreading their fetches out.
+
+**Next step** (phase 2): a resharer that hosts does for its own followers what the creator's node does now. They spread their fetches, tell it when they hold a copy, and it names them to its other followers. The rule stays the same: a node is named only to nodes that follow the same node it does. The strangers run is then repeated, with pass marks fixed first. Someone who arrives through a link without following anyone keeps a private copy, which is never served, so their fetches still fall on hosts that are public by choice.
 
 ## Preservation nodes
 
@@ -132,7 +136,7 @@ If the same hosts each hold every segment, availability equals the whole-file co
 ## Phases
 
 1. **Swarm basics:** prefetched copies served publicly, staggered prefetch, `WhoHosts` listing followers, busy redirect, upload limit. Pairs naturally with milestone M3.
-2. **Parallel range downloads** from several whole-file holders.
+2. **Resharers' swarms and parallel range downloads:** a resharer that hosts keeps track of its own followers' copies ([strangers](#strangers-arriving-from-outside)), and large files are fetched in byte ranges from several whole-file holders.
 3. **Demand-based expiry.**
 4. **Preservation nodes.**
 
@@ -140,7 +144,7 @@ If the same hosts each hold every segment, availability equals the whole-file co
 
 On the test machines, then in simulation:
 
-- One creator, a few hundred simulated followers: measure the creator's total upload with and without the swarm. The [plan and pass marks](testing/b8-creator-upload.md) were fixed before measuring.
+- One creator, a few hundred simulated followers: measure the creator's total upload with and without the swarm. The [plan and pass marks](testing/b8-creator-upload.md) were fixed before measuring. Measured 2026-10-24, together with the next two.
 - A sudden stranger spike after a reshare.
 - Followers going offline mid-spread.
 - Expiry under shrinking demand: confirm copies don't all vanish at once.

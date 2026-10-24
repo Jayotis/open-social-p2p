@@ -1,6 +1,6 @@
 # B8: the creator's upload, with and without the follower swarm
 
-**Status:** The swarm run passed both marks on 2026-10-24 ([results](#results)). The pass marks below were fixed that day, before anything was measured. Changing one later needs a dated note here saying what changed and why.
+**Status:** The swarm run passed both marks on 2026-10-24, and the other three runs were measured the same day ([results](#results)). The pass marks below were fixed that day, before anything was measured. Changing one later needs a dated note here saying what changed and why.
 
 The [critical review](../reviews/2026-10-21-review-of-docs-12-and-13.md#b8-the-first-wave-still-hits-the-creator-serious) found that when someone posts, every follower's node fetches the media at once, so a home connection is swamped by the first wave (finding B8). The follower swarm ([doc 13](../13-hosting-roles-and-follower-swarm.md)) is meant to fix this: fetches are spread out, and early fetchers serve later ones. Doc 13 can't be accepted until this test shows that it works. The review requires the numbers to be written down first, so that results can't be read to fit afterwards.
 
@@ -84,6 +84,9 @@ Only the swarm run is judged. The others are compared with the same marks, and r
 | --- | --- | --- | --- | --- | --- | --- |
 | 2026-10-24 | Baseline | `e61641f` | 8 of 300 after an hour | not reached | 8 copies (418 MB), all in the first 3 minutes; 1,130 requests refused as busy | creator met; 95% and all missed |
 | 2026-10-24 | **Swarm** | `9d9c982` | 300 of 300 after 14 minutes | 509 s / 671 s / 843 s | 20.2 copies (1,055 MB), all in the first 8 minutes; 117 requests refused as busy | **all met** |
+| 2026-10-24 | Fewer followers | `d1c4662` | 100 of 100 after 12 minutes | 417 s / 668 s / 708 s | 9.1 copies (473 MB), all in the first 4 minutes; 8 requests refused as busy | all met (the creator's mark is a tenth of the followers: 10 copies) |
+| 2026-10-24 | Followers dropping out | `d1c4662` | 240 of the 240 that stayed, after 13 minutes | 462 s / 642 s / 761 s | 17.2 copies (897 MB), all in the first 7 minutes; 118 requests refused as busy | all met |
+| 2026-10-24 | Strangers after a reshare | `d1c4662` | followers: 300 of 300 after 15 minutes; strangers: 152 of 200 after an hour | followers: 562 s / 742 s / 900 s; strangers: 2,624 s / not reached / not reached | 160.4 copies (8,367 MB): 24.2 to followers, 136.2 to strangers, still sending when the hour ended; 1,101 requests refused as busy | followers' times met; creator missed (what it sent followers alone would meet it); strangers missed both times |
 
 **Baseline.** 300 followers subscribed in 5 seconds; the video came out at 52.2 MB.
 
@@ -100,4 +103,24 @@ Only the swarm run is judged. The others are compared with the same marks, and r
 - Half the followers held it at 8½ minutes, 95% at 11 minutes, and all 300 at 14 minutes. The spread of up to 10 minutes accounts for most of that.
 - 119 followers sent something; the busiest sent 11 copies, and 181 sent nothing. Followers at 5, 10 and 20 Mbit/s sent 99, 76 and 105 copies: slow followers served about as much as fast ones, each copy just taking longer.
 - Followers' downloads: 600 completed, 515 refused as busy, none failed or sent bad data. Each busy refusal cost the requester up to 10 seconds of waiting before it moved on to the next host. That cost was paid without missing a mark here, but it is the first thing to look at if a later run is slow.
-- Loopback adds no delay or loss, every follower stayed online, and none were strangers. The other runs in the table above test those.
+- Loopback adds no delay or loss, every follower stayed online, and none were strangers. The runs below test followers stopping and strangers; delay and loss wait for the slow and flaky network harness.
+
+**Fewer followers.** The swarm run with 100 followers. Run with `main` at `d1c4662`, whose node code is the same as `9d9c982`'s: only the harness changed.
+
+- The creator sent 9.1 copies, all in the first 4 minutes: 8 to the followers that took its 8 transfer places first, then one more. Followers sent the other 91 between them; the busiest sent 6, and 53 sent nothing.
+- With a third of the followers, the creator sent about half as many copies: 9 here, 20 for 300 followers. Its first copies go to whoever fetches first, before any follower holds one, so its share of the copies falls as the audience grows: 9% here, 7% for 300.
+- 95% of followers held the video at 11 minutes and all at 12. Only 19 downloads were refused as busy, against 515 for 300 followers.
+
+**Followers dropping out.** The swarm run with 60 followers, the last of each group of five, stopping 8 minutes after posting. By then 163 followers held the video, 32 of them among those stopping. The times count the 240 that stayed.
+
+- The creator had sent its 17.2 copies by 7 minutes, before anyone stopped, and sent nothing after. The 240 that stayed got the rest from each other, and as promptly as in the swarm run: 95% at 642 s and all at 761 s.
+- Losing sources cost little. 9 downloads failed when their source stopped partway, and 7 times a follower couldn't connect to a follower that had stopped but was still named as holding a copy, costing a 10-second connect timeout each time. The two slowest followers finished about 70 seconds after the rest.
+- The log has one error per stopped follower, from the blob store's clean-up: it runs every 10 minutes and outlives a node that stops, so it fails once and ends. A real node's process ends when it stops, so this shows only when nodes stop inside a process that keeps running, as here.
+
+**Strangers after a reshare.** The swarm run plus 200 nodes that follow only the first follower, which uploads at 5 Mbit/s and reshared the post with hosting at 574 s, once it held the video.
+
+- Followers were hardly affected: all 300 held the video at 15 minutes, against 14 without strangers, and the creator sent them 24.2 copies.
+- Strangers were slow: half held the video after 44 minutes, and 152 of 200 after an hour. They had two sources. The resharer sent 31 copies, as many as its upload allowed. The creator sent 136, and once the followers were done its 4 places for strangers took its whole upload, about 3 copies a minute until the hour ended.
+- Strangers sent each other nothing, though they share what they prefetch. Nobody names a stranger with a copy to another stranger: the creator's node names to strangers only hosts that are public by choice, and the resharer's node doesn't keep track of which of its followers hold a reshared post's media. Strangers also fetch a reshared post's media at once instead of spreading their fetches out, so all 200 asked together: 2,925 of their requests were refused as busy.
+- 13 strangers gave up prefetching the video: 5 after being refused as busy too many times, and 8 after a download took longer than the 10 minutes a download may take. The resharer's 5 Mbit/s shared by 8 transfers gives each about 0.6 Mbit/s, at which a 52 MB copy takes about 11 minutes. That is also below the video's 1.5 Mbit/s, so a node with a slow upload should perhaps offer fewer places at once.
+- This is the cost [doc 13](../13-hosting-roles-and-follower-swarm.md#strangers-arriving-from-outside) expected of naming followers only to followers, now measured. Its proposed next step is that a resharer that hosts keeps track of its own followers' copies, as the creator's node does; this run would then be repeated with pass marks fixed first.
