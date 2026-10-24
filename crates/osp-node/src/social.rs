@@ -26,7 +26,7 @@ use tokio::sync::Semaphore;
 use tracing::{debug, info};
 
 use crate::{
-    db::{BlobClass, now_ms},
+    db::now_ms,
     node::{Core, check_addr, remember},
     peers::{self, Event},
 };
@@ -232,8 +232,9 @@ impl Core {
                 if class.is_some_and(|c| c.served_to_anyone(share)) {
                     nodes.push(self.shareable_addr().await);
                 }
-                // Followers with a copy of our own media, only to followers.
-                if class == Some(BlobClass::Own)
+                // Followers with a copy of media we host by choice, our own
+                // or reshared, only to followers.
+                if class.is_some_and(|c| c.is_public())
                     && self.db.is_follower(&remote)?
                     && self.may_sample_swarm(remote)
                 {
@@ -253,8 +254,8 @@ impl Core {
                     "only a follower that shares what it prefetches can host this node's media"
                 );
                 ensure!(
-                    self.db.blob_class(&blob)? == Some(BlobClass::Own),
-                    "{} isn't media of this node's posts",
+                    self.db.blob_class(&blob)?.is_some_and(|c| c.is_public()),
+                    "{} isn't media this node hosts",
                     blob.fmt_short()
                 );
                 self.db.add_swarm_member(&blob, &remote)?;

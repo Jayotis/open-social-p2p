@@ -334,13 +334,16 @@ impl Core {
                     }
                     Payload::Announce(announce) => {
                         if let Some(note) = reshared {
-                            if announce.hosting {
+                            // A resharer that hosts the media keeps track of
+                            // its followers' copies too.
+                            let tracker = announce.hosting.then_some(&follow.addr);
+                            if let Some(addr) = tracker {
                                 for blob in note.blobs() {
-                                    self.db.add_host(&blob, &follow.addr)?;
+                                    self.db.add_host(&blob, addr)?;
                                 }
                             }
                             if is_new {
-                                blobs.extend(prefetchable(&note, None));
+                                blobs.extend(prefetchable(&note, tracker));
                             }
                         }
                     }
@@ -496,7 +499,10 @@ impl Core {
     /// tried again later, both in `later_loop`.
     async fn prefetch(&self, wanted: Vec<Wanted>) {
         for wanted in wanted {
-            if self.joins_swarm(&wanted) {
+            // One already here, as when a post we have is reshared, isn't
+            // spread out: there's nothing to fetch, only trackers to tell.
+            let here = self.store.has(&wanted.blob).await.unwrap_or(false);
+            if self.joins_swarm(&wanted) && !here {
                 let wait = self.sim.prefetch_spread.mul_f64(random_fraction());
                 self.fetch_later(Later {
                     wanted,
@@ -510,12 +516,13 @@ impl Core {
     }
 
     /// Whether this node gets `wanted` through the follower swarm: it shares
-    /// what it prefetches, the file is large, and its author's node, which
-    /// knows the followers holding a copy, is one we follow.
+    /// what it prefetches, the file is large, and it follows a node that
+    /// knows the followers holding a copy: the author's, or a resharer's
+    /// that hosts it.
     fn joins_swarm(&self, wanted: &Wanted) -> bool {
         self.config.swarm.share_prefetched
             && wanted.size > store::SMALL_BLOB
-            && wanted.author.is_some()
+            && !wanted.trackers.is_empty()
     }
 
     /// Fetches one file ahead of time, refused as busy `refusals` times so
@@ -533,15 +540,11 @@ impl Core {
 
     async fn try_fetch_ahead(&self, wanted: Wanted, refusals: u32) -> Option<Later> {
         let blob = wanted.blob.fmt_short();
-        let fetched = match &wanted.author {
-            Some(author) if self.joins_swarm(&wanted) => {
-                self.fetch_from_swarm(&wanted.blob, wanted.size, author)
-                    .await
-            }
-            _ => {
-                self.ensure_blob(&wanted.blob, BlobClass::Prefetch, wanted.size)
-                    .await
-            }
+        let fetched = if self.joins_swarm(&wanted) {
+            self.fetch_from_swarm(&wanted).await
+        } else {
+            self.ensure_blob(&wanted.blob, BlobClass::Prefetch, wanted.size)
+                .await
         };
         match fetched {
             Ok(_) => {
@@ -574,36 +577,56 @@ impl Core {
     }
 
     /// Fetches a large file through the follower swarm (doc 13): asks the
-    /// author's node who holds a copy, tries the followers it names first
-    /// and the nodes known to host it, the author's among them, last, then
-    /// tells the author's node that this one holds a copy too.
-    async fn fetch_from_swarm(
-        &self,
-        blob: &BlobHash,
-        declared: u64,
-        author: &EndpointAddr,
-    ) -> Result<u64> {
+    /// trackers who holds a copy, tries the followers they name first, the
+    /// nodes known to host it and the trackers after them, and the author's
+    /// own nodes last, then tells the trackers that this node holds a copy
+    /// too.
+    async fn fetch_from_swarm(&self, wanted: &Wanted) -> Result<u64> {
+        let blob = &wanted.blob;
         let mut providers = Vec::new();
         if self.store.stored_size(blob).await?.is_none() {
-            providers = self.named_hosts(author, blob).await;
+            for tracker in &wanted.trackers {
+                for id in self.named_hosts(tracker, blob).await {
+                    if !providers.contains(&id) {
+                        providers.push(id);
+                    }
+                }
+            }
             // A crowd asks these first, so they come last.
-            for id in self.known_providers(blob)?.into_iter().chain([author.id]) {
+            let trackers = wanted.trackers.iter().map(|t| t.id);
+            for id in self.known_providers(blob)?.into_iter().chain(trackers) {
                 if !providers.contains(&id) {
                     providers.push(id);
                 }
             }
+            // The author's own nodes, which a resharer names too, after
+            // everyone else: they're the ones to spare.
+            let authors = self.nodes_of(&wanted.author);
+            providers.sort_by_key(|id| authors.contains(id));
         }
         let size = self
             .store
-            .download(blob, providers, BlobClass::Prefetch, declared)
+            .download(blob, providers, BlobClass::Prefetch, wanted.size)
             .await?;
-        let told = self
-            .social_request(author, &SocialRequest::Hosting { blob: *blob })
-            .await;
-        if let Err(e) = told {
-            debug!(blob = %blob.fmt_short(), "couldn't tell the author's node we hold a copy: {e:#}");
+        for tracker in &wanted.trackers {
+            let told = self
+                .social_request(tracker, &SocialRequest::Hosting { blob: *blob })
+                .await;
+            if let Err(e) = told {
+                debug!(blob = %blob.fmt_short(), "couldn't tell a tracker we hold a copy: {e:#}");
+            }
         }
         Ok(size)
+    }
+
+    /// The home nodes `actor`'s profile lists, if we have it.
+    fn nodes_of(&self, actor: &PublicKey) -> Vec<EndpointId> {
+        if let Ok(Some(profile)) = self.db.profile(actor)
+            && let Ok(Payload::Person(person)) = profile.verify()
+        {
+            return person.nodes;
+        }
+        Vec::new()
     }
 
     /// The nodes `node` names as hosts of `blob`, other than itself and
@@ -791,9 +814,12 @@ pub(crate) struct Wanted {
     blob: BlobHash,
     /// The size its post declares.
     size: u64,
-    /// The node of the post's author, when the post came from their outbox:
-    /// it knows which followers hold a copy (doc 13).
-    author: Option<EndpointAddr>,
+    /// Who made the post.
+    author: PublicKey,
+    /// Followed nodes that know which of their followers hold a copy (doc
+    /// 13): the author's, when the post came from its outbox, and those of
+    /// resharers that host it.
+    trackers: Vec<EndpointAddr>,
 }
 
 /// A post held back from the feed (`Db::insert_object_held`) until the
@@ -918,15 +944,16 @@ fn random_fraction() -> f64 {
 }
 
 /// A post's media worth fetching ahead of time: thumbnails always, media
-/// files up to `MAX_PREFETCH_BYTES`. `author` is the author's node, if the
-/// post came from their outbox.
-fn prefetchable(note: &Note, author: Option<&EndpointAddr>) -> Vec<Wanted> {
+/// files up to `MAX_PREFETCH_BYTES`. `tracker` is the followed node it came
+/// from, if that node keeps track of its followers' copies.
+fn prefetchable(note: &Note, tracker: Option<&EndpointAddr>) -> Vec<Wanted> {
     let mut wanted = Vec::new();
     let mut add = |blob, size| {
         wanted.push(Wanted {
             blob,
             size,
-            author: author.cloned(),
+            author: note.actor,
+            trackers: tracker.into_iter().cloned().collect(),
         })
     };
     for a in &note.attachment {
@@ -953,14 +980,21 @@ fn worth_holding_for(note: &Note) -> Vec<BlobHash> {
 /// Picks what one sync prefetches, within the per-sync limits, smallest
 /// first, so thumbnails aren't held up behind videos. A file wanted twice,
 /// as when a followed author's post is also reshared, is kept once, with
-/// the author's node if either knows it.
+/// the trackers of both.
 fn choose_prefetch(mut candidates: Vec<Wanted>) -> Vec<Wanted> {
-    candidates.sort_by(|a, b| {
-        a.blob
-            .cmp(&b.blob)
-            .then(b.author.is_some().cmp(&a.author.is_some()))
+    candidates.sort_by_key(|w| w.blob);
+    // `dedup_by` hands over the later of two neighbours first.
+    candidates.dedup_by(|later, kept| {
+        if later.blob != kept.blob {
+            return false;
+        }
+        for tracker in later.trackers.drain(..) {
+            if !kept.trackers.iter().any(|t| t.id == tracker.id) {
+                kept.trackers.push(tracker);
+            }
+        }
+        true
     });
-    candidates.dedup_by_key(|w| w.blob);
     candidates.sort_by_key(|w| w.size);
     let mut chosen = Vec::new();
     let mut bytes = 0;
@@ -986,27 +1020,30 @@ mod tests {
     #[test]
     fn prefetches_go_smallest_first_each_once() {
         let [video, thumb, photo] = [1u8, 2, 3].map(|b| BlobHash::from_bytes([b; 32]));
-        let author = EndpointAddr::new(iroh::SecretKey::generate().public());
-        let wanted = |blob, size, author: Option<&EndpointAddr>| Wanted {
+        let author = iroh::SecretKey::generate().public();
+        let [authors_node, resharer] =
+            [(); 2].map(|_| EndpointAddr::new(iroh::SecretKey::generate().public()));
+        let wanted = |blob, size, trackers: &[&EndpointAddr]| Wanted {
             blob,
             size,
-            author: author.cloned(),
+            author,
+            trackers: trackers.iter().map(|&t| t.clone()).collect(),
         };
         let chosen = choose_prefetch(vec![
-            // Reshared, so whose node it is isn't known; then the author's own post.
-            wanted(video, 50 << 20, None),
-            wanted(thumb, 37 << 10, Some(&author)),
-            wanted(video, 50 << 20, Some(&author)),
-            wanted(photo, 2 << 20, None),
+            // Reshared by a node that hosts it, then the author's own post,
+            // then reshared without hosting.
+            wanted(video, 50 << 20, &[&resharer]),
+            wanted(thumb, 37 << 10, &[&authors_node]),
+            wanted(video, 50 << 20, &[&authors_node]),
+            wanted(photo, 2 << 20, &[]),
+            wanted(video, 50 << 20, &[]),
         ]);
-        assert_eq!(
-            chosen,
-            vec![
-                wanted(thumb, 37 << 10, Some(&author)),
-                wanted(photo, 2 << 20, None),
-                wanted(video, 50 << 20, Some(&author)),
-            ]
-        );
+        assert_eq!(chosen.len(), 3);
+        assert_eq!(chosen[0], wanted(thumb, 37 << 10, &[&authors_node]));
+        assert_eq!(chosen[1], wanted(photo, 2 << 20, &[]));
+        let trackers: HashSet<EndpointId> = chosen[2].trackers.iter().map(|t| t.id).collect();
+        assert_eq!(chosen[2].blob, video);
+        assert_eq!(trackers, HashSet::from([authors_node.id, resharer.id]));
     }
 
     #[test]
@@ -1063,7 +1100,8 @@ mod tests {
         let chosen = [video, photo].map(|blob| Wanted {
             blob,
             size: 2 << 20,
-            author: None,
+            author: iroh::SecretKey::generate().public(),
+            trackers: Vec::new(),
         });
         assert_eq!(plan_holds(&mut holds, &chosen), vec![too_big]);
         let ready: HashSet<ObjectId> = blob_done(&mut holds, &video).into_iter().collect();

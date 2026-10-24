@@ -160,11 +160,14 @@ async fn followers_that_stop_are_left_out_of_the_times() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn strangers_get_a_reshared_video_from_the_resharer_and_creator() {
+async fn strangers_get_a_reshared_video_from_each_other() {
     let dir = tempfile::tempdir().unwrap();
+    // Spread over long enough that the first strangers hold a copy before
+    // the last ask who has one.
     let scenario = Scenario {
         strangers: 12,
-        time_limit: Duration::from_secs(120),
+        prefetch_spread: Duration::from_secs(30),
+        time_limit: Duration::from_secs(180),
         ..with_the_swarm(dir.path())
     };
     let report = osp_sim::run(&scenario).await.unwrap();
@@ -185,19 +188,16 @@ async fn strangers_get_a_reshared_video_from_the_resharer_and_creator() {
     );
     assert_eq!(report.holding(), 12, "{summary}");
 
-    // Nobody names strangers as hosts, so none served the video.
+    // The resharer hosts the video, so it names strangers holding a copy
+    // to the others, and strangers fetching later got it from them.
     let video = report.video_bytes as f64;
-    assert!(
-        report.stranger_sent_bytes.iter().all(|b| *b < video),
-        "{summary}"
-    );
-    // 12 strangers at once fill the resharer's 8 places, so the rest are
-    // refused as busy and go to the creator. What it sent them is counted,
-    // the same on both sides.
+    let sharing = report.stranger_sent_bytes.iter().filter(|b| **b >= video);
+    assert!(sharing.count() >= 1, "{summary}");
+    // What the creator sent them, if anything, is counted the same on both
+    // sides.
     let copies = |bytes: f64| bytes / report.media_bytes as f64;
     let to_strangers = copies(report.creator_sent_to_strangers);
     let by_strangers = copies(report.strangers_received_from_creator);
-    assert!(to_strangers >= 1.0, "{summary}");
     assert!(
         (to_strangers - by_strangers).abs() < 0.1,
         "{to_strangers} vs {by_strangers}"
