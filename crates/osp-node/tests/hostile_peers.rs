@@ -902,7 +902,7 @@ async fn a_node_with_every_place_taken_sends_downloads_to_another_host() {
     let reader = start(dir.path(), "Otto").await;
     let started = Instant::now();
     let got = reader
-        .download_blob_from(&blob, size, &[addr.clone(), other_host])
+        .download_blob_from(&blob, size, &[addr.clone(), other_host.clone()])
         .await;
     assert_eq!(got.unwrap(), size);
     let took = started.elapsed();
@@ -916,6 +916,38 @@ async fn a_node_with_every_place_taken_sends_downloads_to_another_host() {
     assert!(
         took >= BUSY_WAIT - Duration::from_secs(1),
         "refused after {took:?}"
+    );
+
+    // Both sides recorded it (ADR 0011). Counts fade a little even within a
+    // test, so they're rounded.
+    let peers = async |node: &Node| match call(node, ClientRequest::Peers).await {
+        ClientResponse::Peers { peers } => peers,
+        other => panic!("unexpected {other:?}"),
+    };
+    let seen = peers(&reader).await;
+    let busy = seen
+        .iter()
+        .find(|p| p.node == addr.id)
+        .expect("the busy node");
+    assert_eq!(busy.counts.busy.round(), 1.0, "{busy:?}");
+    assert_eq!(busy.counts.completed, 0.0, "{busy:?}");
+    let other = seen
+        .iter()
+        .find(|p| p.node == other_host.id)
+        .expect("the other host");
+    assert!(other.counts.completed.round() >= 1.0, "{other:?}");
+    assert!(
+        other.counts.received_bytes.round() >= size as f64,
+        "{other:?}"
+    );
+    let refused = peers(&node).await;
+    let reader_there = refused
+        .iter()
+        .find(|p| p.node == reader.node_id())
+        .expect("the reader");
+    assert!(
+        reader_there.counts.refused_busy.round() >= 1.0,
+        "{reader_there:?}"
     );
 
     drop(held);

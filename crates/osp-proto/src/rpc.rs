@@ -106,6 +106,8 @@ pub enum ClientRequest {
         path: PathBuf,
         media: bool,
     },
+    /// What this node measured about the peer nodes it deals with (ADR 0011).
+    Peers,
 }
 
 fn default_feed_limit() -> u32 {
@@ -166,6 +168,10 @@ pub enum ClientResponse {
     BackedUp {
         path: PathBuf,
         info: BackupInfo,
+    },
+    /// Most recent contact first.
+    Peers {
+        peers: Vec<PeerRecord>,
     },
     Error {
         message: String,
@@ -269,6 +275,87 @@ pub enum Direction {
     Outgoing,
     Incoming,
     Both,
+}
+
+/// What a node measured about one peer node (ADR 0011), and what it knows of it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PeerRecord {
+    pub node: EndpointId,
+    /// The identity the node belongs to, when a profile this node keeps lists it.
+    pub actor: Option<PublicKey>,
+    pub name: Option<String>,
+    /// A node of someone this node follows.
+    pub followed: bool,
+    /// A node that follows this one.
+    pub follower: bool,
+    /// Named as a host of some media this node knows of.
+    pub host: bool,
+    /// Whether this node ever contacted it, rather than only the other way round.
+    pub contacted: bool,
+    pub first_contact_secs_ago: u64,
+    pub last_contact_secs_ago: u64,
+    pub counts: PeerCounts,
+}
+
+/// What a node measured about one peer node (ADR 0011). Every count fades
+/// by half every 14 days, so these are recent weights rather than totals.
+/// Times are in milliseconds.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PeerCounts {
+    /// Times this node needed the peer: requests sent to it, and attempts
+    /// to download from it.
+    pub tries: f64,
+    /// Of those, times it couldn't connect.
+    pub unreached: f64,
+    /// Requests sent to it.
+    pub requests: f64,
+    /// Of those, answered in time, and their reply times added up.
+    pub answered: f64,
+    pub answer_ms: f64,
+    /// Attempts to download from it, by how they ended.
+    pub completed: f64,
+    pub busy: f64,
+    pub not_hosting: f64,
+    pub bad_data: f64,
+    pub failed: f64,
+    /// Media bytes received from it, and the time taken by the attempts
+    /// that brought them.
+    pub received_bytes: f64,
+    pub receive_ms: f64,
+    /// Times to the first byte added up, and how many attempts they cover.
+    pub first_byte_ms: f64,
+    pub first_bytes: f64,
+    /// Media bytes sent to it, and in how many transfers.
+    pub sent_bytes: f64,
+    pub transfers: f64,
+    /// Its requests for media refused as busy.
+    pub refused_busy: f64,
+}
+
+impl PeerCounts {
+    /// Every count multiplied by `factor`.
+    pub fn scaled(self, factor: f64) -> Self {
+        Self {
+            tries: self.tries * factor,
+            unreached: self.unreached * factor,
+            requests: self.requests * factor,
+            answered: self.answered * factor,
+            answer_ms: self.answer_ms * factor,
+            completed: self.completed * factor,
+            busy: self.busy * factor,
+            not_hosting: self.not_hosting * factor,
+            bad_data: self.bad_data * factor,
+            failed: self.failed * factor,
+            received_bytes: self.received_bytes * factor,
+            receive_ms: self.receive_ms * factor,
+            first_byte_ms: self.first_byte_ms * factor,
+            first_bytes: self.first_bytes * factor,
+            sent_bytes: self.sent_bytes * factor,
+            transfers: self.transfers * factor,
+            refused_busy: self.refused_busy * factor,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

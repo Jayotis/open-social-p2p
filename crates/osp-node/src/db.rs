@@ -13,9 +13,11 @@ use anyhow::{Context, Result, ensure};
 use iroh::{EndpointAddr, EndpointId, PublicKey};
 use osp_proto::{
     BlobHash, EarlierKeys, Key, Note, ObjectId, Payload, SignedObject,
-    rpc::{FollowInfo, StorageInfo},
+    rpc::{FollowInfo, PeerCounts, StorageInfo},
 };
 use rusqlite::{Connection, OptionalExtension, params};
+
+use crate::peers;
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS objects (
@@ -107,6 +109,18 @@ const MIGRATIONS: &[&str] = &[
         actor       TEXT NOT NULL,
         received_ms INTEGER NOT NULL
     )",
+    // 6: what this node measured about each peer node (ADR 0011): whether it
+    // ever contacted the peer itself, first and last contact, and the faded
+    // counts as JSON (`PeerCounts`), so a measure can be added without a
+    // migration. Counts were last faded at the last contact.
+    "CREATE TABLE peers (
+        node     TEXT PRIMARY KEY,
+        ours     INTEGER NOT NULL,
+        first_ms INTEGER NOT NULL,
+        last_ms  INTEGER NOT NULL,
+        counts   TEXT NOT NULL
+    );
+    CREATE INDEX peers_by_contact ON peers(ours, last_ms);",
 ];
 
 /// Hosts remembered per blob. More than enough to find a copy; a peer
@@ -160,6 +174,17 @@ pub struct Follow {
     pub cursor: u64,
     /// Whether a sync has ever completed a page from this follow.
     pub synced: bool,
+}
+
+/// What this node measured about one peer node (ADR 0011).
+#[derive(Debug, Clone)]
+pub struct PeerRow {
+    pub node: EndpointId,
+    /// Whether this node ever contacted it, rather than only the other way round.
+    pub ours: bool,
+    pub first_ms: i64,
+    pub last_ms: i64,
+    pub counts: PeerCounts,
 }
 
 /// SQLite connection shared by the node's tasks.
@@ -878,6 +903,14 @@ impl Db {
         Ok(())
     }
 
+    /// Every node known to host some blob.
+    pub fn host_nodes(&self) -> Result<Vec<EndpointId>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare("SELECT DISTINCT node FROM hosts")?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+        rows.map(|r| Ok(r?.parse()?)).collect()
+    }
+
     /// Known hosts of a blob, most recently seen first.
     pub fn hosts(&self, blob: &BlobHash) -> Result<Vec<EndpointAddr>> {
         let conn = self.conn();
@@ -939,6 +972,131 @@ impl Db {
             )
             .optional()?;
         Ok(found.is_some())
+    }
+
+    /// The nodes each stored profile lists, with the profile's identity and name.
+    pub fn profile_nodes(&self) -> Result<Vec<(PublicKey, String, Vec<EndpointId>)>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare("SELECT name, signed FROM profiles")?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        let mut found = Vec::new();
+        for row in rows {
+            let (name, json) = row?;
+            let obj: SignedObject =
+                serde_json::from_str(&json).context("corrupt stored profile")?;
+            if let Ok(Payload::Person(person)) = obj.verify() {
+                found.push((person.actor, name, person.nodes));
+            }
+        }
+        Ok(found)
+    }
+
+    // ---- peers (ADR 0011) ----
+
+    /// Adds to what this node measured about a peer node, after fading what
+    /// was there to `now`. `ours` says this node made the contact. Paired
+    /// devices are the owner's own, not peers, and aren't recorded. A new
+    /// row, or one joining the group of nodes this node contacted, makes
+    /// room by dropping the row in its group with the oldest contact; rows
+    /// with no contact for `peers::FORGET_AFTER` go too.
+    pub fn update_peer(
+        &self,
+        node: &EndpointId,
+        ours: bool,
+        now: i64,
+        update: impl FnOnce(&mut PeerCounts),
+    ) -> Result<()> {
+        let conn = self.conn();
+        let tx = conn.unchecked_transaction()?;
+        let id = node.to_string();
+        let device: Option<i64> = tx
+            .query_row(
+                "SELECT 1 FROM devices WHERE node = ?1",
+                params![id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if device.is_some() {
+            return Ok(());
+        }
+        let known: Option<(bool, i64, String)> = tx
+            .query_row(
+                "SELECT ours, last_ms, counts FROM peers WHERE node = ?1",
+                params![id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()?;
+        let (was_ours, mut counts) = match known {
+            Some((was_ours, last_ms, json)) => (
+                Some(was_ours),
+                peers::fade(serde_json::from_str(&json)?, now - last_ms),
+            ),
+            None => (None, PeerCounts::default()),
+        };
+        update(&mut counts);
+        let ours = ours || was_ours == Some(true);
+        if was_ours != Some(ours) {
+            // New to this group.
+            tx.execute(
+                "DELETE FROM peers WHERE last_ms < ?1",
+                params![now - peers::FORGET_AFTER.as_millis() as i64],
+            )?;
+            let in_group: i64 = tx.query_row(
+                "SELECT COUNT(*) FROM peers WHERE ours = ?1",
+                params![ours],
+                |row| row.get(0),
+            )?;
+            if in_group >= peers::MAX_PER_GROUP as i64 {
+                tx.execute(
+                    "DELETE FROM peers WHERE node =
+                     (SELECT node FROM peers WHERE ours = ?1 ORDER BY last_ms LIMIT 1)",
+                    params![ours],
+                )?;
+            }
+        }
+        tx.execute(
+            "INSERT INTO peers (node, ours, first_ms, last_ms, counts) VALUES (?1, ?2, ?3, ?3, ?4)
+             ON CONFLICT(node) DO UPDATE SET
+                 ours = excluded.ours, last_ms = excluded.last_ms, counts = excluded.counts",
+            params![id, ours, now, serde_json::to_string(&counts)?],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// What this node measured about each peer node, faded to `now`, most
+    /// recent contact first. Forgets peers not in contact for `peers::FORGET_AFTER`.
+    pub fn peers(&self, now: i64) -> Result<Vec<PeerRow>> {
+        let conn = self.conn();
+        conn.execute(
+            "DELETE FROM peers WHERE last_ms < ?1",
+            params![now - peers::FORGET_AFTER.as_millis() as i64],
+        )?;
+        let mut stmt = conn.prepare(
+            "SELECT node, ours, first_ms, last_ms, counts FROM peers ORDER BY last_ms DESC",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, bool>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, String>(4)?,
+            ))
+        })?;
+        rows.map(|r| {
+            let (node, ours, first_ms, last_ms, json) = r?;
+            Ok(PeerRow {
+                node: node.parse()?,
+                ours,
+                first_ms,
+                last_ms,
+                counts: peers::fade(serde_json::from_str(&json)?, now - last_ms),
+            })
+        })
+        .collect()
     }
 
     pub fn follower_count(&self) -> Result<usize> {
@@ -1029,6 +1187,126 @@ mod tests {
 
     fn some_addr() -> EndpointAddr {
         EndpointAddr::new(iroh::SecretKey::generate().public())
+    }
+
+    const DAY_MS: i64 = 24 * 60 * 60 * 1000;
+
+    /// Adds `n` peers to one group, the first with the oldest contact.
+    fn add_peers(db: &Db, ours: bool, n: usize, from_ms: i64) -> Vec<EndpointId> {
+        let conn = db.conn();
+        let tx = conn.unchecked_transaction().unwrap();
+        let mut nodes = Vec::new();
+        for i in 0..n {
+            let node = some_addr().id;
+            tx.execute(
+                "INSERT INTO peers (node, ours, first_ms, last_ms, counts) VALUES (?1, ?2, ?3, ?3, '{}')",
+                params![node.to_string(), ours, from_ms + i as i64],
+            )
+            .unwrap();
+            nodes.push(node);
+        }
+        tx.commit().unwrap();
+        nodes
+    }
+
+    fn peer(db: &Db, node: &EndpointId, now: i64) -> Option<PeerRow> {
+        db.peers(now).unwrap().into_iter().find(|p| p.node == *node)
+    }
+
+    fn count(c: &mut PeerCounts) {
+        c.requests += 1.0;
+    }
+
+    #[test]
+    fn peers_are_kept_in_two_groups_of_limited_size() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(&dir.path().join("t.db")).unwrap();
+        let now = now_ms();
+        let max = peers::MAX_PER_GROUP;
+        let ours = add_peers(&db, true, max, now - 1000 * max as i64);
+        let theirs = add_peers(&db, false, max, now - 2000 * max as i64);
+
+        // A new node this node contacted takes the place of the one in its
+        // group with the oldest contact, however old the other group's are.
+        let new = some_addr().id;
+        db.update_peer(&new, true, now, count).unwrap();
+        let rows = db.peers(now).unwrap();
+        assert_eq!(rows.iter().filter(|p| p.ours).count(), max);
+        assert_eq!(rows.iter().filter(|p| !p.ours).count(), max);
+        assert!(peer(&db, &ours[0], now).is_none());
+        assert!(peer(&db, &ours[1], now).is_some());
+        assert!(peer(&db, &theirs[0], now).is_some());
+
+        // A stranger the node then contacts moves into that group, and
+        // makes room there too.
+        db.update_peer(&theirs[5], true, now, count).unwrap();
+        assert!(peer(&db, &theirs[5], now).unwrap().ours);
+        assert!(peer(&db, &ours[1], now).is_none());
+        let rows = db.peers(now).unwrap();
+        assert_eq!(rows.iter().filter(|p| p.ours).count(), max);
+        assert_eq!(rows.iter().filter(|p| !p.ours).count(), max - 1);
+
+        // A node contacting us later doesn't leave that group, and a known
+        // node doesn't push anyone out.
+        db.update_peer(&theirs[5], false, now, count).unwrap();
+        assert!(peer(&db, &theirs[5], now).unwrap().ours);
+        assert!(peer(&db, &ours[2], now).is_some());
+
+        // A new stranger fills the free place without pushing anyone out,
+        // and the next one pushes out the stranger with the oldest contact.
+        db.update_peer(&some_addr().id, false, now, count).unwrap();
+        assert!(peer(&db, &theirs[0], now).is_some());
+        db.update_peer(&some_addr().id, false, now, count).unwrap();
+        assert!(peer(&db, &theirs[0], now).is_none());
+        assert!(peer(&db, &ours[2], now).is_some());
+    }
+
+    #[test]
+    fn devices_and_long_silent_peers_arent_kept() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(&dir.path().join("t.db")).unwrap();
+        let now = now_ms();
+        let phone = some_addr().id;
+        db.add_device(&phone, "phone").unwrap();
+        db.update_peer(&phone, true, now, count).unwrap();
+        assert!(db.peers(now).unwrap().is_empty());
+
+        let forget = peers::FORGET_AFTER.as_millis() as i64;
+        let silent = add_peers(&db, true, 2, now - forget - 1);
+        let recent = add_peers(&db, true, 1, now - forget + DAY_MS);
+        // Listing forgets the silent ones...
+        assert!(peer(&db, &silent[0], now).is_none());
+        assert!(peer(&db, &recent[0], now).is_some());
+        // ...and so does a new row.
+        let silent = add_peers(&db, false, 1, now - forget - 1);
+        db.update_peer(&some_addr().id, false, now, count).unwrap();
+        let left: i64 = db
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM peers WHERE node = ?1",
+                params![silent[0].to_string()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(left, 0);
+    }
+
+    #[test]
+    fn peer_counts_fade_before_they_are_added_to_and_when_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(&dir.path().join("t.db")).unwrap();
+        let start = now_ms() - 28 * DAY_MS;
+        let node = some_addr().id;
+        db.update_peer(&node, true, start, |c| c.requests += 4.0)
+            .unwrap();
+        db.update_peer(&node, false, start + 14 * DAY_MS, count)
+            .unwrap();
+        let row = peer(&db, &node, start + 28 * DAY_MS).unwrap();
+        // 4 faded to 2, plus 1, all faded by half again.
+        assert!((row.counts.requests - 1.5).abs() < 1e-9, "{row:?}");
+        assert_eq!(row.first_ms, start);
+        assert_eq!(row.last_ms, start + 14 * DAY_MS);
+        assert!(row.ours);
     }
 
     #[test]

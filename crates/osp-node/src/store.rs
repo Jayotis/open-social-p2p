@@ -32,7 +32,7 @@ use iroh_blobs::{
     protocol::{ERR_LIMIT, ERR_PERMISSION, GetRequest},
     provider::events::{
         AbortReason, ConnectMode, EventMask, EventSender, ObserveMode, ProviderMessage,
-        RequestMode, ThrottleMode,
+        RequestMode, RequestUpdate, ThrottleMode,
     },
     store::{
         GcConfig, ProtectCb, ProtectOutcome,
@@ -53,6 +53,7 @@ use crate::{
     config::{ServingConfig, StorageConfig},
     db::{BlobClass, Db},
     health,
+    peers::{self, Event},
 };
 
 /// Give up on a download after this long, so a stalled provider can't hang a sync.
@@ -85,12 +86,13 @@ const MAX_TRANSFERS_PER_NODE: usize = 2;
 const BUSY_WAIT: Duration = Duration::from_secs(10);
 
 /// Which provider events we want to see. Every data request is intercepted so
-/// the serving rules can refuse it; pushes (writes into our store) are off.
-/// `protocol` turns on throttling when there is an upload cap.
+/// the serving rules can refuse it, with news of its transfer, which says how
+/// much was sent to each node (ADR 0011); pushes (writes into our store) are
+/// off. `protocol` turns on throttling when there is an upload cap.
 const EVENT_MASK: EventMask = EventMask {
     connected: ConnectMode::Intercept,
-    get: RequestMode::Intercept,
-    get_many: RequestMode::Intercept,
+    get: RequestMode::InterceptLog,
+    get_many: RequestMode::InterceptLog,
     push: RequestMode::Disabled,
     observe: ObserveMode::Intercept,
     throttle: ThrottleMode::None,
@@ -353,6 +355,16 @@ impl ContentStore {
                 )
                 .await;
             attempt.log(hash);
+            peers::record(
+                &self.db,
+                &node,
+                Event::Download {
+                    outcome: attempt.outcome,
+                    bytes: attempt.bytes,
+                    took: attempt.took,
+                    first_byte: attempt.first_byte,
+                },
+            );
             match attempt.outcome {
                 Outcome::Completed => return Ok(()),
                 Outcome::Stopped => {
@@ -575,7 +587,7 @@ struct Attempt {
 
 /// How an attempt ended (ADR 0011).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Outcome {
+pub(crate) enum Outcome {
     /// It sent everything we asked for.
     Completed,
     /// It refused because it was busy.
@@ -748,17 +760,33 @@ async fn enforce_serving_rules(
             continue;
         }
         let needed = places.needed(peer, &db);
+        let db = db.clone();
         tokio::spawn(async move {
             let Some(_held) = take_places(needed).await else {
                 debug!(?peer, "busy: refused a blob request");
                 answer.send(Err(AbortReason::RateLimited)).await.ok();
+                if let Some(peer) = peer {
+                    peers::record(&db, &peer, Event::RefusedBusy);
+                }
                 return;
             };
             if answer.send(Ok(())).await.is_ok() {
                 // The channel closes when the transfer ends; the places
-                // are given back then.
+                // are given back then. The last update has what was sent.
                 let mut updates = updates;
-                while let Ok(Some(_)) = updates.recv().await {}
+                let mut sent = None;
+                while let Ok(Some(update)) = updates.recv().await {
+                    match update {
+                        RequestUpdate::Completed(done) => {
+                            sent = Some(done.stats.payload_bytes_sent)
+                        }
+                        RequestUpdate::Aborted(cut) => sent = Some(cut.stats.payload_bytes_sent),
+                        _ => {}
+                    }
+                }
+                if let (Some(peer), Some(bytes)) = (peer, sent) {
+                    peers::record(&db, &peer, Event::Served { bytes });
+                }
             }
         });
     }

@@ -6,10 +6,11 @@
 
 use std::path::{Path, PathBuf};
 
+use iroh::{EndpointAddr, EndpointId, SecretKey};
 use osp_node::{BlobClass, Config, Home, Node};
 use osp_proto::{
-    BlobHash, ObjectId,
-    rpc::{ClientRequest, ClientResponse, Direction, FeedItem, StatusInfo},
+    BlobHash, FollowTicket, ObjectId,
+    rpc::{ClientRequest, ClientResponse, Direction, FeedItem, PeerRecord, StatusInfo},
 };
 
 async fn start(root: &Path, name: &str) -> Node {
@@ -57,6 +58,29 @@ async fn feed(node: &Node) -> Vec<FeedItem> {
         ClientResponse::Feed { items } => items,
         other => panic!("unexpected {other:?}"),
     }
+}
+
+/// What `node` measured about the node `other` (ADR 0011).
+async fn peer(node: &Node, other: EndpointId) -> Option<PeerRecord> {
+    match call(node, ClientRequest::Peers).await {
+        ClientResponse::Peers { peers } => peers.into_iter().find(|p| p.node == other),
+        other => panic!("unexpected {other:?}"),
+    }
+}
+
+/// What `node` measured about `other` once it has served it something. The
+/// serving side records a transfer when it ends there, which can be just
+/// after the other side has what it asked for.
+async fn served(node: &Node, other: EndpointId) -> PeerRecord {
+    for _ in 0..50 {
+        if let Some(p) = peer(node, other).await
+            && p.counts.transfers > 0.0
+        {
+            return p;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    panic!("no transfer to that node was recorded");
 }
 
 async fn make_clip(dir: &Path) -> PathBuf {
@@ -214,6 +238,94 @@ async fn reshared_media_survives_origin_going_offline() {
     assert_eq!(item.id, post_id);
 
     for node in [bob, carol, dave] {
+        node.shutdown().await.unwrap();
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn each_node_records_the_nodes_it_deals_with() {
+    let dir = tempfile::tempdir().unwrap();
+    let alice = start(dir.path(), "Alice").await;
+    let bob = start(dir.path(), "Bob").await;
+    let clip = make_clip(dir.path()).await;
+    call(
+        &alice,
+        ClientRequest::Post {
+            content: "first light".into(),
+            attachments: vec![clip],
+            uploads: vec![],
+        },
+    )
+    .await;
+    follow(&bob, invite(&alice).await).await;
+    sync(&bob).await;
+    let video = feed(&bob).await[0].attachments[0].attachment.clone();
+
+    // Bob asked Alice's node for her profile and posts, and downloaded her
+    // video from it. Counts fade a little even within a test, so they're rounded.
+    let seen = peer(&bob, alice.node_id())
+        .await
+        .expect("a record of Alice's node");
+    assert_eq!(seen.name.as_deref(), Some("Alice"));
+    assert_eq!(seen.actor, Some(alice.identity()));
+    assert!(
+        seen.followed && seen.contacted && !seen.follower,
+        "{seen:?}"
+    );
+    // An author's node hosts the media of their posts.
+    assert!(seen.host, "{seen:?}");
+    assert!(seen.first_contact_secs_ago < 60 && seen.last_contact_secs_ago < 60);
+    let c = &seen.counts;
+    assert!(c.requests.round() >= 2.0, "{c:?}");
+    assert!((c.answered - c.requests).abs() < 1e-6, "{c:?}");
+    assert!(c.answer_ms > 0.0 && c.unreached == 0.0, "{c:?}");
+    assert!(c.completed.round() >= 1.0 && c.failed == 0.0, "{c:?}");
+    assert!(c.received_bytes.round() >= video.size as f64, "{c:?}");
+    assert!(c.receive_ms > 0.0 && c.first_bytes.round() >= 1.0, "{c:?}");
+
+    // Alice's node sent it to Bob's, which follows hers.
+    let to_bob = served(&alice, bob.node_id()).await;
+    assert!(to_bob.follower && !to_bob.followed, "{to_bob:?}");
+    assert!(to_bob.counts.transfers.round() >= 1.0, "{to_bob:?}");
+    assert!(
+        to_bob.counts.sent_bytes.round() >= video.size as f64,
+        "{to_bob:?}"
+    );
+
+    // A stranger's download is recorded on both sides too.
+    let dave = start(dir.path(), "Dave").await;
+    dave.download_blob_from(&video.blob, video.size, &[alice.addr().await])
+        .await
+        .unwrap();
+    let fetched = peer(&dave, alice.node_id())
+        .await
+        .expect("a record of Alice's node");
+    assert!(fetched.contacted && !fetched.followed && fetched.name.is_none());
+    assert!(!fetched.host, "{fetched:?}");
+    assert!(fetched.counts.completed.round() >= 1.0, "{fetched:?}");
+    let stranger = served(&alice, dave.node_id()).await;
+    assert!(!stranger.contacted && !stranger.follower, "{stranger:?}");
+    assert!(
+        stranger.counts.sent_bytes.round() >= video.size as f64,
+        "{stranger:?}"
+    );
+
+    // A node that can't be reached: its address names no way to reach it.
+    let nowhere = EndpointAddr::new(SecretKey::generate().public());
+    let ticket = FollowTicket {
+        actor: SecretKey::generate().public(),
+        node: nowhere.clone(),
+    };
+    follow(&dave, ticket.to_string()).await;
+    sync(&dave).await;
+    let missing = peer(&dave, nowhere.id)
+        .await
+        .expect("a record of that node");
+    let c = &missing.counts;
+    assert_eq!((c.tries.round(), c.unreached.round()), (1.0, 1.0), "{c:?}");
+    assert_eq!((c.requests.round(), c.answered), (1.0, 0.0), "{c:?}");
+
+    for node in [alice, bob, dave] {
         node.shutdown().await.unwrap();
     }
 }
