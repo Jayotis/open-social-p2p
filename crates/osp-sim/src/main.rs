@@ -5,6 +5,7 @@ use std::{path::PathBuf, time::Duration};
 
 use anyhow::{Context, Result};
 use clap::Parser;
+use osp_node::SimSettings;
 use osp_sim::Scenario;
 
 /// Runs one creator and many followers as real nodes in this process. The
@@ -28,6 +29,13 @@ struct Cli {
     /// Followers' upload speeds, in megabits per second, given in turn.
     #[arg(long, value_delimiter = ',', default_values_t = [5, 10, 20])]
     follower_mbps: Vec<u64>,
+    /// Followers join the follower swarm: they share what they prefetch.
+    #[arg(long)]
+    swarm: bool,
+    /// With `--swarm`, followers spread their fetches of the video over up
+    /// to this many seconds. The default is a real node's.
+    #[arg(long)]
+    spread_secs: Option<u64>,
     /// End this many minutes after posting, if not every follower holds
     /// the video by then.
     #[arg(long, default_value_t = 60)]
@@ -66,6 +74,11 @@ async fn main() -> Result<()> {
         video_bytes: (cli.video_mb * 1e6) as u64,
         creator_mbps: cli.creator_mbps,
         follower_mbps: cli.follower_mbps,
+        swarm: cli.swarm,
+        prefetch_spread: cli.spread_secs.map_or_else(
+            || SimSettings::default().prefetch_spread,
+            Duration::from_secs,
+        ),
         time_limit: Duration::from_secs(cli.minutes * 60),
         sample: Duration::from_secs(60),
         label: cli.label,
