@@ -54,7 +54,7 @@ Option 2 for Stage 1.
   - `cache`: media my node fetched when my phone opened it; served only to my paired devices, whatever the settings.
   - Anything else is refused.
 - **Serving limits.** Anyone who knows a node's ID can download its public media, so a node limits how much it sends:
-  - at most 8 transfers at once, at most 4 of them to strangers (nodes that neither follow me nor are my devices), and at most 2 to any one node. A crowd of strangers then can't crowd out my followers;
+  - at most 8 transfers at once, at most half of them (rounded up) to strangers (nodes that neither follow me nor are my devices), and at most 2 to any one node. A crowd of strangers then can't crowd out my followers. With an upload cap (below), a node offers one place for each 1.5 Mbit/s of it, the video bitrate ([ADR 0005](0005-media-profile-v1.md)), and at least 2: a node capped at 5 Mbit/s serves 3 at once, 2 of them to strangers. Each transfer then finishes a video in minutes, and its copy can serve others sooner, rather than all of them crawling along together until they time out;
   - files of 1 MiB or less, such as thumbnails, have 8 places of their own outside those limits, apart from the 2 per node, so they aren't held up behind videos;
   - a request over a limit waits up to 10 seconds for a place, so a burst of requests from one node just takes turns. If no place frees up, it is refused as busy (iroh-blobs' `RateLimited`), and the requester tries the other hosts it knows, then asks the nodes it follows (`WhoHosts`);
   - an optional cap on sending speed for all transfers together: `max_upload_mbps` under `[serving]` in `config.toml`, off by default. About half the home's upload speed leaves room for everything else.
