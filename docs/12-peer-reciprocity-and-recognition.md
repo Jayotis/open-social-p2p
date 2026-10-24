@@ -1,6 +1,6 @@
 # Peer Reciprocity and Recognition
 
-**Status: Proposal, second draft. Nothing here is implemented.** The first draft ("Contribution accounting and network priority") was taken apart in a [critical review](reviews/2026-10-21-review-of-docs-12-and-13.md); this draft responds to it. It becomes a decision record once its blocking findings are resolved. Phase 1, measuring, is decided in [ADR 0011](decisions/0011-measuring-peers.md).
+**Status: Proposal, second draft. Only phase 1, measuring, is built ([ADR 0011](decisions/0011-measuring-peers.md)).** The first draft ("Contribution accounting and network priority") was taken apart in a [critical review](reviews/2026-10-21-review-of-docs-12-and-13.md); this draft responds to it. The rest becomes a decision record once its blocking findings are resolved.
 
 ## Summary
 
