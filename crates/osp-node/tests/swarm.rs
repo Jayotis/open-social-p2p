@@ -363,6 +363,59 @@ async fn a_node_in_the_swarm_fetches_from_other_followers_first() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn media_opened_before_it_was_prefetched_comes_from_a_follower_with_a_copy() {
+    let dir = tempfile::tempdir().unwrap();
+    let alice = start(dir.path(), "Alice", false).await;
+    let photo = post_photo(&alice, dir.path(), false).await;
+    let bob = start(dir.path(), "Bob", true).await;
+    follow(&bob, &alice).await;
+    prefetched(&bob, &photo.blob).await;
+    let follower = Peer::follower(&alice.addr().await, false).await;
+    follower.wait_for_host(photo.blob, bob.node_id()).await;
+    let received = async |node: &Node, from: &Node| {
+        let record = peer(node, from.node_id()).await;
+        record.map_or(0.0, |r| r.counts.received_bytes.round())
+    };
+
+    // Carol's node doesn't fetch ahead of time. When she opens the post,
+    // it asks Alice's node who has a copy, and gets it from Bob.
+    let home = dir.path().join("carol");
+    let mut config = Config::local_test("Carol");
+    config.sync.prefetch = false;
+    Node::init(&home, &config).unwrap();
+    let carol = Node::spawn_sim(&home, SimSettings::default())
+        .await
+        .unwrap();
+    follow(&carol, &alice).await;
+    let ClientResponse::Feed { items } = call(&carol, ClientRequest::Feed { limit: 1 }).await
+    else {
+        panic!("no feed");
+    };
+    let open = ClientRequest::Fetch {
+        id: items[0].id,
+        out_dir: None,
+    };
+    call(&carol, open).await;
+    assert_eq!(
+        carol.blob_class(&photo.blob).unwrap(),
+        Some(BlobClass::Cache)
+    );
+    assert!(received(&carol, &bob).await >= photo.size as f64);
+    assert!(received(&carol, &alice).await < photo.size as f64);
+
+    // Fetching ahead of time without sharing still goes to Alice's node.
+    let dave = start(dir.path(), "Dave", false).await;
+    follow(&dave, &alice).await;
+    prefetched(&dave, &photo.blob).await;
+    assert!(received(&dave, &alice).await >= photo.size as f64);
+    assert!(received(&dave, &bob).await < photo.size as f64);
+
+    for node in [alice, bob, carol, dave] {
+        node.shutdown().await.unwrap();
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_node_in_the_swarm_spreads_out_large_fetches() {
     let dir = tempfile::tempdir().unwrap();
     let alice = start(dir.path(), "Alice", false).await;
