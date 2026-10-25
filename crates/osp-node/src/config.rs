@@ -88,7 +88,7 @@ pub struct StorageConfig {
 
 /// The follower swarm (doc 13): sharing what this node fetched ahead of
 /// time, so a popular post doesn't swamp its author's home connection.
-/// Still being tried out, so off by default.
+/// `osp init` asks; without a yes, it's off (ADR 0012).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SwarmConfig {

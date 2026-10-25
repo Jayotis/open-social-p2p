@@ -74,6 +74,13 @@ enum Command {
         /// Don't ask for words back to check they were written down (test nodes and scripts)
         #[arg(long, conflicts_with = "restore")]
         skip_word_check: bool,
+        /// Share copies of posts from people you follow with other nodes, so popular posts
+        /// don't swamp their authors (ADR 0012). Otherwise you're asked
+        #[arg(long, conflicts_with = "no_share")]
+        share: bool,
+        /// Don't share them. Otherwise you're asked
+        #[arg(long)]
+        no_share: bool,
     },
     /// Run the node in the foreground (Ctrl-C to stop)
     Daemon,
@@ -191,18 +198,25 @@ async fn main() -> Result<()> {
             retired,
             revoked,
             skip_word_check,
+            share,
+            no_share,
         } => {
             let lookup = !no_address_lookup;
             let config = init_config(name, &relay, bind, lookup, backup.is_some());
+            let share = match (share, no_share) {
+                (true, _) => Some(true),
+                (_, true) => Some(false),
+                _ => None,
+            };
             if restore {
                 let old_key = match (retired, revoked) {
                     (true, _) => Some(EarlierKeys::Retired),
                     (_, true) => Some(EarlierKeys::Revoked),
                     _ => None,
                 };
-                return restore_node(&home, &config, backup.as_deref(), old_key);
+                return restore_node(&home, config, backup.as_deref(), old_key, share);
             }
-            return init(&home, &config, !skip_word_check);
+            return init(&home, config, !skip_word_check, share);
         }
         Command::Daemon => return daemon(&home).await,
         // These read the node's files rather than asking the daemon: only
@@ -294,13 +308,15 @@ fn init_config(
     config
 }
 
-fn init(home: &Path, config: &Config, check_words: bool) -> Result<()> {
+fn init(home: &Path, mut config: Config, check_words: bool, share: Option<bool>) -> Result<()> {
+    // Asked first, so words aren't shown for a node that isn't made.
+    config.swarm.share_prefetched = ask_share(share)?;
     let words = osp_node::backup::new_identity_words();
     print_words(&words);
     if check_words {
         check_written_down(&words)?;
     }
-    Node::init_with_words(home, config, &words.join(" "))?;
+    Node::init_with_words(home, &config, &words.join(" "))?;
     println!();
     println!("Created a node in {}", home.display());
     println!();
@@ -310,16 +326,19 @@ fn init(home: &Path, config: &Config, check_words: bool) -> Result<()> {
 
 fn restore_node(
     home: &Path,
-    config: &Config,
+    mut config: Config,
     backup: Option<&Path>,
     old_key: Option<EarlierKeys>,
+    share: Option<bool>,
 ) -> Result<()> {
     let words = read_words()?;
     let old_key = match old_key {
         Some(choice) => choice,
         None => ask_old_key(backup.is_some())?,
     };
-    let restored = Node::restore(home, config, &words, backup, old_key)?;
+    // A backup doesn't keep the settings, so this is asked again.
+    config.swarm.share_prefetched = ask_share(share)?;
+    let restored = Node::restore(home, &config, &words, backup, old_key)?;
     println!("Restored identity {}", restored.identity);
     println!("on a new node in {}.", home.display());
     if let Some(info) = &restored.from_file {
@@ -371,6 +390,44 @@ fn ask_old_key(from_backup: bool) -> Result<EarlierKeys> {
             "yes" | "y" | "not sure" | "unsure" => return Ok(EarlierKeys::Revoked),
             "no" | "n" => return Ok(EarlierKeys::Retired),
             _ => println!("Please answer yes, no or not sure."),
+        }
+    }
+}
+
+/// Asks whether to share copies of posts from people this node follows
+/// (ADR 0012), unless `choice` already says. There's no default: sharing
+/// shows others who you follow, so it needs a yes.
+fn ask_share(choice: Option<bool>) -> Result<bool> {
+    if let Some(share) = choice {
+        return Ok(share);
+    }
+    println!();
+    println!("Your node fetches new posts from people you follow ahead of time, so they open");
+    println!("at once on your phone. It can also share those copies with other nodes, so a");
+    println!("popular post doesn't swamp its author's home connection.");
+    println!();
+    println!("If you share:");
+    println!("- a node that downloads a copy from yours learns that you follow its author, or");
+    println!("  someone who reshared it, and can see your internet address;");
+    println!("- the author's node, or the resharer's, may name yours to their other followers");
+    println!("  as having a copy;");
+    println!("- it uses some of your upload, which `max_upload_mbps` in config.toml can cap.");
+    println!("It never shows what you watched: media you open from outside the people you");
+    println!("follow is never shared.");
+    println!();
+    println!("Recommended: yes. You can change it later: `share_prefetched` under [swarm] in");
+    println!("config.toml.");
+    loop {
+        print!("Share copies of posts from people you follow? (yes / no): ");
+        std::io::Write::flush(&mut std::io::stdout())?;
+        let mut line = String::new();
+        if std::io::stdin().read_line(&mut line)? == 0 {
+            bail!("no answer; nothing was created (or pass --share or --no-share)");
+        }
+        match line.trim().to_lowercase().as_str() {
+            "yes" | "y" => return Ok(true),
+            "no" | "n" => return Ok(false),
+            _ => println!("Please answer yes or no."),
         }
     }
 }
