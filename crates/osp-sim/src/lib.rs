@@ -1,8 +1,11 @@
 //! The simulated network harness ([B8 test plan]): one creator and many
-//! followers, all real nodes in this process, talking over loopback with
-//! relays off. Each node's upload is held to a home connection's speed with
-//! the existing upload cap. The creator posts one video; the harness
-//! measures what the creator sends, and when each follower holds the video.
+//! followers, all real nodes in this process, with relays off. They talk
+//! over loopback, each node's upload held to a home connection's speed with
+//! the existing upload cap; or over a simulated network
+//! (`osp_node::simnet`), where each node's connection also has a download
+//! speed, a delay and packet loss, and can drop out. The creator posts one
+//! video; the harness measures what the creator sends, and when each
+//! follower holds the video.
 //!
 //! [B8 test plan]: ../../docs/testing/b8-creator-upload.md
 
@@ -15,7 +18,11 @@ use std::{
 
 use anyhow::{Context, Result, bail, ensure};
 use n0_future::{BufferedStreamExt, StreamExt, join_all, stream};
-use osp_node::{Config, Node, SimSettings, config::SyncConfig};
+use osp_node::{
+    Config, Node, SimSettings,
+    config::SyncConfig,
+    simnet::{Link, NetStats, SimLink, SimNet},
+};
 use osp_proto::{
     BlobHash, EndpointId, ObjectId,
     rpc::{ClientRequest, ClientResponse, PeerRecord},
@@ -45,6 +52,7 @@ const LATECOMER_TIMEOUT: Duration = Duration::from_secs(300);
 /// How often the harness looks at the latecomer fetching: often enough to
 /// time a download of seconds.
 const LATECOMER_TICK: Duration = Duration::from_millis(250);
+const MBPS: u64 = 1_000_000;
 
 /// One run: who takes part, the video, and how fast each node can upload.
 #[derive(Debug, Clone)]
@@ -60,6 +68,8 @@ pub struct Scenario {
     pub creator_mbps: u64,
     /// Followers' upload speeds, given to followers in turn.
     pub follower_mbps: Vec<u64>,
+    /// Run over this simulated network instead of loopback.
+    pub network: Option<Network>,
     /// Whether followers join the follower swarm (`swarm.share_prefetched`).
     pub swarm: bool,
     /// Followers in the swarm spread their fetches of the video over up to
@@ -93,6 +103,49 @@ pub struct Scenario {
     pub sample: Duration,
     /// Free text kept with the report, such as the commit tested.
     pub label: String,
+}
+
+/// A simulated network for a run (`osp_node::simnet`). Each node's
+/// connection has its upload speed from the scenario, and these.
+#[derive(Debug, Clone, Serialize)]
+pub struct Network {
+    /// The creator's download speed in megabits per second, its delay in
+    /// milliseconds each way to the middle of the network, and the
+    /// percentage of packets it loses each way.
+    pub creator_down_mbps: u64,
+    pub creator_delay_ms: u64,
+    pub creator_loss_percent: f64,
+    /// The same for followers, given in turn, as their upload speeds are.
+    /// Strangers and latecomers get them too.
+    pub down_mbps: Vec<u64>,
+    pub delay_ms: Vec<u64>,
+    pub loss_percent: Vec<f64>,
+    /// Nodes also hold their upload to their connection's speed with the
+    /// upload cap (`max_upload_mbps`), which gives a slow connection fewer
+    /// transfers at once too. Otherwise they set none, as a node doesn't
+    /// unless its owner does.
+    pub caps: bool,
+    /// This many followers' connections are cut off for `outage_secs` in
+    /// every `outage_every_secs` after posting, each at a different time:
+    /// the middle one of each group of `followers / flaky`. Outages end
+    /// with the run, before any latecomers.
+    pub flaky: usize,
+    pub outage_secs: u64,
+    pub outage_every_secs: u64,
+    /// The random packet losses follow from this.
+    pub seed: u64,
+}
+
+/// A run's simulated network: its settings, and what it did with packets.
+#[derive(Debug, Clone, Serialize)]
+pub struct NetworkReport {
+    pub settings: Network,
+    /// The flaky followers, by their place in follower order, and how many
+    /// times one was cut off in all.
+    pub flaky_followers: Vec<usize>,
+    pub outages: usize,
+    /// Everything sent through the network, latecomers' traffic included.
+    pub packets: NetStats,
 }
 
 /// What a run measured. Times are seconds after the creator posted.
@@ -155,6 +208,8 @@ pub struct Report {
     /// Media bytes the creator sent to latecomers. Not part of
     /// `creator_sent_bytes`.
     pub creator_sent_to_latecomers: f64,
+    /// The simulated network, if the run had one.
+    pub network: Option<NetworkReport>,
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -196,19 +251,35 @@ pub async fn run(s: &Scenario) -> Result<Report> {
         "{} isn't empty",
         s.dir.display()
     );
+    if let Some(n) = &s.network {
+        ensure!(
+            !n.down_mbps.is_empty() && !n.delay_ms.is_empty() && !n.loss_percent.is_empty(),
+            "followers' connections need download speeds, delays and losses"
+        );
+        ensure!(
+            2 * n.flaky < s.followers,
+            "fewer than half the followers can be flaky"
+        );
+        ensure!(
+            n.flaky == 0 || n.outage_secs < n.outage_every_secs,
+            "an outage has to be shorter than the time from one to the next"
+        );
+    }
     std::fs::create_dir_all(&s.dir)?;
     let started = osp_proto::now_rfc3339();
     let source = make_video(&s.dir, s.video_bytes).await?;
 
+    let net = s.network.as_ref().map(|n| SimNet::new(n.seed));
     let lifted = SimSettings {
         new_followers_per_hour: (s.followers + s.latecomers)
             .max(SimSettings::default().new_followers_per_hour),
+        network: s.creator_link(net.as_ref()),
         ..SimSettings::default()
     };
     let creator = start(
         &s.dir.join("creator"),
         "Creator",
-        s.creator_mbps,
+        s.upload_cap(s.creator_mbps),
         false,
         lifted,
     )
@@ -222,14 +293,14 @@ pub async fn run(s: &Scenario) -> Result<Report> {
             .max(SimSettings::default().new_followers_per_hour),
         ..SimSettings::default()
     };
-    let followers = start_all(s, "f", "F", s.followers, &spread).await?;
-    let strangers = start_all(s, "s", "S", s.strangers, &spread).await?;
+    let followers = start_all(s, net.as_ref(), "f", "F", s.followers, &spread).await?;
+    let strangers = start_all(s, net.as_ref(), "s", "S", s.strangers, &spread).await?;
     let at_once = SimSettings {
         prefetch_spread: Duration::ZERO,
         download_sources: s.download_sources,
         ..SimSettings::default()
     };
-    let latecomers = start_all(s, "l", "L", s.latecomers, &at_once).await?;
+    let latecomers = start_all(s, net.as_ref(), "l", "L", s.latecomers, &at_once).await?;
     info!(
         followers = followers.len(),
         strangers = strangers.len(),
@@ -275,6 +346,15 @@ pub async fn run(s: &Scenario) -> Result<Report> {
     let dropping: Vec<usize> = (0..s.followers)
         .filter(|&i| drops_out(i, s.drop_out, s.followers))
         .collect();
+    let flaky: Vec<usize> = match &s.network {
+        Some(n) => (0..s.followers)
+            .filter(|&i| is_flaky(i, n.flaky, s.followers))
+            .collect(),
+        None => Vec::new(),
+    };
+    // Flaky followers cut off now, and how many times one was.
+    let mut cut: HashSet<usize> = HashSet::new();
+    let mut outages = 0;
     // `None` once stopped; what a stopped follower measured is kept.
     let mut followers: Vec<Option<Node>> = followers.into_iter().map(Some).collect();
     let mut stopped: HashMap<usize, Vec<PeerRecord>> = HashMap::new();
@@ -301,6 +381,23 @@ pub async fn run(s: &Scenario) -> Result<Report> {
         .await?;
         let now = posted.elapsed();
 
+        if let (Some(net), Some(n)) = (&net, &s.network) {
+            for (k, &i) in flaky.iter().enumerate() {
+                let Some(node) = &followers[i] else {
+                    continue;
+                };
+                let off = cut_off_at(now, k, flaky.len(), n);
+                if off != cut.contains(&i) {
+                    let on_the_network = net.set_online(node.node_id(), !off);
+                    if off {
+                        cut.insert(i);
+                        outages += usize::from(on_the_network);
+                    } else {
+                        cut.remove(&i);
+                    }
+                }
+            }
+        }
         if !strangers.is_empty() && reshared_after_secs.is_none() && held[RESHARER].is_some() {
             let resharer = followers[RESHARER]
                 .as_ref()
@@ -363,6 +460,14 @@ pub async fn run(s: &Scenario) -> Result<Report> {
         tokio::time::sleep(TICK).await;
     }
     let ended_secs = posted.elapsed().as_secs_f64();
+    // Outages end with the run.
+    if let Some(net) = &net {
+        for i in cut.drain() {
+            if let Some(node) = &followers[i] {
+                net.set_online(node.node_id(), true);
+            }
+        }
+    }
     tokio::time::sleep(SETTLE).await;
 
     let mut dropped_out: Vec<usize> = stopped.keys().copied().collect();
@@ -449,7 +554,51 @@ pub async fn run(s: &Scenario) -> Result<Report> {
         latecomer_took_secs,
         latecomer_downloads: from_latecomers.downloads,
         creator_sent_to_latecomers,
+        network: s.network.as_ref().zip(net).map(|(n, net)| NetworkReport {
+            settings: n.clone(),
+            flaky_followers: flaky,
+            outages,
+            packets: net.stats(),
+        }),
     })
+}
+
+impl Scenario {
+    /// The creator's place on the simulated network, if the run has one.
+    fn creator_link(&self, net: Option<&SimNet>) -> Option<SimLink> {
+        let n = self.network.as_ref()?;
+        Some(net?.link(Link {
+            up_bps: self.creator_mbps * MBPS,
+            down_bps: n.creator_down_mbps * MBPS,
+            delay: Duration::from_millis(n.creator_delay_ms),
+            loss: n.creator_loss_percent / 100.0,
+        }))
+    }
+
+    /// The same for the `i`th follower, stranger or latecomer.
+    fn follower_link(&self, net: Option<&SimNet>, i: usize) -> Option<SimLink> {
+        let n = self.network.as_ref()?;
+        Some(net?.link(Link {
+            up_bps: in_turn(&self.follower_mbps, i) * MBPS,
+            down_bps: in_turn(&n.down_mbps, i) * MBPS,
+            delay: Duration::from_millis(in_turn(&n.delay_ms, i)),
+            loss: in_turn(&n.loss_percent, i) / 100.0,
+        }))
+    }
+
+    /// The upload cap a node with this upload speed sets: on loopback, the
+    /// speed itself; on the simulated network, none unless `caps`.
+    fn upload_cap(&self, mbps: u64) -> u64 {
+        match &self.network {
+            Some(n) if !n.caps => 0,
+            _ => mbps,
+        }
+    }
+}
+
+/// The `i`th setting of a list given in turn.
+fn in_turn<T: Copy>(list: &[T], i: usize) -> T {
+    list[i % list.len()]
 }
 
 impl Report {
@@ -561,12 +710,46 @@ impl Report {
             self.followers,
             self.video_bytes as f64 / 1e6,
             self.creator_mbps,
-            self.follower_mbps
-                .iter()
-                .map(u64::to_string)
-                .collect::<Vec<_>>()
-                .join("/"),
+            slashed(&self.follower_mbps),
         );
+        if let Some(net) = &self.network {
+            let n = &net.settings;
+            let _ = writeln!(
+                out,
+                "simulated network, speeds above up: creator {} Mbit/s down, {} ms each way, {}% loss; followers {} Mbit/s down, {} ms each way, {}% loss; {}",
+                n.creator_down_mbps,
+                n.creator_delay_ms,
+                n.creator_loss_percent,
+                slashed(&n.down_mbps),
+                slashed(&n.delay_ms),
+                slashed(&n.loss_percent),
+                if n.caps {
+                    "nodes cap their upload at those speeds"
+                } else {
+                    "no upload caps"
+                },
+            );
+            if !net.flaky_followers.is_empty() {
+                let _ = writeln!(
+                    out,
+                    "{} followers cut off for {} s in every {} s, taking turns: {} outages in all",
+                    net.flaky_followers.len(),
+                    n.outage_secs,
+                    n.outage_every_secs,
+                    net.outages,
+                );
+            }
+            let p = &net.packets;
+            let share = |count: u64| 100.0 * count as f64 / p.packets.max(1) as f64;
+            let _ = writeln!(
+                out,
+                "packets: {:.2} million sent, {:.2}% lost, {:.2}% dropped by full queues, {:.2}% while cut off",
+                p.packets as f64 / 1e6,
+                share(p.lost),
+                share(p.queue_full),
+                share(p.cut_off),
+            );
+        }
         if !self.dropped_out.is_empty() {
             let had_it = self.dropped_out.iter();
             let had_it = had_it.filter(|i| self.held_after_secs[**i].is_some());
@@ -703,11 +886,18 @@ async fn make_video(dir: &Path, bytes: u64) -> Result<PathBuf> {
     Ok(out)
 }
 
-async fn start(home: &Path, name: &str, mbps: u64, swarm: bool, sim: SimSettings) -> Result<Node> {
+/// Starts a node that caps its upload at `upload_cap` Mbit/s (0: no cap).
+async fn start(
+    home: &Path,
+    name: &str,
+    upload_cap: u64,
+    swarm: bool,
+    sim: SimSettings,
+) -> Result<Node> {
     let mut config = Config::local_test(name);
     // Poll like a real node; test nodes poll only hourly.
     config.sync.interval_secs = SyncConfig::default().interval_secs;
-    config.serving.max_upload_mbps = mbps;
+    config.serving.max_upload_mbps = upload_cap;
     config.swarm.share_prefetched = swarm;
     // Noise always reaches the bitrate ceiling, so the preset changes only
     // how long encoding takes, not the size.
@@ -768,6 +958,12 @@ fn sent(peers: &[PeerRecord]) -> f64 {
     total(peers.iter().map(|p| p.counts.sent_bytes))
 }
 
+/// Settings given in turn, for people to read: "5/10/20".
+fn slashed<T: ToString>(list: &[T]) -> String {
+    let list: Vec<String> = list.iter().map(T::to_string).collect();
+    list.join("/")
+}
+
 /// Adds numbers up. Unlike `sum`, which makes -0.0 of nothing, this makes 0.
 fn total(numbers: impl Iterator<Item = f64>) -> f64 {
     numbers.fold(0.0, |sum, n| sum + n)
@@ -788,10 +984,32 @@ fn drops_out(i: usize, drop_out: usize, followers: usize) -> bool {
     (i + 1) * drop_out / followers > i * drop_out / followers
 }
 
+/// Whether follower `i` of `followers` is one of the `flaky`: the middle one
+/// of each group of `followers / flaky`. So with groups of at least three,
+/// none is one that stops partway (the last of each), and with fewer than
+/// half the followers flaky, the resharer (the first) isn't.
+fn is_flaky(i: usize, flaky: usize, followers: usize) -> bool {
+    // How many middles come before `i`, rounding to the nearest.
+    let middles = |i: usize| (2 * i * flaky + followers) / (2 * followers);
+    middles(i + 1) > middles(i)
+}
+
+/// Whether the `k`th of `count` flaky followers is cut off `after` posting.
+/// Each is cut off for `outage_secs` in every `outage_every_secs`, the
+/// `k`th first `(k + 1) / (count + 1)` of the way into the first period, so
+/// that they take turns.
+fn cut_off_at(after: Duration, k: usize, count: usize, n: &Network) -> bool {
+    let every = Duration::from_secs(n.outage_every_secs);
+    let first = every.mul_f64((k + 1) as f64 / (count + 1) as f64);
+    after >= first
+        && (after - first).as_millis() % every.as_millis() < u128::from(n.outage_secs) * 1_000
+}
+
 /// Starts `count` nodes at the followers' upload speeds, given in turn, with
-/// homes `{dir}0000`, `{dir}0001` and so on.
+/// homes `{dir}0000`, `{dir}0001` and so on, on `net` if there is one.
 async fn start_all(
     s: &Scenario,
+    net: Option<&SimNet>,
     dir: &str,
     name: &str,
     count: usize,
@@ -800,9 +1018,12 @@ async fn start_all(
     stream::iter(0..count)
         .map(|i| {
             let home = s.dir.join(format!("{dir}{i:04}"));
-            let mbps = s.follower_mbps[i % s.follower_mbps.len()];
-            let sim = sim.clone();
-            async move { start(&home, &format!("{name}{i}"), mbps, s.swarm, sim).await }
+            let cap = s.upload_cap(in_turn(&s.follower_mbps, i));
+            let sim = SimSettings {
+                network: s.follower_link(net, i),
+                ..sim.clone()
+            };
+            async move { start(&home, &format!("{name}{i}"), cap, s.swarm, sim).await }
         })
         .buffered_ordered(STARTING_AT_ONCE)
         .collect::<Vec<_>>()
@@ -1041,6 +1262,102 @@ mod tests {
         r.dropped_out = vec![3];
         r.held_after_secs[3] = None;
         assert_eq!((r.holding(), r.time_until(100)), (3, Some(3.0)));
+    }
+
+    fn network() -> Network {
+        Network {
+            creator_down_mbps: 100,
+            creator_delay_ms: 20,
+            creator_loss_percent: 0.0,
+            down_mbps: vec![50, 100],
+            delay_ms: vec![10, 40],
+            loss_percent: vec![0.0, 0.5],
+            caps: false,
+            flaky: 0,
+            outage_secs: 30,
+            outage_every_secs: 300,
+            seed: 1,
+        }
+    }
+
+    #[test]
+    fn flaky_followers_are_spread_through_the_order() {
+        let flaky = |n, f| (0..f).filter(|i| is_flaky(*i, n, f)).collect::<Vec<_>>();
+        assert_eq!(flaky(3, 12), [1, 5, 9]);
+        assert_eq!(flaky(0, 300), [] as [usize; 0]);
+        for (n, f) in [(3, 12), (30, 300), (60, 300), (100, 300), (149, 300)] {
+            let picked = flaky(n, f);
+            assert_eq!(picked.len(), n);
+            assert!(!picked.contains(&RESHARER));
+            // Groups of 3 or more: none of them is one that stops.
+            assert!(picked.iter().all(|i| !drops_out(*i, n, f)));
+        }
+    }
+
+    #[test]
+    fn flaky_followers_take_turns_being_cut_off() {
+        let n = Network {
+            flaky: 2,
+            ..network()
+        };
+        let at = |secs, k| cut_off_at(Duration::from_secs(secs), k, 2, &n);
+        // Every 300 s, for 30 s: the first from a third of the way in, the
+        // second from two thirds.
+        assert!(!at(0, 0) && !at(99, 0) && at(100, 0) && at(129, 0) && !at(130, 0));
+        assert!(!at(199, 1) && at(200, 1) && at(229, 1) && !at(230, 1));
+        assert!(!at(150, 0) && !at(150, 1));
+        assert!(at(400, 0) && !at(430, 0) && at(500, 1) && !at(530, 1));
+    }
+
+    #[test]
+    fn each_node_gets_its_connection_in_turn() {
+        let s = Scenario {
+            dir: PathBuf::new(),
+            followers: 4,
+            video_bytes: 0,
+            creator_mbps: 20,
+            follower_mbps: vec![5, 10, 20],
+            network: Some(network()),
+            swarm: true,
+            prefetch_spread: Duration::ZERO,
+            download_sources: 3,
+            drop_out: 0,
+            drop_out_after: Duration::ZERO,
+            strangers: 0,
+            latecomers: 0,
+            time_limit: Duration::ZERO,
+            sample: Duration::ZERO,
+            label: String::new(),
+        };
+        let net = SimNet::new(1);
+        let link = |i| s.follower_link(Some(&net), i).unwrap().link;
+        assert_eq!(
+            link(3),
+            Link {
+                up_bps: 5 * MBPS,
+                down_bps: 100 * MBPS,
+                delay: Duration::from_millis(40),
+                loss: 0.005,
+            }
+        );
+        assert_eq!(link(4).up_bps, 10 * MBPS);
+        assert_eq!(link(4).delay, Duration::from_millis(10));
+        let creator = s.creator_link(Some(&net)).unwrap().link;
+        assert_eq!(
+            (creator.up_bps, creator.down_bps, creator.loss),
+            (20 * MBPS, 100 * MBPS, 0.0)
+        );
+        // No upload caps unless asked for; on loopback, always.
+        assert_eq!(s.upload_cap(5), 0);
+        let mut capped = s.clone();
+        capped.network.as_mut().unwrap().caps = true;
+        assert_eq!(capped.upload_cap(5), 5);
+        let loopback = Scenario {
+            network: None,
+            ..s.clone()
+        };
+        assert_eq!(loopback.upload_cap(5), 5);
+        assert!(loopback.follower_link(Some(&net), 0).is_none());
     }
 
     #[test]

@@ -6,7 +6,7 @@ use std::{path::PathBuf, time::Duration};
 use anyhow::{Context, Result};
 use clap::Parser;
 use osp_node::SimSettings;
-use osp_sim::Scenario;
+use osp_sim::{Network, Scenario};
 
 /// Runs one creator and many followers as real nodes in this process. The
 /// creator posts a video; this measures what the creator sends and when
@@ -29,6 +29,50 @@ struct Cli {
     /// Followers' upload speeds, in megabits per second, given in turn.
     #[arg(long, value_delimiter = ',', default_values_t = [5, 10, 20])]
     follower_mbps: Vec<u64>,
+    /// Run over a simulated network instead of loopback: each node's
+    /// connection has its upload speed (above), and a download speed, a
+    /// delay and packet loss (below). The followers' are given in turn, as
+    /// their upload speeds are, and strangers and latecomers get them too.
+    #[arg(long)]
+    net: bool,
+    /// With --net: the creator's download speed, in megabits per second.
+    #[arg(long, default_value_t = 100, requires = "net")]
+    creator_down_mbps: u64,
+    /// With --net: the creator's delay to the middle of the network, in
+    /// milliseconds each way. A round trip between two nodes takes twice
+    /// the sum of their delays.
+    #[arg(long, default_value_t = 20, requires = "net")]
+    creator_delay_ms: u64,
+    /// With --net: the percentage of the creator's packets lost each way.
+    #[arg(long, default_value_t = 0.0, requires = "net")]
+    creator_loss: f64,
+    /// With --net: followers' download speeds, in megabits per second.
+    #[arg(long, value_delimiter = ',', default_values_t = [50, 100, 300], requires = "net")]
+    down_mbps: Vec<u64>,
+    /// With --net: followers' delays, in milliseconds each way.
+    #[arg(long, value_delimiter = ',', default_values_t = [10, 20, 30, 40], requires = "net")]
+    delay_ms: Vec<u64>,
+    /// With --net: the percentage of followers' packets lost each way.
+    #[arg(long, value_delimiter = ',', default_values_t = [0.0], requires = "net")]
+    loss: Vec<f64>,
+    /// With --net: nodes also cap their upload at their connection's speed
+    /// (`max_upload_mbps`), as on loopback. By default they set no cap, as
+    /// a node doesn't unless its owner does.
+    #[arg(long, requires = "net")]
+    caps: bool,
+    /// With --net: this many followers' connections drop out now and then,
+    /// taking turns: the middle one of each group of `followers / flaky`.
+    #[arg(long, default_value_t = 0, requires = "net")]
+    flaky: usize,
+    /// How long each outage lasts, in seconds.
+    #[arg(long, default_value_t = 30, requires = "flaky")]
+    outage_secs: u64,
+    /// How often a flaky follower's connection drops out, in seconds.
+    #[arg(long, default_value_t = 300, requires = "flaky")]
+    outage_every_secs: u64,
+    /// With --net: the random packet losses follow from this.
+    #[arg(long, default_value_t = 1, requires = "net")]
+    seed: u64,
     /// Followers join the follower swarm: they share what they prefetch.
     #[arg(long)]
     swarm: bool,
@@ -97,6 +141,19 @@ async fn main() -> Result<()> {
         video_bytes: (cli.video_mb * 1e6) as u64,
         creator_mbps: cli.creator_mbps,
         follower_mbps: cli.follower_mbps,
+        network: cli.net.then_some(Network {
+            creator_down_mbps: cli.creator_down_mbps,
+            creator_delay_ms: cli.creator_delay_ms,
+            creator_loss_percent: cli.creator_loss,
+            down_mbps: cli.down_mbps,
+            delay_ms: cli.delay_ms,
+            loss_percent: cli.loss,
+            caps: cli.caps,
+            flaky: cli.flaky,
+            outage_secs: cli.outage_secs,
+            outage_every_secs: cli.outage_every_secs,
+            seed: cli.seed,
+        }),
         swarm: cli.swarm,
         prefetch_spread: cli.spread_secs.map_or_else(
             || SimSettings::default().prefetch_spread,
