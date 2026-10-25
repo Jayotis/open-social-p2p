@@ -50,7 +50,7 @@ use n0_future::{FuturesUnordered, StreamExt, boxed::BoxStream};
 use osp_proto::BlobHash;
 use tokio::{
     io::{AsyncWrite, AsyncWriteExt},
-    sync::{OwnedSemaphorePermit, Semaphore, mpsc, watch},
+    sync::{Notify, OwnedSemaphorePermit, Semaphore, mpsc, watch},
     task::JoinHandle,
 };
 use tracing::{debug, info, warn};
@@ -109,6 +109,11 @@ const MAX_TRANSFERS_PER_NODE: usize = 2;
 /// How long a request over one of those limits waits for a place. After
 /// that it is refused as busy, and the requester tries another host.
 const BUSY_WAIT: Duration = Duration::from_secs(10);
+/// A node fetching a blob in parts asks for its next part as soon as one
+/// ends. Its places are kept for it this long after a transfer of part of
+/// a blob, so that request doesn't wait behind others: to the rest, it's
+/// as if the node fetched the whole blob in one transfer.
+const KEEP_PLACES: Duration = Duration::from_secs(2);
 /// Blobs this small, such as thumbnails, have places of their own, so they
 /// aren't held up behind videos. Each takes a moment to send.
 pub(crate) const SMALL_BLOB: u64 = 1 << 20;
@@ -459,10 +464,13 @@ impl ContentStore {
     /// node is asked for one stretch of the blob, its part, so it keeps
     /// one transfer place throughout, as for a whole blob. A node that
     /// finishes takes over the back half of the part with the most still
-    /// to come; what a node that fails didn't send goes to the next node.
-    /// Returns the nodes that failed, and how: they aren't asked again.
-    /// Whatever is still missing at the end, `fetch` asks for from one
-    /// node at a time.
+    /// to come. What a node that fails didn't send goes to a node that has
+    /// sent its part, whose place is kept for it (`KEEP_PLACES`); only if
+    /// none is left fetching does it go to a node not asked yet, which
+    /// may well be as busy. So no more nodes fetch at once than the first
+    /// few asked. Returns the nodes that failed, and how: they aren't
+    /// asked again. Whatever is still missing at the end, `fetch` asks for
+    /// from one node at a time.
     async fn fetch_in_parts(
         &self,
         hash: Hash,
@@ -473,19 +481,32 @@ impl ContentStore {
         let have = self.store.observe(hash).await?;
         let sources = nodes.len().min(self.max_sources);
         let mut todo = plan_parts(&missing(&have, declared), sources);
-        // Nodes free for a part: those that sent theirs, at the front,
-        // then those not asked yet.
-        let mut free: VecDeque<EndpointId> = nodes.iter().copied().collect();
+        // Nodes that sent their part, and nodes not asked yet.
+        let mut done: Vec<EndpointId> = Vec::new();
+        let mut unasked: VecDeque<EndpointId> = nodes.iter().copied().collect();
         let mut running: Vec<Arc<Part>> = Vec::new();
         let mut attempts = FuturesUnordered::new();
         let mut failed = Vec::new();
         loop {
-            while attempts.len() < self.max_sources && Instant::now() < deadline {
-                let Some(&node) = free.front() else { break };
+            while Instant::now() < deadline {
+                // The first few nodes not asked yet start the parts; after
+                // that, one is asked only when no node is fetching.
+                let asked = nodes.len() - unasked.len();
+                let next = match done.last() {
+                    Some(node) => Some(*node),
+                    None if asked < sources || attempts.is_empty() => unasked.front().copied(),
+                    None => None,
+                };
+                let Some(node) = next else { break };
                 let Some(range) = todo.pop_front().or_else(|| split_largest(&running)) else {
                     break;
                 };
-                free.pop_front();
+                // Off the list it came from.
+                if !done.is_empty() {
+                    done.pop();
+                } else {
+                    unasked.pop_front();
+                }
                 let part = Arc::new(Part::new(range));
                 running.push(part.clone());
                 attempts.push(self.fetch_part(hash, node, part, deadline));
@@ -496,7 +517,7 @@ impl ContentStore {
             running.retain(|p| !Arc::ptr_eq(p, &part));
             self.record(hash, &attempt);
             if attempt.outcome == Outcome::Completed {
-                free.push_front(attempt.node);
+                done.push(attempt.node);
             } else {
                 failed.push((attempt.node, attempt.outcome));
                 let rest = part.reached()..part.end();
@@ -1115,8 +1136,9 @@ fn to_blob_hash(hash: Hash) -> BlobHash {
 ///
 /// A request that may be served still waits for a place within the
 /// transfer limits, and is refused as busy if none frees up in time. A
-/// small blob needs only a small place (`SMALL_BLOB`). With an upload cap,
-/// `pacer` spaces out what is sent.
+/// small blob needs only a small place (`SMALL_BLOB`). A node's places are
+/// kept for its next request for a blob it is fetching in parts
+/// (`KEEP_PLACES`). With an upload cap, `pacer` spaces out what is sent.
 async fn enforce_serving_rules(
     mut rx: mpsc::Receiver<ProviderMessage>,
     db: Arc<Db>,
@@ -1127,9 +1149,10 @@ async fn enforce_serving_rules(
     let mut peers: HashMap<u64, Option<EndpointId>> = HashMap::new();
     while let Some(msg) = rx.recv().await {
         // Requests for data: who asked, whether the rules allow it, whether
-        // it is small, and the channels for the answer and for news of the
-        // transfer.
-        let (peer, allowed, small, answer, updates) = match msg {
+        // it is small, the large blob it is for and whether it asks for
+        // only part of it, and the channels for the answer and for news of
+        // the transfer.
+        let (peer, allowed, small, large, part, answer, updates) = match msg {
             ProviderMessage::GetRequestReceived(msg) => {
                 let peer = peers.get(&msg.inner.connection_id).copied().flatten();
                 let request = &msg.inner.request;
@@ -1139,7 +1162,9 @@ async fn enforce_serving_rules(
                     .then(|| may_serve(&db, request.hash, peer, share_prefetched))
                     .flatten();
                 let small = size.is_some_and(|s| s <= SMALL_BLOB);
-                (peer, size.is_some(), small, msg.tx, msg.rx)
+                let large = (!small).then_some(request.hash);
+                let whole = matches!(request.ranges.as_single(), Some((0, r)) if r.is_all());
+                (peer, size.is_some(), small, large, !whole, msg.tx, msg.rx)
             }
             ProviderMessage::GetManyRequestReceived(msg) => {
                 let peer = peers.get(&msg.inner.connection_id).copied().flatten();
@@ -1149,7 +1174,7 @@ async fn enforce_serving_rules(
                     .hashes
                     .iter()
                     .all(|h| may_serve(&db, *h, peer, share_prefetched).is_some());
-                (peer, ok, false, msg.tx, msg.rx)
+                (peer, ok, false, None, false, msg.tx, msg.rx)
             }
             ProviderMessage::ClientConnected(msg) => {
                 peers.insert(msg.inner.connection_id, msg.inner.endpoint_id);
@@ -1189,10 +1214,23 @@ async fn enforce_serving_rules(
             answer.send(verdict(false)).await.ok();
             continue;
         }
+        let key = peer.zip(large);
         let needed = places.needed(peer, small, &db);
+        let keep = places.kept.clone();
         let db = db.clone();
         tokio::spawn(async move {
-            let Some(_held) = take_places(needed).await else {
+            let held = match key {
+                // Places kept for the node's transfer of another part of
+                // the blob come first, if there are any or once there are:
+                // that transfer may not have ended yet.
+                Some(key) => tokio::select! {
+                    biased;
+                    held = keep.taken(key) => Some(held),
+                    held = take_places(needed) => held,
+                },
+                None => take_places(needed).await,
+            };
+            let Some(held) = held else {
                 debug!(?peer, "busy: refused a blob request");
                 answer.send(Err(AbortReason::RateLimited)).await.ok();
                 if let Some(peer) = peer {
@@ -1217,8 +1255,69 @@ async fn enforce_serving_rules(
                 if let (Some(peer), Some(bytes)) = (peer, sent) {
                     peers::record(&db, &peer, Event::Served { bytes });
                 }
+                // The node may ask for another part of the blob now.
+                if part && let Some(key) = key {
+                    keep.keep(key, held);
+                }
             }
         });
+    }
+}
+
+/// Places kept for a moment for nodes whose transfer of part of a blob
+/// just ended (`KEEP_PLACES`).
+#[derive(Clone, Default)]
+struct KeptPlaces(Arc<Kept>);
+
+/// Kept places by node and blob, each with a number that tells one keeping
+/// from the next.
+type KeptMap = HashMap<(EndpointId, Hash), (u64, Vec<OwnedSemaphorePermit>)>;
+
+#[derive(Default)]
+struct Kept {
+    places: Mutex<KeptMap>,
+    /// Woken whenever places are kept.
+    new: Notify,
+}
+
+impl KeptPlaces {
+    /// Keeps `held` for `key` for `KEEP_PLACES`, then gives them back.
+    fn keep(&self, key: (EndpointId, Hash), held: Vec<OwnedSemaphorePermit>) {
+        static KEPT: AtomicU64 = AtomicU64::new(0);
+        let number = KEPT.fetch_add(1, Ordering::Relaxed);
+        self.lock().insert(key, (number, held));
+        self.0.new.notify_waiters();
+        let this = self.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(KEEP_PLACES).await;
+            let mut kept = this.lock();
+            // Unless they were taken, and maybe kept again since.
+            if kept.get(&key).is_some_and(|(n, _)| *n == number) {
+                kept.remove(&key);
+            }
+        });
+    }
+
+    fn take(&self, key: &(EndpointId, Hash)) -> Option<Vec<OwnedSemaphorePermit>> {
+        self.lock().remove(key).map(|(_, held)| held)
+    }
+
+    /// Waits until places are kept for `key`, and takes them.
+    async fn taken(&self, key: (EndpointId, Hash)) -> Vec<OwnedSemaphorePermit> {
+        loop {
+            // Listening before looking, so places kept in between aren't missed.
+            let new = self.0.new.notified();
+            tokio::pin!(new);
+            new.as_mut().enable();
+            if let Some(held) = self.take(&key) {
+                return held;
+            }
+            new.await;
+        }
+    }
+
+    fn lock(&self) -> MutexGuard<'_, KeptMap> {
+        self.0.places.lock().unwrap_or_else(|e| e.into_inner())
     }
 }
 
@@ -1228,6 +1327,7 @@ struct Places {
     strangers: Arc<Semaphore>,
     small: Arc<Semaphore>,
     per_node: HashMap<Option<EndpointId>, Arc<Semaphore>>,
+    kept: KeptPlaces,
 }
 
 impl Places {
@@ -1239,6 +1339,7 @@ impl Places {
             strangers: Arc::new(Semaphore::new(all.div_ceil(2))),
             small: Arc::new(Semaphore::new(MAX_SMALL_TRANSFERS)),
             per_node: HashMap::new(),
+            kept: KeptPlaces::default(),
         }
     }
 
@@ -1878,8 +1979,8 @@ mod tests {
         assert_eq!(f.record(spare.id()).tries, 0.0);
         assert_eq!(f.record(busy.id()).tries.round(), 1.0);
 
-        // When none of them can, the nodes asked in turn are, after them;
-        // the busy node isn't asked again.
+        // When none of them can, the nodes asked in turn are, after them,
+        // each for all that's missing; the busy node isn't asked again.
         let other = noise(3);
         let (spare, hash) = f.provider(&other, None).await;
         let (busy, _) = f.provider(&other, Some(AbortReason::RateLimited)).await;
@@ -1893,8 +1994,37 @@ mod tests {
             .download(&blob, sources, BlobClass::Cache, other.len() as u64)
             .await
             .unwrap();
-        assert!(f.record(spare.id()).received_bytes.round() >= other.len() as f64);
+        let counts = f.record(spare.id());
+        assert!(counts.received_bytes.round() >= other.len() as f64);
+        assert_eq!(counts.tries.round(), 1.0, "{counts:?}");
         assert_eq!(f.record(busy.id()).tries.round(), 1.0);
+    }
+
+    #[tokio::test]
+    async fn a_part_refused_as_busy_waits_for_a_node_that_sent_its_own() {
+        let f = Fixture::new().await;
+        let store = f.open_with_quotas(64).await;
+        let data = noise(6);
+        let size = data.len() as u64;
+        let (busy, hash) = f.provider(&data, Some(AbortReason::RateLimited)).await;
+        // Slow enough that the busy node refuses while these two send.
+        let (first, _) = f.slow_provider(&data, Duration::from_millis(2)).await;
+        let (second, _) = f.slow_provider(&data, Duration::from_millis(2)).await;
+        let (unasked, _) = f.provider(&data, None).await;
+        let sources = Sources {
+            at_once: vec![busy.id(), first.id(), second.id(), unasked.id()],
+            in_turn: Vec::new(),
+        };
+        store
+            .download(&to_blob_hash(hash), sources, BlobClass::Cache, size)
+            .await
+            .unwrap();
+        // The busy node's part went to one of the other two once it had
+        // sent its own, not to a node not asked yet, which could be busy too.
+        assert_eq!(f.record(busy.id()).busy.round(), 1.0);
+        assert_eq!(f.record(unasked.id()).tries, 0.0);
+        let completed = f.record(first.id()).completed + f.record(second.id()).completed;
+        assert!(completed.round() >= 3.0, "{completed}");
     }
 
     #[tokio::test]

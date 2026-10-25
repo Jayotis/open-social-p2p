@@ -19,7 +19,11 @@ use iroh::{
     endpoint::{Connection, RecvStream, SendStream, presets},
     protocol::{AcceptError, ProtocolHandler, Router},
 };
-use iroh_blobs::{BlobsProtocol, Hash, get, protocol::GetRequest, store::mem::MemStore};
+use iroh_blobs::{
+    BlobsProtocol, Hash, get,
+    protocol::{ChunkRanges, ChunkRangesExt, GetRequest},
+    store::mem::MemStore,
+};
 use osp_node::{BlobClass, Config, Node, SimSettings};
 use osp_proto::{
     Attachment, BlobHash, CLIENT_ALPN, FollowTicket, MediaKind, Note, ObjectId, Payload, Person,
@@ -856,6 +860,114 @@ async fn media_transfers_take_turns_and_strangers_get_only_some_places() {
     assert!(
         took >= BUSY_WAIT - Duration::from_secs(1),
         "refused after {took:?}"
+    );
+
+    drop(held);
+    node.shutdown().await.unwrap();
+}
+
+/// Asks for `ranges` of a blob without reading the answer, as `hold` does.
+async fn hold_part(
+    conn: &Connection,
+    blob: BlobHash,
+    ranges: ChunkRanges,
+) -> get::fsm::ConnectedNext {
+    let request = GetRequest::blob_ranges(Hash::from_bytes(*blob.as_bytes()), ranges);
+    let connected = get::fsm::start(conn.clone(), request, Default::default())
+        .next()
+        .await
+        .unwrap();
+    let held = connected.next().await.unwrap();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    held
+}
+
+/// Downloads `ranges` of a blob. Whether they arrived.
+async fn fetch_part(conn: &Connection, blob: BlobHash, ranges: ChunkRanges) -> bool {
+    let request = GetRequest::blob_ranges(Hash::from_bytes(*blob.as_bytes()), ranges);
+    let got = MemStore::new().remote().execute_get(conn.clone(), request);
+    got.complete().await.is_ok()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_node_fetching_in_parts_keeps_its_place_for_its_next_part() {
+    const MB: u64 = 1 << 20;
+    let dir = tempfile::tempdir().unwrap();
+    let node = start(dir.path(), "Mina").await;
+    let addr = node.addr().await;
+    let (_, blob, size) = post_noise_photo(&node, dir.path()).await;
+    assert!(size > 2 * MB + MB / 4, "{size} bytes");
+
+    // Strangers take every place for strangers. The last goes to one
+    // fetching in parts, and its part is more than a stream holds, so it
+    // can't end until it's read.
+    let first = stranger(&addr, iroh_blobs::ALPN).await;
+    let second = stranger(&addr, iroh_blobs::ALPN).await;
+    let mut held = vec![
+        hold(&first, blob).await,
+        hold(&first, blob).await,
+        hold(&second, blob).await,
+    ];
+    let parts = stranger(&addr, iroh_blobs::ALPN).await;
+    let part = hold_part(&parts, blob, ChunkRanges::bytes(0..2 * MB)).await;
+    // Another stranger waits for a place.
+    let waiting = stranger(&addr, iroh_blobs::ALPN).await;
+    held.push(hold(&waiting, blob).await);
+
+    // The part ends, and the next is asked for at once: it gets the place
+    // kept for it, before the one waiting.
+    drop(part);
+    let next = ChunkRanges::bytes(2 * MB..size);
+    let started = Instant::now();
+    assert!(
+        fetch_part(&parts, blob, next).await,
+        "the next part was refused"
+    );
+    assert!(started.elapsed() < PROMPTLY, "{:?}", started.elapsed());
+
+    // The same when the next part is asked for before the first ends.
+    drop(held);
+    let ahead = stranger(&addr, iroh_blobs::ALPN).await;
+    let mut held = vec![
+        hold(&first, blob).await,
+        hold(&first, blob).await,
+        hold(&second, blob).await,
+    ];
+    let part = hold_part(&ahead, blob, ChunkRanges::bytes(0..2 * MB)).await;
+    held.push(hold(&waiting, blob).await);
+    let conn = ahead.conn.clone();
+    let next = tokio::spawn(async move {
+        let next = ChunkRanges::bytes(2 * MB..size);
+        fetch_part(&conn, blob, next).await
+    });
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert!(!next.is_finished(), "the next part waits for a place");
+    drop(part);
+    let started = Instant::now();
+    assert!(next.await.unwrap(), "the next part was refused");
+    assert!(started.elapsed() < PROMPTLY, "{:?}", started.elapsed());
+
+    // A whole blob's place isn't kept: the one waiting gets it.
+    drop(held);
+    let late = stranger(&addr, iroh_blobs::ALPN).await;
+    let mut held = vec![
+        hold(&first, blob).await,
+        hold(&first, blob).await,
+        hold(&second, blob).await,
+        hold(&parts, blob).await,
+    ];
+    let conn = late.conn.clone();
+    let waited = tokio::spawn(async move { fetch(&conn, blob).await });
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    held.pop();
+    let freed = Instant::now();
+    let (ok, _) = waited.await.unwrap();
+    // Not after the 2 seconds a place is kept.
+    assert!(ok, "the waiting stranger was refused");
+    assert!(
+        freed.elapsed() < Duration::from_secs(1),
+        "{:?}",
+        freed.elapsed()
     );
 
     drop(held);
