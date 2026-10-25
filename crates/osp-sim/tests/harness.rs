@@ -5,7 +5,7 @@ use std::{path::Path, time::Duration};
 
 use osp_node::{Config, Node, SimSettings};
 use osp_proto::rpc::{ClientRequest, ClientResponse};
-use osp_sim::Scenario;
+use osp_sim::{Network, Scenario};
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_small_run_measures_the_creators_upload() {
@@ -16,6 +16,7 @@ async fn a_small_run_measures_the_creators_upload() {
         video_bytes: 1_000_000,
         creator_mbps: 20,
         follower_mbps: vec![5, 10, 20],
+        network: None,
         swarm: false,
         prefetch_spread: Duration::ZERO,
         download_sources: 3,
@@ -98,6 +99,7 @@ fn with_the_swarm(dir: &Path) -> Scenario {
         video_bytes: 2_000_000,
         creator_mbps: 20,
         follower_mbps: vec![5, 10, 20],
+        network: None,
         swarm: true,
         prefetch_spread: Duration::from_secs(10),
         download_sources: 3,
@@ -244,6 +246,72 @@ async fn strangers_get_a_reshared_video_from_each_other() {
         (report.creator_copies() - received).abs() < 0.1,
         "{summary}"
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_small_run_over_a_simulated_network() {
+    let dir = tempfile::tempdir().unwrap();
+    let scenario = Scenario {
+        // Over 2 MiB, so it comes in parts.
+        video_bytes: 3_000_000,
+        network: Some(Network {
+            creator_down_mbps: 100,
+            creator_delay_ms: 20,
+            creator_loss_percent: 0.5,
+            down_mbps: vec![50, 100, 300],
+            delay_ms: vec![10, 20, 40],
+            loss_percent: vec![0.0, 1.0],
+            caps: false,
+            // Cut off from 4 s and 8 s, for 3 s in every 12.
+            flaky: 2,
+            outage_secs: 3,
+            outage_every_secs: 12,
+            seed: 1,
+        }),
+        latecomers: 1,
+        // Without upload caps, a slow connection's upload is shared by all
+        // its transfers at once, so the first copies take longer than on
+        // loopback: spread long enough that early ones still serve later.
+        prefetch_spread: Duration::from_secs(30),
+        // Usually under a minute; room for a slow machine.
+        time_limit: Duration::from_secs(300),
+        ..with_the_swarm(dir.path())
+    };
+    let report = osp_sim::run(&scenario).await.unwrap();
+    let summary = report.summary();
+    println!("{summary}");
+    assert!(
+        summary.contains("simulated network, speeds above up: creator 100 Mbit/s down, 20 ms each way, 0.5% loss; followers 50/100/300 Mbit/s down, 10/20/40 ms each way, 0/1% loss; no upload caps"),
+        "{summary}"
+    );
+    assert!(
+        summary.contains("2 followers cut off for 3 s in every 12 s"),
+        "{summary}"
+    );
+
+    // Everyone got the video, the flaky followers too. How much came from
+    // the creator depends on timing; the latecomer, fetching once everyone
+    // held it, got it from followers, in parts.
+    let net = report.network.as_ref().expect("a network");
+    assert_eq!(net.flaky_followers, [2, 8]);
+    // Each was cut off at least once before everyone held the video.
+    assert!(net.outages >= 2, "{summary}");
+    assert_eq!(report.holding(), 12, "{summary}");
+    assert!(report.creator_copies() < 12.5, "{summary}");
+    assert!(report.latecomer_time(100).is_some(), "{summary}");
+    let thumbnail = (report.media_bytes - report.video_bytes) as f64;
+    assert!(
+        report.creator_sent_to_latecomers < thumbnail + 1000.0,
+        "{summary}"
+    );
+    assert!(report.latecomer_downloads.completed.round() >= 3.0);
+    // Packets were lost along the way, and QUIC sent them again.
+    let p = &net.packets;
+    assert!(p.lost > 0 && p.delivered > 0, "{p:?}");
+    // And some while the flaky followers were cut off.
+    assert!(p.cut_off > 0, "{p:?}");
+    assert!(p.delivered + p.lost + p.queue_full + p.cut_off <= p.packets);
+    assert_eq!(report.downloads.bad_data, 0.0, "{summary}");
 }
 
 async fn start(root: &Path, name: &str, sim: Option<SimSettings>) -> Node {
