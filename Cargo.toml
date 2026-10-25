@@ -27,6 +27,8 @@ iroh-base = { version = "1.4", features = ["key"] }
 iroh-blobs = "0.103.1" # minimum: earlier versions ignored EventMask modes (ADR 0002)
 iroh-relay = "1.4" # tests only: a relay server on loopback
 n0-future = "0.3"
+n0-watcher = "1" # the simulated network only (osp-node's `sim`), as iroh's custom transports need
+noq-udp = { version = "1.4", default-features = false } # the same
 postcard = { version = "1", default-features = false, features = ["use-std"] }
 qr2term = "0.3"
 ring = "0.17" # already used by iroh; encrypts backup files (ADR 0009)

@@ -8,9 +8,9 @@ license-file.workspace = true
 repository.workspace = true
 
 [features]
-# `Node::spawn_sim`, for the simulated network harness (`osp-sim`) only.
-# Nothing in `config.toml` or the CLI reaches it.
-sim = []
+# `Node::spawn_sim` and the simulated network, for the harness (`osp-sim`)
+# and tests only. Nothing in `config.toml` or the CLI reaches it.
+sim = ["iroh/unstable-custom-transports", "dep:iroh-base", "dep:n0-watcher", "dep:noq-udp"]
 
 [dependencies]
 osp-proto.workspace = true
@@ -21,8 +21,11 @@ data-encoding.workspace = true
 getrandom.workspace = true
 humantime.workspace = true
 iroh.workspace = true
+iroh-base = { workspace = true, optional = true }
 iroh-blobs.workspace = true
 n0-future.workspace = true
+n0-watcher = { workspace = true, optional = true }
+noq-udp = { workspace = true, optional = true }
 ring.workspace = true
 rusqlite.workspace = true
 rustix.workspace = true
