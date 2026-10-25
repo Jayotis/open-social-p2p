@@ -36,8 +36,8 @@ const RESUBSCRIBE_EVERY: Duration = Duration::from_secs(24 * 60 * 60);
 /// Hosts taken from one "who hosts" reply. Enough to find a copy.
 const MAX_HOSTS_PER_REPLY: usize = 20;
 /// How long media someone opened waits for a followed node to name other
-/// hosts before the download starts without them. Nodes that are up answer
-/// in milliseconds.
+/// hosts, before the download starts and again if it fails; then it goes on
+/// without that node's answer. Nodes that are up answer in milliseconds.
 const ASK_FIRST_WAIT: Duration = Duration::from_secs(3);
 /// However often followed nodes notify us, we sync at most this often.
 const MIN_SYNC_GAP: Duration = Duration::from_secs(5);
@@ -662,19 +662,29 @@ impl Core {
         class: BlobClass,
         declared: u64,
     ) -> Result<u64> {
+        // Opened on demand, on one of our devices or with `osp fetch`:
+        // someone is waiting.
+        let waiting = class == BlobClass::Cache;
         let providers = if self.store.has(blob).await? {
             Vec::new()
-        } else if class == BlobClass::Cache {
-            // Opened on demand, on one of our devices or with `osp fetch`.
+        } else if waiting {
             self.providers_asking_first(blob).await?
         } else {
             self.known_providers(blob)?
         };
-        match self.store.download(blob, providers, class, declared).await {
+        match self
+            .store
+            .download(blob, providers.clone(), class, declared)
+            .await
+        {
             Ok(size) => Ok(size),
             Err(first_error) => {
                 // Ask the nodes we follow who else has it, then try again.
-                let found = self.ask_who_hosts(blob).await;
+                // Someone waiting isn't kept waiting on nodes just tried.
+                let mut found = self.ask_who_hosts(blob, waiting).await;
+                if waiting {
+                    found.retain(|id| !providers.contains(id));
+                }
                 if found.is_empty() {
                     return Err(first_error);
                 }
@@ -760,16 +770,21 @@ impl Core {
     /// name, then those that answered and those we knew of, which were
     /// likely asked already. What they name is used for this download only,
     /// not remembered: an author's node names followers holding a copy only
-    /// to its followers (doc 13), and we mustn't pass them on.
-    async fn ask_who_hosts(&self, blob: &BlobHash) -> Vec<EndpointId> {
+    /// to its followers (doc 13), and we mustn't pass them on. With someone
+    /// `waiting`, a node that doesn't answer at once is passed over.
+    async fn ask_who_hosts(&self, blob: &BlobHash, waiting: bool) -> Vec<EndpointId> {
         let me = self.endpoint.id();
         let mut found = Vec::new();
         let mut answered = Vec::new();
         for follow in self.db.follows().unwrap_or_default() {
             let req = SocialRequest::WhoHosts { blob: *blob };
-            if let Ok(SocialResponse::Hosts { nodes }) =
-                self.social_request(&follow.addr, &req).await
-            {
+            let ask = self.social_request(&follow.addr, &req);
+            let reply = if waiting {
+                tokio::time::timeout(ASK_FIRST_WAIT, ask).await.ok()
+            } else {
+                Some(ask.await)
+            };
+            if let Some(Ok(SocialResponse::Hosts { nodes })) = reply {
                 let usable = nodes
                     .iter()
                     .filter(|a| a.id != me && check_addr(a).is_ok())
