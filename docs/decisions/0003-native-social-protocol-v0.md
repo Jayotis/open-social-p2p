@@ -51,7 +51,7 @@ Option 2 for Stage 1.
 - **Serving rules** (enforced by the iroh-blobs request hook):
   - `own`: media of my own posts; served to anyone.
   - `replica`: media I chose to host by resharing; served to anyone.
-  - `prefetch`: media my node fetched ahead of time from people I follow, and from the posts they reshared, so my phone loads it quickly. Served only to my paired devices, unless I share prefetched copies (`share_prefetched` under `[swarm]` in `config.toml`), when it is served to anyone. Sharing is the first piece of the follower swarm ([doc 13](../13-hosting-roles-and-follower-swarm.md)), off by default while it is tried out. It shows other nodes that I follow the post's author or a resharer, nothing about what I watched.
+  - `prefetch`: media my node fetched ahead of time from people I follow, and from the posts they reshared, so my phone loads it quickly. Served only to my paired devices, unless I share prefetched copies (`share_prefetched` under `[swarm]` in `config.toml`), when it is served to anyone. Sharing is the first piece of the follower swarm ([doc 13](../13-hosting-roles-and-follower-swarm.md)). `osp init` asks whether to share, recommending yes, and it's off without a yes ([ADR 0012](0012-sharing-prefetched-copies.md)). It shows other nodes that I follow the post's author or a resharer, nothing about what I watched.
   - `cache`: media my node fetched when my phone opened it; served only to my paired devices, whatever the settings.
   - Anything else is refused.
 - **Serving limits.** Anyone who knows a node's ID can download its public media, so a node limits how much it sends:
