@@ -429,6 +429,84 @@ async fn a_resharer_that_hosts_names_its_followers_with_a_copy() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_large_file_comes_in_parts_from_several_followers_with_a_copy() {
+    let dir = tempfile::tempdir().unwrap();
+    let alice = start(dir.path(), "Alice", false).await;
+    let photo = post_photo(&alice, dir.path(), false).await;
+    assert!(
+        photo.size >= 2 << 20,
+        "{} bytes: too small for parts",
+        photo.size
+    );
+    let received = async |node: &Node, from: &Node| {
+        let record = peer(node, from.node_id()).await;
+        record.map_or(0.0, |r| r.counts.received_bytes.round())
+    };
+
+    // Bob reshares Alice's photo, hosting it. Carol and Dave follow him,
+    // and fetch it one after the other, so Dave can get it from Carol.
+    let bob = start(dir.path(), "Bob", false).await;
+    follow(&bob, &alice).await;
+    let ClientResponse::Feed { items } = call(&bob, ClientRequest::Feed { limit: 1 }).await else {
+        panic!("no feed");
+    };
+    let reshare = ClientRequest::Reshare {
+        id: items[0].id,
+        host: true,
+    };
+    call(&bob, reshare).await;
+    let watcher = Peer::follower(&bob.addr().await, false).await;
+    let mut copies = Vec::new();
+    for name in ["Carol", "Dave"] {
+        let node = start(dir.path(), name, true).await;
+        follow(&node, &bob).await;
+        prefetched(&node, &photo.blob).await;
+        watcher.wait_for_host(photo.blob, node.node_id()).await;
+        copies.push(node);
+    }
+
+    // Erin's node doesn't fetch ahead of time. When she opens the post, it
+    // gets the photo from both at once. Bob's node names Alice's too, but
+    // the author's node is the one to spare: it isn't asked.
+    let home = dir.path().join("erin");
+    let mut config = Config::local_test("Erin");
+    config.sync.prefetch = false;
+    Node::init(&home, &config).unwrap();
+    let erin = Node::spawn_sim(&home, SimSettings::default())
+        .await
+        .unwrap();
+    follow(&erin, &bob).await;
+    let ClientResponse::Feed { items } = call(&erin, ClientRequest::Feed { limit: 1 }).await else {
+        panic!("no feed");
+    };
+    let open = ClientRequest::Fetch {
+        id: items[0].id,
+        out_dir: None,
+    };
+    call(&erin, open).await;
+    for copy in &copies {
+        let got = received(&erin, copy).await;
+        assert!(got >= 1_000_000.0, "{got} bytes from one copy");
+    }
+    assert_eq!(received(&erin, &alice).await, 0.0);
+    assert!(received(&erin, &bob).await < photo.size as f64);
+
+    // So does Frank's, fetching it ahead of time.
+    let frank = start(dir.path(), "Frank", true).await;
+    follow(&frank, &bob).await;
+    prefetched(&frank, &photo.blob).await;
+    for copy in &copies {
+        let got = received(&frank, copy).await;
+        assert!(got >= 1_000_000.0, "{got} bytes from one copy");
+    }
+    assert_eq!(received(&frank, &alice).await, 0.0);
+
+    for node in copies.into_iter().chain([alice, bob, erin, frank]) {
+        node.shutdown().await.unwrap();
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn media_opened_before_it_was_prefetched_comes_from_a_follower_with_a_copy() {
     let dir = tempfile::tempdir().unwrap();
     let alice = start(dir.path(), "Alice", false).await;

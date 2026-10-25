@@ -44,7 +44,7 @@ use crate::{
     network::{self, ConnTracker},
     relays::{self, Checked, RelayPolicy},
     social::{self, SocialProtocol},
-    store::{self, ContentStore},
+    store::{self, ContentStore, Sources},
     sync,
 };
 
@@ -65,6 +65,9 @@ pub struct SimSettings {
     /// Longest a post is held back from the feed while its media is on its
     /// way. Tests shorten it.
     pub max_hold: Duration,
+    /// Most nodes a file is fetched from at once, each sending a part of
+    /// it. The harness sets 1 to compare with fetching from one at a time.
+    pub download_sources: usize,
 }
 
 impl Default for SimSettings {
@@ -74,6 +77,7 @@ impl Default for SimSettings {
             first_retry_wait: sync::FIRST_RETRY_WAIT,
             prefetch_spread: sync::PREFETCH_SPREAD,
             max_hold: sync::MAX_HOLD,
+            download_sources: store::MAX_SOURCES,
         }
     }
 }
@@ -302,6 +306,7 @@ impl Node {
             db.clone(),
             &config.storage,
             store::GC_INTERVAL,
+            sim.download_sources,
         )
         .await?;
         import_restored_media(&home, &store).await?;
@@ -409,7 +414,7 @@ impl Node {
     }
 
     /// Downloads a blob of at most `size` bytes from specific nodes into
-    /// the cache. For tests and diagnostics.
+    /// the cache, asking them one at a time. For tests and diagnostics.
     pub async fn download_blob_from(
         &self,
         hash: &BlobHash,
@@ -422,7 +427,7 @@ impl Node {
         let ids = providers.iter().map(|a| a.id).collect();
         self.core
             .store
-            .download(hash, ids, BlobClass::Cache, size)
+            .download(hash, Sources::one_at_a_time(ids), BlobClass::Cache, size)
             .await
     }
 

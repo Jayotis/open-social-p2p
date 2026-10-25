@@ -136,6 +136,10 @@ const MIGRATIONS: &[&str] = &[
     // (`insert_object_held`), which takes its place when it's shown.
     "ALTER TABLE objects ADD COLUMN feed_ms INTEGER NOT NULL DEFAULT 0;
     UPDATE objects SET feed_ms = published_ms;",
+    // 9: who posted each blob, so a download can leave the author's own
+    // nodes until last when it fetches from several at once (doc 13).
+    // Filled in from the posts already stored by `migrate`.
+    "ALTER TABLE declared_sizes ADD COLUMN author TEXT",
 ];
 
 /// Hosts remembered per blob. More than enough to find a copy; a peer
@@ -989,6 +993,19 @@ impl Db {
         Ok(size.map(|s| s as u64))
     }
 
+    /// Who posted `blob`, from the posts we have.
+    pub fn blob_author(&self, blob: &BlobHash) -> Result<Option<PublicKey>> {
+        let author: Option<Option<String>> = self
+            .conn()
+            .query_row(
+                "SELECT author FROM declared_sizes WHERE blob = ?1",
+                params![blob.to_string()],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(author.flatten().map(|a| a.parse()).transpose()?)
+    }
+
     pub fn storage_summary(&self) -> Result<Vec<StorageInfo>> {
         let conn = self.conn();
         let mut stmt = conn.prepare(
@@ -1278,7 +1295,9 @@ fn migrate(conn: &Connection) -> Result<()> {
         let version = i as i64 + 1;
         let tx = conn.unchecked_transaction()?;
         tx.execute_batch(sql)?;
-        if version == 2 {
+        // `declared_sizes` has had all its columns since 9, and every
+        // database gets there in the same call.
+        if version == 9 {
             backfill_declared_sizes(&tx)?;
         }
         tx.pragma_update(None, "user_version", version)?;
@@ -1301,13 +1320,15 @@ fn signed_before(obj: &SignedObject, before_ms: i64) -> bool {
     }
 }
 
-/// Records the sizes a post declares for its media and thumbnails.
+/// Records the sizes a post declares for its media and thumbnails, and who
+/// posted them. If two people post the same file, the first is kept.
 fn declare_sizes(conn: &Connection, note: &Note) -> Result<()> {
     for (blob, size) in note.sized_blobs() {
         conn.execute(
-            "INSERT INTO declared_sizes (blob, size) VALUES (?1, ?2)
-             ON CONFLICT(blob) DO UPDATE SET size = MAX(size, excluded.size)",
-            params![blob.to_string(), size as i64],
+            "INSERT INTO declared_sizes (blob, size, author) VALUES (?1, ?2, ?3)
+             ON CONFLICT(blob) DO UPDATE SET size = MAX(size, excluded.size),
+                 author = COALESCE(author, excluded.author)",
+            params![blob.to_string(), size as i64, note.actor.to_string()],
         )?;
     }
     Ok(())
@@ -1670,6 +1691,7 @@ mod tests {
         let db = Db::open(&path).unwrap();
         assert_eq!(db.declared_size(&old).unwrap(), Some(500));
         assert_eq!(db.declared_size(&new).unwrap(), None);
+        assert_eq!(db.blob_author(&old).unwrap(), Some(key.public()));
 
         let (obj, payload) = note_with_media(&key, &[(new, 300)]);
         db.insert_object(&obj, &payload).unwrap();
@@ -1679,6 +1701,51 @@ mod tests {
         db.insert_object(&obj, &payload).unwrap();
         assert_eq!(db.declared_size(&new).unwrap(), Some(300));
         assert_eq!(db.declared_size(&old).unwrap(), Some(900));
+        // The first to post it stays its author.
+        let other = iroh::SecretKey::generate();
+        let (obj, payload) = note_with_media(&other, &[(new, 300)]);
+        db.insert_object(&obj, &payload).unwrap();
+        assert_eq!(db.blob_author(&new).unwrap(), Some(key.public()));
+        assert_eq!(
+            db.blob_author(&BlobHash::from_bytes([3; 32])).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn a_database_from_before_authors_learns_who_posted_each_blob() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("old.db");
+        let key = iroh::SecretKey::generate();
+        let blob = BlobHash::from_bytes([1; 32]);
+        {
+            // A database from before migration 9, holding a post with media.
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(SCHEMA).unwrap();
+            for sql in &MIGRATIONS[..8] {
+                conn.execute_batch(sql).unwrap();
+            }
+            conn.pragma_update(None, "user_version", 8).unwrap();
+            let (obj, _) = note_with_media(&key, &[(blob, 500)]);
+            conn.execute(
+                "INSERT INTO objects (id, actor, kind, published_ms, received_ms, signed)
+                 VALUES (?1, ?2, 'Note', 1, 1, ?3)",
+                params![
+                    obj.id().to_string(),
+                    key.public().to_string(),
+                    serde_json::to_string(&obj).unwrap()
+                ],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO declared_sizes (blob, size) VALUES (?1, 500)",
+                params![blob.to_string()],
+            )
+            .unwrap();
+        }
+        let db = Db::open(&path).unwrap();
+        assert_eq!(db.declared_size(&blob).unwrap(), Some(500));
+        assert_eq!(db.blob_author(&blob).unwrap(), Some(key.public()));
     }
 
     #[test]
