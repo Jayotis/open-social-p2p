@@ -18,6 +18,8 @@ mod network;
 mod node;
 mod peers;
 mod relays;
+#[cfg(feature = "sim")]
+pub mod simnet;
 mod social;
 mod store;
 mod sync;

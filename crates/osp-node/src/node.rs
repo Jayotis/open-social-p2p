@@ -69,6 +69,10 @@ pub struct SimSettings {
     /// Most nodes a file is fetched from at once, each sending a part of
     /// it. The harness sets 1 to compare with fetching from one at a time.
     pub download_sources: usize,
+    /// The node sends and receives through this simulated network instead
+    /// of IP sockets (`simnet`). Its config should have relays disabled.
+    #[cfg(feature = "sim")]
+    pub network: Option<crate::simnet::SimLink>,
 }
 
 impl Default for SimSettings {
@@ -79,6 +83,8 @@ impl Default for SimSettings {
             prefetch_spread: sync::PREFETCH_SPREAD,
             max_hold: sync::MAX_HOLD,
             download_sources: store::MAX_SOURCES,
+            #[cfg(feature = "sim")]
+            network: None,
         }
     }
 }
@@ -298,7 +304,8 @@ impl Node {
         let lookup = MemoryLookup::new();
         let relays = RelayPolicy::from_config(&config.network)?;
         let tracker = ConnTracker::new(relays.clone());
-        let endpoint = bind_endpoint(&config, node_key, &lookup, &relays, tracker.clone()).await?;
+        let endpoint =
+            bind_endpoint(&config, node_key, &lookup, &relays, tracker.clone(), &sim).await?;
         for follow in db.follows()? {
             remember(&lookup, &follow.addr);
         }
@@ -648,6 +655,7 @@ async fn bind_endpoint(
     lookup: &MemoryLookup,
     relays: &RelayPolicy,
     tracker: ConnTracker,
+    #[cfg_attr(not(feature = "sim"), allow(unused_variables))] sim: &SimSettings,
 ) -> Result<Endpoint> {
     let net = &config.network;
     let transport = QuicTransportConfig::builder()
@@ -683,6 +691,16 @@ async fn bind_endpoint(
         builder = builder.clear_ip_transports();
     } else if let Some(addr) = net.bind {
         builder = builder.clear_ip_transports().bind_addr(addr)?;
+    }
+    // On the simulated network, nodes hand out only their IDs: an
+    // endpoint's address leaves out custom transports'. Its own lookup finds
+    // them, so no address on it passes through the relay policy.
+    #[cfg(feature = "sim")]
+    if let Some(network) = &sim.network {
+        builder = builder
+            .clear_ip_transports()
+            .add_custom_transport(network.transport(key.public()))
+            .address_lookup(network.lookup());
     }
     builder
         .secret_key(key)
