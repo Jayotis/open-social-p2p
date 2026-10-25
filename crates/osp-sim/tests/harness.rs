@@ -120,10 +120,11 @@ async fn a_small_run_with_the_swarm_on() {
     );
     assert_eq!(report.holding(), 12, "{}", report.summary());
 
-    // Followers fetching later got it from followers fetching earlier.
+    // Followers fetching later got it from followers fetching earlier, a
+    // copy at least between them: in parts, it may come from several.
     let video = report.video_bytes as f64;
-    let sharing = report.follower_sent_bytes.iter().filter(|b| **b >= video);
-    assert!(sharing.count() >= 1, "{}", report.summary());
+    let sent: f64 = report.follower_sent_bytes.iter().sum();
+    assert!(sent >= video, "{}", report.summary());
     assert!(report.creator_copies() < 11.0, "{}", report.summary());
 }
 
@@ -191,8 +192,8 @@ async fn strangers_get_a_reshared_video_from_each_other() {
     // The resharer hosts the video, so it names strangers holding a copy
     // to the others, and strangers fetching later got it from them.
     let video = report.video_bytes as f64;
-    let sharing = report.stranger_sent_bytes.iter().filter(|b| **b >= video);
-    assert!(sharing.count() >= 1, "{summary}");
+    let sent: f64 = report.stranger_sent_bytes.iter().sum();
+    assert!(sent >= video, "{summary}");
     // What the creator sent them, if anything, is counted the same on both
     // sides.
     let copies = |bytes: f64| bytes / report.media_bytes as f64;

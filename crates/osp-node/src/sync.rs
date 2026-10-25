@@ -28,7 +28,7 @@ use crate::{
     db::{BlobClass, Follow, now_ms},
     node::{Core, check_addr, remember},
     social::profile_date,
-    store,
+    store::{self, Sources},
 };
 
 /// How often we ask each followed node to keep notifying us.
@@ -577,36 +577,42 @@ impl Core {
     }
 
     /// Fetches a large file through the follower swarm (doc 13): asks the
-    /// trackers who holds a copy, tries the followers they name first, the
-    /// nodes known to host it and the trackers after them, and the author's
-    /// own nodes last, then tells the trackers that this node holds a copy
-    /// too.
+    /// trackers who holds a copy, and fetches from the followers they name
+    /// first, from several at once. Then the nodes known to host it and
+    /// the trackers are asked for anything still missing, one at a time,
+    /// and the author's own nodes last. Then tells the trackers that this
+    /// node holds a copy too.
     async fn fetch_from_swarm(&self, wanted: &Wanted) -> Result<u64> {
         let blob = &wanted.blob;
-        let mut providers = Vec::new();
+        let mut sources = Sources::default();
         if self.store.stored_size(blob).await?.is_none() {
+            let mut named = Vec::new();
             for tracker in &wanted.trackers {
                 for id in self.named_hosts(tracker, blob).await {
-                    if !providers.contains(&id) {
-                        providers.push(id);
+                    if !named.contains(&id) {
+                        named.push(id);
                     }
                 }
             }
-            // A crowd asks these first, so they come last.
+            // A crowd asks these first, so they're asked one at a time,
+            // after the followers named.
             let trackers = wanted.trackers.iter().map(|t| t.id);
             for id in self.known_providers(blob)?.into_iter().chain(trackers) {
-                if !providers.contains(&id) {
-                    providers.push(id);
+                if !sources.contains(&id) {
+                    sources.in_turn.push(id);
                 }
             }
+            named.retain(|id| !sources.contains(id));
+            sources.at_once = named;
             // The author's own nodes, which a resharer names too, after
             // everyone else: they're the ones to spare.
             let authors = self.nodes_of(&wanted.author);
-            providers.sort_by_key(|id| authors.contains(id));
+            sources.spare(&authors);
+            sources.in_turn.sort_by_key(|id| authors.contains(id));
         }
         let size = self
             .store
-            .download(blob, providers, BlobClass::Prefetch, wanted.size)
+            .download(blob, sources, BlobClass::Prefetch, wanted.size)
             .await?;
         for tracker in &wanted.trackers {
             let told = self
@@ -665,29 +671,31 @@ impl Core {
         // Opened on demand, on one of our devices or with `osp fetch`:
         // someone is waiting.
         let waiting = class == BlobClass::Cache;
-        let providers = if self.store.has(blob).await? {
-            Vec::new()
+        let sources = if self.store.has(blob).await? {
+            Sources::default()
         } else if waiting {
-            self.providers_asking_first(blob).await?
+            self.sources_asking_first(blob).await?
         } else {
-            self.known_providers(blob)?
+            Sources::one_at_a_time(self.known_providers(blob)?)
         };
         match self
             .store
-            .download(blob, providers.clone(), class, declared)
+            .download(blob, sources.clone(), class, declared)
             .await
         {
             Ok(size) => Ok(size),
             Err(first_error) => {
-                // Ask the nodes we follow who else has it, then try again.
-                // Someone waiting isn't kept waiting on nodes just tried.
+                // Ask the nodes we follow who else has it, then try again,
+                // one at a time. Someone waiting isn't kept waiting on
+                // nodes just tried.
                 let mut found = self.ask_who_hosts(blob, waiting).await;
                 if waiting {
-                    found.retain(|id| !providers.contains(id));
+                    found.retain(|id| !sources.contains(id));
                 }
                 if found.is_empty() {
                     return Err(first_error);
                 }
+                let found = Sources::one_at_a_time(found);
                 self.store.download(blob, found, class, declared).await
             }
         }
@@ -726,12 +734,13 @@ impl Core {
     /// Nodes to fetch media opened on demand from, when it wasn't fetched
     /// ahead of time: first the hosts named by the nodes we follow
     /// among those known to serve it, such as its author's, which may name
-    /// followers with a copy, as a prefetch through the swarm does; then
-    /// the nodes known to serve it. So everyone who opens a post doesn't go
-    /// to its author.
-    async fn providers_asking_first(&self, blob: &BlobHash) -> Result<Vec<EndpointId>> {
+    /// followers with a copy, as a prefetch through the swarm does, several
+    /// at once; then the nodes known to serve it, and any of the author's
+    /// own that a resharer named, one at a time. So everyone who opens a
+    /// post doesn't go to its author.
+    async fn sources_asking_first(&self, blob: &BlobHash) -> Result<Sources> {
         let known = self.known_providers(blob)?;
-        let mut providers = Vec::new();
+        let mut named = Vec::new();
         for follow in self.db.follows()? {
             if !known.contains(&follow.addr.id) {
                 continue;
@@ -739,17 +748,23 @@ impl Core {
             // Someone is waiting: a node that doesn't answer at once is
             // only tried for the download, with the rest.
             let ask = self.named_hosts(&follow.addr, blob);
-            let named = tokio::time::timeout(ASK_FIRST_WAIT, ask)
+            let hosts = tokio::time::timeout(ASK_FIRST_WAIT, ask)
                 .await
                 .unwrap_or_default();
-            for id in named {
-                if !known.contains(&id) && !providers.contains(&id) {
-                    providers.push(id);
+            for id in hosts {
+                if !known.contains(&id) && !named.contains(&id) {
+                    named.push(id);
                 }
             }
         }
-        providers.extend(known);
-        Ok(providers)
+        let mut sources = Sources {
+            at_once: named,
+            in_turn: known,
+        };
+        if let Some(author) = self.db.blob_author(blob)? {
+            sources.spare(&self.nodes_of(&author));
+        }
+        Ok(sources)
     }
 
     /// Nodes believed to serve `blob`, most recently seen first.

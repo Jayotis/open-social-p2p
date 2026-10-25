@@ -11,12 +11,13 @@
 //! next run.
 
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, VecDeque},
     fmt,
+    ops::Range,
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex, MutexGuard,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -34,7 +35,7 @@ use iroh_blobs::{
         GetError,
         fsm::{AtBlobHeaderNextError, DecodeError},
     },
-    protocol::{ERR_LIMIT, ERR_PERMISSION, GetRequest},
+    protocol::{ChunkRanges, ChunkRangesExt, ERR_LIMIT, ERR_PERMISSION, GetRequest},
     provider::events::{
         AbortReason, ConnectMode, EventMask, EventSender, ObserveMode, ProviderMessage,
         RequestMode, RequestUpdate, ThrottleMode,
@@ -45,7 +46,7 @@ use iroh_blobs::{
     },
     util::connection_pool::{self, ConnectionPool},
 };
-use n0_future::{StreamExt, boxed::BoxStream};
+use n0_future::{FuturesUnordered, StreamExt, boxed::BoxStream};
 use osp_proto::BlobHash;
 use tokio::{
     io::{AsyncWrite, AsyncWriteExt},
@@ -67,6 +68,18 @@ const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(600);
 /// enough for a first connection through a relay, so a node that is merely
 /// slow to reach isn't taken for one that can't be reached.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+/// Most nodes one blob is fetched from at once, each sending a part of it
+/// (doc 13). A `WhoHosts` reply names up to six followers with a copy;
+/// three of them give most of the speed, and leave the others free for
+/// other nodes fetching it.
+pub(crate) const MAX_SOURCES: usize = 3;
+/// Parts are at least this big, so only a blob at least twice this size is
+/// fetched in parts. A smaller one takes moments from one node, and each
+/// node asked costs a connection and one of its transfer places.
+const MIN_PART: u64 = 1 << 20;
+/// Parts start on a multiple of this, the blob store's block size: a node
+/// always sends whole blocks, so two parts never share one.
+const BLOCK: u64 = 16 << 10;
 
 /// How often the garbage collector deletes blobs nothing keeps any more:
 /// evicted ones, and the remains of failed downloads.
@@ -126,17 +139,21 @@ pub(crate) struct ContentStore {
     replica_quota: u64,
     /// Bytes promised to downloads still running, by class.
     reserved: Mutex<BTreeMap<BlobClass, u64>>,
+    /// Most nodes one blob is fetched from at once (`MAX_SOURCES`).
+    max_sources: usize,
 }
 
 impl ContentStore {
     /// Opens the store, makes its tags match the database, and trims the
-    /// cache to its quota. Evicted blobs are deleted every `gc_every`.
+    /// cache to its quota. Evicted blobs are deleted every `gc_every`. A
+    /// blob is fetched from up to `max_sources` nodes at once.
     pub async fn open(
         dir: &Path,
         endpoint: &Endpoint,
         db: Arc<Db>,
         quotas: &StorageConfig,
         gc_every: Duration,
+        max_sources: usize,
     ) -> Result<Self> {
         // The collector waits until the tags have been checked.
         let ready = Arc::new(AtomicBool::new(false));
@@ -164,6 +181,7 @@ impl ContentStore {
             cache_quota: quotas.cache_quota_mb << 20,
             replica_quota: quotas.replica_quota_mb << 20,
             reserved: Mutex::new(BTreeMap::new()),
+            max_sources: max_sources.max(1),
         };
         this.reconcile().await?;
         let over = this.db.evictable_bytes()?.saturating_sub(this.cache_quota);
@@ -241,14 +259,14 @@ impl ContentStore {
         self.size(to_hash(hash)).await
     }
 
-    /// Downloads a blob, trying `providers` in order, and records it under
-    /// `class`. Every chunk is verified against the hash before it is
-    /// stored. `declared` is the size the blob's post gives: room is made
-    /// for that much, and the download stops if more arrives.
+    /// Downloads a blob from `sources`, and records it under `class`.
+    /// Every chunk is verified against the hash before it is stored.
+    /// `declared` is the size the blob's post gives: room is made for that
+    /// much, and the download stops if more arrives.
     pub async fn download(
         &self,
         hash: &BlobHash,
-        providers: Vec<EndpointId>,
+        sources: Sources,
         class: BlobClass,
         declared: u64,
     ) -> Result<u64> {
@@ -265,12 +283,12 @@ impl ContentStore {
             self.keep(h, class, size).await?;
             return Ok(size);
         }
-        ensure!(!providers.is_empty(), "no known providers for {hash}");
+        ensure!(!sources.is_empty(), "no known providers for {hash}");
         let _room = self.reserve(class, declared).await?;
         // Keeps the collector off the partial blob until it has its tag.
         let _downloading = self.store.tags().temp_tag(h).await?;
-        debug!(%hash, ?providers, "downloading");
-        self.fetch(h, providers, declared, Instant::now() + DOWNLOAD_TIMEOUT)
+        debug!(%hash, ?sources, "downloading");
+        self.fetch(h, &sources, declared, Instant::now() + DOWNLOAD_TIMEOUT)
             .await
             .with_context(|| format!("download of {} failed", hash.fmt_short()))?;
         let size = self
@@ -366,48 +384,54 @@ impl ContentStore {
         })
     }
 
-    /// Asks `providers` in turn for what is still missing of a blob, until
-    /// it is complete or `deadline` passes. Each node is asked only for what
-    /// the ones before it didn't send, and how its attempt ended is logged
-    /// (ADR 0011). Stops once more than `declared` bytes have arrived: a
-    /// provider can't send bytes that don't match the hash, but the post's
-    /// author can declare a smaller size than the blob has. Fails with
-    /// [`Busy`] if one of them refused as busy.
+    /// Fetches what is still missing of a blob from `sources`, until it is
+    /// complete or `deadline` passes. A large one comes in parts from
+    /// several of `sources.at_once` (`fetch_in_parts`); then the nodes that
+    /// didn't fail there, and `sources.in_turn`, are asked one at a time,
+    /// each only for what the ones before it didn't send. How each attempt
+    /// ended is logged (ADR 0011). Stops once more than `declared` bytes
+    /// have arrived: a provider can't send bytes that don't match the
+    /// hash, but the post's author can declare a smaller size than the blob
+    /// has. Fails with [`Busy`] if one of them refused as busy.
     async fn fetch(
         &self,
         hash: Hash,
-        providers: Vec<EndpointId>,
+        sources: &Sources,
         declared: u64,
         deadline: Instant,
     ) -> Result<()> {
         let request = Arc::new(GetRequest::blob(hash));
         let remote = self.store.remote();
-        let mut busy = false;
-        for node in providers {
+        let in_parts = self.max_sources > 1
+            && sources.at_once.len() > 1
+            && declared >= 2 * MIN_PART
+            && !remote
+                .local_for_request(request.clone())
+                .await?
+                .is_complete();
+        let failed = if in_parts {
+            self.fetch_in_parts(hash, &sources.at_once, declared, deadline)
+                .await?
+        } else {
+            Vec::new()
+        };
+        let mut busy = failed.iter().any(|(_, outcome)| *outcome == Outcome::Busy);
+        let rest = sources
+            .at_once
+            .iter()
+            .chain(&sources.in_turn)
+            .filter(|node| !failed.iter().any(|(f, _)| f == *node));
+        for &node in rest {
             let local = remote.local_for_request(request.clone()).await?;
             if local.is_complete() {
                 return Ok(());
             }
-            let attempt = self
-                .attempt(
-                    node,
-                    local.missing(),
-                    local.local_bytes(),
-                    declared,
-                    deadline,
-                )
-                .await;
-            attempt.log(hash);
-            peers::record(
-                &self.db,
-                &node,
-                Event::Download {
-                    outcome: attempt.outcome,
-                    bytes: attempt.bytes,
-                    took: attempt.took,
-                    first_byte: attempt.first_byte,
-                },
-            );
+            let stop = Stop::PastDeclared {
+                local: local.local_bytes(),
+                declared,
+            };
+            let attempt = self.attempt(node, local.missing(), stop, deadline).await;
+            self.record(hash, &attempt);
             match attempt.outcome {
                 Outcome::Completed => return Ok(()),
                 Outcome::Stopped => {
@@ -420,20 +444,109 @@ impl ContentStore {
                 bail!("it timed out");
             }
         }
+        // The parts may have brought all of it, with no node left to ask.
+        if remote.local_for_request(request).await?.is_complete() {
+            return Ok(());
+        }
         if busy {
             return Err(Busy.into());
         }
         bail!("no provider could send it")
     }
 
-    /// Asks one node for `request`: what is still missing of a blob, of
-    /// which `local` bytes are already here.
+    /// Fetches what is missing of a blob's first `declared` bytes in parts,
+    /// from up to `max_sources` of `nodes` at once, in their order. Each
+    /// node is asked for one stretch of the blob, its part, so it keeps
+    /// one transfer place throughout, as for a whole blob. A node that
+    /// finishes takes over the back half of the part with the most still
+    /// to come; what a node that fails didn't send goes to the next node.
+    /// Returns the nodes that failed, and how: they aren't asked again.
+    /// Whatever is still missing at the end, `fetch` asks for from one
+    /// node at a time.
+    async fn fetch_in_parts(
+        &self,
+        hash: Hash,
+        nodes: &[EndpointId],
+        declared: u64,
+        deadline: Instant,
+    ) -> Result<Vec<(EndpointId, Outcome)>> {
+        let have = self.store.observe(hash).await?;
+        let sources = nodes.len().min(self.max_sources);
+        let mut todo = plan_parts(&missing(&have, declared), sources);
+        // Nodes free for a part: those that sent theirs, at the front,
+        // then those not asked yet.
+        let mut free: VecDeque<EndpointId> = nodes.iter().copied().collect();
+        let mut running: Vec<Arc<Part>> = Vec::new();
+        let mut attempts = FuturesUnordered::new();
+        let mut failed = Vec::new();
+        loop {
+            while attempts.len() < self.max_sources && Instant::now() < deadline {
+                let Some(&node) = free.front() else { break };
+                let Some(range) = todo.pop_front().or_else(|| split_largest(&running)) else {
+                    break;
+                };
+                free.pop_front();
+                let part = Arc::new(Part::new(range));
+                running.push(part.clone());
+                attempts.push(self.fetch_part(hash, node, part, deadline));
+            }
+            let Some((part, attempt)) = attempts.next().await else {
+                break;
+            };
+            running.retain(|p| !Arc::ptr_eq(p, &part));
+            self.record(hash, &attempt);
+            if attempt.outcome == Outcome::Completed {
+                free.push_front(attempt.node);
+            } else {
+                failed.push((attempt.node, attempt.outcome));
+                let rest = part.reached()..part.end();
+                if !rest.is_empty() {
+                    todo.push_front(rest);
+                }
+            }
+        }
+        Ok(failed)
+    }
+
+    /// Asks `node` for `part` of a blob.
+    async fn fetch_part(
+        &self,
+        hash: Hash,
+        node: EndpointId,
+        part: Arc<Part>,
+        deadline: Instant,
+    ) -> (Arc<Part>, Attempt) {
+        let ranges = ChunkRanges::bytes(part.start..part.end());
+        let request = GetRequest::blob_ranges(hash, ranges);
+        let attempt = self
+            .attempt(node, request, Stop::PastPart(&part), deadline)
+            .await;
+        (part, attempt)
+    }
+
+    /// Logs how an attempt ended, and adds it to the node's record (ADR 0011).
+    fn record(&self, hash: Hash, attempt: &Attempt) {
+        attempt.log(hash);
+        peers::record(
+            &self.db,
+            &attempt.node,
+            Event::Download {
+                outcome: attempt.outcome,
+                bytes: attempt.bytes,
+                took: attempt.took,
+                first_byte: attempt.first_byte,
+            },
+        );
+    }
+
+    /// Asks one node for `request`: part or all of what is still missing
+    /// of a blob. It goes on until the node has sent all of it, or `stop`
+    /// says enough has arrived.
     async fn attempt(
         &self,
         node: EndpointId,
         request: GetRequest,
-        local: u64,
-        declared: u64,
+        stop: Stop<'_>,
         deadline: Instant,
     ) -> Attempt {
         let started = Instant::now();
@@ -464,8 +577,19 @@ impl ContentStore {
                         Ok(Some(GetProgressItem::Progress(bytes))) => {
                             attempt.first_byte.get_or_insert_with(|| started.elapsed());
                             attempt.bytes = bytes;
-                            if local + bytes > declared {
-                                break Outcome::Stopped;
+                            match stop {
+                                Stop::PastDeclared { local, declared } => {
+                                    if local + bytes > declared {
+                                        break Outcome::Stopped;
+                                    }
+                                }
+                                // The rest of the part is another node's
+                                // now: this one has sent its share.
+                                Stop::PastPart(part) => {
+                                    if part.arrived(bytes) {
+                                        break Outcome::Completed;
+                                    }
+                                }
                             }
                         }
                         Ok(Some(GetProgressItem::Done(_))) => break Outcome::Completed,
@@ -610,6 +734,49 @@ impl ContentStore {
     }
 }
 
+/// The nodes a download may come from (`ContentStore::download`).
+#[derive(Debug, Clone, Default)]
+pub(crate) struct Sources {
+    /// Nodes that may each send part of a large blob at the same time, up
+    /// to `MAX_SOURCES` at once, in this order: followers' copies, named
+    /// for this download (doc 13).
+    pub at_once: Vec<EndpointId>,
+    /// Then, one at a time, for whatever is still missing: the nodes that
+    /// everyone asks, such as the author's.
+    pub in_turn: Vec<EndpointId>,
+}
+
+impl Sources {
+    /// Nodes asked one at a time, in this order.
+    pub fn one_at_a_time(nodes: Vec<EndpointId>) -> Self {
+        Self {
+            at_once: Vec::new(),
+            in_turn: nodes,
+        }
+    }
+
+    /// Takes `nodes` out of `at_once`, so they're only asked one at a time,
+    /// after the others there: they're the ones to spare, such as the
+    /// author's, which everyone asks.
+    pub fn spare(&mut self, nodes: &[EndpointId]) {
+        let (spared, at_once) = self.at_once.drain(..).partition(|id| nodes.contains(id));
+        self.at_once = at_once;
+        for id in spared {
+            if !self.in_turn.contains(&id) {
+                self.in_turn.push(id);
+            }
+        }
+    }
+
+    pub fn contains(&self, node: &EndpointId) -> bool {
+        self.at_once.contains(node) || self.in_turn.contains(node)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.at_once.is_empty() && self.in_turn.is_empty()
+    }
+}
+
 /// Space promised to one download or upload. Given back when dropped, by
 /// which time the bytes are on the disk, or abandoned.
 pub struct Reservation<'a> {
@@ -698,6 +865,113 @@ fn stored_until(have: &Bitfield, position: u64) -> u64 {
         }
     }
     position
+}
+
+/// One node's share of a blob fetched in parts: the bytes from `start` to
+/// its end. The end moves earlier when another node takes over the rest.
+#[derive(Debug)]
+struct Part {
+    start: u64,
+    /// Where the bytes the node has sent so far end.
+    reached: AtomicU64,
+    end: AtomicU64,
+}
+
+impl Part {
+    fn new(range: Range<u64>) -> Self {
+        Self {
+            start: range.start,
+            reached: AtomicU64::new(range.start),
+            end: AtomicU64::new(range.end),
+        }
+    }
+
+    fn reached(&self) -> u64 {
+        self.reached.load(Ordering::Relaxed)
+    }
+
+    fn end(&self) -> u64 {
+        self.end.load(Ordering::Relaxed)
+    }
+
+    /// Bytes still to come.
+    fn left(&self) -> u64 {
+        self.end().saturating_sub(self.reached())
+    }
+
+    /// Notes that the node has sent `bytes` of the part. True once they
+    /// run past its end. Stopping at the end itself could drop the last
+    /// block: its bytes are counted before they're stored.
+    fn arrived(&self, bytes: u64) -> bool {
+        let reached = self.start + bytes;
+        self.reached.store(reached, Ordering::Relaxed);
+        reached > self.end()
+    }
+}
+
+/// What of a blob's first `declared` bytes isn't here, in runs of whole
+/// blocks, so the runs and the parts cut from them start on a block.
+fn missing(have: &Bitfield, declared: u64) -> Vec<Range<u64>> {
+    let gaps = &ChunkRanges::bytes(0..declared) - &have.ranges;
+    let mut runs: Vec<Range<u64>> = Vec::new();
+    // Start, end, start, end... in 1 KiB chunks, as in `stored_until`.
+    for gap in gaps.boundaries().chunks(2) {
+        let start = gap[0].to_bytes() / BLOCK * BLOCK;
+        let end = gap
+            .get(1)
+            .map_or(declared, |end| end.to_bytes().div_ceil(BLOCK) * BLOCK)
+            .min(declared);
+        match runs.last_mut() {
+            Some(last) if start <= last.end => last.end = last.end.max(end),
+            _ => runs.push(start..end),
+        }
+    }
+    runs
+}
+
+/// Cuts what is `missing` into parts for `sources` nodes, in the blob's
+/// order: each about the same size, and at least `MIN_PART` unless a gap
+/// is smaller.
+fn plan_parts(missing: &[Range<u64>], sources: usize) -> VecDeque<Range<u64>> {
+    let total: u64 = missing.iter().map(|gap| gap.end - gap.start).sum();
+    let size = (total / sources.max(1) as u64).max(MIN_PART);
+    let mut parts = VecDeque::new();
+    for gap in missing {
+        let len = gap.end - gap.start;
+        let count = (len / size).max(1);
+        let mut start = gap.start;
+        for i in 1..count {
+            let end = (gap.start + len * i / count) / BLOCK * BLOCK;
+            parts.push_back(start..end);
+            start = end;
+        }
+        parts.push_back(start..gap.end);
+    }
+    parts
+}
+
+/// For a node with nothing to do: takes the back half of the part with
+/// the most still to come, from the node fetching it. None if every part
+/// has less than two `MIN_PART`s to go.
+fn split_largest(running: &[Arc<Part>]) -> Option<Range<u64>> {
+    let part = running.iter().max_by_key(|part| part.left())?;
+    if part.left() < 2 * MIN_PART {
+        return None;
+    }
+    let (reached, end) = (part.reached(), part.end());
+    let middle = (reached + (end - reached) / 2) / BLOCK * BLOCK;
+    part.end.store(middle, Ordering::Relaxed);
+    Some(middle..end)
+}
+
+/// When an attempt stops before the node has sent all it was asked for.
+#[derive(Debug, Clone, Copy)]
+enum Stop<'a> {
+    /// Once more than the post declares has arrived, counting the `local`
+    /// bytes that were here before.
+    PastDeclared { local: u64, declared: u64 },
+    /// Once bytes past the end of the part arrive.
+    PastPart(&'a Part),
 }
 
 /// One node's attempt at sending us (part of) a blob.
@@ -1083,6 +1357,7 @@ mod tests {
         protocol::{AcceptError, ProtocolHandler, Router},
     };
     use iroh_blobs::store::mem::MemStore;
+    use osp_proto::rpc::PeerCounts;
 
     use super::*;
 
@@ -1152,14 +1427,33 @@ mod tests {
 
         /// Opens the store with quotas of 1 MB each.
         async fn open(&self) -> ContentStore {
+            self.open_with_quotas(1).await
+        }
+
+        /// Opens the store with quotas of `mb` each.
+        async fn open_with_quotas(&self, mb: u64) -> ContentStore {
             let quotas = StorageConfig {
-                replica_quota_mb: 1,
-                cache_quota_mb: 1,
+                replica_quota_mb: mb,
+                cache_quota_mb: mb,
             };
             let blobs = self.dir.path().join("blobs");
-            ContentStore::open(&blobs, &self.endpoint, self.db.clone(), &quotas, GC_SOON)
-                .await
-                .unwrap()
+            ContentStore::open(
+                &blobs,
+                &self.endpoint,
+                self.db.clone(),
+                &quotas,
+                GC_SOON,
+                MAX_SOURCES,
+            )
+            .await
+            .unwrap()
+        }
+
+        /// What this node recorded about downloading from `node` (ADR 0011).
+        fn record(&self, node: EndpointId) -> PeerCounts {
+            let peers = self.db.peers(crate::db::now_ms()).unwrap();
+            let row = peers.into_iter().find(|p| p.node == node);
+            row.map(|p| p.counts).unwrap_or_default()
         }
 
         /// Stores `size` bytes of `fill` under `class`.
@@ -1178,8 +1472,6 @@ mod tests {
         /// Starts a node that keeps `data`, and refuses every request for
         /// `refuse` if it is given. Returns its ID and the data's hash.
         async fn provider(&self, data: &[u8], refuse: Option<AbortReason>) -> (Provider, Hash) {
-            let media = MemStore::new();
-            let hash = media.add_bytes(data.to_vec()).await.unwrap().hash;
             let events = refuse.map(|reason| {
                 let mask = EventMask {
                     get: RequestMode::Intercept,
@@ -1195,6 +1487,37 @@ mod tests {
                 });
                 events
             });
+            self.provider_with(data, events).await
+        }
+
+        /// Starts a node that keeps `data` and sends it slowly: each block
+        /// waits `delay` before it goes.
+        async fn slow_provider(&self, data: &[u8], delay: Duration) -> (Provider, Hash) {
+            let mask = EventMask {
+                throttle: ThrottleMode::Intercept,
+                ..EventMask::DEFAULT
+            };
+            let (events, mut rx) = EventSender::channel(8, mask);
+            tokio::spawn(async move {
+                while let Some(msg) = rx.recv().await {
+                    if let ProviderMessage::Throttle(msg) = msg {
+                        tokio::spawn(async move {
+                            tokio::time::sleep(delay).await;
+                            msg.tx.send(Ok(())).await.ok();
+                        });
+                    }
+                }
+            });
+            self.provider_with(data, Some(events)).await
+        }
+
+        async fn provider_with(
+            &self,
+            data: &[u8],
+            events: Option<EventSender>,
+        ) -> (Provider, Hash) {
+            let media = MemStore::new();
+            let hash = media.add_bytes(data.to_vec()).await.unwrap().hash;
             let blobs = BlobsProtocol::new(&media, events);
             let provider = self.serve(blobs).await;
             (
@@ -1286,8 +1609,9 @@ mod tests {
 
         let soon = Instant::now() + Duration::from_secs(30);
         let attempt = async |node: EndpointId, declared: u64| {
+            let stop = Stop::PastDeclared { local: 0, declared };
             store
-                .attempt(node, GetRequest::blob(hash), 0, declared, soon)
+                .attempt(node, GetRequest::blob(hash), stop, soon)
                 .await
         };
         assert_eq!(attempt(busy.id(), KB).await.outcome, Outcome::Busy);
@@ -1325,9 +1649,10 @@ mod tests {
         let nowhere = SecretKey::generate().public();
 
         let blob = to_blob_hash(hash);
+        let in_turn = |nodes| Sources::one_at_a_time(nodes);
         let providers = vec![busy.id(), liar.id(), nowhere, honest.id()];
         let size = store
-            .download(&blob, providers, BlobClass::Cache, KB)
+            .download(&blob, in_turn(providers), BlobClass::Cache, KB)
             .await
             .unwrap();
         assert_eq!(size, KB);
@@ -1340,7 +1665,7 @@ mod tests {
         let err = store
             .download(
                 &other_blob,
-                vec![busy.id(), liar.id()],
+                in_turn(vec![busy.id(), liar.id()]),
                 BlobClass::Cache,
                 KB,
             )
@@ -1352,17 +1677,22 @@ mod tests {
         );
         assert!(is_busy(&err), "{err:#}");
         let err = store
-            .download(&other_blob, vec![liar.id(), nowhere], BlobClass::Cache, KB)
+            .download(
+                &other_blob,
+                in_turn(vec![liar.id(), nowhere]),
+                BlobClass::Cache,
+                KB,
+            )
             .await
             .unwrap_err();
         assert!(!is_busy(&err), "{err:#}");
 
         // Bigger than its post says: no other node can send a smaller one.
-        let providers = vec![other_provider.id(), honest.id()];
+        let providers = in_turn(vec![other_provider.id(), honest.id()]);
         let err = store
             .fetch(
                 other,
-                providers.clone(),
+                &providers,
                 KB / 2,
                 Instant::now() + Duration::from_secs(30),
             )
@@ -1375,11 +1705,272 @@ mod tests {
 
         // Out of time: the next node isn't asked.
         let (late, unseen) = f.provider(&[9; KB as usize], None).await;
+        let providers = in_turn(vec![late.id(), late.id()]);
         let err = store
-            .fetch(unseen, vec![late.id(), late.id()], KB, Instant::now())
+            .fetch(unseen, &providers, KB, Instant::now())
             .await
             .unwrap_err();
         assert!(format!("{err:#}").contains("timed out"), "{err:#}");
+    }
+
+    /// `MB` bytes that are different in every block, so a part sent from
+    /// the wrong place can't pass for the right one.
+    fn noise(mb: u64) -> Vec<u8> {
+        (0..mb << 20)
+            .map(|i: u64| (i.wrapping_mul(2_654_435_761) >> 13) as u8)
+            .collect()
+    }
+
+    #[test]
+    fn parts_are_cut_in_whole_blocks() {
+        use iroh_blobs::protocol::ChunkRanges;
+        const MB: u64 = 1 << 20;
+        // Nothing here: three parts of about a third each, ending at the
+        // size the post declares.
+        let size = 10 * MB + 500;
+        let gaps = missing(&Bitfield::empty(), size);
+        assert_eq!((gaps.len(), &gaps[0]), (1, &(0..size)));
+        let parts = plan_parts(&gaps, 3);
+        assert_eq!(parts.len(), 3);
+        assert_eq!(parts[0].start, 0);
+        assert_eq!(parts[2].end, size);
+        for pair in parts.iter().collect::<Vec<_>>().windows(2) {
+            assert_eq!(pair[0].end, pair[1].start);
+            assert_eq!(pair[1].start % BLOCK, 0);
+        }
+        // Parts are at least 1 MiB: 2.5 MB makes only two.
+        let parts_of = |len| plan_parts(std::slice::from_ref(&(0..len)), 3).len();
+        assert_eq!(parts_of(5 * MB / 2), 2);
+        assert_eq!(parts_of(MB), 1);
+
+        // What is here is left out, and the gaps widen to whole blocks.
+        let have = Bitfield::new(
+            ChunkRanges::bytes(0..3 * MB + 4 * KB) | ChunkRanges::bytes(3 * MB + 20 * KB..8 * MB),
+            size,
+        );
+        assert_eq!(
+            missing(&have, size),
+            [3 * MB..3 * MB + 32 * KB, 8 * MB..size]
+        );
+        // A small gap stays one part, before the parts of a large one.
+        let parts = plan_parts(&missing(&have, size), 3);
+        assert_eq!(parts[0], 3 * MB..3 * MB + 32 * KB);
+        assert_eq!(parts.len(), 3);
+        assert!(missing(&Bitfield::complete(size), size).is_empty());
+    }
+
+    #[test]
+    fn a_node_with_nothing_to_do_takes_half_of_the_largest_part() {
+        const MB: u64 = 1 << 20;
+        let slow = Arc::new(Part::new(0..10 * MB));
+        let fast = Arc::new(Part::new(10 * MB..12 * MB));
+        assert!(!slow.arrived(MB));
+        let running = [slow.clone(), fast.clone()];
+        // 9 MB left of one part: the back half goes.
+        let taken = split_largest(&running).unwrap();
+        assert_eq!(taken.start % BLOCK, 0);
+        assert_eq!(taken.end, 10 * MB);
+        assert_eq!(slow.end(), taken.start);
+        assert!(taken.start > MB + 4 * MB && taken.start <= MB + 9 * MB / 2);
+        // The node stops once its bytes run past the new end.
+        assert!(!slow.arrived(taken.start - MB));
+        assert!(!slow.arrived(taken.start));
+        assert!(slow.arrived(taken.start + BLOCK));
+        // Under 2 MiB left anywhere isn't worth splitting.
+        assert!(!fast.arrived(MB / 2));
+        assert_eq!(split_largest(&[fast]), None);
+        assert_eq!(split_largest(&[]), None);
+    }
+
+    #[tokio::test]
+    async fn a_large_blob_comes_in_parts_from_several_nodes_at_once() {
+        let f = Fixture::new().await;
+        let store = f.open_with_quotas(64).await;
+        let data = noise(6);
+        let size = data.len() as u64;
+        let mut nodes = Vec::new();
+        let mut providers = Vec::new();
+        for _ in 0..4 {
+            let (provider, hash) = f.provider(&data, None).await;
+            nodes.push(provider.id());
+            providers.push((provider, hash));
+        }
+        let blob = to_blob_hash(providers[0].1);
+        let sources = Sources {
+            at_once: nodes.clone(),
+            in_turn: Vec::new(),
+        };
+        assert_eq!(
+            store
+                .download(&blob, sources, BlobClass::Replica, size)
+                .await
+                .unwrap(),
+            size
+        );
+        // Three at once, each sending a share; the fourth wasn't needed.
+        let mut received = 0.0;
+        for node in &nodes[..3] {
+            let counts = f.record(*node);
+            assert!(counts.completed.round() >= 1.0, "{counts:?}");
+            assert!(
+                counts.received_bytes.round() >= MIN_PART as f64,
+                "{counts:?}"
+            );
+            received += counts.received_bytes;
+        }
+        assert!(received < (size + 3 * BLOCK) as f64, "{received} bytes");
+        assert_eq!(f.record(nodes[3]).tries, 0.0);
+        // Every byte is the one the hash names.
+        let out = f.dir.path().join("out");
+        store.export(&blob, &out).await.unwrap();
+        assert!(std::fs::read(&out).unwrap() == data);
+
+        // A blob under two parts comes from one node.
+        let small = noise(1);
+        let (first, hash) = f.provider(&small, None).await;
+        let (second, _) = f.provider(&small, None).await;
+        let sources = Sources {
+            at_once: vec![first.id(), second.id()],
+            in_turn: Vec::new(),
+        };
+        store
+            .download(
+                &to_blob_hash(hash),
+                sources,
+                BlobClass::Cache,
+                2 * MIN_PART - 1,
+            )
+            .await
+            .unwrap();
+        assert_eq!(f.record(first.id()).completed.round(), 1.0);
+        assert_eq!(f.record(second.id()).tries, 0.0);
+    }
+
+    #[tokio::test]
+    async fn the_part_a_node_cant_send_goes_to_another() {
+        let f = Fixture::new().await;
+        let store = f.open_with_quotas(64).await;
+        let data = noise(4);
+        let size = data.len() as u64;
+        let (busy, _) = f.provider(&data, Some(AbortReason::RateLimited)).await;
+        let (refusing, _) = f.provider(&data, Some(AbortReason::Permission)).await;
+        let (honest, hash) = f.provider(&data, None).await;
+        let (spare, _) = f.provider(&data, None).await;
+        let blob = to_blob_hash(hash);
+        let nowhere = SecretKey::generate().public();
+        let sources = Sources {
+            at_once: vec![busy.id(), nowhere, refusing.id(), honest.id()],
+            in_turn: vec![spare.id()],
+        };
+        store
+            .download(&blob, sources, BlobClass::Cache, size)
+            .await
+            .unwrap();
+        // The honest node sent the parts of the three that couldn't, each
+        // as soon as it was free.
+        let counts = f.record(honest.id());
+        assert!(counts.received_bytes.round() >= size as f64, "{counts:?}");
+        assert_eq!(counts.completed.round(), 3.0, "{counts:?}");
+        assert_eq!(f.record(busy.id()).busy.round(), 1.0);
+        assert_eq!(f.record(refusing.id()).not_hosting.round(), 1.0);
+        assert_eq!(f.record(nowhere).unreached.round(), 1.0);
+        // Each was asked once, and the node to spare not at all.
+        assert_eq!(f.record(spare.id()).tries, 0.0);
+        assert_eq!(f.record(busy.id()).tries.round(), 1.0);
+
+        // When none of them can, the nodes asked in turn are, after them;
+        // the busy node isn't asked again.
+        let other = noise(3);
+        let (spare, hash) = f.provider(&other, None).await;
+        let (busy, _) = f.provider(&other, Some(AbortReason::RateLimited)).await;
+        let liar = f.serve(Fake::liar()).await;
+        let sources = Sources {
+            at_once: vec![busy.id(), liar.id()],
+            in_turn: vec![spare.id()],
+        };
+        let blob = to_blob_hash(hash);
+        store
+            .download(&blob, sources, BlobClass::Cache, other.len() as u64)
+            .await
+            .unwrap();
+        assert!(f.record(spare.id()).received_bytes.round() >= other.len() as f64);
+        assert_eq!(f.record(busy.id()).tries.round(), 1.0);
+    }
+
+    #[tokio::test]
+    async fn a_node_that_finishes_its_part_takes_over_half_of_a_slow_one() {
+        let f = Fixture::new().await;
+        let store = f.open_with_quotas(64).await;
+        let data = noise(12);
+        let size = data.len() as u64;
+        // 16 KiB every 20 ms: its 4 MiB part would take over 5 seconds.
+        let (slow, hash) = f.slow_provider(&data, Duration::from_millis(20)).await;
+        let (fast, _) = f.provider(&data, None).await;
+        let (also_fast, _) = f.provider(&data, None).await;
+        let (unasked, _) = f.provider(&data, None).await;
+        let blob = to_blob_hash(hash);
+        let sources = Sources {
+            at_once: vec![slow.id(), fast.id(), also_fast.id(), unasked.id()],
+            in_turn: Vec::new(),
+        };
+        let started = Instant::now();
+        store
+            .download(&blob, sources, BlobClass::Cache, size)
+            .await
+            .unwrap();
+        let took = started.elapsed();
+        // The slow node sent about half its part, and stopped when told.
+        let counts = f.record(slow.id());
+        assert!(counts.completed.round() >= 1.0, "{counts:?}");
+        assert!(counts.received_bytes < (3 << 20) as f64, "{counts:?}");
+        assert!(took < Duration::from_secs(5), "{took:?}");
+        // The rest went to a node that had just sent its part, not to one
+        // not asked yet.
+        let completed = f.record(fast.id()).completed + f.record(also_fast.id()).completed;
+        assert_eq!(completed.round(), 3.0);
+        assert_eq!(f.record(unasked.id()).tries, 0.0);
+        let out = f.dir.path().join("out");
+        store.export(&blob, &out).await.unwrap();
+        assert!(std::fs::read(&out).unwrap() == data);
+    }
+
+    #[tokio::test]
+    async fn parts_stop_at_the_size_the_post_declares() {
+        let f = Fixture::new().await;
+        let store = f.open_with_quotas(64).await;
+        let data = noise(3);
+        let size = data.len() as u64;
+        let (a, hash) = f.provider(&data, None).await;
+        let (b, _) = f.provider(&data, None).await;
+        let blob = to_blob_hash(hash);
+        let both = || Sources {
+            at_once: vec![a.id(), b.id()],
+            in_turn: Vec::new(),
+        };
+        // Bigger than its post says: nothing past the declared size comes.
+        let err = store
+            .download(&blob, both(), BlobClass::Cache, size - 600 * KB)
+            .await
+            .unwrap_err();
+        assert!(
+            format!("{err:#}").contains("bigger than its post says"),
+            "{err:#}"
+        );
+        let received = f.record(a.id()).received_bytes + f.record(b.id()).received_bytes;
+        assert!(received <= (size - 500 * KB) as f64, "{received} bytes");
+
+        // Smaller than it says: what there is comes, and that's all of it.
+        let (c, other) = f.provider(&data[..2 << 20], None).await;
+        let (d, _) = f.provider(&data[..2 << 20], None).await;
+        let sources = Sources {
+            at_once: vec![c.id(), d.id()],
+            in_turn: Vec::new(),
+        };
+        let got = store
+            .download(&to_blob_hash(other), sources, BlobClass::Cache, size)
+            .await
+            .unwrap();
+        assert_eq!(got, 2 << 20);
     }
 
     /// Waits up to five seconds for the collector to delete `hash`.
