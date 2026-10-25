@@ -46,6 +46,7 @@ use crate::{
     social::{self, SocialProtocol},
     store::{self, ContentStore, Sources},
     sync,
+    uploads::{LiveUpload, UploadKey},
 };
 
 /// Limits that only the simulated network harness (`osp-sim`) changes,
@@ -124,6 +125,8 @@ pub(crate) struct Core {
     pub holds: Mutex<HashMap<ObjectId, sync::Hold>>,
     /// Pairing secrets handed out and not used yet. Kept in memory only.
     pub pairings: Mutex<Vec<PendingPairing>>,
+    /// Uploads from devices that streams are using now (`uploads.rs`).
+    pub uploads: Mutex<HashMap<UploadKey, Arc<LiveUpload>>>,
     /// Media a device opened that is still on its way here, so devices
     /// reading it at the same time share one download.
     pub opening: Mutex<HashMap<BlobHash, watch::Receiver<store::Download>>>,
@@ -287,6 +290,9 @@ impl Node {
         // Posts held back from the feed waited for prefetches the last run
         // planned, which are forgotten now: show them.
         db.show_all_held()?;
+        // Transcodes and uploads a stopped node left part way: the uploads
+        // that can be resumed are kept in `home.uploads()` instead.
+        let _ = std::fs::remove_dir_all(home.work());
         std::fs::create_dir_all(home.work())?;
 
         let lookup = MemoryLookup::new();
@@ -341,6 +347,7 @@ impl Node {
             prefetch_later,
             holds: Mutex::new(HashMap::new()),
             pairings: Mutex::new(Vec::new()),
+            uploads: Mutex::new(HashMap::new()),
             opening: Mutex::new(HashMap::new()),
             subscribed: Mutex::new(HashMap::new()),
             swarm_samples: Mutex::new(HashMap::new()),
@@ -352,6 +359,7 @@ impl Node {
             sim,
         });
 
+        core.start_uploads()?;
         let (blobs, serving_rules) = core
             .store
             .protocol(&core.config.serving, &core.config.swarm);
@@ -367,7 +375,15 @@ impl Node {
             let core = core.clone();
             tokio::spawn(async move { core.refetch_replicas().await })
         };
-        let mut tasks = vec![serving_rules, sync_loop, later, tell_moved, replicas];
+        let sweep_uploads = tokio::spawn(core.clone().sweep_uploads_loop());
+        let mut tasks = vec![
+            serving_rules,
+            sync_loop,
+            later,
+            tell_moved,
+            replicas,
+            sweep_uploads,
+        ];
         if core.config.network.relay != RelayChoice::Disabled {
             tasks.push(tokio::spawn(network::log_nat_changes(
                 core.endpoint.clone(),
@@ -436,6 +452,12 @@ impl Node {
     /// as the node can tell, without writing anything.
     pub async fn reserve_disk_space(&self, bytes: u64) -> Result<store::Reservation<'_>> {
         self.core.store.reserve_upload(bytes).await
+    }
+
+    /// Drops unfinished uploads from devices that nobody has touched for
+    /// `keep`, as the node does after a day. For tests.
+    pub fn expire_uploads(&self, keep: Duration) -> Result<()> {
+        self.core.expire_uploads(keep)
     }
 
     /// Stops background work, closes connections and flushes the blob store.

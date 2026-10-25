@@ -93,6 +93,7 @@ async fn post_video(node: &Node, clip: PathBuf) -> Attachment {
         content: "a video".into(),
         attachments: vec![clip],
         uploads: vec![],
+        upload: None,
     };
     let ClientResponse::Posted { .. } = node.handle(post).await else {
         panic!("not posted");
@@ -217,6 +218,7 @@ async fn phone_pairs_posts_plays_and_is_revoked() {
         content: "sneaky".into(),
         attachments: vec!["/etc/hostname".into()],
         uploads: vec![],
+        upload: None,
     };
     assert!(phone.request(&paths).await.is_err());
 

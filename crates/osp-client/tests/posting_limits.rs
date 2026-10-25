@@ -58,6 +58,7 @@ fn local_post(content: &str, path: &Path) -> ClientRequest {
         content: content.into(),
         attachments: vec![path.to_path_buf()],
         uploads: vec![],
+        upload: None,
     }
 }
 
@@ -145,6 +146,7 @@ async fn media_posts_take_turns_and_a_stuck_ffmpeg_is_stopped() {
             content: "just text".into(),
             attachments: vec![],
             uploads: vec![],
+            upload: None,
         })
         .await;
     assert!(matches!(resp, ClientResponse::Posted { .. }), "{resp:?}");

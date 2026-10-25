@@ -13,7 +13,7 @@ use anyhow::{Context, Result, ensure};
 use iroh::{EndpointAddr, EndpointId, PublicKey};
 use osp_proto::{
     BlobHash, EarlierKeys, Key, Note, ObjectId, Payload, SignedObject,
-    rpc::{FollowInfo, PeerCounts, StorageInfo},
+    rpc::{FollowInfo, PeerCounts, StorageInfo, Upload, UploadId},
 };
 use rusqlite::{Connection, OptionalExtension, params};
 
@@ -140,6 +140,19 @@ const MIGRATIONS: &[&str] = &[
     // nodes until last when it fetches from several at once (doc 13).
     // Filled in from the posts already stored by `migrate`.
     "ALTER TABLE declared_sizes ADD COLUMN author TEXT",
+    // 10: uploads from devices that can be resumed after a broken
+    // connection (ADR 0008): the post's text and files (JSON `Upload`s),
+    // how far it got, and the post ID or the reason it failed.
+    "CREATE TABLE uploads (
+        device     TEXT NOT NULL,
+        id         TEXT NOT NULL,
+        content    TEXT NOT NULL,
+        files      TEXT NOT NULL,
+        state      TEXT NOT NULL,
+        outcome    TEXT,
+        updated_ms INTEGER NOT NULL,
+        PRIMARY KEY (device, id)
+    )",
 ];
 
 /// Hosts remembered per blob. More than enough to find a copy; a peer
@@ -228,6 +241,54 @@ pub struct PeerRow {
     pub first_ms: i64,
     pub last_ms: i64,
     pub counts: PeerCounts,
+}
+
+/// An upload from a paired device (`uploads.rs`).
+#[derive(Debug, Clone)]
+pub struct UploadRow {
+    pub device: EndpointId,
+    pub id: UploadId,
+    pub content: String,
+    pub files: Vec<Upload>,
+    pub state: UploadState,
+    /// When it last started, stopped or changed state.
+    pub updated_ms: i64,
+}
+
+/// How far an upload got.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UploadState {
+    /// Waiting for the files, or the rest of them.
+    Receiving,
+    /// All the files are here; the post is being transcoded and published.
+    Preparing,
+    Posted(ObjectId),
+    Failed(String),
+}
+
+impl UploadState {
+    fn to_columns(&self) -> (&'static str, Option<String>) {
+        match self {
+            UploadState::Receiving => ("receiving", None),
+            UploadState::Preparing => ("preparing", None),
+            UploadState::Posted(id) => ("posted", Some(id.to_string())),
+            UploadState::Failed(reason) => ("failed", Some(reason.clone())),
+        }
+    }
+
+    fn from_columns(state: &str, outcome: Option<String>) -> Result<Self> {
+        Ok(match (state, outcome) {
+            ("receiving", _) => UploadState::Receiving,
+            ("preparing", _) => UploadState::Preparing,
+            ("posted", Some(id)) => UploadState::Posted(id.parse()?),
+            ("failed", reason) => UploadState::Failed(reason.unwrap_or_default()),
+            (other, _) => anyhow::bail!("unknown upload state {other}"),
+        })
+    }
+
+    pub fn is_finished(&self) -> bool {
+        matches!(self, UploadState::Posted(_) | UploadState::Failed(_))
+    }
 }
 
 /// SQLite connection shared by the node's tasks.
@@ -1155,6 +1216,88 @@ impl Db {
         Ok(found.is_some())
     }
 
+    // ---- uploads from devices ----
+
+    /// Records a new upload as receiving. False if the device already has
+    /// one with this ID.
+    pub fn add_upload(
+        &self,
+        device: &EndpointId,
+        id: &UploadId,
+        content: &str,
+        files: &[Upload],
+        now: i64,
+    ) -> Result<bool> {
+        let n = self.conn().execute(
+            "INSERT OR IGNORE INTO uploads (device, id, content, files, state, updated_ms)
+             VALUES (?1, ?2, ?3, ?4, 'receiving', ?5)",
+            params![
+                device.to_string(),
+                id.to_string(),
+                content,
+                serde_json::to_string(files)?,
+                now
+            ],
+        )?;
+        Ok(n > 0)
+    }
+
+    pub fn upload(&self, device: &EndpointId, id: &UploadId) -> Result<Option<UploadRow>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT device, id, content, files, state, outcome, updated_ms FROM uploads
+             WHERE device = ?1 AND id = ?2",
+        )?;
+        stmt.query_row(params![device.to_string(), id.to_string()], upload_columns)
+            .optional()?
+            .map(parse_upload)
+            .transpose()
+    }
+
+    /// Every upload, oldest change first.
+    pub fn uploads(&self) -> Result<Vec<UploadRow>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT device, id, content, files, state, outcome, updated_ms FROM uploads
+             ORDER BY updated_ms, rowid",
+        )?;
+        let rows = stmt.query_map([], upload_columns)?;
+        rows.map(|r| parse_upload(r?)).collect()
+    }
+
+    /// Changes an upload's state, and when it last changed.
+    pub fn set_upload_state(
+        &self,
+        device: &EndpointId,
+        id: &UploadId,
+        state: &UploadState,
+        now: i64,
+    ) -> Result<()> {
+        let (state, outcome) = state.to_columns();
+        self.conn().execute(
+            "UPDATE uploads SET state = ?3, outcome = ?4, updated_ms = ?5
+             WHERE device = ?1 AND id = ?2",
+            params![device.to_string(), id.to_string(), state, outcome, now],
+        )?;
+        Ok(())
+    }
+
+    pub fn remove_upload(&self, device: &EndpointId, id: &UploadId) -> Result<bool> {
+        let n = self.conn().execute(
+            "DELETE FROM uploads WHERE device = ?1 AND id = ?2",
+            params![device.to_string(), id.to_string()],
+        )?;
+        Ok(n > 0)
+    }
+
+    /// Forgets finished uploads that last changed before `before_ms`.
+    pub fn forget_finished_uploads(&self, before_ms: i64) -> Result<usize> {
+        Ok(self.conn().execute(
+            "DELETE FROM uploads WHERE state IN ('posted', 'failed') AND updated_ms < ?1",
+            params![before_ms],
+        )?)
+    }
+
     /// The nodes each stored profile lists, with the profile's identity and name.
     pub fn profile_nodes(&self) -> Result<Vec<(PublicKey, String, Vec<EndpointId>)>> {
         let conn = self.conn();
@@ -1286,6 +1429,33 @@ impl Db {
             .query_row("SELECT COUNT(*) FROM followers", [], |row| row.get(0))?;
         Ok(n as usize)
     }
+}
+
+/// An `uploads` row as stored: device, id, content, files, state, outcome, updated_ms.
+type UploadColumns = (String, String, String, String, String, Option<String>, i64);
+
+fn upload_columns(row: &rusqlite::Row<'_>) -> rusqlite::Result<UploadColumns> {
+    Ok((
+        row.get(0)?,
+        row.get(1)?,
+        row.get(2)?,
+        row.get(3)?,
+        row.get(4)?,
+        row.get(5)?,
+        row.get(6)?,
+    ))
+}
+
+fn parse_upload(columns: UploadColumns) -> Result<UploadRow> {
+    let (device, id, content, files, state, outcome, updated_ms) = columns;
+    Ok(UploadRow {
+        device: device.parse()?,
+        id: id.parse()?,
+        content,
+        files: serde_json::from_str(&files)?,
+        state: UploadState::from_columns(&state, outcome)?,
+        updated_ms,
+    })
 }
 
 /// Runs the migrations this database hasn't had yet, each in one transaction.

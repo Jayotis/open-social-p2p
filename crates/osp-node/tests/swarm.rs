@@ -100,6 +100,7 @@ async fn post_photo(node: &Node, dir: &Path, small: bool) -> Attachment {
         content: "a photo".into(),
         attachments: vec![photo],
         uploads: vec![],
+        upload: None,
     };
     call(node, post).await;
     let ClientResponse::Feed { items } = call(node, ClientRequest::Feed { limit: 1 }).await else {

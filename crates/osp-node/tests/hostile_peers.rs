@@ -366,6 +366,7 @@ async fn followers_that_never_answer_dont_delay_the_others() {
             content: "hello, followers".into(),
             attachments: vec![],
             uploads: vec![],
+            upload: None,
         },
     )
     .await;
@@ -591,6 +592,7 @@ async fn a_followed_node_that_never_moves_on_cant_freeze_syncing() {
             content: "an honest post".into(),
             attachments: vec![],
             uploads: vec![],
+            upload: None,
         },
     )
     .await;
@@ -766,6 +768,7 @@ async fn post_noise_photo(node: &Node, dir: &Path) -> (ObjectId, BlobHash, u64) 
         content: "noise".into(),
         attachments: vec![photo],
         uploads: vec![],
+        upload: None,
     };
     let ClientResponse::Posted { id } = call(node, post).await else {
         panic!("not posted");

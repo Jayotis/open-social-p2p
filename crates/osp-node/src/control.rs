@@ -100,6 +100,7 @@ impl Core {
                 content,
                 attachments,
                 uploads,
+                upload: _,
             } => {
                 ensure!(
                     local || attachments.is_empty(),
@@ -160,7 +161,10 @@ impl Core {
             ClientRequest::Peers => ClientResponse::Peers {
                 peers: self.peer_records()?,
             },
-            ClientRequest::Pair { .. } | ClientRequest::ReadBlob { .. } => {
+            ClientRequest::Pair { .. }
+            | ClientRequest::ReadBlob { .. }
+            | ClientRequest::ResumeUpload { .. }
+            | ClientRequest::CancelUpload { .. } => {
                 bail!("this request is only accepted over osp/client/0")
             }
         })

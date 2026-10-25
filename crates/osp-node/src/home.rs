@@ -62,6 +62,12 @@ impl Home {
         self.root.join("work")
     }
 
+    /// Files devices are uploading, one folder per upload, kept while the
+    /// upload can still be resumed.
+    pub fn uploads(&self) -> PathBuf {
+        self.root.join("uploads")
+    }
+
     /// Media a restore left for the node to import when it starts (ADR 0009).
     pub fn restored_media(&self) -> PathBuf {
         self.root.join("restored-media")

@@ -2,18 +2,14 @@
 //! their home node, and new phones pairing with it.
 //!
 //! Requests are the same as on the local socket (see `control.rs`), one per
-//! QUIC stream. Two carry raw bytes besides their frames: a `Post` with
-//! uploads, and `ReadBlob`.
+//! QUIC stream. Three carry raw bytes besides their frames: a `Post` with
+//! uploads and `ResumeUpload` (both in `uploads.rs`), and `ReadBlob`.
 
 use std::{
     collections::HashMap,
     fmt,
     net::IpAddr,
-    path::{Path, PathBuf},
-    sync::{
-        Arc,
-        atomic::{AtomicU64, Ordering},
-    },
+    sync::Arc,
     time::{Duration, Instant},
 };
 
@@ -24,34 +20,21 @@ use iroh::{
     protocol::{AcceptError, ProtocolHandler},
 };
 use osp_proto::{
-    BlobHash, ObjectId, PairingTicket,
+    BlobHash, PairingTicket,
     framing::{read_frame_max, write_frame},
-    rpc::{
-        ClientRequest, ClientResponse, DeviceInfo, MAX_PAIR_REQUEST_LEN, MAX_REQUEST_LEN, Upload,
-    },
+    rpc::{ClientRequest, ClientResponse, DeviceInfo, MAX_PAIR_REQUEST_LEN, MAX_REQUEST_LEN},
 };
-use tokio::{
-    io::{AsyncRead, AsyncReadExt, AsyncWriteExt},
-    sync::{Semaphore, watch},
-};
+use tokio::sync::{Semaphore, watch};
 use tracing::{debug, info};
 
-use crate::{
-    config::RelayChoice,
-    control::{self, Origin},
-    db::BlobClass,
-    node::Core,
-    store::Download,
-};
+use crate::{config::RelayChoice, control::Origin, db::BlobClass, node::Core, store::Download};
 
 /// How long a pairing ticket works.
 const PAIRING_TTL: Duration = Duration::from_secs(600);
 /// Longest device name kept, in characters.
 const MAX_DEVICE_NAME: usize = 64;
-/// Largest file a device may upload. Phone videos up to the length limit fit.
-const MAX_UPLOAD_BYTES: u64 = 4 << 30;
 /// Give up on a request frame, or on an upload that stops moving, after this long.
-const IDLE_TIMEOUT: Duration = Duration::from_secs(60);
+pub(crate) const IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 /// Most requests from unknown devices handled at once. They can only try
 /// to pair, which is rare, so more than this is someone probing the node.
 const MAX_UNKNOWN_REQUESTS: usize = 8;
@@ -165,11 +148,31 @@ async fn serve_stream(
                 content,
                 attachments,
                 uploads,
+                upload,
             } if attachments.is_empty() && !uploads.is_empty() => {
                 let resp = reply(
-                    core.post_uploads(content, &uploads, &mut recv)
+                    core.receive_post(device, upload, content, &uploads, &mut recv)
                         .await
                         .map(|id| ClientResponse::Posted { id }),
+                );
+                write_frame(&mut send, &resp).await?;
+            }
+            ClientRequest::ResumeUpload {
+                upload,
+                content,
+                uploads,
+            } => {
+                let resp = reply(
+                    core.resume_upload(device, upload, content, &uploads, &mut send, &mut recv)
+                        .await,
+                );
+                write_frame(&mut send, &resp).await?;
+            }
+            ClientRequest::CancelUpload { upload } => {
+                let resp = reply(
+                    core.cancel_upload(device, &upload)
+                        .await
+                        .map(|()| ClientResponse::Ok),
                 );
                 write_frame(&mut send, &resp).await?;
             }
@@ -369,53 +372,6 @@ impl Core {
         rx
     }
 
-    /// Receives a device's files into a scratch directory, then posts them
-    /// like local attachments. The scratch copies are deleted either way.
-    /// A post the node can't take on is refused before any file bytes are
-    /// read: too big, the node busy with other posts, or the disk too full.
-    async fn post_uploads(
-        self: &Arc<Self>,
-        content: String,
-        uploads: &[Upload],
-        recv: &mut RecvStream,
-    ) -> Result<ObjectId> {
-        control::check_post(&content, uploads.len())?;
-        for u in uploads {
-            ensure!(u.size > 0, "{} is empty", u.name);
-            ensure!(
-                u.size <= MAX_UPLOAD_BYTES,
-                "{} is larger than the {} GB limit",
-                u.name,
-                MAX_UPLOAD_BYTES >> 30
-            );
-        }
-        let _slot = self.media_post_slot()?;
-        // Room for every file before any arrives, so two uploads at once
-        // can't both count on the same free space.
-        let mut rooms = Vec::new();
-        for u in uploads {
-            rooms.push(self.store.reserve_upload(u.size).await?);
-        }
-
-        let dir = upload_dir(&self.home.work())?;
-        let result = async {
-            let mut paths = Vec::new();
-            for ((i, upload), room) in uploads.iter().enumerate().zip(rooms) {
-                let path = dir.join(format!("{i}.{}", extension(&upload.name)));
-                receive_file(recv, &path, upload.size)
-                    .await
-                    .with_context(|| format!("receiving {}", upload.name))?;
-                // The file is on the disk now, so the free space counts it.
-                drop(room);
-                paths.push(path);
-            }
-            self.publish_post(content, &paths).await
-        }
-        .await;
-        let _ = std::fs::remove_dir_all(&dir);
-        result
-    }
-
     fn lock_pairings(&self) -> std::sync::MutexGuard<'_, Vec<PendingPairing>> {
         self.pairings.lock().unwrap_or_else(|e| e.into_inner())
     }
@@ -425,26 +381,6 @@ impl Core {
     ) -> std::sync::MutexGuard<'_, HashMap<BlobHash, watch::Receiver<Download>>> {
         self.opening.lock().unwrap_or_else(|e| e.into_inner())
     }
-}
-
-/// Copies exactly `size` bytes from the stream into a new file.
-async fn receive_file<R: AsyncRead + Unpin>(recv: &mut R, path: &Path, size: u64) -> Result<()> {
-    let mut file = tokio::fs::File::create(path)
-        .await
-        .with_context(|| format!("creating {}", path.display()))?;
-    let mut buf = vec![0u8; 256 * 1024];
-    let mut left = size;
-    while left > 0 {
-        let n = left.min(buf.len() as u64) as usize;
-        tokio::time::timeout(IDLE_TIMEOUT, recv.read_exact(&mut buf[..n]))
-            .await
-            .context("upload stalled")?
-            .context("upload ended early")?;
-        file.write_all(&buf[..n]).await?;
-        left -= n as u64;
-    }
-    file.flush().await?;
-    Ok(())
 }
 
 /// The addresses that go in a pairing ticket: the relay, plus addresses on
@@ -466,27 +402,10 @@ fn pairing_addr(addr: EndpointAddr, relays: bool) -> EndpointAddr {
     EndpointAddr::from_parts(addr.id, addr.addrs.into_iter().filter(keep))
 }
 
-fn upload_dir(work: &Path) -> Result<PathBuf> {
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-    let dir = work.join(format!("upload-{}-{n}", std::process::id()));
-    std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
-    Ok(dir)
-}
-
-/// The upload's extension if it looks like one. ffmpeg goes by the content,
-/// so this only helps when reading logs.
-fn extension(name: &str) -> String {
-    match Path::new(name).extension().and_then(|e| e.to_str()) {
-        Some(ext) if ext.len() <= 5 && ext.chars().all(|c| c.is_ascii_alphanumeric()) => {
-            ext.to_ascii_lowercase()
-        }
-        _ => "bin".to_string(),
-    }
-}
-
 #[cfg(test)]
 mod tests {
+    use osp_proto::rpc::{Upload, UploadId};
+
     use super::*;
 
     #[test]
@@ -506,30 +425,31 @@ mod tests {
     }
 
     #[test]
-    fn upload_extensions_are_sanitised() {
-        assert_eq!(extension("IMG_0001.JPG"), "jpg");
-        assert_eq!(extension("clip.mp4"), "mp4");
-        assert_eq!(extension("../../etc/passwd"), "bin");
-        assert_eq!(extension("x.a/b"), "bin");
-        assert_eq!(extension("noext"), "bin");
-        assert_eq!(extension("weird.sh;rm"), "bin");
-    }
-
-    #[test]
     fn largest_requests_fit_their_limits() {
         // Control characters are escaped as \u00XX: six bytes each.
+        let content = "\u{1}".repeat(osp_proto::types::MAX_CONTENT_BYTES);
+        let uploads: Vec<Upload> = (0..osp_proto::types::MAX_ATTACHMENTS)
+            .map(|_| Upload {
+                name: "\u{1}".repeat(255),
+                size: u64::MAX,
+            })
+            .collect();
+        let upload = UploadId::from_bytes([0xff; 32]);
         let post = ClientRequest::Post {
-            content: "\u{1}".repeat(osp_proto::types::MAX_CONTENT_BYTES),
+            content: content.clone(),
             attachments: Vec::new(),
-            uploads: (0..osp_proto::types::MAX_ATTACHMENTS)
-                .map(|_| Upload {
-                    name: "\u{1}".repeat(255),
-                    size: u64::MAX,
-                })
-                .collect(),
+            uploads: uploads.clone(),
+            upload: Some(upload),
         };
-        let len = serde_json::to_vec(&post).unwrap().len();
-        assert!(len <= MAX_REQUEST_LEN as usize, "post is {len} bytes");
+        let resume = ClientRequest::ResumeUpload {
+            upload,
+            content,
+            uploads,
+        };
+        for req in [post, resume] {
+            let len = serde_json::to_vec(&req).unwrap().len();
+            assert!(len <= MAX_REQUEST_LEN as usize, "{req:?} is {len} bytes");
+        }
 
         let pair = ClientRequest::Pair {
             secret: "f".repeat(32),
@@ -537,16 +457,5 @@ mod tests {
         };
         let len = serde_json::to_vec(&pair).unwrap().len();
         assert!(len <= MAX_PAIR_REQUEST_LEN as usize, "pair is {len} bytes");
-    }
-
-    #[tokio::test]
-    async fn short_upload_is_an_error() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("f");
-        let mut data: &[u8] = b"only ten b";
-        receive_file(&mut data, &path, 10).await.unwrap();
-        assert_eq!(std::fs::read(&path).unwrap(), b"only ten b");
-        let mut data: &[u8] = b"short";
-        assert!(receive_file(&mut data, &path, 10).await.is_err());
     }
 }

@@ -47,6 +47,7 @@ async fn post(node: &Node, text: &str) {
         content: text.into(),
         attachments: vec![],
         uploads: vec![],
+        upload: None,
     };
     call(node, req).await;
 }
@@ -100,6 +101,7 @@ async fn post_photo(node: &Node, dir: &Path, name: &str, source: &str) -> (Objec
         content: name.into(),
         attachments: vec![photo],
         uploads: vec![],
+        upload: None,
     };
     let ClientResponse::Posted { id } = call(node, req).await else {
         panic!("not posted")

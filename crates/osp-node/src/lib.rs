@@ -21,6 +21,7 @@ mod relays;
 mod social;
 mod store;
 mod sync;
+mod uploads;
 
 pub use config::{Config, RelayChoice};
 pub use db::BlobClass;
