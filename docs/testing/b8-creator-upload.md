@@ -44,7 +44,7 @@ The defaults are the scenario below; `osp-sim --help` lists the options (followe
 - **Strangers after a reshare:** `--strangers 200` adds 200 nodes that follow only the first follower. It reshares the post, hosting its media, as soon as it holds the video. The summary gives the strangers' times, from posting and from the reshare, what the resharer sent, how many copies the creator sent strangers, and the strangers' [marks](#strangers-once-resharers-keep-track-of-copies).
 - **Latecomers:** `--latecomers 10` adds 10 nodes that follow the creator once the run is over, one after another. Each fetches the video at once, without spreading its fetch out, and the summary gives how long half of them and all of them took, from following to holding it, and what the creator sent them. Nothing else in the summary counts them. `--sources 1` makes every node fetch from one node at a time, as before downloads in parts.
 
-What loopback can't show: real delay and loss, NAT and relays. Those belong to the slow and flaky network harness, a later M3 item.
+What loopback can't show: delay, packet loss, slow downloads and connections dropping out, NAT and relays. `--net` runs the nodes over a simulated network of home connections instead, with all of these but NAT and relays; its runs and marks have [their own plan](network-conditions.md).
 
 ## The scenario
 
