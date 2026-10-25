@@ -68,7 +68,7 @@ B (all-in-one)  ec66132b14  you follow them
 
 The numbers are the faded counts, rounded; the output says so in a line at the top.
 
-**The download loop.** `store.rs` replaces the `Downloader` with its own loop for one blob. It keeps every rule downloads follow now: chunks verified against the hash before they are stored, a stop once more than the post's declared size arrives, room reserved within the quotas first, and 10 minutes at most for the whole download. Each node is asked only for the parts still missing. The order nodes are tried in doesn't change: the most recently seen hosts first, then any found by asking who hosts it. Each attempt ends in one of the outcomes above, which the loop records.
+**The download loop.** `store.rs` replaces the `Downloader` with its own loop for one blob. It keeps every rule downloads follow now: chunks verified against the hash before they are stored, a stop once more than the post's declared size arrives, room reserved within the quotas first, and 10 minutes at most for the whole download (since 2026-10-25, 30 seconds at most without bytes from a node, and 30 minutes for the whole download: [ADR 0003](0003-native-social-protocol-v0.md)). Each node is asked only for the parts still missing. The order nodes are tried in doesn't change: the most recently seen hosts first, then any found by asking who hosts it. Each attempt ends in one of the outcomes above, which the loop records.
 
 No protocol change. One database migration adds the table.
 

@@ -59,10 +59,10 @@ const MAX_PREFETCH_BYTES: u64 = 256 << 20;
 /// Most files, and bytes, prefetched per sync.
 const MAX_PREFETCH_FILES_PER_SYNC: usize = 200;
 const MAX_PREFETCH_BYTES_PER_SYNC: u64 = 1 << 30;
-/// How long a prefetch refused as busy waits before it is tried again. Each
-/// later wait is twice as long, up to `MAX_RETRY_WAIT`, and each is varied
-/// by up to half either way, so followers refused together don't come back
-/// together.
+/// How long a prefetch that failed, or was refused as busy, waits before it
+/// is tried again. Each later wait is twice as long, up to
+/// `MAX_RETRY_WAIT`, and each is varied by up to half either way, so
+/// followers refused together don't come back together.
 pub(crate) const FIRST_RETRY_WAIT: Duration = Duration::from_secs(60);
 const MAX_RETRY_WAIT: Duration = Duration::from_secs(15 * 60);
 /// Tries again before giving up: about 45 minutes with the waits above.
@@ -495,8 +495,8 @@ impl Core {
 
     /// Fetches media ahead of time, one file at a time, in the order given.
     /// A large file this node gets through the follower swarm waits a
-    /// random while first (`PREFETCH_SPREAD`), and one refused as busy is
-    /// tried again later, both in `later_loop`.
+    /// random while first (`PREFETCH_SPREAD`), and one that fails or is
+    /// refused as busy is tried again later, both in `later_loop`.
     async fn prefetch(&self, wanted: Vec<Wanted>) {
         for wanted in wanted {
             // One already here, as when a post we have is reshared, isn't
@@ -507,7 +507,7 @@ impl Core {
                 self.fetch_later(Later {
                     wanted,
                     due: Instant::now() + wait,
-                    refusals: 0,
+                    failures: 0,
                 });
             } else if let Some(later) = self.fetch_ahead(wanted, 0).await {
                 self.fetch_later(later);
@@ -525,20 +525,20 @@ impl Core {
             && !wanted.trackers.is_empty()
     }
 
-    /// Fetches one file ahead of time, refused as busy `refusals` times so
-    /// far. If the nodes with it are busy again, says when to try again,
+    /// Fetches one file ahead of time, which failed or was refused as busy
+    /// `failures` times so far. If it fails again, says when to try again,
     /// unless that has happened `MAX_RETRIES` times. Otherwise the file is
     /// here or won't be, and posts held back for it are shown.
-    async fn fetch_ahead(&self, wanted: Wanted, refusals: u32) -> Option<Later> {
+    async fn fetch_ahead(&self, wanted: Wanted, failures: u32) -> Option<Later> {
         let hash = wanted.blob;
-        let later = self.try_fetch_ahead(wanted, refusals).await;
+        let later = self.try_fetch_ahead(wanted, failures).await;
         if later.is_none() {
             self.prefetch_done(&hash);
         }
         later
     }
 
-    async fn try_fetch_ahead(&self, wanted: Wanted, refusals: u32) -> Option<Later> {
+    async fn try_fetch_ahead(&self, wanted: Wanted, failures: u32) -> Option<Later> {
         let blob = wanted.blob.fmt_short();
         let fetched = if self.joins_swarm(&wanted) {
             self.fetch_from_swarm(&wanted).await
@@ -548,18 +548,25 @@ impl Core {
         };
         match fetched {
             Ok(_) => {
-                if refusals > 0 {
-                    info!(%blob, refusals, "prefetched after the nodes with it were busy");
+                if failures > 0 {
+                    info!(%blob, failures, "prefetched on a later try");
                 }
                 None
             }
-            Err(e) if store::is_busy(&e) && refusals < MAX_RETRIES => {
-                info!(%blob, "the nodes with this media are busy; trying again later");
-                let wait = jitter(retry_wait(self.sim.first_retry_wait, refusals));
+            // The nodes with it couldn't send it just then: they may be
+            // busy, offline for a while, or on a poor connection. A file
+            // too big for the cache, or for its post, won't do better later.
+            Err(e) if store::may_come_later(&e) && failures < MAX_RETRIES => {
+                if store::is_busy(&e) {
+                    info!(%blob, "the nodes with this media are busy; trying again later");
+                } else {
+                    info!(%blob, "prefetch failed; trying again later: {e:#}");
+                }
+                let wait = jitter(retry_wait(self.sim.first_retry_wait, failures));
                 Some(Later {
                     wanted,
                     due: Instant::now() + wait,
-                    refusals: refusals + 1,
+                    failures: failures + 1,
                 })
             }
             Err(e) => {
@@ -907,13 +914,13 @@ fn take_ready(holds: &mut HashMap<ObjectId, Hold>) -> Vec<ObjectId> {
     ready
 }
 
-/// A file to fetch ahead of time once it's `due`: spread out, or refused as
-/// busy `refusals` times so far.
+/// A file to fetch ahead of time once it's `due`: spread out, or failed or
+/// refused as busy `failures` times so far.
 #[derive(Debug)]
 pub(crate) struct Later {
     wanted: Wanted,
     due: Instant,
-    refusals: u32,
+    failures: u32,
 }
 
 /// Fetches, one at a time, the files `prefetch` puts off until later.
@@ -941,7 +948,7 @@ pub(crate) async fn later_loop(core: Arc<Core>, mut later: mpsc::Receiver<Later>
                     let Some(l) = waiting.remove(&blob) else {
                         continue;
                     };
-                    if let Some(again) = core.fetch_ahead(l.wanted, l.refusals).await {
+                    if let Some(again) = core.fetch_ahead(l.wanted, l.failures).await {
                         waiting.insert(blob, again);
                     }
                 }
@@ -966,11 +973,11 @@ fn wait_for(waiting: &mut HashMap<BlobHash, Later>, l: Later) -> Option<BlobHash
     None
 }
 
-/// How long to wait before trying again a prefetch refused as busy
-/// `refusals` times before this one, before `jitter`.
-fn retry_wait(first: Duration, refusals: u32) -> Duration {
+/// How long to wait before trying again a prefetch that failed or was
+/// refused as busy `failures` times before this one, before `jitter`.
+fn retry_wait(first: Duration, failures: u32) -> Duration {
     first
-        .saturating_mul(1 << refusals.min(16))
+        .saturating_mul(1 << failures.min(16))
         .min(MAX_RETRY_WAIT)
 }
 
@@ -1174,7 +1181,7 @@ mod tests {
                 trackers: vec![tracker.clone()],
             },
             due,
-            refusals: 0,
+            failures: 0,
         };
         let mut waiting = HashMap::new();
         assert_eq!(
