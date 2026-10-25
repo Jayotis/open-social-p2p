@@ -87,7 +87,7 @@ Results here are public, so describe networks in general terms. Keep details of 
 ## Known limitations
 
 - A paired device has full access until unpaired; no read-only devices.
-- The phone uploads the original file; there is no phone-side transcoding or resume yet.
+- The phone uploads the original file; there is no phone-side transcoding. An interrupted upload carries on where it stopped ([ADR 0008](../decisions/0008-device-pairing-and-client-protocol.md)), but the app doesn't yet offer to carry on after it restarts.
 - Media the node hasn't fetched yet is downloaded in full by the node before the phone gets the first byte.
 - The app doesn't keep media on the phone: when the node is unreachable, the saved feed shows text and layout, but no pictures or video.
 - Android may stop the app in the background, which interrupts an upload. Keep the app open until the post is sent.
