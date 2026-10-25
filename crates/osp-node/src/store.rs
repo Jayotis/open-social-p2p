@@ -62,8 +62,14 @@ use crate::{
     peers::{self, Event},
 };
 
-/// Give up on a download after this long, so a stalled provider can't hang a sync.
-const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(600);
+/// Give up on a node that has sent nothing for this long, and ask the next:
+/// its connection may have dropped out. Longer than a busy node takes to
+/// refuse (`BUSY_WAIT`), so a refusal is still heard as one.
+const STALL_TIMEOUT: Duration = Duration::from_secs(30);
+/// Give up on a whole download after this long, however it's going, so a
+/// node sending just enough not to stall can't hold it forever. A download
+/// that is merely slow, from slow or lossy connections, has time to finish.
+const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 /// How long to wait for a connection to a node that may have a blob. Long
 /// enough for a first connection through a relay, so a node that is merely
 /// slow to reach isn't taken for one that can't be reached.
@@ -446,7 +452,7 @@ impl ContentStore {
                 _ => {}
             }
             if Instant::now() >= deadline {
-                bail!("it timed out");
+                return Err(Unsent("it timed out").into());
             }
         }
         // The parts may have brought all of it, with no node left to ask.
@@ -456,7 +462,7 @@ impl ContentStore {
         if busy {
             return Err(Busy.into());
         }
-        bail!("no provider could send it")
+        Err(Unsent("no provider could send it").into())
     }
 
     /// Fetches what is missing of a blob's first `declared` bytes in parts,
@@ -562,7 +568,8 @@ impl ContentStore {
 
     /// Asks one node for `request`: part or all of what is still missing
     /// of a blob. It goes on until the node has sent all of it, or `stop`
-    /// says enough has arrived.
+    /// says enough has arrived, or the node sends nothing for
+    /// `STALL_TIMEOUT`.
     async fn attempt(
         &self,
         node: EndpointId,
@@ -592,8 +599,9 @@ impl ContentStore {
                     .execute_get(conn.clone(), request)
                     .stream();
                 loop {
-                    match tokio::time::timeout(left(), progress.next()).await {
-                        // Out of time, or it ended without saying how.
+                    let wait = left().min(STALL_TIMEOUT);
+                    match tokio::time::timeout(wait, progress.next()).await {
+                        // Stalled, out of time, or it ended without saying how.
                         Err(_) | Ok(None) => break Outcome::Failed,
                         Ok(Some(GetProgressItem::Progress(bytes))) => {
                             attempt.first_byte.get_or_insert_with(|| started.elapsed());
@@ -1021,7 +1029,8 @@ pub(crate) enum Outcome {
     BadData,
     /// It couldn't be reached.
     Unreachable,
-    /// Anything else: a dropped connection, an error, or out of time.
+    /// Anything else: a dropped connection, an error, nothing sent for a
+    /// while, or out of time.
     Failed,
     /// We stopped it: more arrived than the post says the blob has. That
     /// says nothing about the node, which can only send the blob the hash names.
@@ -1064,6 +1073,28 @@ impl std::error::Error for Busy {}
 /// Whether a download failed because a node that has the blob was busy.
 pub(crate) fn is_busy(e: &anyhow::Error) -> bool {
     e.chain().any(|cause| cause.is::<Busy>())
+}
+
+/// Why a download failed when none of the nodes asked sent all of the
+/// blob, busy or not: they didn't have it, failed, sent nothing for a
+/// while, or time ran out. Asking again later may work.
+#[derive(Debug)]
+pub(crate) struct Unsent(&'static str);
+
+impl fmt::Display for Unsent {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.0)
+    }
+}
+
+impl std::error::Error for Unsent {}
+
+/// Whether a download failed because the nodes asked couldn't send the
+/// blob just then (`Busy` or `Unsent`), not for a reason that will last,
+/// such as a blob too big for the cache or for its post.
+pub(crate) fn may_come_later(e: &anyhow::Error) -> bool {
+    e.chain()
+        .any(|cause| cause.is::<Busy>() || cause.is::<Unsent>())
 }
 
 /// What a failed request says about the node that was asked. A node refuses

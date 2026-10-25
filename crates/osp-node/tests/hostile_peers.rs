@@ -47,6 +47,8 @@ const TRANSFER_LIMIT: usize = 8;
 const STRANGER_TRANSFER_LIMIT: usize = 4;
 const TRANSFER_LIMIT_PER_NODE: usize = 2;
 const BUSY_WAIT: Duration = Duration::from_secs(10);
+/// Matches `STALL_TIMEOUT` in `store.rs`.
+const STALL_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Long enough for loopback, far shorter than any of the node's timeouts.
 const PROMPTLY: Duration = Duration::from_secs(5);
@@ -1166,6 +1168,121 @@ async fn a_prefetch_refused_as_busy_is_tried_again_later() {
         reader.blob_class(&photo).unwrap(),
         Some(BlobClass::Prefetch)
     );
+
+    reader.shutdown().await.unwrap();
+    node.shutdown().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_prefetch_that_fails_is_tried_again_later() {
+    let dir = tempfile::tempdir().unwrap();
+    // An author whose node doesn't have its video yet, so it can't send it.
+    let media = MemStore::new();
+    let bytes = vec![7u8; 400 << 10];
+    let blob = BlobHash::from_bytes(*Hash::new(&bytes).as_bytes());
+    let key = SecretKey::generate();
+    let author = HostileAuthor {
+        key: key.clone(),
+        outbox: Outbox::Posts,
+        stray: note(&SecretKey::generate(), "unused"),
+        posts: vec![note_with(
+            &key,
+            "a video",
+            vec![video(blob, bytes.len() as u64)],
+        )],
+    };
+    let (_author, ticket) = serve(author, Some(&media)).await;
+
+    let home = dir.path().join("xena");
+    Node::init(&home, &Config::local_test("Xena")).unwrap();
+    let sim = SimSettings {
+        first_retry_wait: Duration::from_millis(500),
+        ..SimSettings::default()
+    };
+    let reader = Node::spawn_sim(&home, sim).await.unwrap();
+    call(&reader, ClientRequest::Follow { ticket }).await;
+    // A sync from the owner waits for the prefetch, which fails.
+    sync_within(&reader, Duration::from_secs(60)).await;
+    assert_eq!(reader.blob_class(&blob).unwrap(), None);
+
+    // Once the author's node has it, the prefetch is tried again and the
+    // video arrives.
+    add_blob(&media, bytes).await;
+    let started = Instant::now();
+    while reader.blob_class(&blob).unwrap().is_none() {
+        assert!(
+            started.elapsed() < PROMPTLY * 2,
+            "not fetched again in time"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(reader.blob_class(&blob).unwrap(), Some(BlobClass::Prefetch));
+
+    reader.shutdown().await.unwrap();
+}
+
+/// A host that takes requests for media and never answers them, as one
+/// whose connection dropped out looks to a node fetching from it.
+#[derive(Debug, Clone)]
+struct Silent;
+
+impl ProtocolHandler for Silent {
+    async fn accept(&self, conn: Connection) -> Result<(), AcceptError> {
+        // Holds each request's streams, unanswered, until the other side goes.
+        let mut held = Vec::new();
+        while let Ok(streams) = conn.accept_bi().await {
+            held.push(streams);
+        }
+        Ok(())
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_download_moves_on_from_a_host_that_sends_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let node = start(dir.path(), "Vera").await;
+    let addr = node.addr().await;
+    let (_, photo, size) = post_noise_photo(&node, dir.path()).await;
+    let endpoint = Endpoint::builder(presets::Minimal)
+        .relay_mode(RelayMode::Disabled)
+        .clear_ip_transports()
+        .bind_addr("127.0.0.1:0".parse::<SocketAddr>().unwrap())
+        .unwrap()
+        .bind()
+        .await
+        .unwrap();
+    let silent = endpoint.addr();
+    let _silent = Router::builder(endpoint)
+        .accept(iroh_blobs::ALPN, Silent)
+        .spawn();
+
+    // The silent host, asked first, is given up on once it has sent
+    // nothing for a while, and the node with the photo is asked next.
+    let reader = start(dir.path(), "Wes").await;
+    let started = Instant::now();
+    let got = tokio::time::timeout(
+        STALL_TIMEOUT + PROMPTLY,
+        reader.download_blob_from(&photo, size, &[silent.clone(), addr.clone()]),
+    )
+    .await
+    .expect("it should move on long before the download's time is up");
+    assert_eq!(got.unwrap(), size);
+    let took = started.elapsed();
+    assert!(
+        took >= STALL_TIMEOUT - Duration::from_secs(1),
+        "it asked the silent host first, {took:?}"
+    );
+
+    // Its record says so (ADR 0011).
+    let ClientResponse::Peers { peers } = call(&reader, ClientRequest::Peers).await else {
+        panic!("no peers");
+    };
+    let record = peers
+        .iter()
+        .find(|p| p.node == silent.id)
+        .expect("the silent host");
+    assert_eq!(record.counts.failed.round(), 1.0, "{record:?}");
+    assert_eq!(record.counts.received_bytes, 0.0, "{record:?}");
 
     reader.shutdown().await.unwrap();
     node.shutdown().await.unwrap();
