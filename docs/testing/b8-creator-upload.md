@@ -1,6 +1,6 @@
 # B8: the creator's upload, with and without the follower swarm
 
-**Status:** The swarm run passed both marks on 2026-10-24, and the other three runs were measured the same day ([results](#results)). The pass marks below were fixed that day, before anything was measured. Changing one later needs a dated note here saying what changed and why. Marks for repeating the strangers run once resharers keep track of copies were added on 2026-10-24, also before that run ([below](#strangers-once-resharers-keep-track-of-copies)), and the repeated run met all of them the same day.
+**Status:** The swarm run passed both marks on 2026-10-24, and the other three runs were measured the same day ([results](#results)). The pass marks below were fixed that day, before anything was measured. Changing one later needs a dated note here saying what changed and why. Marks for repeating the strangers run once resharers keep track of copies were added on 2026-10-24, also before that run ([below](#strangers-once-resharers-keep-track-of-copies)), and the repeated run met all of them the same day. Marks for downloads in parts were added on 2026-10-24 too, before those runs ([below](#downloads-in-parts)).
 
 The [critical review](../reviews/2026-10-21-review-of-docs-12-and-13.md#b8-the-first-wave-still-hits-the-creator-serious) found that when someone posts, every follower's node fetches the media at once, so a home connection is swamped by the first wave (finding B8). The follower swarm ([doc 13](../13-hosting-roles-and-follower-swarm.md)) is meant to fix this: fetches are spread out, and early fetchers serve later ones. Doc 13 can't be accepted until this test shows that it works. The review requires the numbers to be written down first, so that results can't be read to fit afterwards.
 
@@ -42,6 +42,7 @@ The defaults are the scenario below; `osp-sim --help` lists the options (followe
 - **Fewer followers:** `--followers 100`.
 - **Followers dropping out:** `--drop-out 60` stops 60 followers, the last of each group of five, so every upload speed loses some. By default they stop 8 minutes after posting (`--drop-out-secs`), when about 40% of followers held the video in the swarm run and the creator had sent all it would. The times count only the followers that stayed.
 - **Strangers after a reshare:** `--strangers 200` adds 200 nodes that follow only the first follower. It reshares the post, hosting its media, as soon as it holds the video. The summary gives the strangers' times, from posting and from the reshare, what the resharer sent, how many copies the creator sent strangers, and the strangers' [marks](#strangers-once-resharers-keep-track-of-copies).
+- **Latecomers:** `--latecomers 10` adds 10 nodes that follow the creator once the run is over, one after another. Each fetches the video at once, without spreading its fetch out, and the summary gives how long half of them and all of them took, from following to holding it, and what the creator sent them. Nothing else in the summary counts them. `--sources 1` makes every node fetch from one node at a time, as before downloads in parts.
 
 What loopback can't show: real delay and loss, NAT and relays. Those belong to the slow and flaky network harness, a later M3 item.
 
@@ -74,6 +75,16 @@ Fixed on 2026-10-24, before the run was repeated. The first strangers run (below
 2. **Strangers get the media promptly:** 95% of strangers hold the verified file within **15 minutes of the reshare**, and every stranger within **30 minutes of it**. Strangers can't start before the reshare exists, so their clock starts then.
 3. **Followers still meet their marks:** 95% within 15 minutes of posting and all within 30.
 
+### Downloads in parts
+
+Fixed on 2026-10-24, before measuring. With [doc 13](../13-hosting-roles-and-follower-swarm.md#how-a-post-spreads) phase 2's downloads in parts, a node fetches a large file from up to three of the followers named as holding a copy at once, each sending a part of it, and asks the creator's node only for what they couldn't send. The swarm run is repeated twice on the same code, the same day: once as a real node does it (**in parts**), and once fetching from one node at a time (`--sources 1`, **one at a time**), as before. Both runs add 10 **latecomers** (`--latecomers 10`): once the run is over, they follow the creator one after another, and each fetches the video at once, with nothing else going on. How long each takes, from following to holding the video, shows how fast one download from the swarm is; in the run itself, the spread of up to 10 minutes would hide it.
+
+Downloads in parts pass when **all** of these hold:
+
+1. **The swarm's marks still hold** in the run in parts: the creator sends at most 30 copies, 95% of followers hold the video within 15 minutes, and all within 30.
+2. **A download is at least twice as fast:** half of the latecomers hold the video within half the time it takes half of them one at a time.
+3. **The creator is still spared:** in the run in parts, it sends the latecomers at most 0.1 copies between them, which leaves room for their thumbnails only.
+
 ## Runs
 
 | Run | Code | What it shows |
@@ -84,8 +95,10 @@ Fixed on 2026-10-24, before the run was repeated. The first strangers run (below
 | Followers dropping out | swarm, a fifth of the followers stop partway through | whether the spread recovers when sources disappear |
 | Strangers after a reshare | swarm, plus 200 nodes that don't follow the creator fetching the post through a reshare | the cost of `WhoHosts` pointing strangers only at the creator and resharers (doc 13) |
 | Strangers, resharers' swarms | the same, with doc 13 phase 2 | whether strangers that follow a resharer can get the video from each other; judged on the [marks above](#strangers-once-resharers-keep-track-of-copies) |
+| Swarm, in parts | swarm, downloads in parts (doc 13 phase 2), 10 latecomers | whether fetching from several followers at once keeps the swarm's marks and speeds up a download; judged on the [marks above](#downloads-in-parts), with the next run |
+| Swarm, one at a time | the same code, fetching from one node at a time, 10 latecomers | what the latecomers take without parts |
 
-Only the swarm run and the second strangers run are judged. The others are compared with the same marks, and reported either way.
+Only the swarm run, the second strangers run and the two runs with latecomers are judged. The others are compared with the same marks, and reported either way.
 
 ## Results
 
