@@ -6,6 +6,7 @@
 //! uploads, and `ReadBlob`.
 
 use std::{
+    collections::HashMap,
     fmt,
     net::IpAddr,
     path::{Path, PathBuf},
@@ -16,7 +17,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use anyhow::{Context, Result, ensure};
+use anyhow::{Context, Result, bail, ensure};
 use iroh::{
     EndpointAddr, EndpointId, TransportAddr,
     endpoint::{Connection, RecvStream, SendStream},
@@ -31,7 +32,7 @@ use osp_proto::{
 };
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWriteExt},
-    sync::Semaphore,
+    sync::{Semaphore, watch},
 };
 use tracing::{debug, info};
 
@@ -40,6 +41,7 @@ use crate::{
     control::{self, Origin},
     db::BlobClass,
     node::Core,
+    store::Download,
 };
 
 /// How long a pairing ticket works.
@@ -261,37 +263,51 @@ impl Core {
             .collect())
     }
 
-    /// Answers `ReadBlob`: a `Blob` frame, then the bytes. Fetches the blob
-    /// first if this node doesn't have it.
+    /// Answers `ReadBlob`: a `Blob` frame, then the bytes. A blob this node
+    /// doesn't have yet is fetched, and its bytes are sent as they arrive.
+    /// The frame waits for the first of them, so a fetch that fails from
+    /// the start still sends the device its reason.
     async fn send_blob(
-        &self,
+        self: &Arc<Self>,
         blob: &BlobHash,
         offset: u64,
         len: Option<u64>,
         send: &mut SendStream,
     ) -> Result<()> {
-        let size = async {
-            let size = match self.store.stored_size(blob).await? {
-                Some(size) => size,
-                None => {
-                    // The device only names the blob; our posts say how big it may be.
-                    let declared = self.db.declared_size(blob)?.with_context(|| {
-                        format!("no post on this node includes {}", blob.fmt_short())
-                    })?;
-                    self.ensure_blob(blob, BlobClass::Cache, declared).await?
-                }
-            };
-            self.db.touch_blob(blob).ok();
+        // The size, and the download if the blob isn't all here.
+        let found = async {
+            if let Some(size) = self.store.stored_size(blob).await? {
+                self.db.touch_blob(blob).ok();
+                ensure!(
+                    offset <= size,
+                    "offset {offset} is past the end of {} ({size} bytes)",
+                    blob.fmt_short()
+                );
+                return Ok((size, None));
+            }
+            // The device only names the blob; our posts say how big it is.
+            let size = self
+                .db
+                .declared_size(blob)?
+                .with_context(|| format!("no post on this node includes {}", blob.fmt_short()))?;
             ensure!(
                 offset <= size,
                 "offset {offset} is past the end of {} ({size} bytes)",
                 blob.fmt_short()
             );
-            Ok(size)
+            let mut download = self.open_blob(blob, size);
+            let mut arriving = self.store.arriving(blob).await?;
+            if offset < size {
+                tokio::select! {
+                    stored = arriving.stored_from(offset, &mut download) => { stored?; }
+                    _ = send.stopped() => bail!("the device stopped waiting"),
+                }
+            }
+            Ok((size, Some((arriving, download))))
         }
         .await;
-        let size = match size {
-            Ok(size) => size,
+        let (size, arriving) = match found {
+            Ok(found) => found,
             Err(e) => {
                 let resp = ClientResponse::Error {
                     message: format!("{e:#}"),
@@ -301,7 +317,56 @@ impl Core {
         };
         let len = len.unwrap_or(u64::MAX).min(size - offset);
         write_frame(send, &ClientResponse::Blob { size }).await?;
-        self.store.write_range(blob, offset, len, send).await
+        let Some((mut arriving, mut download)) = arriving else {
+            return self.store.write_range(blob, offset, len, send).await;
+        };
+        // What is here, then more as it comes, until the device hangs up.
+        let end = offset + len;
+        let mut position = offset;
+        while position < end {
+            let stored = tokio::select! {
+                stored = arriving.stored_from(position, &mut download) => stored?,
+                _ = send.stopped() => return Ok(()),
+            };
+            let upto = stored.min(end);
+            self.store
+                .write_range(blob, position, upto - position, send)
+                .await?;
+            position = upto;
+        }
+        Ok(())
+    }
+
+    /// Starts fetching a blob a device opened, or joins the fetch under
+    /// way, so devices reading it at the same time share one download. The
+    /// receiver says when it's over.
+    fn open_blob(self: &Arc<Self>, blob: &BlobHash, declared: u64) -> watch::Receiver<Download> {
+        let mut opening = self.lock_opening();
+        // A download whose task is gone without saying how it ended is
+        // started again.
+        if let Some(download) = opening.get(blob)
+            && download.has_changed().is_ok()
+        {
+            return download.clone();
+        }
+        let (tx, rx) = watch::channel(Download::Running);
+        opening.insert(*blob, rx.clone());
+        let (core, blob) = (self.clone(), *blob);
+        tokio::spawn(async move {
+            let fetched = core.ensure_blob(&blob, BlobClass::Cache, declared).await;
+            core.lock_opening().remove(&blob);
+            tx.send_replace(match fetched {
+                Ok(_) => {
+                    core.db.touch_blob(&blob).ok();
+                    Download::Done
+                }
+                Err(e) => {
+                    debug!(blob = %blob.fmt_short(), "couldn't fetch media a device opened: {e:#}");
+                    Download::Failed(format!("{e:#}"))
+                }
+            });
+        });
+        rx
     }
 
     /// Receives a device's files into a scratch directory, then posts them
@@ -353,6 +418,12 @@ impl Core {
 
     fn lock_pairings(&self) -> std::sync::MutexGuard<'_, Vec<PendingPairing>> {
         self.pairings.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn lock_opening(
+        &self,
+    ) -> std::sync::MutexGuard<'_, HashMap<BlobHash, watch::Receiver<Download>>> {
+        self.opening.lock().unwrap_or_else(|e| e.into_inner())
     }
 }
 

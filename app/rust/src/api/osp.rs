@@ -191,13 +191,12 @@ impl OspApp {
         self.client.media_url(&blob, &media_type).await
     }
 
-    /// Asks the node to download a post's media, if it hasn't yet.
-    pub async fn fetch_media(&self, post_id: String) -> Result<()> {
-        let id: ObjectId = post_id.parse()?;
-        self.client
-            .request(&ClientRequest::Fetch { id, out_dir: None })
-            .await?;
-        Ok(())
+    /// Waits until the node has the start of a blob, asking it to fetch
+    /// the blob if it hasn't, so a player can start on it. The rest
+    /// reaches the player as it arrives.
+    pub async fn wait_for_media(&self, blob: String) -> Result<()> {
+        let blob: BlobHash = blob.parse()?;
+        self.client.wait_for_media(&blob).await
     }
 
     /// Posts text with photos or videos from this phone, reporting progress.

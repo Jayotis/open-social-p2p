@@ -66,7 +66,7 @@ class RustLib extends BaseEntrypoint<RustLibApi, RustLibApiImpl, RustLibWire> {
   String get codegenVersion => '2.13.0';
 
   @override
-  int get rustContentHash => -399082614;
+  int get rustContentHash => 2041414932;
 
   static const kDefaultExternalLibraryLoaderConfig =
       ExternalLibraryLoaderConfig(
@@ -85,11 +85,6 @@ abstract class RustLibApi extends BaseApi {
   Future<List<Post>> crateApiOspOspAppFeed({
     required OspApp that,
     required int limit,
-  });
-
-  Future<void> crateApiOspOspAppFetchMedia({
-    required OspApp that,
-    required String postId,
   });
 
   Future<void> crateApiOspOspAppFollow({
@@ -141,6 +136,11 @@ abstract class RustLibApi extends BaseApi {
   Future<NodeStatus> crateApiOspOspAppStatus({required OspApp that});
 
   Future<int> crateApiOspOspAppSync({required OspApp that});
+
+  Future<void> crateApiOspOspAppWaitForMedia({
+    required OspApp that,
+    required String blob,
+  });
 
   Future<void> crateApiOspInitApp();
 
@@ -260,44 +260,6 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   );
 
   @override
-  Future<void> crateApiOspOspAppFetchMedia({
-    required OspApp that,
-    required String postId,
-  }) {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerOspApp(
-            that,
-            serializer,
-          );
-          sse_encode_String(postId, serializer);
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 4,
-            port: port_,
-          );
-        },
-        codec: SseCodec(
-          decodeSuccessData: sse_decode_unit,
-          decodeErrorData: sse_decode_AnyhowException,
-        ),
-        constMeta: kCrateApiOspOspAppFetchMediaConstMeta,
-        argValues: [that, postId],
-        apiImpl: this,
-      ),
-    );
-  }
-
-  TaskConstMeta get kCrateApiOspOspAppFetchMediaConstMeta =>
-      const TaskConstMeta(
-        debugName: "OspApp_fetch_media",
-        argNames: ["that", "postId"],
-      );
-
-  @override
   Future<void> crateApiOspOspAppFollow({
     required OspApp that,
     required String ticket,
@@ -314,7 +276,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 5,
+            funcId: 4,
             port: port_,
           );
         },
@@ -347,7 +309,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 6,
+            funcId: 5,
             port: port_,
           );
         },
@@ -378,7 +340,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 7,
+            funcId: 6,
             port: port_,
           );
         },
@@ -415,7 +377,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 8,
+            funcId: 7,
             port: port_,
           );
         },
@@ -448,7 +410,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 9,
+            funcId: 8,
             port: port_,
           );
         },
@@ -483,7 +445,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 10,
+            funcId: 9,
             port: port_,
           );
         },
@@ -523,7 +485,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 11,
+            funcId: 10,
             port: port_,
           );
         },
@@ -553,7 +515,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             that,
             serializer,
           );
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 12)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 11)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_opt_box_autoadd_node_info,
@@ -591,7 +553,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             pdeCallFfi(
               generalizedFrbRustBinding,
               serializer,
-              funcId: 13,
+              funcId: 12,
               port: port_,
             );
           },
@@ -627,7 +589,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             serializer,
           );
           sse_encode_u_32(lines, serializer);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 14)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 13)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_String,
@@ -664,7 +626,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 15,
+            funcId: 14,
             port: port_,
           );
         },
@@ -694,7 +656,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             that,
             serializer,
           );
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 16)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 15)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_opt_box_autoadd_saved_feed,
@@ -723,7 +685,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 17,
+            funcId: 16,
             port: port_,
           );
         },
@@ -754,7 +716,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 18,
+            funcId: 17,
             port: port_,
           );
         },
@@ -771,6 +733,44 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
 
   TaskConstMeta get kCrateApiOspOspAppSyncConstMeta =>
       const TaskConstMeta(debugName: "OspApp_sync", argNames: ["that"]);
+
+  @override
+  Future<void> crateApiOspOspAppWaitForMedia({
+    required OspApp that,
+    required String blob,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerOspApp(
+            that,
+            serializer,
+          );
+          sse_encode_String(blob, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 18,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_unit,
+          decodeErrorData: sse_decode_AnyhowException,
+        ),
+        constMeta: kCrateApiOspOspAppWaitForMediaConstMeta,
+        argValues: [that, blob],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiOspOspAppWaitForMediaConstMeta =>
+      const TaskConstMeta(
+        debugName: "OspApp_wait_for_media",
+        argNames: ["that", "blob"],
+      );
 
   @override
   Future<void> crateApiOspInitApp() {
@@ -1824,10 +1824,6 @@ class OspAppImpl extends RustOpaque implements OspApp {
   Future<List<Post>> feed({required int limit}) =>
       RustLib.instance.api.crateApiOspOspAppFeed(that: this, limit: limit);
 
-  /// Asks the node to download a post's media, if it hasn't yet.
-  Future<void> fetchMedia({required String postId}) => RustLib.instance.api
-      .crateApiOspOspAppFetchMedia(that: this, postId: postId);
-
   /// Follows someone by their follow ticket (`OSP1...`).
   Future<void> follow({required String ticket}) =>
       RustLib.instance.api.crateApiOspOspAppFollow(that: this, ticket: ticket);
@@ -1892,4 +1888,10 @@ class OspAppImpl extends RustOpaque implements OspApp {
   /// Asks the node to sync everyone it follows now. Returns how many new
   /// objects arrived.
   Future<int> sync_() => RustLib.instance.api.crateApiOspOspAppSync(that: this);
+
+  /// Waits until the node has the start of a blob, asking it to fetch
+  /// the blob if it hasn't, so a player can start on it. The rest
+  /// reaches the player as it arrives.
+  Future<void> waitForMedia({required String blob}) => RustLib.instance.api
+      .crateApiOspOspAppWaitForMedia(that: this, blob: blob);
 }

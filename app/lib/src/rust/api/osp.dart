@@ -30,9 +30,6 @@ abstract class OspApp implements RustOpaqueInterface {
 
   Future<List<Post>> feed({required int limit});
 
-  /// Asks the node to download a post's media, if it hasn't yet.
-  Future<void> fetchMedia({required String postId});
-
   /// Follows someone by their follow ticket (`OSP1...`).
   Future<void> follow({required String ticket});
 
@@ -82,6 +79,11 @@ abstract class OspApp implements RustOpaqueInterface {
   /// Asks the node to sync everyone it follows now. Returns how many new
   /// objects arrived.
   Future<int> sync_();
+
+  /// Waits until the node has the start of a blob, asking it to fetch
+  /// the blob if it hasn't, so a player can start on it. The rest
+  /// reaches the player as it arrives.
+  Future<void> waitForMedia({required String blob});
 }
 
 class Media {

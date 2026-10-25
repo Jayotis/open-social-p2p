@@ -11,12 +11,13 @@ use std::{
         Arc,
         atomic::{AtomicU64, Ordering},
     },
+    time::{Duration, Instant},
 };
 
 use osp_client::{Client, ClientOptions, Pairing};
-use osp_node::{Config, Node};
+use osp_node::{BlobClass, Config, Node};
 use osp_proto::{
-    BlobHash,
+    Attachment, BlobHash,
     rpc::{ClientRequest, ClientResponse, StatusInfo},
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -67,6 +68,48 @@ async fn make_clip(dir: &Path) -> PathBuf {
         .expect("ffmpeg must be installed");
     assert!(status.success());
     out
+}
+
+/// Three seconds of noise, which compresses badly, so the posted video is
+/// as large as the media profile allows: about 700 KB.
+async fn make_noise_clip(dir: &Path) -> PathBuf {
+    let out = dir.join("noise.mp4");
+    let source = "color=c=gray:s=640x360:d=3,noise=alls=60:allf=t";
+    let status = tokio::process::Command::new("ffmpeg")
+        .args(["-hide_banner", "-loglevel", "error", "-y"])
+        .args(["-f", "lavfi", "-i", source])
+        .args(["-c:v", "libx264", "-preset", "ultrafast"])
+        .arg(&out)
+        .status()
+        .await
+        .expect("ffmpeg must be installed");
+    assert!(status.success());
+    out
+}
+
+/// Posts a video from a file on the node, and returns its attachment.
+async fn post_video(node: &Node, clip: PathBuf) -> Attachment {
+    let post = ClientRequest::Post {
+        content: "a video".into(),
+        attachments: vec![clip],
+        uploads: vec![],
+    };
+    let ClientResponse::Posted { .. } = node.handle(post).await else {
+        panic!("not posted");
+    };
+    let ClientResponse::Feed { items } = node.handle(ClientRequest::Feed { limit: 1 }).await else {
+        panic!("no feed");
+    };
+    items[0].attachments[0].attachment.clone()
+}
+
+async fn follow(node: &Node, author: &Node) {
+    let ClientResponse::Ticket { ticket } = author.handle(ClientRequest::Invite).await else {
+        panic!("no ticket");
+    };
+    let followed = node.handle(ClientRequest::Follow { ticket }).await;
+    assert!(matches!(followed, ClientResponse::Ok), "{followed:?}");
+    node.handle(ClientRequest::Sync).await;
 }
 
 /// A bare HTTP GET, as a video player would send it. Returns the status
@@ -267,6 +310,107 @@ async fn phone_pairs_posts_plays_and_is_revoked() {
         client.shutdown().await;
     }
     node.shutdown().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_video_the_node_is_still_fetching_plays_as_it_arrives() {
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter("osp_node=debug,osp_client=debug,warn")
+        .with_test_writer()
+        .try_init();
+    let dir = tempfile::tempdir().unwrap();
+    let (alice, video, bob, phone) = video_not_on_the_phones_node(dir.path()).await;
+    assert!(video.size > 400_000, "{} bytes", video.size);
+
+    // The phone waits only until the node has the start of the video.
+    phone.wait_for_media(&video.blob).await.unwrap();
+    assert_eq!(bob.blob_class(&video.blob).unwrap(), None, "all of it came");
+
+    // Players read it at once, several requests at a time, as it arrives.
+    let url = phone
+        .media_url(&video.blob, &video.media_type)
+        .await
+        .unwrap();
+    let (whole, part) = tokio::join!(
+        http_get(&url, Some("bytes=0-")),
+        http_get(&url, Some("bytes=300000-300999")),
+    );
+    let (status_line, headers, body) = whole;
+    assert_eq!(status_line, "HTTP/1.1 206 Partial Content");
+    assert!(headers.contains(&format!(
+        "content-range: bytes 0-{}/{}",
+        video.size - 1,
+        video.size
+    )));
+    assert_eq!(blake3::hash(&body).as_bytes(), video.blob.as_bytes());
+    assert_eq!(part.2, body[300_000..301_000]);
+    // The last bytes may reach the phone just before the node records them.
+    let started = Instant::now();
+    while bob.blob_class(&video.blob).unwrap() != Some(BlobClass::Cache) {
+        assert!(started.elapsed() < Duration::from_secs(10), "not kept");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    // All of them shared one download: the video came once. Downloads of
+    // their own would have run on a while, then come to about twice that.
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let ClientResponse::Peers { peers } = bob.handle(ClientRequest::Peers).await else {
+        panic!("no peers");
+    };
+    let from_alice = peers.iter().find(|p| p.node == alice.node_id()).unwrap();
+    // Counts fade a little as time passes.
+    let received = from_alice.counts.received_bytes.round() as u64;
+    assert!(
+        received > video.size * 9 / 10 && received < video.size * 3 / 2,
+        "{received} of {} bytes",
+        video.size
+    );
+
+    phone.shutdown().await;
+    for node in [alice, bob] {
+        node.shutdown().await.unwrap();
+    }
+}
+
+/// Slow: the node tries the author's for a while before it gives up.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_video_nobody_can_send_fails_with_the_reason() {
+    let dir = tempfile::tempdir().unwrap();
+    let (alice, video, bob, phone) = video_not_on_the_phones_node(dir.path()).await;
+    alice.shutdown().await.unwrap();
+    let err = phone.wait_for_media(&video.blob).await.unwrap_err();
+    assert!(
+        err.to_string().contains("no provider could send it"),
+        "{err:#}"
+    );
+    phone.shutdown().await;
+    bob.shutdown().await.unwrap();
+}
+
+/// Alice posts a video, and her node sends slowly, so it takes seconds to
+/// reach Bob's. Bob's node follows hers but doesn't fetch ahead of time.
+/// Returns Alice's node, the video, Bob's node and his paired phone.
+async fn video_not_on_the_phones_node(dir: &Path) -> (Node, Attachment, Node, Arc<Client>) {
+    let home = dir.join("alice");
+    let mut config = Config::local_test("Alice");
+    config.serving.max_upload_mbps = 1;
+    Node::init(&home, &config).unwrap();
+    let alice = Node::spawn(&home).await.unwrap();
+    let video = post_video(&alice, make_noise_clip(dir).await).await;
+
+    let home = dir.join("bob");
+    let mut config = Config::local_test("Bob");
+    config.sync.prefetch = false;
+    Node::init(&home, &config).unwrap();
+    let bob = Node::spawn(&home).await.unwrap();
+    follow(&bob, &alice).await;
+    let phone = Client::open(&dir.join("phone"), ClientOptions::local_test())
+        .await
+        .unwrap();
+    phone
+        .pair(&new_pairing(&bob).await, "Bob's phone")
+        .await
+        .unwrap();
+    (alice, video, bob, phone)
 }
 
 #[tokio::test(flavor = "multi_thread")]
