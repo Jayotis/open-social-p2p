@@ -18,9 +18,11 @@ async fn a_small_run_measures_the_creators_upload() {
         follower_mbps: vec![5, 10, 20],
         swarm: false,
         prefetch_spread: Duration::ZERO,
+        download_sources: 3,
         drop_out: 0,
         drop_out_after: Duration::ZERO,
         strangers: 0,
+        latecomers: 0,
         time_limit: Duration::from_secs(90),
         sample: Duration::from_secs(1),
         label: "test".into(),
@@ -98,9 +100,11 @@ fn with_the_swarm(dir: &Path) -> Scenario {
         follower_mbps: vec![5, 10, 20],
         swarm: true,
         prefetch_spread: Duration::from_secs(10),
+        download_sources: 3,
         drop_out: 0,
         drop_out_after: Duration::ZERO,
         strangers: 0,
+        latecomers: 0,
         time_limit: Duration::from_secs(90),
         sample: Duration::from_secs(1),
         label: "test".into(),
@@ -126,6 +130,38 @@ async fn a_small_run_with_the_swarm_on() {
     let sent: f64 = report.follower_sent_bytes.iter().sum();
     assert!(sent >= video, "{}", report.summary());
     assert!(report.creator_copies() < 11.0, "{}", report.summary());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn latecomers_fetch_from_several_followers_at_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let scenario = Scenario {
+        // Over 2 MiB, so it comes in parts.
+        video_bytes: 3_000_000,
+        latecomers: 2,
+        ..with_the_swarm(dir.path())
+    };
+    let report = osp_sim::run(&scenario).await.unwrap();
+    let summary = report.summary();
+    println!("{summary}");
+    assert!(
+        summary.contains("each file from up to 3 nodes at once"),
+        "{summary}"
+    );
+    assert!(summary.contains("2 of 2 held the video"), "{summary}");
+    assert!(report.latecomer_time(100).is_some(), "{summary}");
+    // Each got the thumbnail from the creator, and the video in two parts
+    // or more from followers holding a copy.
+    let d = &report.latecomer_downloads;
+    assert!(d.completed.round() >= 6.0, "{summary}");
+    let thumbnails = (report.media_bytes - report.video_bytes) as f64;
+    assert!(
+        report.creator_sent_to_latecomers < 2.0 * thumbnails + 1000.0,
+        "{summary}"
+    );
+    // They aren't counted with the followers.
+    assert_eq!(report.held_after_secs.len(), 12);
+    assert_eq!(report.holding(), 12, "{summary}");
 }
 
 #[tokio::test(flavor = "multi_thread")]
