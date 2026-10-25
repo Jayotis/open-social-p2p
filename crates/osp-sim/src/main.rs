@@ -36,6 +36,11 @@ struct Cli {
     /// to this many seconds. The default is a real node's.
     #[arg(long)]
     spread_secs: Option<u64>,
+    /// Most nodes a follower fetches a file from at once, each sending a
+    /// part of it. The default is a real node's; 1 fetches from one node
+    /// at a time.
+    #[arg(long, default_value_t = SimSettings::default().download_sources)]
+    sources: usize,
     /// This many followers stop partway through: the last of each group of
     /// `followers / drop-out`.
     #[arg(long, default_value_t = 0)]
@@ -49,6 +54,11 @@ struct Cli {
     /// reshares the post, hosting its media, as soon as it holds the video.
     #[arg(long, default_value_t = 0)]
     strangers: usize,
+    /// Then this many nodes follow the creator, one after another, each
+    /// fetching the video at once: how long each takes shows how fast a
+    /// download from the swarm is.
+    #[arg(long, default_value_t = 0)]
+    latecomers: usize,
     /// End this many minutes after posting, if not every follower and
     /// stranger holds the video by then.
     #[arg(long, default_value_t = 60)]
@@ -92,9 +102,11 @@ async fn main() -> Result<()> {
             || SimSettings::default().prefetch_spread,
             Duration::from_secs,
         ),
+        download_sources: cli.sources,
         drop_out: cli.drop_out,
         drop_out_after: Duration::from_secs(cli.drop_out_secs),
         strangers: cli.strangers,
+        latecomers: cli.latecomers,
         time_limit: Duration::from_secs(cli.minutes * 60),
         sample: Duration::from_secs(60),
         label: cli.label,

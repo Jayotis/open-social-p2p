@@ -40,6 +40,11 @@ const SETTLE: Duration = Duration::from_secs(2);
 /// The follower that reshares the post to the strangers, by its place in
 /// follower order. It never drops out.
 const RESHARER: usize = 0;
+/// Longest a latecomer may take to fetch the video.
+const LATECOMER_TIMEOUT: Duration = Duration::from_secs(300);
+/// How often the harness looks at the latecomer fetching: often enough to
+/// time a download of seconds.
+const LATECOMER_TICK: Duration = Duration::from_millis(250);
 
 /// One run: who takes part, the video, and how fast each node can upload.
 #[derive(Debug, Clone)]
@@ -60,6 +65,11 @@ pub struct Scenario {
     /// Followers in the swarm spread their fetches of the video over up to
     /// this long. A real node uses `SimSettings::default().prefetch_spread`.
     pub prefetch_spread: Duration,
+    /// Most nodes a follower or stranger fetches a file from at once, each
+    /// sending a part of it. A real node uses
+    /// `SimSettings::default().download_sources`; 1 fetches from one node
+    /// at a time.
+    pub download_sources: usize,
     /// Followers that stop this long after posting, the last of each group
     /// of `followers / drop_out` in follower order, so they have every
     /// upload speed. The times until 50%, 95% and all count only the
@@ -70,6 +80,12 @@ pub struct Scenario {
     /// reshares the post, hosting its media, as soon as it holds the video.
     /// They upload at the followers' speeds, given in turn.
     pub strangers: usize,
+    /// Nodes that follow the creator once the run is over, one after
+    /// another, and fetch the video at once, without spreading their
+    /// fetches out: how long each takes shows how fast a download from the
+    /// swarm is. Like followers, they upload at the followers' speeds and
+    /// share what they fetch. Nothing else counts them.
+    pub latecomers: usize,
     /// The run ends when every follower that stays and every stranger holds
     /// the video, or this long after posting.
     pub time_limit: Duration,
@@ -89,6 +105,7 @@ pub struct Report {
     pub follower_mbps: Vec<u64>,
     pub swarm: bool,
     pub prefetch_spread_secs: f64,
+    pub download_sources: usize,
     pub time_limit_secs: u64,
     /// The video, and its media altogether (the video and its thumbnail).
     pub video_bytes: u64,
@@ -129,6 +146,15 @@ pub struct Report {
     /// `creator_sent_bytes`, and what the strangers' records say came from it.
     pub creator_sent_to_strangers: f64,
     pub strangers_received_from_creator: f64,
+    /// Nodes that followed the creator after the run, one after another,
+    /// and how long each took from following to holding the video, if it
+    /// did within `LATECOMER_TIMEOUT`.
+    pub latecomers: usize,
+    pub latecomer_took_secs: Vec<Option<f64>>,
+    pub latecomer_downloads: Outcomes,
+    /// Media bytes the creator sent to latecomers. Not part of
+    /// `creator_sent_bytes`.
+    pub creator_sent_to_latecomers: f64,
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -175,8 +201,7 @@ pub async fn run(s: &Scenario) -> Result<Report> {
     let source = make_video(&s.dir, s.video_bytes).await?;
 
     let lifted = SimSettings {
-        new_followers_per_hour: s
-            .followers
+        new_followers_per_hour: (s.followers + s.latecomers)
             .max(SimSettings::default().new_followers_per_hour),
         ..SimSettings::default()
     };
@@ -190,6 +215,7 @@ pub async fn run(s: &Scenario) -> Result<Report> {
     .await?;
     let spread = SimSettings {
         prefetch_spread: s.prefetch_spread,
+        download_sources: s.download_sources,
         // The resharer gathered its followers over time too.
         new_followers_per_hour: s
             .strangers
@@ -198,9 +224,16 @@ pub async fn run(s: &Scenario) -> Result<Report> {
     };
     let followers = start_all(s, "f", "F", s.followers, &spread).await?;
     let strangers = start_all(s, "s", "S", s.strangers, &spread).await?;
+    let at_once = SimSettings {
+        prefetch_spread: Duration::ZERO,
+        download_sources: s.download_sources,
+        ..SimSettings::default()
+    };
+    let latecomers = start_all(s, "l", "L", s.latecomers, &at_once).await?;
     info!(
         followers = followers.len(),
         strangers = strangers.len(),
+        latecomers = latecomers.len(),
         "nodes started"
     );
 
@@ -355,7 +388,27 @@ pub async fn run(s: &Scenario) -> Result<Report> {
             .map(|p| p.counts.sent_bytes),
     );
 
-    let running = followers.into_iter().flatten().chain(strangers);
+    let latecomer_took_secs = latecomers_fetch(&creator, &latecomers, post, video).await?;
+    tokio::time::sleep(SETTLE).await;
+    let mut latecomer_records = Vec::new();
+    for node in &latecomers {
+        latecomer_records.push(peers(node).await?);
+    }
+    let from_latecomers = tally(&latecomer_records, creator.node_id());
+    let latecomer_ids: HashSet<EndpointId> = latecomers.iter().map(Node::node_id).collect();
+    let creator_sent_to_latecomers = total(
+        peers(&creator)
+            .await?
+            .iter()
+            .filter(|p| latecomer_ids.contains(&p.node))
+            .map(|p| p.counts.sent_bytes),
+    );
+
+    let running = followers
+        .into_iter()
+        .flatten()
+        .chain(strangers)
+        .chain(latecomers);
     for result in join_all(running.map(Node::shutdown)).await {
         result?;
     }
@@ -369,6 +422,7 @@ pub async fn run(s: &Scenario) -> Result<Report> {
         follower_mbps: s.follower_mbps.clone(),
         swarm: s.swarm,
         prefetch_spread_secs: s.prefetch_spread.as_secs_f64(),
+        download_sources: s.download_sources,
         time_limit_secs: s.time_limit.as_secs(),
         video_bytes,
         media_bytes,
@@ -390,6 +444,10 @@ pub async fn run(s: &Scenario) -> Result<Report> {
         stranger_downloads: from_strangers.downloads,
         creator_sent_to_strangers,
         strangers_received_from_creator: from_strangers.from_creator,
+        latecomers: s.latecomers,
+        latecomer_took_secs,
+        latecomer_downloads: from_latecomers.downloads,
+        creator_sent_to_latecomers,
     })
 }
 
@@ -422,6 +480,12 @@ impl Report {
     /// reshare: they couldn't start before it.
     pub fn stranger_time_after_reshare(&self, percent: usize) -> Option<f64> {
         Some(self.stranger_time_until(percent)? - self.reshared_after_secs?)
+    }
+
+    /// How long it took `percent` of the latecomers to hold the video, from
+    /// when each followed the creator.
+    pub fn latecomer_time(&self, percent: usize) -> Option<f64> {
+        time_until(&self.latecomer_took_secs, percent)
     }
 
     /// The creator's upload, in copies of the post's media.
@@ -485,10 +549,14 @@ impl Report {
         } else {
             "swarm off".to_string()
         };
+        let sources = match self.download_sources {
+            1 => "each file from one node at a time".to_string(),
+            n => format!("each file from up to {n} nodes at once"),
+        };
         let mut out = String::new();
         let _ = writeln!(
             out,
-            "{} followers, {:.1} MB video, creator {} Mbit/s, followers {} Mbit/s, {swarm}",
+            "{} followers, {:.1} MB video, creator {} Mbit/s, followers {} Mbit/s, {swarm}, {sources}",
             self.followers,
             self.video_bytes as f64 / 1e6,
             self.creator_mbps,
@@ -567,6 +635,26 @@ impl Report {
                 out,
                 "strangers' downloads: {}",
                 outcomes(&self.stranger_downloads),
+            );
+        }
+        if self.latecomers > 0 {
+            let time = |t: Option<f64>| match t {
+                Some(t) => format!("{t:.1} s"),
+                None => "not reached".to_string(),
+            };
+            let _ = writeln!(
+                out,
+                "latecomers, following one after another after the run and fetching at once: {} of {} held the video; half within {}, all within {}; the creator sent them {:.2} copies",
+                self.latecomer_took_secs.iter().flatten().count(),
+                self.latecomers,
+                time(self.latecomer_time(50)),
+                time(self.latecomer_time(100)),
+                copies(self.creator_sent_to_latecomers),
+            );
+            let _ = writeln!(
+                out,
+                "latecomers' downloads: {}",
+                outcomes(&self.latecomer_downloads),
             );
         }
         let _ = write!(
@@ -738,6 +826,40 @@ async fn follow_all(followed: &Node, nodes: &[Node]) -> Result<()> {
         .await?;
     }
     wait_for_followers(followed, nodes.len()).await
+}
+
+/// Has each latecomer in turn follow the creator and fetch the video at
+/// once. Returns how long each took, from following to holding it.
+async fn latecomers_fetch(
+    creator: &Node,
+    latecomers: &[Node],
+    post: ObjectId,
+    video: BlobHash,
+) -> Result<Vec<Option<f64>>> {
+    let ClientResponse::Ticket { ticket } = call(creator, ClientRequest::Invite).await? else {
+        bail!("no ticket");
+    };
+    let mut took = Vec::new();
+    for (i, node) in latecomers.iter().enumerate() {
+        let started = Instant::now();
+        let follow = ClientRequest::Follow {
+            ticket: ticket.clone(),
+        };
+        call(node, follow).await?;
+        call(node, ClientRequest::Sync).await?;
+        let held = loop {
+            if holds(node, post, video).await? {
+                break Some(started.elapsed().as_secs_f64());
+            }
+            if started.elapsed() >= LATECOMER_TIMEOUT {
+                break None;
+            }
+            tokio::time::sleep(LATECOMER_TICK).await;
+        };
+        info!(latecomer = i, secs = ?held, "a latecomer fetched the video");
+        took.push(held);
+    }
+    Ok(took)
 }
 
 /// Notes the time since `posted` for each running node that has come to
