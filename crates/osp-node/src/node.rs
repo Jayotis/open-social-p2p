@@ -120,6 +120,9 @@ pub(crate) struct Core {
     pub holds: Mutex<HashMap<ObjectId, sync::Hold>>,
     /// Pairing secrets handed out and not used yet. Kept in memory only.
     pub pairings: Mutex<Vec<PendingPairing>>,
+    /// Media a device opened that is still on its way here, so devices
+    /// reading it at the same time share one download.
+    pub opening: Mutex<HashMap<BlobHash, watch::Receiver<store::Download>>>,
     /// When we last asked each followed identity's node to notify us.
     pub subscribed: Mutex<HashMap<PublicKey, Instant>>,
     /// Followers given samples of the swarm (`WhoHosts`): since when, and
@@ -333,6 +336,7 @@ impl Node {
             prefetch_later,
             holds: Mutex::new(HashMap::new()),
             pairings: Mutex::new(Vec::new()),
+            opening: Mutex::new(HashMap::new()),
             subscribed: Mutex::new(HashMap::new()),
             swarm_samples: Mutex::new(HashMap::new()),
             tell_moved_lock: tokio::sync::Mutex::new(()),

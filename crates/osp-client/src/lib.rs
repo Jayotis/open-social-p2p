@@ -322,6 +322,15 @@ impl Client {
         Ok(server.url(blob, media_type))
     }
 
+    /// Waits until the home node has the start of a blob, fetching it if
+    /// it doesn't, so a player opened next has bytes to read at once. Fails
+    /// with the node's reason if it can't get it. A node from before
+    /// streaming answers only once it has the whole blob.
+    pub async fn wait_for_media(&self, blob: &BlobHash) -> Result<()> {
+        self.read_blob(blob, 0, Some(1)).await?;
+        Ok(())
+    }
+
     /// Opens a `ReadBlob` stream: the blob's total size, and a stream of
     /// `len` bytes (or up to the end) from `offset`.
     pub(crate) async fn read_blob(

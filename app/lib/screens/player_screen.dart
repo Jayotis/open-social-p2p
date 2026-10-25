@@ -55,13 +55,11 @@ class _PlayerScreenState extends State<PlayerScreen> {
       }
       // Each step can take a while; stop if the screen was closed meanwhile.
       if (!media.onNode) {
-        // The player would give up waiting, so let the node fetch it first.
+        // The player gives up if no bytes come for a few seconds, so wait
+        // until the node has the start; the rest arrives as it plays.
         if (!mounted) return;
-        setState(
-          () =>
-              _stage = 'Your home node is fetching this video from its author…',
-        );
-        await widget.node.app.fetchMedia(postId: widget.post.id);
+        setState(() => _stage = 'Your home node is getting this video…');
+        await widget.node.app.waitForMedia(blob: media.blob);
       }
       if (!mounted) return;
       setState(() => _stage = 'Starting…');

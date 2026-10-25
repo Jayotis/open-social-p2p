@@ -89,9 +89,10 @@ pub enum ClientRequest {
         secret: String,
         name: String,
     },
-    /// Read a blob the node has, fetching it first if it doesn't
-    /// (`osp/client/0` only). The `Blob` reply is followed by the raw bytes
-    /// from `offset`: `len` of them, or up to the end.
+    /// Read a blob (`osp/client/0` only). The `Blob` reply is followed by
+    /// the raw bytes from `offset`: `len` of them, or up to the end. A blob
+    /// the node doesn't have yet is fetched: the reply comes once the byte
+    /// at `offset` is there, and the rest follow as they arrive.
     ReadBlob {
         blob: BlobHash,
         #[serde(default)]

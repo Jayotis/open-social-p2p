@@ -25,7 +25,11 @@ use anyhow::{Context, Result, bail, ensure};
 use iroh::{Endpoint, EndpointId};
 use iroh_blobs::{
     BlobsProtocol, Hash,
-    api::{blobs::BlobStatus, proto::ExportRangesItem, remote::GetProgressItem},
+    api::{
+        blobs::BlobStatus,
+        proto::{Bitfield, ExportRangesItem},
+        remote::GetProgressItem,
+    },
     get::{
         GetError,
         fsm::{AtBlobHeaderNextError, DecodeError},
@@ -41,11 +45,11 @@ use iroh_blobs::{
     },
     util::connection_pool::{self, ConnectionPool},
 };
-use n0_future::StreamExt;
+use n0_future::{StreamExt, boxed::BoxStream};
 use osp_proto::BlobHash;
 use tokio::{
     io::{AsyncWrite, AsyncWriteExt},
-    sync::{OwnedSemaphorePermit, Semaphore, mpsc},
+    sync::{OwnedSemaphorePermit, Semaphore, mpsc, watch},
     task::JoinHandle,
 };
 use tracing::{debug, info, warn};
@@ -338,6 +342,23 @@ impl ContentStore {
         Ok(())
     }
 
+    /// A blob that may still be on its way here, to read as its bytes
+    /// arrive. Each byte was checked against the hash before it was stored.
+    pub async fn arriving(&self, hash: &BlobHash) -> Result<Arriving> {
+        let hash = to_hash(hash);
+        let mut news = self.store.observe(hash).stream().await?.boxed();
+        let have = news
+            .next()
+            .await
+            .context("the blob store didn't say what it has")?;
+        Ok(Arriving {
+            store: self.store.clone(),
+            hash,
+            news,
+            have,
+        })
+    }
+
     async fn size(&self, hash: Hash) -> Result<Option<u64>> {
         Ok(match self.store.status(hash).await? {
             BlobStatus::Complete { size } => Some(size),
@@ -603,6 +624,80 @@ impl Drop for Reservation<'_> {
             *n -= self.bytes;
         }
     }
+}
+
+/// How a download that devices wait on is going (see `Arriving`).
+#[derive(Clone, Debug)]
+pub(crate) enum Download {
+    Running,
+    Done,
+    Failed(String),
+}
+
+/// A blob that may still be arriving: what the store has of it, kept up to
+/// date while waiting for more.
+pub(crate) struct Arriving {
+    store: FsStore,
+    hash: Hash,
+    /// The store's news of what it has, whole each time.
+    news: BoxStream<Bitfield>,
+    have: Bitfield,
+}
+
+impl Arriving {
+    /// Waits until the byte at `position` is here, then says where the
+    /// bytes stored from there end. Fails if `download` is over first:
+    /// with its error, or because the blob is shorter than its post says.
+    pub async fn stored_from(
+        &mut self,
+        position: u64,
+        download: &mut watch::Receiver<Download>,
+    ) -> Result<u64> {
+        loop {
+            let end = stored_until(&self.have, position);
+            if end > position {
+                return Ok(end);
+            }
+            let state = download.borrow_and_update().clone();
+            match state {
+                Download::Running => tokio::select! {
+                    news = self.news.next() => {
+                        self.have = news.context("the blob store stopped saying what it has")?;
+                    }
+                    changed = download.changed() => {
+                        changed.context("the download stopped without saying how")?;
+                    }
+                },
+                Download::Done => {
+                    // All of it is here, even if the news hasn't caught up.
+                    self.have = self.store.observe(self.hash).await?;
+                    let end = stored_until(&self.have, position);
+                    ensure!(
+                        end > position,
+                        "{} ends before byte {position}",
+                        to_blob_hash(self.hash).fmt_short()
+                    );
+                    return Ok(end);
+                }
+                Download::Failed(e) => bail!("{e}"),
+            }
+        }
+    }
+}
+
+/// Where the bytes stored from `position` on end: `position` itself if the
+/// byte there hasn't arrived.
+fn stored_until(have: &Bitfield, position: u64) -> u64 {
+    // Start, end, start, end... in 1 KiB chunks, with no last end when the
+    // final range runs on past the end of the blob.
+    for range in have.ranges.boundaries().chunks(2) {
+        let start = range[0].to_bytes();
+        let end = range.get(1).map_or(u64::MAX, |end| end.to_bytes());
+        if start <= position && position < end {
+            return end.min(have.size()).max(position);
+        }
+    }
+    position
 }
 
 /// One node's attempt at sending us (part of) a blob.
@@ -1010,6 +1105,27 @@ mod tests {
         assert_eq!(places(1000), (8, 4));
         // Small files keep their own places.
         assert_eq!(Places::new(1).small.available_permits(), 8);
+    }
+
+    #[test]
+    fn stored_bytes_run_to_the_first_gap() {
+        use iroh_blobs::protocol::{ChunkRanges, ChunkRangesExt};
+        // A 10,000-byte blob with its first two and fifth and sixth chunks.
+        let have = Bitfield::new(
+            ChunkRanges::bytes(0..2 * KB) | ChunkRanges::bytes(4 * KB..6 * KB),
+            10_000,
+        );
+        assert_eq!(stored_until(&have, 0), 2 * KB);
+        assert_eq!(stored_until(&have, 2 * KB - 1), 2 * KB);
+        assert_eq!(stored_until(&have, 2 * KB), 2 * KB);
+        assert_eq!(stored_until(&have, 5000), 6 * KB);
+        assert_eq!(stored_until(&have, 6 * KB), 6 * KB);
+        // A run with the last chunk ends at the blob's end.
+        let have = Bitfield::new(ChunkRanges::bytes(9 * KB..10_000), 10_000);
+        assert_eq!(stored_until(&have, 9500), 10_000);
+        assert_eq!(stored_until(&have, 10_000), 10_000);
+        assert_eq!(stored_until(&Bitfield::complete(10_000), 3), 10_000);
+        assert_eq!(stored_until(&Bitfield::empty(), 0), 0);
     }
 
     struct Fixture {

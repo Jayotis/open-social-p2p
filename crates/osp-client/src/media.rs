@@ -3,6 +3,7 @@
 //!
 //! Each HTTP request becomes one `ReadBlob` over the connection to the home
 //! node. A `Range` header becomes an offset and length, so seeking works.
+//! Media the node is still fetching arrives as the node gets it.
 //! Other apps on the phone can reach 127.0.0.1 too, so every URL carries a
 //! random token and requests without it are refused.
 //!
@@ -17,7 +18,7 @@ use std::{
 use anyhow::{Context, Result};
 use osp_proto::BlobHash;
 use tokio::{
-    io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
+    io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWriteExt, BufReader},
     net::{TcpListener, TcpStream},
     task::JoinHandle,
 };
@@ -104,6 +105,9 @@ async fn handle(stream: TcpStream, client: &Weak<Client>, token: &str) -> Result
     let Some(client) = client.upgrade() else {
         return respond_error(&mut writer, "503 Service Unavailable").await;
     };
+    // Without the head's size limit, so it's only the player hanging up
+    // that ends a read.
+    let mut reader = reader.into_inner();
 
     let (offset, len) = match req.range {
         _ if req.head_only => (0, Some(0)),
@@ -111,7 +115,13 @@ async fn handle(stream: TcpStream, client: &Weak<Client>, token: &str) -> Result
         Some((first, None)) => (first, None),
         Some((first, Some(last))) => (first, Some(last.saturating_sub(first) + 1)),
     };
-    let (size, mut body) = match client.read_blob(&req.blob, offset, len).await {
+    // The node may be waiting for bytes still on their way to it. A player
+    // that seeks elsewhere meanwhile hangs up, and the node can stop.
+    let found = tokio::select! {
+        found = client.read_blob(&req.blob, offset, len) => found,
+        () = hung_up(&mut reader) => return Ok(()),
+    };
+    let (size, body) = match found {
         Ok(found) => found,
         Err(e) => {
             debug!("home node couldn't serve {}: {e:#}", req.blob.fmt_short());
@@ -144,10 +154,27 @@ async fn handle(stream: TcpStream, client: &Weak<Client>, token: &str) -> Result
     if !req.head_only {
         // Stops early if the player hangs up (a seek, say); dropping the
         // stream then tells the node to stop sending.
-        tokio::io::copy(&mut (&mut body).take(body_len), &mut writer).await?;
+        let mut body = body.take(body_len);
+        tokio::select! {
+            copied = tokio::io::copy(&mut body, &mut writer) => {
+                copied?;
+            }
+            () = hung_up(&mut reader) => return Ok(()),
+        }
     }
     writer.shutdown().await?;
     Ok(())
+}
+
+/// Returns once the player closes the connection. Players send nothing
+/// after their request (one per connection), so anything else is ignored.
+async fn hung_up<R: AsyncRead + Unpin>(reader: &mut R) {
+    let mut buf = [0u8; 256];
+    while let Ok(n) = reader.read(&mut buf).await {
+        if n == 0 {
+            return;
+        }
+    }
 }
 
 /// Reads up to and including the blank line that ends the request head.
