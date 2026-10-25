@@ -822,6 +822,17 @@ pub(crate) struct Wanted {
     trackers: Vec<EndpointAddr>,
 }
 
+impl Wanted {
+    /// Adds the trackers of the same file wanted again, each once.
+    fn add_trackers(&mut self, trackers: Vec<EndpointAddr>) {
+        for tracker in trackers {
+            if !self.trackers.iter().any(|t| t.id == tracker.id) {
+                self.trackers.push(tracker);
+            }
+        }
+    }
+}
+
 /// A post held back from the feed (`Db::insert_object_held`) until the
 /// files it waits for are on this node, or won't be.
 #[derive(Debug)]
@@ -884,12 +895,9 @@ pub(crate) async fn later_loop(core: Arc<Core>, mut later: mpsc::Receiver<Later>
         tokio::select! {
             got = later.recv() => {
                 let Some(l) = got else { return };
-                let blob = l.wanted.blob;
-                if waiting.len() < MAX_WAITING {
-                    waiting.entry(blob).or_insert(l);
-                } else if !waiting.contains_key(&blob) {
-                    // Dropped: it's fetched when it's opened.
-                    core.prefetch_done(&blob);
+                if let Some(dropped) = wait_for(&mut waiting, l) {
+                    // It's fetched when it's opened.
+                    core.prefetch_done(&dropped);
                 }
             }
             _ = sleep_until(next) => {
@@ -910,6 +918,22 @@ pub(crate) async fn later_loop(core: Arc<Core>, mut later: mpsc::Receiver<Later>
             }
         }
     }
+}
+
+/// Adds a file to those waiting, within `MAX_WAITING`. One already waiting
+/// keeps its time, and gains the new one's trackers, as when a post spread
+/// out is then reshared by a node that hosts it. Returns the file if it's
+/// dropped.
+fn wait_for(waiting: &mut HashMap<BlobHash, Later>, l: Later) -> Option<BlobHash> {
+    let blob = l.wanted.blob;
+    if let Some(earlier) = waiting.get_mut(&blob) {
+        earlier.wanted.add_trackers(l.wanted.trackers);
+    } else if waiting.len() < MAX_WAITING {
+        waiting.insert(blob, l);
+    } else {
+        return Some(blob);
+    }
+    None
 }
 
 /// How long to wait before trying again a prefetch refused as busy
@@ -988,11 +1012,7 @@ fn choose_prefetch(mut candidates: Vec<Wanted>) -> Vec<Wanted> {
         if later.blob != kept.blob {
             return false;
         }
-        for tracker in later.trackers.drain(..) {
-            if !kept.trackers.iter().any(|t| t.id == tracker.id) {
-                kept.trackers.push(tracker);
-            }
-        }
+        kept.add_trackers(std::mem::take(&mut later.trackers));
         true
     });
     candidates.sort_by_key(|w| w.size);
@@ -1107,6 +1127,61 @@ mod tests {
         let ready: HashSet<ObjectId> = blob_done(&mut holds, &video).into_iter().collect();
         assert_eq!(ready, HashSet::from([earlier, both]));
         assert!(holds.is_empty());
+    }
+
+    #[test]
+    fn a_file_waiting_gains_the_trackers_of_a_later_reshare() {
+        let [video, other] = [1u8, 2].map(|b| BlobHash::from_bytes([b; 32]));
+        let [authors_node, resharer] =
+            [(); 2].map(|_| EndpointAddr::new(iroh::SecretKey::generate().public()));
+        let author = iroh::SecretKey::generate().public();
+        let soon = Instant::now() + Duration::from_secs(60);
+        let later = |blob, tracker: &EndpointAddr, due| Later {
+            wanted: Wanted {
+                blob,
+                size: 50 << 20,
+                author,
+                trackers: vec![tracker.clone()],
+            },
+            due,
+            refusals: 0,
+        };
+        let mut waiting = HashMap::new();
+        assert_eq!(
+            wait_for(&mut waiting, later(video, &authors_node, soon)),
+            None
+        );
+        // Reshared while it waits: it keeps its time, and both are told.
+        let much_later = soon + Duration::from_secs(600);
+        assert_eq!(
+            wait_for(&mut waiting, later(video, &resharer, much_later)),
+            None
+        );
+        assert_eq!(
+            wait_for(&mut waiting, later(video, &resharer, much_later)),
+            None
+        );
+        let waited = &waiting[&video];
+        assert_eq!(waited.due, soon);
+        let ids: Vec<EndpointId> = waited.wanted.trackers.iter().map(|t| t.id).collect();
+        assert_eq!(ids, [authors_node.id, resharer.id]);
+
+        // When the queue is full, a new file is dropped, but one waiting
+        // still gains trackers.
+        for b in 0..MAX_WAITING - 1 {
+            let mut bytes = [3; 32];
+            bytes[..8].copy_from_slice(&(b as u64).to_le_bytes());
+            let blob = BlobHash::from_bytes(bytes);
+            assert_eq!(wait_for(&mut waiting, later(blob, &resharer, soon)), None);
+        }
+        assert_eq!(waiting.len(), MAX_WAITING);
+        assert_eq!(
+            wait_for(&mut waiting, later(other, &resharer, soon)),
+            Some(other)
+        );
+        let third = EndpointAddr::new(iroh::SecretKey::generate().public());
+        assert_eq!(wait_for(&mut waiting, later(video, &third, soon)), None);
+        assert_eq!(waiting[&video].wanted.trackers.len(), 3);
     }
 
     #[test]
