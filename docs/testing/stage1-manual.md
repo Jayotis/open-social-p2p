@@ -31,7 +31,7 @@ The script starts three daemons (alice, bob, carol), runs the publish → reshar
 ## Running a node by hand
 
 ```sh
-osp init --name "Your name"        # shows 24 recovery words, asks for three back, creates ~/.local/share/osp
+osp init --name "Your name"        # asks whether to share, shows 24 recovery words, asks for three back, creates ~/.local/share/osp
 osp daemon                         # leave running, or `osp service install` (see the M2 guide)
 
 # in another terminal
@@ -50,6 +50,8 @@ Use `--home DIR` (or `OSP_HOME=DIR`) to run several nodes on one machine. Add `-
 ### Moving or restoring a node
 
 Your identity is the 24 recovery words that `osp init` shows. They are the only copy of your identity key, and the node can't show them again ([ADR 0010](../decisions/0010-signing-keys-and-revocation.md)). The node keeps a signing key the words certified (`signing.key` and `signing.cert`) and a key for backup files (`backup.key`). `osp keys check` checks your written copy against the node. For test nodes and scripts, `osp init --skip-word-check` doesn't ask for words back.
+
+`osp init` also asks whether to share copies of posts from people you follow with other nodes (the follower swarm), after explaining what that shows others; yes is recommended ([ADR 0012](../decisions/0012-sharing-prefetched-copies.md)). `--share` or `--no-share` answers without asking. The answer is `share_prefetched` under `[swarm]` in `config.toml`; change it there and restart the node.
 
 A node made before this keeps `identity.key`, and `osp status` reports it. Stop the node, run `osp keys protect` (it shows the words, asks for three back, and deletes `identity.key`), then start the node again.
 

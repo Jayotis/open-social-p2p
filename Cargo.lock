@@ -2928,6 +2928,7 @@ dependencies = [
  "osp-proto",
  "qr2term",
  "serde_json",
+ "tempfile",
  "tokio",
  "tracing",
  "tracing-subscriber",
