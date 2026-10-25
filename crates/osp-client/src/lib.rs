@@ -3,22 +3,23 @@
 //!
 //! The Android app calls this through flutter_rust_bridge. Tests and desktop
 //! tools can use it directly. Everything the client keeps lives in one
-//! directory: the pairing, the last feed it saw, and its device key, unless
-//! the app keeps that in the phone's secure storage (`open_with_key`).
+//! directory: the pairing, the last feed it saw, a post still on its way to
+//! the node, and its device key, unless the app keeps that in the phone's
+//! secure storage (`open_with_key`).
 
 mod media;
 
 use std::{
     fs::OpenOptions,
-    io::Write,
+    io::{SeekFrom, Write},
     net::SocketAddr,
     os::unix::fs::OpenOptionsExt,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
-    time::Duration,
+    time::{Duration, Instant, UNIX_EPOCH},
 };
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, bail, ensure};
 use iroh::{
     Endpoint, EndpointAddr, PublicKey, RelayMode,
     address_lookup::{DnsAddressLookup, MemoryLookup, PkarrResolver},
@@ -27,10 +28,10 @@ use iroh::{
 use osp_proto::{
     BlobHash, CLIENT_ALPN, ObjectId, PairingTicket,
     framing::{read_frame, write_frame},
-    rpc::{ClientRequest, ClientResponse, FeedItem, Upload},
+    rpc::{ClientRequest, ClientResponse, FeedItem, Upload, UploadId},
 };
 use serde::{Deserialize, Serialize};
-use tokio::io::AsyncReadExt;
+use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tracing::debug;
 
 pub use iroh::SecretKey;
@@ -46,6 +47,23 @@ const POST_REPLY_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 /// How long to wait for a blob the node may first have to fetch, and for
 /// `Fetch` and `Sync`, which can also wait on other nodes.
 const BLOB_REPLY_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+/// Waits between tries to reach the home node again during a post. The
+/// last one repeats.
+const POST_RETRY_WAITS: [Duration; 5] = [
+    Duration::from_secs(1),
+    Duration::from_secs(2),
+    Duration::from_secs(5),
+    Duration::from_secs(10),
+    Duration::from_secs(30),
+];
+/// A post whose bytes stop moving for this long is carried on over a new
+/// connection.
+const POST_STALL: Duration = Duration::from_secs(30);
+/// After sending fails, how long to wait for the node's reply, which says
+/// why if the node refused the post part way.
+const REFUSAL_WAIT: Duration = Duration::from_secs(5);
+/// Where the post still on its way to the home node is kept.
+const PENDING_POST: &str = "pending-post.json";
 
 /// How the client reaches the network.
 #[derive(Debug, Clone)]
@@ -57,6 +75,11 @@ pub struct ClientOptions {
     pub address_lookup: bool,
     /// Bind to this address only (for example `127.0.0.1:0` in tests).
     pub bind: Option<SocketAddr>,
+    /// A post gives up after this long without contact with the home node.
+    /// Ten minutes covers the usual short breaks (a lift, Wi-Fi to mobile
+    /// data, the home computer restarting); past that, something needs the
+    /// owner's attention.
+    pub post_give_up: Duration,
 }
 
 impl Default for ClientOptions {
@@ -65,6 +88,7 @@ impl Default for ClientOptions {
             relays: true,
             address_lookup: true,
             bind: None,
+            post_give_up: Duration::from_secs(10 * 60),
         }
     }
 }
@@ -76,6 +100,7 @@ impl ClientOptions {
             relays: false,
             address_lookup: false,
             bind: Some("127.0.0.1:0".parse().expect("valid address")),
+            ..Self::default()
         }
     }
 }
@@ -100,6 +125,116 @@ pub struct CachedFeed {
     pub saved: String,
 }
 
+/// A post whose files are on their way to the home node. Saved as
+/// `pending-post.json` until the node publishes it or the owner discards
+/// it, so it can be carried on after a broken connection or a restart of
+/// the app.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PendingPost {
+    /// Names the upload to the node (`ResumeUpload`).
+    pub upload: UploadId,
+    pub content: String,
+    pub files: Vec<PendingFile>,
+    /// When the post was started (RFC 3339).
+    pub started: String,
+}
+
+/// A file of a pending post, with what it looked like when the post began.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PendingFile {
+    pub path: PathBuf,
+    pub size: u64,
+    /// When the file last changed, in milliseconds since 1970.
+    pub modified_ms: u64,
+}
+
+impl PendingPost {
+    fn new(content: String, files: &[PathBuf]) -> Result<Self> {
+        let mut id = [0u8; 32];
+        getrandom::fill(&mut id)
+            .map_err(|e| anyhow::anyhow!("no secure random numbers available: {e}"))?;
+        Ok(Self {
+            upload: UploadId::from_bytes(id),
+            content,
+            files: files
+                .iter()
+                .map(|path| PendingFile::read(path))
+                .collect::<Result<_>>()?,
+            started: osp_proto::now_rfc3339(),
+        })
+    }
+
+    /// The files as the node knows them.
+    fn uploads(&self) -> Vec<Upload> {
+        self.files
+            .iter()
+            .map(|f| Upload {
+                name: f.name(),
+                size: f.size,
+            })
+            .collect()
+    }
+
+    fn total(&self) -> u64 {
+        self.files.iter().map(|f| f.size).sum()
+    }
+
+    /// Stops a post from carrying on with files that changed since it
+    /// began, as their bytes would no longer line up with what was sent.
+    fn check_files(&self) -> Result<()> {
+        for file in &self.files {
+            let now = PendingFile::read(&file.path)?;
+            ensure!(
+                (now.size, now.modified_ms) == (file.size, file.modified_ms),
+                "{} changed since the post began; discard the post and post it again",
+                file.name()
+            );
+        }
+        Ok(())
+    }
+}
+
+impl PendingFile {
+    fn read(path: &Path) -> Result<Self> {
+        let meta =
+            std::fs::metadata(path).with_context(|| format!("reading {}", path.display()))?;
+        let modified_ms = meta
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+            .map_or(0, |d| d.as_millis() as u64);
+        Ok(Self {
+            path: path.to_path_buf(),
+            size: meta.len(),
+            modified_ms,
+        })
+    }
+
+    fn name(&self) -> String {
+        self.path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default()
+    }
+}
+
+/// How a post is getting on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PostProgress {
+    /// `sent` of `total` bytes have gone to the home node. Once all have,
+    /// the node is preparing the post.
+    Sending { sent: u64, total: u64 },
+    /// Lost contact with the home node; trying again.
+    Waiting,
+}
+
+/// How one try at sending a post ended, short of a broken connection.
+enum Attempt {
+    Posted(ObjectId),
+    /// The node said no, and why.
+    Refused(String),
+}
+
 /// How the device is connected to its home node right now.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConnectionInfo {
@@ -117,6 +252,7 @@ pub struct Client {
     /// so two callers don't dial at once.
     conn: tokio::sync::Mutex<Option<Connection>>,
     media: tokio::sync::OnceCell<MediaServer>,
+    post_give_up: Duration,
 }
 
 impl Client {
@@ -168,6 +304,7 @@ impl Client {
             pairing: Mutex::new(pairing),
             conn: tokio::sync::Mutex::new(None),
             media: tokio::sync::OnceCell::new(),
+            post_give_up: options.post_give_up,
         }))
     }
 
@@ -211,7 +348,7 @@ impl Client {
     pub async fn forget(&self) -> Result<()> {
         self.disconnect().await;
         *self.lock_pairing() = None;
-        for file in ["pairing.json", "feed.json"] {
+        for file in ["pairing.json", "feed.json", PENDING_POST] {
             match std::fs::remove_file(self.dir.join(file)) {
                 Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.into()),
                 _ => {}
@@ -261,54 +398,179 @@ impl Client {
         files: &[PathBuf],
         progress: impl Fn(u64, u64),
     ) -> Result<ObjectId> {
-        let mut uploads = Vec::new();
-        for path in files {
-            let size = std::fs::metadata(path)
-                .with_context(|| format!("reading {}", path.display()))?
-                .len();
-            let name = path
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_default();
-            uploads.push(Upload { name, size });
-        }
-        let total: u64 = uploads.iter().map(|u| u.size).sum();
-        let req = ClientRequest::Post {
-            content,
-            attachments: Vec::new(),
-            uploads: uploads.clone(),
-        };
-        let (mut send, mut recv) = self.send_request(&req).await?;
-
-        let sent = async {
-            let mut done = 0;
-            let mut buf = vec![0u8; 256 * 1024];
-            for (path, upload) in files.iter().zip(&uploads) {
-                let mut file = tokio::fs::File::open(path).await?.take(upload.size);
-                loop {
-                    let n = file.read(&mut buf).await?;
-                    if n == 0 {
-                        break;
-                    }
-                    send.write_all(&buf[..n]).await?;
-                    done += n as u64;
-                    progress(done, total);
-                }
+        self.post_with(content, files, |p| {
+            if let PostProgress::Sending { sent, total } = p {
+                progress(sent, total);
             }
-            anyhow::ensure!(done == total, "a file got shorter while it was being sent");
+        })
+        .await
+    }
+
+    /// Publishes a post with files from this device, carrying on where it
+    /// stopped after a broken connection, until `ClientOptions::post_give_up`
+    /// passes without contact with the home node. The post is saved first and
+    /// kept until the node publishes it, so if this fails, or the app
+    /// stops, `continue_post` picks it up. Replaces any post still pending.
+    pub async fn post_with(
+        &self,
+        content: String,
+        files: &[PathBuf],
+        progress: impl Fn(PostProgress),
+    ) -> Result<ObjectId> {
+        let pending = PendingPost::new(content, files)?;
+        write_json(&self.dir.join(PENDING_POST), &pending)?;
+        self.send_post(&pending, true, progress).await
+    }
+
+    /// The post still on its way to the home node, if any: one that failed
+    /// or was interrupted by the app stopping.
+    pub fn pending_post(&self) -> Option<PendingPost> {
+        read_json(&self.dir.join(PENDING_POST)).ok().flatten()
+    }
+
+    /// Carries on with the pending post where it stopped.
+    pub async fn continue_post(&self, progress: impl Fn(PostProgress)) -> Result<ObjectId> {
+        let pending = self
+            .pending_post()
+            .context("no post is waiting to be sent")?;
+        self.send_post(&pending, false, progress).await
+    }
+
+    /// Forgets the pending post on this device, and asks the home node to
+    /// drop what it has of it if the node can be reached (otherwise the
+    /// node drops it within a day). Fails with the node's reason if the
+    /// post is already being prepared or was published.
+    pub async fn discard_post(&self) -> Result<()> {
+        let Some(pending) = self.pending_post() else {
+            return Ok(());
+        };
+        let req = ClientRequest::CancelUpload {
+            upload: pending.upload,
+        };
+        let reply = async {
+            let (mut send, mut recv) = self.send_request(&req).await?;
             send.finish()?;
-            anyhow::Ok(())
+            read_reply(&mut recv, REPLY_TIMEOUT).await
         }
         .await;
+        std::fs::remove_file(self.dir.join(PENDING_POST))?;
+        match reply {
+            Ok(ClientResponse::Error { message }) => bail!(message),
+            Ok(_) => Ok(()),
+            Err(e) => {
+                debug!("couldn't tell the home node to drop the post: {e:#}");
+                Ok(())
+            }
+        }
+    }
+
+    /// Sends a pending post until the node publishes or refuses it, or
+    /// there's no contact for `post_give_up`. The first try of a new post
+    /// is a `Post`; later ones are `ResumeUpload`s.
+    async fn send_post(
+        &self,
+        pending: &PendingPost,
+        mut first: bool,
+        progress: impl Fn(PostProgress),
+    ) -> Result<ObjectId> {
+        let mut lost_since: Option<Instant> = None;
+        let mut tries = 0;
+        loop {
+            if !first {
+                pending.check_files()?;
+            }
+            let mut contact = false;
+            let tried = Instant::now();
+            let attempt = self.try_post(pending, first, &progress, &mut contact).await;
+            if contact {
+                lost_since = None;
+                tries = 0;
+            }
+            let e = match attempt {
+                Ok(Attempt::Posted(id)) => {
+                    std::fs::remove_file(self.dir.join(PENDING_POST)).ok();
+                    return Ok(id);
+                }
+                Ok(Attempt::Refused(message)) => bail!(message),
+                Err(e) => e,
+            };
+            debug!("post interrupted, trying again: {e:#}");
+            // The next try dials again, in case this connection is dead.
+            self.disconnect().await;
+            // Without contact since this try began, or since it broke.
+            let since = *lost_since.get_or_insert(if contact { Instant::now() } else { tried });
+            if since.elapsed() >= self.post_give_up {
+                return Err(e.context(
+                    "no contact with your home node for a while; the post is kept, to carry on later",
+                ));
+            }
+            progress(PostProgress::Waiting);
+            tokio::time::sleep(POST_RETRY_WAITS[tries.min(POST_RETRY_WAITS.len() - 1)]).await;
+            tries += 1;
+            first = false;
+        }
+    }
+
+    /// One try at sending a post. An `Err` is a broken connection, worth
+    /// another try. `contact` is set once the node is heard from or bytes
+    /// go out.
+    async fn try_post(
+        &self,
+        pending: &PendingPost,
+        first: bool,
+        progress: &impl Fn(PostProgress),
+        contact: &mut bool,
+    ) -> Result<Attempt> {
+        let req = if first {
+            ClientRequest::Post {
+                content: pending.content.clone(),
+                attachments: Vec::new(),
+                uploads: pending.uploads(),
+                upload: Some(pending.upload),
+            }
+        } else {
+            ClientRequest::ResumeUpload {
+                upload: pending.upload,
+                content: pending.content.clone(),
+                uploads: pending.uploads(),
+            }
+        };
+        let (mut send, mut recv) = self.send_request(&req).await?;
+        let from = if first {
+            0
+        } else {
+            let reply = read_reply(&mut recv, REPLY_TIMEOUT).await?;
+            *contact = true;
+            match reply {
+                ClientResponse::Resume { received } => received,
+                ClientResponse::Posted { id } => return Ok(Attempt::Posted(id)),
+                ClientResponse::Error { message } => return Ok(Attempt::Refused(message)),
+                other => {
+                    let message = format!("unexpected reply to ResumeUpload: {other:?}");
+                    return Ok(Attempt::Refused(message));
+                }
+            }
+        };
+        progress(PostProgress::Sending {
+            sent: from,
+            total: pending.total(),
+        });
+        let sent = send_files(pending, from, &mut send, progress, contact).await;
         // If the node refuses the post part way, it stops reading and its
         // reply says why, so read the reply even when sending failed.
-        let reply = read_reply(&mut recv, POST_REPLY_TIMEOUT).await;
-        match (sent, reply) {
-            (_, Ok(ClientResponse::Posted { id })) => Ok(id),
-            (_, Ok(ClientResponse::Error { message })) => bail!(message),
+        let wait = if sent.is_ok() {
+            POST_REPLY_TIMEOUT
+        } else {
+            REFUSAL_WAIT
+        };
+        match (sent, read_reply(&mut recv, wait).await) {
+            (_, Ok(ClientResponse::Posted { id })) => Ok(Attempt::Posted(id)),
+            (_, Ok(ClientResponse::Error { message })) => Ok(Attempt::Refused(message)),
             (Err(e), _) => Err(e.context("sending files to the home node")),
             (Ok(()), Err(e)) => Err(e),
-            (Ok(()), Ok(other)) => bail!("unexpected reply to Post: {other:?}"),
+            (Ok(()), Ok(other)) => Ok(Attempt::Refused(format!(
+                "unexpected reply to Post: {other:?}"
+            ))),
         }
     }
 
@@ -446,6 +708,49 @@ impl Client {
     fn lock_pairing(&self) -> std::sync::MutexGuard<'_, Option<Pairing>> {
         self.pairing.lock().unwrap_or_else(|e| e.into_inner())
     }
+}
+
+/// Sends a pending post's files from byte `from` on, counting them back to
+/// back, then finishes the stream. Fails if the bytes stop moving for
+/// `POST_STALL`.
+async fn send_files(
+    pending: &PendingPost,
+    from: u64,
+    send: &mut SendStream,
+    progress: &impl Fn(PostProgress),
+    contact: &mut bool,
+) -> Result<()> {
+    let total = pending.total();
+    let mut done = from;
+    let mut start = 0;
+    let mut buf = vec![0u8; 256 * 1024];
+    for file in &pending.files {
+        let end = start + file.size;
+        if from < end {
+            let skip = from.saturating_sub(start);
+            let mut f = tokio::fs::File::open(&file.path)
+                .await
+                .with_context(|| format!("reading {}", file.path.display()))?;
+            f.seek(SeekFrom::Start(skip)).await?;
+            let mut f = f.take(file.size - skip);
+            loop {
+                let n = f.read(&mut buf).await?;
+                if n == 0 {
+                    break;
+                }
+                tokio::time::timeout(POST_STALL, send.write_all(&buf[..n]))
+                    .await
+                    .context("the upload stopped moving")??;
+                *contact = true;
+                done += n as u64;
+                progress(PostProgress::Sending { sent: done, total });
+            }
+        }
+        start = end;
+    }
+    ensure!(done == total, "a file got shorter while it was being sent");
+    send.finish()?;
+    Ok(())
 }
 
 async fn request_on(

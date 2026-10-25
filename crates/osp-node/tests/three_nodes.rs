@@ -130,6 +130,7 @@ async fn reshared_media_survives_origin_going_offline() {
             content: "first light".into(),
             attachments: vec![clip],
             uploads: vec![],
+            upload: None,
         },
     )
     .await
@@ -255,6 +256,7 @@ async fn each_node_records_the_nodes_it_deals_with() {
             content: "first light".into(),
             attachments: vec![clip],
             uploads: vec![],
+            upload: None,
         },
     )
     .await;
@@ -381,7 +383,8 @@ async fn tampered_or_unknown_requests_fail_cleanly() {
         node.handle(ClientRequest::Post {
             content: "  ".into(),
             attachments: vec![],
-            uploads: vec![]
+            uploads: vec![],
+            upload: None,
         })
         .await,
         ClientResponse::Error { .. }

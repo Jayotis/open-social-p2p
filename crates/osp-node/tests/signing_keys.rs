@@ -638,6 +638,7 @@ async fn post(node: &Node, text: &str) {
         content: text.into(),
         attachments: vec![],
         uploads: vec![],
+        upload: None,
     };
     call(node, req).await;
 }

@@ -127,6 +127,7 @@ async fn post_text(node: &Node, text: &str) -> ObjectId {
         content: text.into(),
         attachments: vec![],
         uploads: vec![],
+        upload: None,
     };
     match call(node, post).await {
         ClientResponse::Posted { id } => id,
@@ -156,6 +157,7 @@ async fn post_photo(node: &Node, dir: &Path, small: bool) -> (ObjectId, Attachme
         content: "a photo".into(),
         attachments: vec![photo],
         uploads: vec![],
+        upload: None,
     };
     let ClientResponse::Posted { id } = call(node, post).await else {
         panic!("not published");

@@ -2,10 +2,11 @@
 //! command-line tool over a Unix socket, and paired phones over
 //! `osp/client/0` (ADR 0008). Same framing as the social protocol.
 //!
-//! Each request gets one reply frame. Two requests also carry raw bytes on
+//! Each request gets one reply frame. Three requests also carry raw bytes on
 //! the same stream, and are only accepted over `osp/client/0`: a `Post` with
-//! `uploads` (the device sends the files after its request) and `ReadBlob`
-//! (the node sends the bytes after its reply).
+//! `uploads` (the device sends the files after its request), `ResumeUpload`
+//! (the device sends the rest of them after a `Resume` reply, then gets a
+//! second reply) and `ReadBlob` (the node sends the bytes after its reply).
 
 use std::path::PathBuf;
 
@@ -44,12 +45,18 @@ pub enum ClientRequest {
     /// accepted only from the local socket. `uploads` come from a device:
     /// their bytes follow this request on the same stream, back to back, in
     /// order. Either way the node transcodes them before publishing.
+    ///
+    /// `upload` names a device's upload, so that after a broken connection
+    /// it can carry on with `ResumeUpload` instead of starting over. A node
+    /// publishes each upload at most once.
     Post {
         content: String,
         #[serde(default)]
         attachments: Vec<PathBuf>,
         #[serde(default)]
         uploads: Vec<Upload>,
+        #[serde(default)]
+        upload: Option<UploadId>,
     },
     Feed {
         #[serde(default = "default_feed_limit")]
@@ -100,6 +107,23 @@ pub enum ClientRequest {
         #[serde(default)]
         len: Option<u64>,
     },
+    /// Carry on with an upload after a broken connection, or start it if the
+    /// node doesn't know it (`osp/client/0` only). Repeats the post's text
+    /// and files, so the device never needs to know whether its `Post`
+    /// arrived. A `Resume` reply says how many bytes the node has; the
+    /// device sends the rest, counting the files back to back, and then gets
+    /// the reply a `Post` gets. If the upload was published already, the
+    /// first reply is `Posted`.
+    ResumeUpload {
+        upload: UploadId,
+        content: String,
+        uploads: Vec<Upload>,
+    },
+    /// Drop an unfinished upload and the bytes the node holds of it
+    /// (`osp/client/0` only).
+    CancelUpload {
+        upload: UploadId,
+    },
     /// Write an encrypted backup of this identity to a file on the home
     /// node (local socket only, ADR 0009). With `media`, it includes the
     /// media of its own posts.
@@ -115,8 +139,13 @@ fn default_feed_limit() -> u32 {
     50
 }
 
+crate::types::hex_id! {
+    /// Names one upload from a device: 32 random bytes the device picks.
+    UploadId
+}
+
 /// A file a device sends with a `Post`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Upload {
     /// The file's name on the device; only its extension is used.
     pub name: String,
@@ -165,6 +194,11 @@ pub enum ClientResponse {
     /// The blob's total size; the requested bytes follow.
     Blob {
         size: u64,
+    },
+    /// The node has the first `received` bytes of an upload; the device
+    /// sends the rest (`ResumeUpload`).
+    Resume {
+        received: u64,
     },
     BackedUp {
         path: PathBuf,

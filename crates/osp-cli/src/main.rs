@@ -264,6 +264,7 @@ async fn main() -> Result<()> {
                 .map(|p| p.canonicalize().with_context(|| format!("{}", p.display())))
                 .collect::<Result<_>>()?,
             uploads: Vec::new(),
+            upload: None,
         },
         Command::Feed { limit } => ClientRequest::Feed { limit },
         Command::Show { id } => ClientRequest::Show { id },
@@ -721,6 +722,7 @@ fn print(resp: ClientResponse, json: bool) -> Result<()> {
         ClientResponse::Peers { peers } => print_peers(&peers),
         ClientResponse::Paired { name, .. } => println!("Paired with {name}'s node."),
         ClientResponse::Blob { size: bytes } => println!("{}", size(bytes)),
+        ClientResponse::Resume { received } => println!("{} received", size(received)),
         ClientResponse::BackedUp { path, info } => {
             println!("Wrote {} ({}):", path.display(), size(info.bytes));
             println!(

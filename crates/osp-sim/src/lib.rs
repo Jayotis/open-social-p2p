@@ -250,6 +250,7 @@ pub async fn run(s: &Scenario) -> Result<Report> {
             content: "B8 test video".into(),
             attachments: vec![source],
             uploads: vec![],
+            upload: None,
         },
     )
     .await?

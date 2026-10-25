@@ -140,6 +140,7 @@ async fn a_relay_only_node_has_no_ip_sockets_and_is_reached_through_its_relay() 
             content: "only through the relay".into(),
             attachments: vec![],
             uploads: vec![],
+            upload: None,
         },
     )
     .await;
