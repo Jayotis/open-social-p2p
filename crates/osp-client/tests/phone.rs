@@ -371,16 +371,25 @@ async fn a_video_the_node_is_still_fetching_plays_as_it_arrives() {
     }
 }
 
-/// Slow: the node tries the author's for a while before it gives up.
+/// The phone is told soon: the node asks Alice's node who has a copy (3 s),
+/// tries to reach it (10 s) and asks again (3 s), but doesn't try it twice.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_video_nobody_can_send_fails_with_the_reason() {
+async fn a_video_nobody_can_send_fails_soon_with_the_reason() {
     let dir = tempfile::tempdir().unwrap();
     let (alice, video, bob, phone) = video_not_on_the_phones_node(dir.path()).await;
     alice.shutdown().await.unwrap();
+    let started = Instant::now();
     let err = phone.wait_for_media(&video.blob).await.unwrap_err();
     assert!(
         err.to_string().contains("no provider could send it"),
         "{err:#}"
+    );
+    // 16 s. Trying Alice's node again would add 10 s, and waiting for its
+    // answer as long as a sync does, 17 s more (it took 43 s before).
+    assert!(
+        started.elapsed() < Duration::from_secs(21),
+        "{:?}",
+        started.elapsed()
     );
     phone.shutdown().await;
     bob.shutdown().await.unwrap();
