@@ -49,7 +49,7 @@ Design decisions are recorded in [docs/decisions/](docs/decisions/). The first p
 Selected for the Stage 1 prototype (see the [decision records](docs/decisions/)):
 
 - **Rust** home node built on **iroh** (peer connections by public key, hole punching, relay fallback) and **iroh-blobs** (BLAKE3-verified content transfer).
-- **ffmpeg** for transcoding to a low-bitrate 720p profile.
+- **ffmpeg** for transcoding to a low-bitrate 720p profile, and **libheif** for reading iPhone photos.
 - **Flutter** for the Android app (iOS later), calling the same Rust code through `flutter_rust_bridge`.
 
 Still to evaluate:
@@ -59,7 +59,7 @@ Still to evaluate:
 
 ## Building the prototype
 
-Requirements: Rust (stable) and ffmpeg.
+Requirements: Rust (stable), ffmpeg, and libheif-examples for iPhone photos (HEIC).
 
 ```sh
 cargo build
