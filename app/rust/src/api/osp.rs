@@ -3,7 +3,11 @@
 //! hand to Dart. Byte counts are `i64` because Dart has no unsigned 64-bit
 //! integers.
 
-use std::{path::PathBuf, sync::Arc};
+use std::{
+    future::Future,
+    path::PathBuf,
+    sync::{Arc, Mutex},
+};
 
 use anyhow::{bail, Result};
 use flutter_rust_bridge::frb;
@@ -13,8 +17,9 @@ use osp_client::{
         rpc::{ClientRequest, ClientResponse, FeedItem},
         BlobHash, MediaKind, ObjectId,
     },
-    Client, ClientOptions, Pairing,
+    Client, ClientOptions, NoContact, Pairing,
 };
+use tokio::sync::oneshot;
 
 use crate::{frb_generated::StreamSink, logging};
 
@@ -32,6 +37,8 @@ pub fn init_app() {
 pub struct OspApp {
     client: Arc<Client>,
     dir: PathBuf,
+    /// Stops the post being sent, if any (`discard_post`).
+    stop_post: Mutex<Option<oneshot::Sender<()>>>,
 }
 
 /// The home node this phone is paired with.
@@ -97,6 +104,8 @@ pub struct SavedFeed {
 pub enum PostStage {
     /// Sending files to the node.
     Sending,
+    /// Lost contact with the node; trying again.
+    Waiting,
     /// The node is transcoding and publishing.
     Processing,
     Done,
@@ -110,6 +119,26 @@ pub struct PostProgress {
     pub total: i64,
     /// The new post's ID when done, or what went wrong.
     pub message: Option<String>,
+    /// When failed: the post is kept on the phone, to try again
+    /// (`continue_post`) or discard.
+    pub kept: bool,
+    /// When failed: it gave up after a long time without contact with the
+    /// node.
+    pub no_contact: bool,
+}
+
+/// A post that didn't finish sending, kept on the phone until the node
+/// publishes it or the owner discards it.
+pub struct UnsentPost {
+    pub text: String,
+    pub files: Vec<UnsentFile>,
+    /// When it was started (RFC 3339).
+    pub started: String,
+}
+
+pub struct UnsentFile {
+    pub path: String,
+    pub size: i64,
 }
 
 impl OspApp {
@@ -121,7 +150,11 @@ impl OspApp {
         tracing::info!("app starting");
         let key = device_key_from_hex(&device_key)?;
         let client = Client::open_with_key(&dir, key, ClientOptions::default()).await?;
-        Ok(OspApp { client, dir })
+        Ok(OspApp {
+            client,
+            dir,
+            stop_post: Mutex::new(None),
+        })
     }
 
     #[frb(sync)]
@@ -200,6 +233,8 @@ impl OspApp {
     }
 
     /// Posts text with photos or videos from this phone, reporting progress.
+    /// It carries on after short breaks in the connection; if it fails, the
+    /// post is usually kept (`pending_post`) to try again.
     pub async fn post(
         &self,
         text: String,
@@ -207,42 +242,49 @@ impl OspApp {
         sink: StreamSink<PostProgress>,
     ) -> Result<()> {
         let files: Vec<PathBuf> = files.into_iter().map(PathBuf::from).collect();
-        let progress = sink.clone();
-        let result = self
-            .client
-            .post(text, &files, move |sent, total| {
-                let stage = if sent < total {
-                    PostStage::Sending
-                } else {
-                    PostStage::Processing
-                };
-                let _ = progress.add(PostProgress {
-                    stage,
-                    sent: sent as i64,
-                    total: total as i64,
-                    message: None,
-                });
-            })
-            .await;
-        let last = match result {
-            Ok(id) => PostProgress {
-                stage: PostStage::Done,
-                sent: 0,
-                total: 0,
-                message: Some(id.to_string()),
-            },
-            Err(e) => {
-                tracing::warn!("post failed: {e:#}");
-                PostProgress {
-                    stage: PostStage::Failed,
-                    sent: 0,
-                    total: 0,
-                    message: Some(format!("{e:#}")),
-                }
-            }
-        };
-        let _ = sink.add(last);
+        let sending = self.client.post_with(text, &files, report_to(sink.clone()));
+        self.run_post(sending, sink).await;
         Ok(())
+    }
+
+    /// The post that didn't finish sending, if any: one that failed, or was
+    /// stopped when the app was.
+    #[frb(sync)]
+    pub fn pending_post(&self) -> Option<UnsentPost> {
+        self.client.pending_post().map(|p| UnsentPost {
+            text: p.content,
+            files: p
+                .files
+                .into_iter()
+                .map(|f| UnsentFile {
+                    path: f.path.to_string_lossy().into_owned(),
+                    size: f.size as i64,
+                })
+                .collect(),
+            started: p.started,
+        })
+    }
+
+    /// Carries on sending the pending post where it stopped.
+    pub async fn continue_post(&self, sink: StreamSink<PostProgress>) -> Result<()> {
+        let sending = self.client.continue_post(report_to(sink.clone()));
+        self.run_post(sending, sink).await;
+        Ok(())
+    }
+
+    /// Stops the post being sent, if any, and discards the pending post on
+    /// the phone and the node. Fails with the node's reason if it's too
+    /// late: the node is preparing the post, or published it.
+    pub async fn discard_post(&self) -> Result<()> {
+        let stop = self
+            .stop_post
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take();
+        if let Some(stop) = stop {
+            let _ = stop.send(());
+        }
+        self.client.discard_post().await
     }
 
     /// Reshares a post; with `host`, the node also keeps and serves its media.
@@ -293,6 +335,65 @@ impl OspApp {
     #[frb(sync)]
     pub fn recent_log(&self, lines: u32) -> String {
         logging::tail(&self.dir, lines as usize)
+    }
+
+    /// Runs a post until it ends, and reports how, unless `discard_post`
+    /// stops it first.
+    async fn run_post(
+        &self,
+        sending: impl Future<Output = Result<ObjectId>>,
+        sink: StreamSink<PostProgress>,
+    ) {
+        let (stop, stopped) = oneshot::channel();
+        *self.stop_post.lock().unwrap_or_else(|e| e.into_inner()) = Some(stop);
+        let result = tokio::select! {
+            result = sending => result,
+            // Discarded; `discard_post` says how that went.
+            Ok(()) = stopped => return,
+        };
+        let last = match result {
+            Ok(id) => PostProgress {
+                message: Some(id.to_string()),
+                ..progress(PostStage::Done, 0, 0)
+            },
+            Err(e) => {
+                tracing::warn!("post failed: {e:#}");
+                PostProgress {
+                    message: Some(format!("{e:#}")),
+                    kept: self.client.pending_post().is_some(),
+                    no_contact: e.downcast_ref::<NoContact>().is_some(),
+                    ..progress(PostStage::Failed, 0, 0)
+                }
+            }
+        };
+        let _ = sink.add(last);
+    }
+}
+
+/// Passes a post's progress on to Dart.
+fn report_to(sink: StreamSink<PostProgress>) -> impl Fn(osp_client::PostProgress) {
+    move |p| {
+        let report = match p {
+            osp_client::PostProgress::Sending { sent, total } if sent < total => {
+                progress(PostStage::Sending, sent, total)
+            }
+            osp_client::PostProgress::Sending { sent, total } => {
+                progress(PostStage::Processing, sent, total)
+            }
+            osp_client::PostProgress::Waiting => progress(PostStage::Waiting, 0, 0),
+        };
+        let _ = sink.add(report);
+    }
+}
+
+fn progress(stage: PostStage, sent: u64, total: u64) -> PostProgress {
+    PostProgress {
+        stage,
+        sent: sent as i64,
+        total: total as i64,
+        message: None,
+        kept: false,
+        no_contact: false,
     }
 }
 

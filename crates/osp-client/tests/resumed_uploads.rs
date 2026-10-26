@@ -14,7 +14,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use osp_client::{Client, ClientOptions, Pairing, PostProgress};
+use osp_client::{Client, ClientOptions, NoContact, Pairing, PostProgress};
 use osp_node::{Config, Node};
 use osp_proto::rpc::{ClientRequest, ClientResponse, Upload, UploadId};
 
@@ -311,8 +311,15 @@ async fn a_post_gives_up_when_the_node_stays_away_and_is_kept() {
         .await
         .unwrap_err();
     assert!(err.to_string().contains("no contact"), "{err:#}");
+    assert!(err.downcast_ref::<NoContact>().is_some(), "{err:#}");
     assert!(started.elapsed() < Duration::from_secs(60));
     assert!(phone.pending_post().is_some(), "kept, to carry on later");
+
+    // Discarding it doesn't wait long for a node that isn't there.
+    let started = Instant::now();
+    phone.discard_post().await.unwrap();
+    assert!(started.elapsed() < Duration::from_secs(15));
+    assert!(phone.pending_post().is_none());
 
     phone.shutdown().await;
 }
@@ -588,6 +595,15 @@ async fn a_pending_post_can_be_discarded_expired_or_stopped_by_a_changed_file() 
         phone.pending_post().is_some(),
         "kept, for the owner to discard"
     );
+
+    // So does one that's gone.
+    std::fs::remove_file(&clip).unwrap();
+    let err = phone.continue_post(|_| {}).await.unwrap_err();
+    assert!(
+        err.to_string().contains("can't be read any more"),
+        "{err:#}"
+    );
+    assert!(phone.pending_post().is_some());
 
     phone.shutdown().await;
     node.shutdown().await.unwrap();

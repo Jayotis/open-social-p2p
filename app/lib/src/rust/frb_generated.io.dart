@@ -67,6 +67,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   int dco_decode_box_autoadd_u_32(dynamic raw);
 
   @protected
+  UnsentPost dco_decode_box_autoadd_unsent_post(dynamic raw);
+
+  @protected
   int dco_decode_i_32(dynamic raw);
 
   @protected
@@ -83,6 +86,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   Uint8List dco_decode_list_prim_u_8_strict(dynamic raw);
+
+  @protected
+  List<UnsentFile> dco_decode_list_unsent_file(dynamic raw);
 
   @protected
   Media dco_decode_media(dynamic raw);
@@ -109,6 +115,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   int? dco_decode_opt_box_autoadd_u_32(dynamic raw);
 
   @protected
+  UnsentPost? dco_decode_opt_box_autoadd_unsent_post(dynamic raw);
+
+  @protected
   Post dco_decode_post(dynamic raw);
 
   @protected
@@ -128,6 +137,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void dco_decode_unit(dynamic raw);
+
+  @protected
+  UnsentFile dco_decode_unsent_file(dynamic raw);
+
+  @protected
+  UnsentPost dco_decode_unsent_post(dynamic raw);
 
   @protected
   BigInt dco_decode_usize(dynamic raw);
@@ -177,6 +192,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   int sse_decode_box_autoadd_u_32(SseDeserializer deserializer);
 
   @protected
+  UnsentPost sse_decode_box_autoadd_unsent_post(SseDeserializer deserializer);
+
+  @protected
   int sse_decode_i_32(SseDeserializer deserializer);
 
   @protected
@@ -193,6 +211,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   Uint8List sse_decode_list_prim_u_8_strict(SseDeserializer deserializer);
+
+  @protected
+  List<UnsentFile> sse_decode_list_unsent_file(SseDeserializer deserializer);
 
   @protected
   Media sse_decode_media(SseDeserializer deserializer);
@@ -221,6 +242,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   int? sse_decode_opt_box_autoadd_u_32(SseDeserializer deserializer);
 
   @protected
+  UnsentPost? sse_decode_opt_box_autoadd_unsent_post(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   Post sse_decode_post(SseDeserializer deserializer);
 
   @protected
@@ -240,6 +266,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_decode_unit(SseDeserializer deserializer);
+
+  @protected
+  UnsentFile sse_decode_unsent_file(SseDeserializer deserializer);
+
+  @protected
+  UnsentPost sse_decode_unsent_post(SseDeserializer deserializer);
 
   @protected
   BigInt sse_decode_usize(SseDeserializer deserializer);
@@ -305,6 +337,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_encode_box_autoadd_u_32(int self, SseSerializer serializer);
 
   @protected
+  void sse_encode_box_autoadd_unsent_post(
+    UnsentPost self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_i_32(int self, SseSerializer serializer);
 
   @protected
@@ -322,6 +360,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_list_prim_u_8_strict(
     Uint8List self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_unsent_file(
+    List<UnsentFile> self,
     SseSerializer serializer,
   );
 
@@ -359,6 +403,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_encode_opt_box_autoadd_u_32(int? self, SseSerializer serializer);
 
   @protected
+  void sse_encode_opt_box_autoadd_unsent_post(
+    UnsentPost? self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_post(Post self, SseSerializer serializer);
 
   @protected
@@ -378,6 +428,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_unit(void self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_unsent_file(UnsentFile self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_unsent_post(UnsentPost self, SseSerializer serializer);
 
   @protected
   void sse_encode_usize(BigInt self, SseSerializer serializer);
