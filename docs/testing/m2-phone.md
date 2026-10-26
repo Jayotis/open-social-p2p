@@ -70,6 +70,12 @@ $P forget
 | 4 | Any | Stop the node (`systemctl --user stop osp`) | The phone says the node is unreachable and shows the saved feed |
 | 5 | Any | `osp unpair` the phone | Its next request fails with "isn't paired"; pairing again works |
 | 6 | Any | Reboot the node's machine, don't log in | The phone reaches the node again within a minute or two of boot |
+| 7 | Home Wi-Fi | Post a large video, and part way turn Wi-Fi off for about 30 s, then on | "Waiting for your home node…", then sending carries on from where it stopped; one post. The node's log says `resuming an upload at N of M bytes` |
+| 8 | Home Wi-Fi | Post a large video, and part way restart the node (`systemctl --user restart osp`) | As in 7 |
+| 9 | Home Wi-Fi | Post a large video, switch to another app, and lock the phone | The notification shows the progress; the post is published |
+| 10 | Home Wi-Fi | Post a large video, and part way force-stop the app (Settings → Apps), then open it | The feed says "A post didn't finish sending"; Continue carries on from where it stopped; one post |
+| 11 | Home Wi-Fi | Post a large video, and once it says the node is preparing it, turn Wi-Fi off for about 30 s | One post, and nothing sent twice |
+| 12 | Any | Post a large video and press Cancel part way | "Post discarded."; nothing published, and the node's `uploads/` folder is empty |
 
 ## Results to record
 
@@ -87,8 +93,8 @@ Results here are public, so describe networks in general terms. Keep details of 
 ## Known limitations
 
 - A paired device has full access until unpaired; no read-only devices.
-- The phone uploads the original file; there is no phone-side transcoding. An interrupted upload carries on where it stopped ([ADR 0008](../decisions/0008-device-pairing-and-client-protocol.md)), but the app doesn't yet offer to carry on after it restarts.
+- The phone uploads the original file; there is no phone-side transcoding. An interrupted upload carries on where it stopped ([ADR 0008](../decisions/0008-device-pairing-and-client-protocol.md)), for up to a day.
 - Media the node hasn't fetched yet is downloaded in full by the node before the phone gets the first byte.
 - The app doesn't keep media on the phone: when the node is unreachable, the saved feed shows text and layout, but no pictures or video.
-- Android may stop the app in the background, which interrupts an upload. Keep the app open until the post is sent.
+- Android may still stop the app in the background (some phones' battery savers do), and swiping the app away from the recent apps stops its upload. The post then waits in the feed until you press Continue.
 - The app looks up DNS with public resolvers rather than the phone's own settings. It still works, but networks that block outside DNS will break relay connections.

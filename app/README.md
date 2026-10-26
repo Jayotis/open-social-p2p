@@ -8,6 +8,8 @@ All networking is Rust: [`crates/osp-client`](../crates/osp-client/), reached th
 | --- | --- |
 | `lib/node.dart` | The app's view of its home node: pairing, reachability, health, feed |
 | `lib/screens/`, `lib/widgets/` | The UI |
+| `lib/uploads.dart` | Keeps a post's files in the app's own folder until the node has published it |
+| `lib/background_upload.dart`, `android/.../UploadService.kt` | Keeps a post sending in the background, with a notification |
 | `lib/src/rust/` | Generated Dart bindings (don't edit) |
 | `rust/src/api/osp.rs` | The functions Dart calls |
 | `rust/src/frb_generated.rs` | Generated Rust side of the bindings (don't edit) |
@@ -76,4 +78,5 @@ The Rust side is checked with the rest of the workspace (`cargo clippy`, `cargo 
 
 - The device key, the pairing and the saved feed live in the app's private storage. Android backups are turned off, so the key never leaves the phone; a new phone pairs again.
 - The video player loads media from `http://127.0.0.1:<port>/<token>/...`, served by the Rust side from the home node. The network security config allows plain HTTP only to 127.0.0.1.
+- A post being sent keeps the app running in the background, with a notification showing its progress. If the app stops anyway, the feed offers to carry on with the post when the app is next opened ([ADR 0008](../docs/decisions/0008-device-pairing-and-client-protocol.md)).
 - The app's log is under *Home node status → Diagnostics log*.
