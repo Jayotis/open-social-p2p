@@ -18,8 +18,11 @@ The home node transcodes everything it publishes with ffmpeg (run as a separate 
 - AAC, 96 kbit/s, stereo, 48 kHz.
 - MP4 with `-movflags +faststart`, so playback can start before the download finishes.
 - Maximum duration 10 minutes by default (configurable per node).
+- HDR video, HLG as iPhones record by default or PQ (HDR10), is tone-mapped to SDR BT.709 (`zscale` and `tonemap`, Hable's curve) after scaling. Without it, its colours come out washed out. It makes the transcode about 1.7 times as long: 8.2 s instead of 4.9 s for an 18-second 1080p iPhone clip on a desktop.
 
-**Images:** WebP, at most 2048 px on the long side, quality 80.
+**Images:** WebP, at most 2048 px on the long side, quality 80, turned upright as the photo says (EXIF orientation, which ffmpeg applies).
+
+**HEIC photos,** as iPhones take them, are decoded first with `heif-convert` from libheif, into a PNG that ffmpeg transcodes as above. ffmpeg can't read them whole: iPhones store a photo as a grid of 512-pixel tiles, and ffmpeg 7.1 shows one tile as a 1-frame video, while ffmpeg 6.1 can't open the file at all. libheif applies the photo's rotation. The decoded PNG keeps the photo's metadata, so it is deleted as soon as the WebP is made. A file is taken as HEIC from the brands at its start (`heic`, `heix`, `heim` or `heis`, or the general HEIF brand with one of those among its compatible brands); other HEIF files, such as AVIF, are left to ffmpeg.
 
 **Thumbnails:** WebP, 480 px on the long side; for video, taken from about one second in.
 
@@ -43,10 +46,13 @@ The home node transcodes everything it publishes with ffmpeg (run as a separate 
 ## Consequences
 
 - Transcoding uses the home node's CPU; a 10-minute clip can take a few minutes on a modest machine. The node reports progress.
-- ffmpeg becomes a runtime dependency of the home node (packaged with it or installed from the distribution).
+- ffmpeg becomes a runtime dependency of the home node (packaged with it or installed from the distribution). It needs the `zscale` filter (libzimg) for HDR video, as Debian's and Ubuntu's builds have.
+- `heif-convert` (libheif-examples; newer versions also call it `heif-dec`) is needed for HEIC photos. Without it, those photos fail to post, and the node's status says what to install. `heif_convert` under `[media]` in `config.toml` names another program.
+- Photos in a wide colour space, such as Display P3 as iPhones take them, lose their colour profile and look slightly duller. Converting them to sRGB is left for later.
 - Publishing never alters the person's original file.
 
 ## Validation and revisit conditions
 
 - Tests transcode a generated clip and assert the resolution, bitrate cap and absence of metadata.
+- Tests decode a small HEIC made like an iPhone's (a grid of tiles, a rotation, EXIF with a GPS position) and assert the whole picture, upright, with no EXIF left. Others check a rotated JPEG is turned upright and HLG and PQ video come out as BT.709.
 - Revisit when Stage 3 playback testing shows people need higher quality, or when replication capacity makes larger files affordable.

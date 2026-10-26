@@ -4,7 +4,7 @@ How to run the prototype home node by hand, on one machine or across several, an
 
 ## Build
 
-Requirements: Rust (stable) and ffmpeg (`sudo apt install ffmpeg`). ffmpeg is only needed on nodes that post media.
+Requirements: Rust (stable), ffmpeg and libheif-examples (`sudo apt install ffmpeg libheif-examples`). They're only needed on nodes that post media, and libheif-examples only for HEIC photos, as iPhones take them.
 
 ```sh
 cargo build --release      # produces target/release/osp
@@ -147,4 +147,4 @@ Add a row per run. Results here are public, so describe networks in general term
 - No upload rate limits, storage quotas or eviction yet. They came later, in M3 ([ADR 0003](../decisions/0003-native-social-protocol-v0.md)).
 - Media is unavailable when the author's node and every host are offline.
 - Development uses n0's public relays and DNS lookup ([ADR 0002](../decisions/0002-rust-and-iroh.md)).
-- Not yet tested: HDR phone video, rotated photos, very long uploads.
+- Not yet tested: very long uploads. HDR phone video, HEIC photos and rotated photos were handled in M3 ([ADR 0005](../decisions/0005-media-profile-v1.md)).
