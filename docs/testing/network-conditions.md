@@ -1,6 +1,6 @@
 # The follower swarm on slow and flaky connections
 
-**Status:** The home run met every mark on 2026-10-25. The lossy and flaky runs missed the followers' marks the same day: followers whose download took too long gave up and never tried again, as many did in the slow-hosts run. After a fix the same day (`9f72b4f`), every follower got the video in every run: the home and flaky runs met every mark, and the lossy run every mark but 95% of followers within 15 minutes, which took 18 ([results](#results)). The runs and pass marks below were fixed on 2026-10-25, before anything was measured, and the runs after the fix used them unchanged. Changing one later needs a dated note here saying what changed and why.
+**Status:** The home run met every mark on 2026-10-25. The lossy and flaky runs missed the followers' marks the same day: followers whose download took too long gave up and never tried again, as many did in the slow-hosts run. After a fix the same day (`9f72b4f`), every follower got the video in every run: the home and flaky runs met every mark, and the lossy run every mark but 95% of followers within 15 minutes, which took 18 ([results](#results)). Each run is being [repeated](#repeats) to show how much its figures vary. The runs and pass marks below were fixed on 2026-10-25, before anything was measured, and the runs after the fix used them unchanged. Changing one later needs a dated note here saying what changed and why.
 
 The [B8 runs](b8-creator-upload.md) showed the follower swarm sparing a creator with 300 followers, but over loopback: no delay or packet loss, unlimited downloads, every node always reachable, and each node's upload held down by its own upload cap, a setting real nodes leave off. Stage 1 asks for transfers to be measured across fast, slow and unstable peers ([roadmap](../06-roadmap.md)), and [doc 12](../12-peer-reciprocity-and-recognition.md#validation) asks for slow hosts alongside a fast one to be simulated before peers are chosen by what's been measured about them. These runs repeat B8 on a simulated network of home connections.
 
@@ -69,6 +69,12 @@ Each judged run passes when **all** of B8's marks for the swarm hold:
 3. **The creator is spared by latecomers:** it sends them at most **0.1 copies** between them, room for their thumbnails only.
 
 Recorded too, without a pass mark: the latecomers' times, against 14.1 s for half and 23.6 s for all on loopback; busy refusals and failed downloads; and what the network did with packets.
+
+### Repeats
+
+Added on 2026-10-25, before any repeat was run. One run of each leaves open how much a figure varies from run to run, so the runs are repeated: the home run five more times with the fix (`9f72b4f`, [below](#results)) and five times with `8533ea3`, the same code without it; the lossy and flaky runs five more times each, and the slow-hosts run twice more, all with the fix. They run one at a time on the same machine, in rounds of home without the fix, home with it, lossy and flaky, so that both versions of the code share whatever else the machine is doing.
+
+Each repeat is judged on the same marks. A judged run counts as meeting a mark only when every one of its runs, the first included, meets it. The results give how many runs met each mark, and the median and range of each figure.
 
 ## Results
 
