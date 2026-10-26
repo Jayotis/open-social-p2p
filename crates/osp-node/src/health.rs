@@ -43,6 +43,11 @@ impl Core {
                 "{} isn't installed or doesn't run, so posts with photos or videos will fail",
                 self.config.media.ffmpeg
             ));
+        } else if !self.heic_tool {
+            problems.push(format!(
+                "{} isn't installed or doesn't run, so HEIC photos, as iPhones take them, will fail; it comes with libheif-examples",
+                self.config.media.heif_convert
+            ));
         }
         if let Some(free) = disk_free
             && free < LOW_DISK_BYTES
