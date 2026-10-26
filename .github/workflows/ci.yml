@@ -22,24 +22,29 @@ jobs:
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
-      # ffmpeg's packages are kept between runs, so a slow package mirror
-      # only matters when the runner image moves to newer versions of them.
+      # The media tools' packages are kept between runs, so a slow package
+      # mirror only matters when the runner image moves to newer versions.
       - name: Name the runner image
         id: image
         run: echo "version=$ImageOS-$ImageVersion" >> "$GITHUB_OUTPUT"
       - uses: actions/cache@v6
         with:
           path: ~/apt-archives
-          key: ffmpeg-debs-${{ steps.image.outputs.version }}
-          restore-keys: ffmpeg-debs-
-      - name: Install ffmpeg
+          key: media-debs-${{ steps.image.outputs.version }}
+          # Before libheif, the cache held ffmpeg's packages alone.
+          restore-keys: |
+            media-debs-
+            ffmpeg-debs-
+      - name: Install ffmpeg and libheif
         # Package mirrors sometimes hang; fail fast rather than wait for the job limit.
         timeout-minutes: 5
         run: |
           mkdir -p ~/apt-archives/partial
           opts="-o Acquire::Retries=3 -o Dir::Cache::Archives=$HOME/apt-archives"
           sudo apt-get update -o Acquire::Retries=3
-          sudo apt-get install -y --no-install-recommends $opts ffmpeg
+          # libheif's HEVC decoder is only recommended, so it's named here.
+          sudo apt-get install -y --no-install-recommends $opts ffmpeg \
+            libheif-examples libheif-plugin-libde265
           # Drop versions that were replaced, and apt's own files the cache can't read.
           sudo apt-get autoclean $opts
           sudo rm -rf ~/apt-archives/partial ~/apt-archives/lock

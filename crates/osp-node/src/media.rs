@@ -5,6 +5,7 @@
 
 use std::{
     collections::HashMap,
+    io::Read,
     path::{Path, PathBuf},
     process::Stdio,
     sync::atomic::{AtomicU64, Ordering},
@@ -28,6 +29,13 @@ const IMAGE_SCALE: &str =
     "scale=w='min(2048,iw)':h='min(2048,ih)':force_original_aspect_ratio=decrease";
 const THUMB_SCALE: &str =
     "scale=w='min(480,iw)':h='min(480,ih)':force_original_aspect_ratio=decrease";
+/// HDR video, as iPhones record by default, to SDR: without this its colours
+/// come out washed out. In linear light, the Hable curve brings highlights
+/// within SDR's range; then BT.709 colours and 8 bits, as for any video.
+const TONE_MAP: &str = "zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv,format=yuv420p";
+
+/// HEIF brands of photos coded with HEVC: HEIC, as iPhones take them.
+const HEIC_BRANDS: [&[u8]; 4] = [b"heic", b"heix", b"heim", b"heis"];
 
 /// Stop ffprobe if reading a file's details takes longer than this.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(60);
@@ -55,6 +63,10 @@ pub struct Probe {
     pub bit_rate: Option<u64>,
     /// Width and height of the first video stream.
     pub video: Option<(u32, u32)>,
+    /// The first video stream's transfer function, as ffprobe names it:
+    /// `bt709` for ordinary video, `arib-std-b67` (HLG) or `smpte2084`
+    /// (PQ) for HDR.
+    pub transfer: Option<String>,
     pub has_audio: bool,
     /// Every metadata tag, from the container and from each stream.
     pub tags: Vec<(String, String)>,
@@ -65,44 +77,134 @@ impl Probe {
     fn is_still_image(&self) -> bool {
         self.format_name == "image2" || self.format_name.ends_with("_pipe")
     }
+
+    /// HDR video: HLG, as iPhones record, or PQ (HDR10).
+    fn is_hdr(&self) -> bool {
+        matches!(self.transfer.as_deref(), Some("arib-std-b67" | "smpte2084"))
+    }
 }
 
 /// Whether ffmpeg and ffprobe can be run. Without them, posts with media fail.
 pub async fn tools_available(cfg: &MediaConfig) -> bool {
-    for tool in [&cfg.ffmpeg, &cfg.ffprobe] {
-        let ran = Command::new(tool)
-            .arg("-version")
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .await;
-        if !ran.is_ok_and(|status| status.success()) {
-            return false;
-        }
-    }
-    true
+    runs(&cfg.ffmpeg, "-version").await && runs(&cfg.ffprobe, "-version").await
+}
+
+/// Whether heif-convert can be run. Without it, HEIC photos fail.
+pub async fn heic_tool_available(cfg: &MediaConfig) -> bool {
+    runs(&cfg.heif_convert, "--version").await
+}
+
+async fn runs(tool: &str, version_flag: &str) -> bool {
+    let ran = Command::new(tool)
+        .arg(version_flag)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .await;
+    ran.is_ok_and(|status| status.success())
 }
 
 /// Transcodes `input` into a fresh directory under `work_dir`. If that
 /// fails, the directory and whatever ffmpeg left in it are deleted.
 pub async fn transcode(cfg: &MediaConfig, input: &Path, work_dir: &Path) -> Result<Rendition> {
+    let job_dir = new_job_dir(work_dir)?;
+    let result = transcode_into(cfg, input, &job_dir).await;
+    if result.is_err() {
+        let _ = std::fs::remove_dir_all(&job_dir);
+    }
+    result
+}
+
+async fn transcode_into(cfg: &MediaConfig, input: &Path, job_dir: &Path) -> Result<Rendition> {
+    if is_heic(input)? {
+        let decoded = decode_heic(cfg, input, job_dir).await?;
+        let result = transcode_image(cfg, &decoded, job_dir).await;
+        // The decoded photo still has the original's metadata (GPS, say).
+        let _ = std::fs::remove_file(&decoded);
+        return result;
+    }
     let source = probe(cfg, input).await?;
     ensure!(
         source.video.is_some(),
         "{} has no picture; only images and videos can be attached",
         input.display()
     );
-    let job_dir = new_job_dir(work_dir)?;
-    let result = if source.is_still_image() {
-        transcode_image(cfg, input, &job_dir).await
+    if source.is_still_image() {
+        transcode_image(cfg, input, job_dir).await
     } else {
-        transcode_video(cfg, input, &source, &job_dir).await
-    };
-    if result.is_err() {
-        let _ = std::fs::remove_dir_all(&job_dir);
+        transcode_video(cfg, input, &source, job_dir).await
     }
-    result
+}
+
+/// Whether a file is a HEIC photo. ffmpeg can't read those whole: iPhones
+/// store a photo as a grid of tiles, and ffmpeg 7.1 shows one tile as a
+/// 1-frame video, while older versions can't open the file at all.
+fn is_heic(path: &Path) -> Result<bool> {
+    let mut head = Vec::new();
+    std::fs::File::open(path)
+        .and_then(|file| file.take(64).read_to_end(&mut head))
+        .with_context(|| format!("reading {}", path.display()))?;
+    Ok(has_heic_brand(&head))
+}
+
+/// Reads the brands in a file's first box, `ftyp`: its size (4 bytes),
+/// "ftyp", the main brand, a version (4 bytes), then the brands it's also
+/// compatible with. HEIC is the main brand, or the general HEIF brand
+/// (`mif1`, `mif2`) is, with HEIC among the compatible ones. HEIF with
+/// other codings (AVIF, say) and image sequences are left to ffmpeg.
+fn has_heic_brand(head: &[u8]) -> bool {
+    if head.len() < 12 || &head[4..8] != b"ftyp" {
+        return false;
+    }
+    let size = u32::from_be_bytes([head[0], head[1], head[2], head[3]]) as usize;
+    let main = &head[8..12];
+    let (compatible, _) = head
+        .get(16..size.min(head.len()))
+        .unwrap_or_default()
+        .as_chunks::<4>();
+    let general = main == b"mif1" || main == b"mif2";
+    HEIC_BRANDS.contains(&main)
+        || general
+            && compatible
+                .iter()
+                .any(|brand| HEIC_BRANDS.contains(&brand.as_slice()))
+}
+
+/// Decodes a HEIC photo into a PNG that ffmpeg can read: the whole photo,
+/// turned the way it was taken. The PNG keeps the photo's metadata, so it
+/// is deleted once it has been transcoded.
+async fn decode_heic(cfg: &MediaConfig, input: &Path, job_dir: &Path) -> Result<PathBuf> {
+    let out = job_dir.join("decoded.png");
+    let run = Command::new(&cfg.heif_convert)
+        .arg(input)
+        .arg(&out)
+        .stdin(Stdio::null())
+        .kill_on_drop(true)
+        .output();
+    let output = tokio::time::timeout(QUICK_TIMEOUT, run)
+        .await
+        .map_err(|_| {
+            anyhow::anyhow!(
+                "{} took longer than {} s and was stopped",
+                cfg.heif_convert,
+                QUICK_TIMEOUT.as_secs()
+            )
+        })?
+        .with_context(|| {
+            format!(
+                "running {} to read a HEIC photo (is libheif-examples installed?)",
+                cfg.heif_convert
+            )
+        })?;
+    if !output.status.success() {
+        bail!(
+            "{} failed: {}",
+            cfg.heif_convert,
+            last_lines(&output.stderr)
+        );
+    }
+    Ok(out)
 }
 
 async fn transcode_video(
@@ -121,11 +223,17 @@ async fn transcode_video(
         cfg.max_video_secs
     );
     let max_secs = cfg.max_video_secs.to_string();
+    // Scaled first, so tone mapping has fewer pixels to work on.
+    let filters = if source.is_hdr() {
+        format!("{VIDEO_SCALE},{TONE_MAP}")
+    } else {
+        VIDEO_SCALE.to_string()
+    };
     let out = job_dir.join("video.mp4");
     let mut args: Vec<&str> = vec!["-i", path_str(input)?, "-map", "0:v:0", "-map", "0:a:0?"];
     args.extend([
         "-vf",
-        VIDEO_SCALE,
+        &filters,
         "-fpsmax",
         "30",
         "-c:v",
@@ -237,6 +345,7 @@ pub async fn probe(cfg: &MediaConfig, path: &Path) -> Result<Probe> {
         codec_type: Option<String>,
         width: Option<u32>,
         height: Option<u32>,
+        color_transfer: Option<String>,
         #[serde(default)]
         tags: HashMap<String, String>,
     }
@@ -282,11 +391,12 @@ pub async fn probe(cfg: &MediaConfig, path: &Path) -> Result<Probe> {
     let parsed: Output =
         serde_json::from_slice(&output.stdout).context("unexpected ffprobe output")?;
 
-    let video = parsed
+    let first_video = parsed
         .streams
         .iter()
-        .find(|s| s.codec_type.as_deref() == Some("video"))
-        .and_then(|s| Some((s.width?, s.height?)));
+        .find(|s| s.codec_type.as_deref() == Some("video"));
+    let video = first_video.and_then(|s| Some((s.width?, s.height?)));
+    let transfer = first_video.and_then(|s| s.color_transfer.clone());
     let has_audio = parsed
         .streams
         .iter()
@@ -300,6 +410,7 @@ pub async fn probe(cfg: &MediaConfig, path: &Path) -> Result<Probe> {
         duration_secs: parsed.format.duration.and_then(|d| d.parse().ok()),
         bit_rate: parsed.format.bit_rate.and_then(|b| b.parse().ok()),
         video,
+        transfer,
         has_audio,
         tags,
     })
@@ -473,6 +584,134 @@ mod tests {
         assert_eq!(r.media_type, "image/webp");
         assert_eq!(r.width, 2048);
         assert!((1365..=1366).contains(&r.height), "height {}", r.height);
+    }
+
+    /// The colour of one pixel of an image, as red, green and blue.
+    async fn pixel(image: &Path, x: u32, y: u32) -> [u8; 3] {
+        let out = Command::new("ffmpeg")
+            .args(["-hide_banner", "-loglevel", "error", "-i"])
+            .arg(image)
+            .args(["-vf", &format!("format=rgb24,crop=1:1:{x}:{y}")])
+            .args(["-frames:v", "1"])
+            .args(["-f", "rawvideo", "-pix_fmt", "rgb24", "-"])
+            .output()
+            .await
+            .unwrap();
+        assert!(out.status.success());
+        out.stdout.try_into().unwrap()
+    }
+
+    #[tokio::test]
+    async fn heic_photos_are_decoded_whole_upright_and_stripped() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = MediaConfig::default();
+        // A 512x384 picture, blue with a red top-left corner, stored as a
+        // grid of 128-pixel tiles (iPhones use 512), to be turned a quarter
+        // clockwise, with EXIF giving a GPS position and the artist
+        // "secret-artist". Made with Pillow and `heif-enc --cut-tiles 128
+        // --rotate-cw 90 -q 40`.
+        let input = Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata/tiled-rotated.heic");
+        assert!(
+            std::fs::read(&input)
+                .unwrap()
+                .windows(6)
+                .any(|w| w == b"secret")
+        );
+
+        let r = transcode(&cfg, &input, dir.path()).await.unwrap();
+        assert_eq!(r.kind, MediaKind::Image);
+        assert_eq!(r.media_type, "image/webp");
+        assert_eq!((r.width, r.height), (384, 512));
+        let [red, green, blue] = pixel(&r.file, 380, 4).await;
+        assert!(
+            red > 180 && green < 90 && blue < 90,
+            "the top-right corner isn't red: {red} {green} {blue}"
+        );
+        for file in [&r.file, &r.thumbnail] {
+            let bytes = std::fs::read(file).unwrap();
+            assert!(!bytes.windows(6).any(|w| w == b"secret"), "leaked EXIF");
+        }
+        // Only the image and its thumbnail are left.
+        let job_dir = r.file.parent().unwrap();
+        assert_eq!(std::fs::read_dir(job_dir).unwrap().count(), 2);
+    }
+
+    #[tokio::test]
+    async fn rotated_jpeg_photos_are_turned_upright() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = MediaConfig::default();
+        // The same 512x384 picture with its red corner, as a JPEG whose EXIF
+        // says to turn it a quarter clockwise, as phones save photos taken
+        // upright. Made with Pillow.
+        let input = Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata/rotated.jpg");
+        let r = transcode(&cfg, &input, dir.path()).await.unwrap();
+        assert_eq!((r.width, r.height), (384, 512));
+        let [red, green, blue] = pixel(&r.file, 380, 4).await;
+        assert!(
+            red > 180 && green < 90 && blue < 90,
+            "the top-right corner isn't red: {red} {green} {blue}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_heic_photo_without_heif_convert_says_what_to_install() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = MediaConfig {
+            heif_convert: "osp-no-such-tool".into(),
+            ..MediaConfig::default()
+        };
+        assert!(!heic_tool_available(&cfg).await);
+        let input = Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata/tiled-rotated.heic");
+        let err = transcode(&cfg, &input, dir.path()).await.unwrap_err();
+        assert!(format!("{err:#}").contains("libheif-examples"), "{err:#}");
+    }
+
+    #[test]
+    fn heic_is_told_by_its_brands() {
+        // As iPhones and heif-enc write it.
+        assert!(has_heic_brand(b"\0\0\0\x1cftypheic\0\0\0\0mif1heicmiaf"));
+        // The general HEIF brand first, HEIC among the compatible ones.
+        assert!(has_heic_brand(b"\0\0\0\x18ftypmif1\0\0\0\0heicmiaf"));
+        // AVIF, an iPhone video, an MP4 and a PNG aren't HEIC.
+        assert!(!has_heic_brand(b"\0\0\0\x18ftypmif1\0\0\0\0avifmiaf"));
+        assert!(!has_heic_brand(b"\0\0\0\x14ftypqt  \0\0\0\0qt  "));
+        assert!(!has_heic_brand(b"\0\0\0\x18ftypisom\0\0\x02\0isomiso2"));
+        assert!(!has_heic_brand(b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR"));
+        // A compatible brand past the box's end doesn't count.
+        assert!(!has_heic_brand(b"\0\0\0\x10ftypmif1\0\0\0\0heic"));
+        assert!(!has_heic_brand(b""));
+    }
+
+    #[tokio::test]
+    async fn hdr_video_is_tone_mapped_to_sdr() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = MediaConfig {
+            x264_preset: "ultrafast".into(),
+            ..MediaConfig::default()
+        };
+        // 10-bit HLG, as iPhones record, and PQ (HDR10).
+        for transfer in ["arib-std-b67", "smpte2084"] {
+            let input = dir.path().join(format!("{transfer}.mp4"));
+            let status = Command::new("ffmpeg")
+                .args(["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi"])
+                .args(["-i", "testsrc=duration=1:size=640x360:rate=30", "-vf"])
+                .arg(format!(
+                    "setparams=color_primaries=bt2020:color_trc={transfer}:colorspace=bt2020nc"
+                ))
+                .args(["-c:v", "libx264", "-preset", "ultrafast"])
+                .args(["-pix_fmt", "yuv420p10le"])
+                .arg(&input)
+                .status()
+                .await
+                .unwrap();
+            assert!(status.success());
+            assert!(probe(&cfg, &input).await.unwrap().is_hdr());
+
+            let r = transcode(&cfg, &input, dir.path()).await.unwrap();
+            assert_eq!((r.width, r.height), (640, 360));
+            let out = probe(&cfg, &r.file).await.unwrap();
+            assert_eq!(out.transfer.as_deref(), Some("bt709"), "from {transfer}");
+        }
     }
 
     #[tokio::test]

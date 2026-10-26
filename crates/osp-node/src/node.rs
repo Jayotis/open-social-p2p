@@ -146,6 +146,8 @@ pub(crate) struct Core {
     pub started: Instant,
     /// Whether ffmpeg ran at startup; without it, posts with media fail.
     pub media_tools: bool,
+    /// Whether heif-convert ran at startup; without it, HEIC photos fail.
+    pub heic_tool: bool,
     /// Places for posts with media in progress (`control::MAX_MEDIA_POSTS`).
     pub media_posts: Semaphore,
     /// Only one transcode runs at a time, so many posts at once can't start
@@ -326,6 +328,7 @@ impl Node {
         resign_own_objects(&signer, &db)?;
         let profile = own_profile(&signer, &config.name, endpoint.id(), &db)?;
         let media_tools = media::tools_available(&config.media).await;
+        let heic_tool = media::heic_tool_available(&config.media).await;
         if matches!(signer, Signer::Identity(_)) {
             warn!("this node keeps your identity key; run `osp keys protect` (ADR 0010)");
         }
@@ -361,6 +364,7 @@ impl Node {
             tell_moved_lock: tokio::sync::Mutex::new(()),
             started: Instant::now(),
             media_tools,
+            heic_tool,
             media_posts: Semaphore::new(control::MAX_MEDIA_POSTS),
             transcode_lock: tokio::sync::Mutex::new(()),
             sim,

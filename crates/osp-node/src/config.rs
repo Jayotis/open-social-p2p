@@ -62,6 +62,10 @@ pub struct SyncConfig {
 pub struct MediaConfig {
     pub ffmpeg: String,
     pub ffprobe: String,
+    /// Decodes HEIC photos, as iPhones take them, which ffmpeg can't read
+    /// whole. It comes with libheif-examples; newer versions also call it
+    /// `heif-dec`.
+    pub heif_convert: String,
     /// Longest video accepted for publishing.
     pub max_video_secs: u64,
     /// Stop transcoding a video that takes longer than this. On a slow
@@ -149,6 +153,7 @@ impl Default for MediaConfig {
         Self {
             ffmpeg: "ffmpeg".to_string(),
             ffprobe: "ffprobe".to_string(),
+            heif_convert: "heif-convert".to_string(),
             max_video_secs: 600,
             // As long as a phone waits for its post to be published.
             max_transcode_secs: 1800,
