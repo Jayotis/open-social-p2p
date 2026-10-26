@@ -7,6 +7,7 @@ import 'package:flutter/widgets.dart';
 import 'device_key.dart';
 import 'format.dart';
 import 'src/rust/api/osp.dart';
+import 'uploads.dart';
 
 /// Whether the home node answered recently.
 enum Reachability { unknown, connecting, online, offline }
@@ -17,10 +18,17 @@ enum Reachability { unknown, connecting, online, offline }
 /// All networking happens in Rust (`osp-client`); this class only keeps
 /// state and decides when to ask.
 class HomeNode extends ChangeNotifier with WidgetsBindingObserver {
-  HomeNode._(this.app);
+  HomeNode._(this.app, this.uploads);
+
+  /// For tests: a node with a stand-in for the Rust side, not paired.
+  @visibleForTesting
+  HomeNode.forTests(this.app, this.uploads);
 
   /// The Rust side.
   final OspApp app;
+
+  /// Where the files of a post being sent are kept.
+  final UploadsFolder uploads;
 
   NodeInfo? paired;
   Reachability reachability = Reachability.unknown;
@@ -36,8 +44,14 @@ class HomeNode extends ChangeNotifier with WidgetsBindingObserver {
   DateTime? savedAt;
   bool onMobileData = false;
 
+  /// The phone has no network at all.
+  bool phoneOffline = false;
+
   /// While a post is uploading, the connection stays open in the background.
   bool uploading = false;
+
+  /// A post that didn't finish sending, kept to carry on or discard.
+  UnsentPost? unsent;
 
   /// Something to tell the owner on the pairing screen.
   String? notice;
@@ -46,8 +60,15 @@ class HomeNode extends ChangeNotifier with WidgetsBindingObserver {
   StreamSubscription<List<ConnectivityResult>>? _network;
   final Map<String, Future<String>> _urls = {};
 
-  static Future<HomeNode> open(String dir, DeviceKey key) async {
-    final node = HomeNode._(await OspApp.open(dir: dir, deviceKey: key.hex));
+  static Future<HomeNode> open(
+    String dir,
+    DeviceKey key,
+    UploadsFolder uploads,
+  ) async {
+    final node = HomeNode._(
+      await OspApp.open(dir: dir, deviceKey: key.hex),
+      uploads,
+    );
     if (key.isNew && node.app.pairedNode() != null) {
       // The old key was lost, and the node knows only that one.
       await node.app.forget();
@@ -57,6 +78,8 @@ class HomeNode extends ChangeNotifier with WidgetsBindingObserver {
     }
     node.paired = node.app.pairedNode();
     node._showSaved();
+    node.unsent = node.app.pendingPost();
+    await uploads.clean(keep: [...?node.unsent?.files.map((f) => f.path)]);
     WidgetsBinding.instance.addObserver(node);
     final connectivity = Connectivity();
     node._setNetwork(await connectivity.checkConnectivity());
@@ -93,6 +116,7 @@ class HomeNode extends ChangeNotifier with WidgetsBindingObserver {
         results.contains(ConnectivityResult.mobile) &&
         !results.contains(ConnectivityResult.wifi) &&
         !results.contains(ConnectivityResult.ethernet);
+    phoneOffline = results.every((r) => r == ConnectivityResult.none);
     notifyListeners();
   }
 
@@ -159,10 +183,30 @@ class HomeNode extends ChangeNotifier with WidgetsBindingObserver {
     return info;
   }
 
+  /// Looks again for a post that didn't finish sending.
+  void checkUnsent() {
+    unsent = app.pendingPost();
+    notifyListeners();
+  }
+
+  /// Stops and discards the post that didn't finish sending, on the phone
+  /// and the node. Fails with the node's reason if it's too late.
+  Future<void> discardPost() async {
+    final files = [...?app.pendingPost()?.files.map((f) => f.path)];
+    try {
+      await app.discardPost();
+    } finally {
+      if (app.pendingPost() == null) await uploads.release(files);
+      checkUnsent();
+    }
+  }
+
   /// Forgets the node on this phone.
   Future<void> forget() async {
     _stop();
     await app.forget();
+    await uploads.clean();
+    unsent = null;
     paired = null;
     posts = [];
     status = null;

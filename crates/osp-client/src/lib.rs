@@ -62,8 +62,25 @@ const POST_STALL: Duration = Duration::from_secs(30);
 /// After sending fails, how long to wait for the node's reply, which says
 /// why if the node refused the post part way.
 const REFUSAL_WAIT: Duration = Duration::from_secs(5);
+/// How long discarding a post waits for the home node. Past that, the node
+/// drops what it has of the post itself within a day.
+const DISCARD_WAIT: Duration = Duration::from_secs(10);
 /// Where the post still on its way to the home node is kept.
 const PENDING_POST: &str = "pending-post.json";
+
+/// Why a post stopped when it gave up for lack of contact with the home
+/// node: the post is kept, to carry on later. Find it with
+/// `error.downcast_ref::<NoContact>()`.
+#[derive(Debug, Clone, Copy)]
+pub struct NoContact;
+
+impl std::fmt::Display for NoContact {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(
+            "no contact with your home node for a while; the post is kept, to carry on later",
+        )
+    }
+}
 
 /// How the client reaches the network.
 #[derive(Debug, Clone)]
@@ -183,7 +200,12 @@ impl PendingPost {
     /// began, as their bytes would no longer line up with what was sent.
     fn check_files(&self) -> Result<()> {
         for file in &self.files {
-            let now = PendingFile::read(&file.path)?;
+            let now = PendingFile::read(&file.path).with_context(|| {
+                format!(
+                    "{} can't be read any more; discard the post and post it again",
+                    file.name()
+                )
+            })?;
             ensure!(
                 (now.size, now.modified_ms) == (file.size, file.modified_ms),
                 "{} changed since the post began; discard the post and post it again",
@@ -437,9 +459,9 @@ impl Client {
     }
 
     /// Forgets the pending post on this device, and asks the home node to
-    /// drop what it has of it if the node can be reached (otherwise the
-    /// node drops it within a day). Fails with the node's reason if the
-    /// post is already being prepared or was published.
+    /// drop what it has of it if the node answers within `DISCARD_WAIT`
+    /// (otherwise the node drops it within a day). Fails with the node's
+    /// reason if the post is already being prepared or was published.
     pub async fn discard_post(&self) -> Result<()> {
         let Some(pending) = self.pending_post() else {
             return Ok(());
@@ -447,12 +469,13 @@ impl Client {
         let req = ClientRequest::CancelUpload {
             upload: pending.upload,
         };
-        let reply = async {
+        let reply = tokio::time::timeout(DISCARD_WAIT, async {
             let (mut send, mut recv) = self.send_request(&req).await?;
             send.finish()?;
             read_reply(&mut recv, REPLY_TIMEOUT).await
-        }
-        .await;
+        })
+        .await
+        .unwrap_or_else(|_| Err(anyhow::anyhow!("the home node didn't answer in time")));
         std::fs::remove_file(self.dir.join(PENDING_POST))?;
         match reply {
             Ok(ClientResponse::Error { message }) => bail!(message),
@@ -500,9 +523,7 @@ impl Client {
             // Without contact since this try began, or since it broke.
             let since = *lost_since.get_or_insert(if contact { Instant::now() } else { tried });
             if since.elapsed() >= self.post_give_up {
-                return Err(e.context(
-                    "no contact with your home node for a while; the post is kept, to carry on later",
-                ));
+                return Err(e.context(NoContact));
             }
             progress(PostProgress::Waiting);
             tokio::time::sleep(POST_RETRY_WAITS[tries.min(POST_RETRY_WAITS.len() - 1)]).await;

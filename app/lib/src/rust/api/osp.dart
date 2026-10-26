@@ -6,7 +6,7 @@
 import '../frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `node_info`, `post`
+// These functions are ignored because they are not marked as `pub`: `node_info`, `post`, `progress`, `report_to`, `run_post`
 // These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `clone`, `clone`
 
 /// A new device key, as 64 hex digits, for the app to keep in the phone's
@@ -23,7 +23,15 @@ bool isFollowTicket({required String text}) =>
 
 // Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<OspApp>>
 abstract class OspApp implements RustOpaqueInterface {
+  /// Carries on sending the pending post where it stopped.
+  Stream<PostProgress> continuePost();
+
   String deviceId();
+
+  /// Stops the post being sent, if any, and discards the pending post on
+  /// the phone and the node. Fails with the node's reason if it's too
+  /// late: the node is preparing the post, or published it.
+  Future<void> discardPost();
 
   /// Closes the connection while the app is in the background.
   Future<void> disconnect();
@@ -60,7 +68,13 @@ abstract class OspApp implements RustOpaqueInterface {
 
   NodeInfo? pairedNode();
 
+  /// The post that didn't finish sending, if any: one that failed, or was
+  /// stopped when the app was.
+  UnsentPost? pendingPost();
+
   /// Posts text with photos or videos from this phone, reporting progress.
+  /// It carries on after short breaks in the connection; if it fails, the
+  /// post is usually kept (`pending_post`) to try again.
   Stream<PostProgress> post({
     required String text,
     required List<String> files,
@@ -288,16 +302,31 @@ class PostProgress {
   /// The new post's ID when done, or what went wrong.
   final String? message;
 
+  /// When failed: the post is kept on the phone, to try again
+  /// (`continue_post`) or discard.
+  final bool kept;
+
+  /// When failed: it gave up after a long time without contact with the
+  /// node.
+  final bool noContact;
+
   const PostProgress({
     required this.stage,
     required this.sent,
     required this.total,
     this.message,
+    required this.kept,
+    required this.noContact,
   });
 
   @override
   int get hashCode =>
-      stage.hashCode ^ sent.hashCode ^ total.hashCode ^ message.hashCode;
+      stage.hashCode ^
+      sent.hashCode ^
+      total.hashCode ^
+      message.hashCode ^
+      kept.hashCode ^
+      noContact.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -307,12 +336,17 @@ class PostProgress {
           stage == other.stage &&
           sent == other.sent &&
           total == other.total &&
-          message == other.message;
+          message == other.message &&
+          kept == other.kept &&
+          noContact == other.noContact;
 }
 
 enum PostStage {
   /// Sending files to the node.
   sending,
+
+  /// Lost contact with the node; trying again.
+  waiting,
 
   /// The node is transcoding and publishing.
   processing,
@@ -339,4 +373,50 @@ class SavedFeed {
           runtimeType == other.runtimeType &&
           posts == other.posts &&
           saved == other.saved;
+}
+
+class UnsentFile {
+  final String path;
+  final PlatformInt64 size;
+
+  const UnsentFile({required this.path, required this.size});
+
+  @override
+  int get hashCode => path.hashCode ^ size.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is UnsentFile &&
+          runtimeType == other.runtimeType &&
+          path == other.path &&
+          size == other.size;
+}
+
+/// A post that didn't finish sending, kept on the phone until the node
+/// publishes it or the owner discards it.
+class UnsentPost {
+  final String text;
+  final List<UnsentFile> files;
+
+  /// When it was started (RFC 3339).
+  final String started;
+
+  const UnsentPost({
+    required this.text,
+    required this.files,
+    required this.started,
+  });
+
+  @override
+  int get hashCode => text.hashCode ^ files.hashCode ^ started.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is UnsentPost &&
+          runtimeType == other.runtimeType &&
+          text == other.text &&
+          files == other.files &&
+          started == other.started;
 }

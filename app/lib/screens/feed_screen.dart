@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../format.dart';
 import '../node.dart';
+import '../src/rust/api/osp.dart';
 import '../widgets/node_banner.dart';
 import '../widgets/post_card.dart';
 import 'compose_screen.dart';
@@ -15,7 +16,9 @@ class FeedScreen extends StatelessWidget {
   final HomeNode node;
 
   void _open(BuildContext context, Widget screen) {
-    Navigator.of(context).push(MaterialPageRoute(builder: (_) => screen));
+    Navigator.of(context)
+        .push(MaterialPageRoute(builder: (_) => screen))
+        .then((_) => node.checkUnsent());
   }
 
   @override
@@ -48,6 +51,13 @@ class FeedScreen extends StatelessWidget {
       body: Column(
         children: [
           NodeBanner(node: node),
+          if (node.unsent case final unsent? when !node.uploading)
+            _UnsentCard(
+              node: node,
+              unsent: unsent,
+              onContinue: () =>
+                  _open(context, ComposeScreen(node: node, unsent: unsent)),
+            ),
           Expanded(
             child: RefreshIndicator(
               onRefresh: () => node.refresh(sync: true),
@@ -133,6 +143,100 @@ class _Empty extends StatelessWidget {
             style: Theme.of(context).textTheme.bodySmall,
           ),
       ],
+    );
+  }
+}
+
+/// A post that didn't finish sending, say because the app was stopped:
+/// carry on with it, or discard it.
+class _UnsentCard extends StatelessWidget {
+  const _UnsentCard({
+    required this.node,
+    required this.unsent,
+    required this.onContinue,
+  });
+
+  final HomeNode node;
+  final UnsentPost unsent;
+  final VoidCallback onContinue;
+
+  Future<void> _discard(BuildContext context) async {
+    final messenger = ScaffoldMessenger.of(context);
+    final go = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Discard this post?'),
+        content: const Text(
+          "It hasn't been published. What was sent so far is deleted.",
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Keep it'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Discard'),
+          ),
+        ],
+      ),
+    );
+    if (go != true) return;
+    try {
+      await node.discardPost();
+      messenger.showSnackBar(const SnackBar(content: Text('Post discarded.')));
+    } catch (e) {
+      messenger.showSnackBar(
+        SnackBar(content: Text('Too late to discard: ${describeError(e)}')),
+      );
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final files = unsent.files.length;
+    final size = unsent.files.fold(0, (sum, f) => sum + f.size);
+    final started = DateTime.tryParse(unsent.started);
+    final what = [
+      if (unsent.text.isNotEmpty) '"${unsent.text.split('\n').first}"',
+      if (files > 0)
+        '$files ${files == 1 ? 'file' : 'files'}, ${formatBytes(size)}',
+      if (started != null) 'started ${formatAgo(started)}',
+    ].join(' · ');
+    return Card(
+      margin: const EdgeInsets.fromLTRB(12, 12, 12, 0),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 12, 8, 4),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              "A post didn't finish sending",
+              style: Theme.of(context).textTheme.titleSmall,
+            ),
+            const SizedBox(height: 4),
+            Text(
+              what,
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.end,
+              children: [
+                TextButton(
+                  onPressed: () => _discard(context),
+                  child: const Text('Discard'),
+                ),
+                TextButton(
+                  onPressed: onContinue,
+                  child: const Text('Continue'),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
     );
   }
 }

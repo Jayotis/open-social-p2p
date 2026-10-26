@@ -3025,6 +3025,7 @@ dependencies = [
  "flutter_rust_bridge",
  "log",
  "osp-client",
+ "tokio",
  "tracing",
  "tracing-subscriber",
 ]
