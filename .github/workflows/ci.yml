@@ -72,6 +72,19 @@ jobs:
       - run: flutter analyze
       - run: flutter test
 
+  ios:
+    # The iPhone app's Rust, as far as Linux can check it: the network crates
+    # that broke on iOS before (libc 0.2.190 left out a type netdev uses).
+    # Crates with C build scripts, such as ring, need Apple's compiler, so the
+    # whole app is only built on Codemagic (codemagic.yaml).
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios
+      - run: cargo check --target aarch64-apple-ios -p netwatch -p portmapper
+
   audit:
     # Fails if any dependency has a known security vulnerability (RustSec
     # database). "Unmaintained" notices are reported but don't fail the job.

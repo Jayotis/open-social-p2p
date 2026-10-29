@@ -8,6 +8,12 @@ updates:
     groups:
       rust-dependencies:
         patterns: ["*"]
+    ignore:
+      # From 0.2.190, libc defines in6_ifreq for macOS only, and netdev 0.46
+      # (under iroh's netwatch) uses it on iOS too: the iPhone build fails.
+      # Drop this once netdev or libc is fixed (CI's ios job checks it).
+      - dependency-name: libc
+        versions: [">= 0.2.190"]
   - package-ecosystem: github-actions
     directory: /
     schedule:
