@@ -64,7 +64,7 @@ To set it up once:
 1. With a paid Apple Developer membership, register the iPhone under Certificates, IDs & Profiles → Devices. Its UDID: plug it in, `idevicepair pair`, then `ideviceinfo -k UniqueDeviceID` (libimobiledevice).
 2. Create an App Store Connect API key (Users and Access → Integrations → App Store Connect API, with App Manager access). Note its key ID and the issuer ID, and download the `.p8` file, which is offered only once.
 3. Make a private key for the signing certificate, outside the repository: `ssh-keygen -t rsa -b 2048 -m PEM -f ~/keys/ios_distribution_private_key -q -N ""`.
-4. In Codemagic, add the repository as a Flutter app configured by `codemagic.yaml`, and under its environment variables a group named `app_store_connect` holding `APP_STORE_CONNECT_ISSUER_ID`, `APP_STORE_CONNECT_KEY_IDENTIFIER`, `APP_STORE_CONNECT_PRIVATE_KEY` (the `.p8` file's contents) and `CERTIFICATE_PRIVATE_KEY` (the key file's contents), the `BEGIN` and `END` lines included, each marked secret. (A key added to Codemagic as an integration isn't found by builds on a personal account.)
+4. In Codemagic, add the repository as a Flutter app configured by `codemagic.yaml`, and under its environment variables a group named `app_store_connect` holding `APP_STORE_CONNECT_ISSUER_ID`, `APP_STORE_CONNECT_KEY_IDENTIFIER`, `APP_STORE_CONNECT_PRIVATE_KEY` (the `.p8` file's contents) and `CERTIFICATE_PRIVATE_KEY` (the key file's contents), the `BEGIN` and `END` lines included, each marked secret. (Variables, because a key in the personal account's Developer Portal integration wasn't found by the build.)
 
 Back up both key files like the Android keystore. Then start `ios-adhoc` on a branch, download the `.ipa` it makes, and install it on the plugged-in iPhone:
 
