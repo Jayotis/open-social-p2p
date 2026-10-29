@@ -62,11 +62,11 @@ Building for an iPhone needs a Mac, so the app is built on [Codemagic](https://c
 To set it up once:
 
 1. With a paid Apple Developer membership, register the iPhone under Certificates, IDs & Profiles → Devices. Its UDID: plug it in, `idevicepair pair`, then `ideviceinfo -k UniqueDeviceID` (libimobiledevice).
-2. Create an App Store Connect API key (Users and Access → Integrations → App Store Connect API, with App Manager access). Note its key ID and the issuer ID, and download the `.p8` file, which is offered only once.
+2. Create an App Store Connect API key (Users and Access → Integrations → App Store Connect API, with App Manager access), and add it to Codemagic under Integrations → Developer Portal. `codemagic.yaml` names it (`integrations: app_store_connect`), which gives the build its key ID, issuer ID and private key.
 3. Make a private key for the signing certificate, outside the repository: `ssh-keygen -t rsa -b 2048 -m PEM -f ~/keys/ios_distribution_private_key -q -N ""`.
-4. In Codemagic, add the repository, and under its environment variables a group named `app_store_connect` holding `APP_STORE_CONNECT_ISSUER_ID`, `APP_STORE_CONNECT_KEY_IDENTIFIER`, `APP_STORE_CONNECT_PRIVATE_KEY` (the `.p8` file's contents) and `CERTIFICATE_PRIVATE_KEY` (the key file's contents, both lines with `BEGIN` and `END` included), each marked secret.
+4. In Codemagic, add the repository as a Flutter app configured by `codemagic.yaml`, and under its environment variables a group named `app_store_connect` holding `CERTIFICATE_PRIVATE_KEY`: the key file's contents, the `BEGIN` and `END` lines included, marked secret.
 
-Back up both key files like the Android keystore. Then start `ios-adhoc` on a branch, download the `.ipa` it makes, and install it on the plugged-in iPhone:
+Back up the key file like the Android keystore. Then start `ios-adhoc` on a branch, download the `.ipa` it makes, and install it on the plugged-in iPhone:
 
 ```sh
 sudo apt install ideviceinstaller   # once
