@@ -1,0 +1,53 @@
+# Builds the iPhone app on Codemagic's macOS machines (app/README.md,
+# "iPhone"). Started by hand; nothing triggers it.
+#
+# The `app_store_connect` group in Codemagic's settings holds the secrets:
+# APP_STORE_CONNECT_ISSUER_ID, APP_STORE_CONNECT_KEY_IDENTIFIER and
+# APP_STORE_CONNECT_PRIVATE_KEY (an App Store Connect API key), and
+# CERTIFICATE_PRIVATE_KEY (the RSA key of the signing certificate).
+workflows:
+  ios-adhoc:
+    name: iPhone app (ad hoc)
+    instance_type: mac_mini_m2
+    max_build_duration: 60
+    environment:
+      groups:
+        - app_store_connect
+      vars:
+        BUNDLE_ID: io.github.jayotis.ospApp
+      flutter: 3.44.6
+      # The background upload needs the iOS 26 SDK or later.
+      xcode: latest
+      cocoapods: default
+    scripts:
+      - name: Rust
+        script: |
+          # cargokit builds the app's Rust code with rustup's stable Rust,
+          # which needs to be at least the workspace's rust-version.
+          if ! command -v rustup > /dev/null; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+              | sh -s -- -y --profile minimal --default-toolchain none
+            export PATH="$HOME/.cargo/bin:$PATH"
+            echo "PATH=$PATH" >> "$CM_ENV"
+          fi
+          rustup toolchain install stable --profile minimal --target aarch64-apple-ios
+          rustc +stable --version
+      - name: Signing
+        script: |
+          # An ad hoc profile for the devices registered in the Apple
+          # Developer account; the certificate and profile are made the
+          # first time.
+          keychain initialize
+          app-store-connect fetch-signing-files "$BUNDLE_ID" --type IOS_APP_ADHOC --create
+          keychain add-certificates
+          cd app && xcode-project use-profiles --project ios/Runner.xcodeproj
+      - name: Build
+        script: |
+          cd app
+          flutter pub get
+          flutter build ipa --release \
+            --build-number="$BUILD_NUMBER" \
+            --export-options-plist="$HOME/export_options.plist"
+    artifacts:
+      - app/build/ios/ipa/*.ipa
+      - /tmp/xcodebuild_logs/*.log

@@ -131,8 +131,8 @@ class _ComposeScreenState extends State<ComposeScreen> {
       }
     }
 
-    // Out of the picker's cache, which Android may clear, so the post can
-    // carry on later.
+    // Out of the picker's folder, which the phone may clear, so the post
+    // can carry on later.
     final List<String> files;
     try {
       files = await widget.node.uploads.take([
@@ -216,7 +216,7 @@ class _ComposeScreenState extends State<ComposeScreen> {
 
   void _finish(String? error, {bool kept = false}) {
     widget.node.uploading = false;
-    _background.stop();
+    _background.stop(sent: error == null);
     _sending?.cancel();
     _sending = null;
     if (error == null) {

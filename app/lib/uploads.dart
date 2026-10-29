@@ -4,8 +4,9 @@ import 'dart:io';
 /// home node has published it or the owner discards it.
 ///
 /// image_picker leaves its copies of picked photos and videos in the cache
-/// folder, which Android may clear whenever it needs room. A post that
-/// carries on after the app was stopped needs them for up to a day.
+/// folder on Android and the tmp folder on an iPhone, which the phone may
+/// clear whenever it needs room. A post that carries on after the app was
+/// stopped needs them for up to a day.
 class UploadsFolder {
   UploadsFolder(this.dir, {required this.pickerDir});
 

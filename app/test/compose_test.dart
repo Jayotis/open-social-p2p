@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:osp_app/node.dart';
 import 'package:osp_app/screens/compose_screen.dart';
@@ -68,7 +69,19 @@ void main() {
   late HomeNode node;
   late UnsentPost unsent;
 
+  /// What the screen asked of the phone's background upload.
+  late List<MethodCall> background;
+
   setUp(() {
+    background = [];
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(
+          const MethodChannel('osp/background_upload'),
+          (call) async {
+            background.add(call);
+            return null;
+          },
+        );
     root = Directory.systemTemp.createTempSync('compose_test');
     final uploads = UploadsFolder(
       Directory('${root.path}/uploads'),
@@ -141,6 +154,9 @@ void main() {
       isFalse,
       reason: "the post's files are deleted",
     );
+    expect(background.first.method, 'start');
+    expect(background.last.method, 'stop');
+    expect(background.last.arguments, {'sent': true});
   });
 
   testWidgets('a post that gave up says why, is kept, and can try again', (
@@ -163,10 +179,13 @@ void main() {
       findsOneWidget,
     );
     expect(find.textContaining('kept on this phone'), findsOneWidget);
+    expect(background.last.method, 'stop');
+    expect(background.last.arguments, {'sent': false});
 
     await tester.tap(find.text('Try again'));
     await settle(tester);
     expect(app.sends, hasLength(2));
+    expect(background.last.method, 'start');
     expect(find.text('Try again'), findsNothing);
     expect(find.text('Cancel'), findsOneWidget);
   });
@@ -188,6 +207,8 @@ void main() {
     await settle(tester, files: true);
     expect(app.discards, 1);
     expect(find.text('Post discarded.'), findsOneWidget);
+    expect(background.last.method, 'stop');
+    expect(background.last.arguments, {'sent': false});
     expect(find.byType(ComposeScreen), findsNothing);
   });
 

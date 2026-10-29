@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:device_info_plus/device_info_plus.dart';
@@ -241,6 +242,15 @@ class HomeNode extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   static Future<String> _deviceName() async {
+    if (Platform.isIOS) {
+      try {
+        // Such as "iPhone 12". The name the owner gave the phone needs an
+        // entitlement Apple grants few apps.
+        return (await DeviceInfoPlugin().iosInfo).modelName;
+      } catch (_) {
+        return 'iPhone';
+      }
+    }
     try {
       final info = await DeviceInfoPlugin().androidInfo;
       final maker = info.manufacturer;

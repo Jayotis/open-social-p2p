@@ -28,8 +28,11 @@ Future<void> main() async {
     );
     final uploads = UploadsFolder(
       Directory('${dir.path}/uploads'),
-      // Android: the cache folder, where image_picker leaves its copies.
-      pickerDir: await getTemporaryDirectory(),
+      // Where image_picker leaves its copies: the tmp folder on an iPhone,
+      // the cache folder on Android.
+      pickerDir: Platform.isIOS
+          ? Directory.systemTemp
+          : await getTemporaryDirectory(),
     );
     node = await HomeNode.open(dir.path, key, uploads);
   } catch (e) {
