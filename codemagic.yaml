@@ -5,8 +5,8 @@
 # secrets: APP_STORE_CONNECT_ISSUER_ID, APP_STORE_CONNECT_KEY_IDENTIFIER and
 # APP_STORE_CONNECT_PRIVATE_KEY (an App Store Connect API key), and
 # CERTIFICATE_PRIVATE_KEY (the RSA key of the signing certificate). Variables
-# rather than a Codemagic integration, which builds on a personal account
-# don't find.
+# rather than a Codemagic integration: the build didn't find the personal
+# account's one ("does not exist").
 workflows:
   ios-adhoc:
     name: iPhone app (ad hoc)
