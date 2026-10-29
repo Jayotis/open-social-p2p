@@ -21,6 +21,10 @@ A new Flutter FFI plugin project.
   s.source_files = 'Classes/**/*'
   s.dependency 'Flutter'
   s.platform = :ios, '11.0'
+  # The Apple frameworks the Rust crates link on iOS. A static library
+  # doesn't carry its crates' #[link] attributes to Xcode's linker, so they
+  # are named here (Network is for netdev, under iroh's netwatch).
+  s.frameworks = 'Network', 'Security', 'SystemConfiguration', 'CoreFoundation', 'Foundation'
 
   # Flutter.framework does not contain a i386 slice.
   s.pod_target_xcconfig = { 'DEFINES_MODULE' => 'YES', 'EXCLUDED_ARCHS[sdk=iphonesimulator*]' => 'i386' }
