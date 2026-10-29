@@ -1,4 +1,4 @@
-"""Makes the Android launcher icons from app-icon.png. Needs Pillow.
+"""Makes the Android and iPhone app icons from app-icon.png. Needs Pillow.
 
 Run from the repo root after changing the artwork:
 
@@ -12,14 +12,20 @@ Writes two kinds of icon into app/android/app/src/main/res:
   and only a circle 66 dp across is sure to, so the picture is scaled to
   fit the network inside that circle. The background layer is the
   picture's dark edge colour (values/ic_launcher_background.xml).
+
+And the whole picture, at each size the iPhone project's icon set lists,
+into app/ios/Runner/Assets.xcassets/AppIcon.appiconset. iOS rounds the
+corners itself, and refuses icons that aren't opaque.
 """
 
+import json
 from pathlib import Path
 
 from PIL import Image
 
 HERE = Path(__file__).resolve().parent
 RES = HERE.parent / "android" / "app" / "src" / "main" / "res"
+IOS_ICONS = HERE.parent / "ios" / "Runner" / "Assets.xcassets" / "AppIcon.appiconset"
 
 # Pixels per dp at each density.
 DENSITIES = {"mdpi": 1, "hdpi": 1.5, "xhdpi": 2, "xxhdpi": 3, "xxxhdpi": 4}
@@ -45,6 +51,12 @@ def main():
         offset = (canvas - inner) // 2
         foreground.paste(art.resize((inner, inner), Image.LANCZOS), (offset, offset))
         foreground.save(folder / "ic_launcher_foreground.png", optimize=True)
+
+    opaque = art.convert("RGB")
+    for icon in json.loads((IOS_ICONS / "Contents.json").read_text())["images"]:
+        points = float(icon["size"].split("x")[0])
+        size = round(points * int(icon["scale"].rstrip("x")))
+        opaque.resize((size, size), Image.LANCZOS).save(IOS_ICONS / icon["filename"], optimize=True)
 
 
 if __name__ == "__main__":

@@ -16,7 +16,14 @@ abstract class SecretStore {
 class PhoneSecretStore implements SecretStore {
   const PhoneSecretStore();
 
-  static const _storage = FlutterSecureStorage();
+  static const _storage = FlutterSecureStorage(
+    // Not in the iPhone's backups, so it can't move to another phone, as on
+    // Android. Readable once the phone was unlocked after starting, so the
+    // app could start in the background.
+    iOptions: IOSOptions(
+      accessibility: KeychainAccessibility.first_unlock_this_device,
+    ),
+  );
 
   @override
   Future<String?> read(String name) => _storage.read(key: name);

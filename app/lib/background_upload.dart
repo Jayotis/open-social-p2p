@@ -5,9 +5,11 @@ import 'package:flutter/services.dart';
 ///
 /// On Android this is a foreground service with a notification showing
 /// the post's progress; without one, Android may stop the app soon after
-/// it leaves the screen (`UploadService.kt`). Elsewhere it does nothing
-/// yet. If the app is stopped anyway, the post carries on when the app is
-/// next opened.
+/// it leaves the screen (`UploadService.kt`). On an iPhone it's a continued
+/// processing task, with the progress in a Live Activity, on iOS 26 and
+/// later, and about 30 seconds before that (`BackgroundUpload.swift`). If
+/// the app is stopped anyway, the post carries on when the app is next
+/// opened.
 class BackgroundUpload {
   static const _channel = MethodChannel('osp/background_upload');
 
@@ -28,7 +30,8 @@ class BackgroundUpload {
     await _call('show', {'title': title, 'text': text, 'percent': percent});
   }
 
-  Future<void> stop() => _call('stop');
+  /// [sent] says whether the post was published, for the Live Activity.
+  Future<void> stop({bool sent = false}) => _call('stop', {'sent': sent});
 
   static Future<void> _call(String method, [Object? arguments]) async {
     try {
