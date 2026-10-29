@@ -1,15 +1,16 @@
 # Builds the iPhone app on Codemagic's macOS machines (app/README.md,
 # "iPhone"). Started by hand; nothing triggers it.
 #
-# The `app_store_connect` group in Codemagic's settings holds the secrets:
-# APP_STORE_CONNECT_ISSUER_ID, APP_STORE_CONNECT_KEY_IDENTIFIER and
-# APP_STORE_CONNECT_PRIVATE_KEY (an App Store Connect API key), and
-# CERTIFICATE_PRIVATE_KEY (the RSA key of the signing certificate).
+# Codemagic's settings hold the secrets: the App Store Connect API key, as
+# the integration named below, and CERTIFICATE_PRIVATE_KEY (the RSA key of
+# the signing certificate) in the `app_store_connect` variable group.
 workflows:
   ios-adhoc:
     name: iPhone app (ad hoc)
     instance_type: mac_mini_m2
     max_build_duration: 60
+    integrations:
+      app_store_connect: CodeMagic
     environment:
       groups:
         - app_store_connect
