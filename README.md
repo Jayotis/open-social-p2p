@@ -50,7 +50,7 @@ Selected for the Stage 1 prototype (see the [decision records](docs/decisions/))
 
 - **Rust** home node built on **iroh** (peer connections by public key, hole punching, relay fallback) and **iroh-blobs** (BLAKE3-verified content transfer).
 - **ffmpeg** for transcoding to a low-bitrate 720p profile, and **libheif** for reading iPhone photos.
-- **Flutter** for the Android app (iOS later), calling the same Rust code through `flutter_rust_bridge`.
+- **Flutter** for the phone app, on Android and iPhone, calling the same Rust code through `flutter_rust_bridge`.
 
 Still to evaluate:
 

@@ -1,4 +1,4 @@
-# Open Social P2P: Android app
+# Open Social P2P: the phone app
 
 The phone app is a remote control for your home node ([ADR 0001](../docs/decisions/0001-home-node-architecture.md)). It pairs with the node by QR code and then talks only to it ([ADR 0008](../docs/decisions/0008-device-pairing-and-client-protocol.md)). With it you can read your feed, play videos, post photos and videos, reshare, follow people by their QR code and see whether your node is healthy.
 
@@ -9,13 +9,13 @@ All networking is Rust: [`crates/osp-client`](../crates/osp-client/), reached th
 | `lib/node.dart` | The app's view of its home node: pairing, reachability, health, feed |
 | `lib/screens/`, `lib/widgets/` | The UI |
 | `lib/uploads.dart` | Keeps a post's files in the app's own folder until the node has published it |
-| `lib/background_upload.dart`, `android/.../UploadService.kt` | Keeps a post sending in the background, with a notification |
+| `lib/background_upload.dart`, `android/.../UploadService.kt`, `ios/Runner/BackgroundUpload.swift` | Keeps a post sending in the background, with a notification on Android and a Live Activity on an iPhone |
 | `lib/src/rust/` | Generated Dart bindings (don't edit) |
 | `rust/src/api/osp.rs` | The functions Dart calls |
 | `rust/src/frb_generated.rs` | Generated Rust side of the bindings (don't edit) |
 | `rust_builder/` | Cargokit, which builds the Rust library during the Flutter build (generated) |
 
-## Build
+## Build for Android
 
 Requirements: Flutter 3.44 or newer, the Android SDK with NDK 28.2 (Android Studio's SDK manager, or `sdkmanager "ndk;28.2.13676358"`), Rust with the Android target, and Java 17 or newer.
 
@@ -55,6 +55,26 @@ Back up the keystore and its password somewhere other than this computer. Androi
 
 To check which key signed an APK: `apksigner verify --print-certs build/app/outputs/flutter-apk/app-release.apk` (`apksigner` is in the Android SDK's `build-tools`).
 
+## iPhone
+
+Building for an iPhone needs a Mac, so the app is built on [Codemagic](https://codemagic.io)'s, by the `ios-adhoc` workflow in [`codemagic.yaml`](../codemagic.yaml), started by hand. It makes an **ad hoc** build: signed for the iPhones registered in an Apple Developer account and installed over USB, without the App Store or TestFlight. The app runs on iOS 13 and later; keeping a post sending in the background for more than about 30 seconds needs iOS 26.
+
+To set it up once:
+
+1. With a paid Apple Developer membership, register the iPhone under Certificates, IDs & Profiles → Devices. Its UDID: plug it in, `idevicepair pair`, then `ideviceinfo -k UniqueDeviceID` (libimobiledevice).
+2. Create an App Store Connect API key (Users and Access → Integrations → App Store Connect API, with App Manager access). Note its key ID and the issuer ID, and download the `.p8` file, which is offered only once.
+3. Make a private key for the signing certificate, outside the repository: `ssh-keygen -t rsa -b 2048 -m PEM -f ~/keys/ios_distribution_private_key -q -N ""`.
+4. In Codemagic, add the repository, and under its environment variables a group named `app_store_connect` holding `APP_STORE_CONNECT_ISSUER_ID`, `APP_STORE_CONNECT_KEY_IDENTIFIER`, `APP_STORE_CONNECT_PRIVATE_KEY` (the `.p8` file's contents) and `CERTIFICATE_PRIVATE_KEY` (the key file's contents, both lines with `BEGIN` and `END` included), each marked secret.
+
+Back up both key files like the Android keystore. Then start `ios-adhoc` on a branch, download the `.ipa` it makes, and install it on the plugged-in iPhone:
+
+```sh
+sudo apt install ideviceinstaller   # once
+ideviceinstaller -i osp_app.ipa
+```
+
+The first build makes the signing certificate and a profile listing the registered iPhones. An iPhone registered later needs a new profile: delete the old one in the Apple Developer account, and the next build makes one that includes it.
+
 ## After changing the Rust API
 
 ```sh
@@ -76,7 +96,7 @@ The Rust side is checked with the rest of the workspace (`cargo clippy`, `cargo 
 
 ## Notes
 
-- The device key, the pairing and the saved feed live in the app's private storage. Android backups are turned off, so the key never leaves the phone; a new phone pairs again.
-- The video player loads media from `http://127.0.0.1:<port>/<token>/...`, served by the Rust side from the home node. The network security config allows plain HTTP only to 127.0.0.1.
+- The device key, the pairing and the saved feed live in the app's private storage. Android backups are turned off, and on an iPhone the key is kept for this device only, out of backups, so the key never leaves the phone; a new phone pairs again.
+- The video player loads media from `http://127.0.0.1:<port>/<token>/...`, served by the Rust side from the home node. On Android the network security config allows plain HTTP only to 127.0.0.1; on an iPhone `NSAllowsLocalNetworking` in `Info.plist` allows it.
 - A post being sent keeps the app running in the background, with a notification showing its progress. If the app stops anyway, the feed offers to carry on with the post when the app is next opened ([ADR 0008](../docs/decisions/0008-device-pairing-and-client-protocol.md)).
 - The app's log is under *Home node status → Diagnostics log*.
