@@ -53,6 +53,10 @@ const LATECOMER_TIMEOUT: Duration = Duration::from_secs(300);
 /// time a download of seconds.
 const LATECOMER_TICK: Duration = Duration::from_millis(250);
 const MBPS: u64 = 1_000_000;
+/// A run is flagged as on a busy machine when other programs took this
+/// share of its CPUs in some period, or everything together this much.
+const BUSY_OTHERS_PERCENT: f64 = 10.0;
+const FULL_PERCENT: f64 = 90.0;
 
 /// One run: who takes part, the video, and how fast each node can upload.
 #[derive(Debug, Clone)]
@@ -208,6 +212,13 @@ pub struct Report {
     /// Media bytes the creator sent to latecomers. Not part of
     /// `creator_sent_bytes`.
     pub creator_sent_to_latecomers: f64,
+    /// For each latecomer, what it received from each node, most first.
+    pub latecomer_sources: Vec<Vec<Received>>,
+    /// What the followers received, by the upload speed of the nodes it
+    /// came from, the creator apart.
+    pub follower_sources: Vec<Received>,
+    /// How busy the machine was, where it can be read.
+    pub machine: Option<Machine>,
     /// The simulated network, if the run had one.
     pub network: Option<NetworkReport>,
 }
@@ -221,6 +232,49 @@ pub struct Outcomes {
     pub failed: f64,
     /// Times a node couldn't connect to another, to download or to ask.
     pub unreached: f64,
+}
+
+/// What nodes received from one node, or from all the nodes with one
+/// upload speed, by their own records.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct Received {
+    /// The node's name, or "creator" or the speed for a total.
+    pub from: String,
+    pub upload_mbps: u64,
+    /// How many nodes sent something.
+    pub nodes: usize,
+    pub bytes: f64,
+    /// Time taken by the attempts that brought the bytes.
+    pub ms: f64,
+    pub completed: f64,
+    pub busy: f64,
+    /// Attempts that ended without the file, most often a node that sent
+    /// nothing for 30 s.
+    pub failed: f64,
+}
+
+impl Received {
+    /// The rate the bytes came at while they came.
+    pub fn mbps(&self) -> f64 {
+        if self.ms > 0.0 {
+            self.bytes * 8.0 / self.ms / 1000.0
+        } else {
+            0.0
+        }
+    }
+}
+
+/// How busy the machine's CPUs were, from the post on, as shares of all of
+/// them: other programs taking much of them makes a run's times longer
+/// than the network alone would.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct Machine {
+    pub cpus: usize,
+    /// For each period, this run's share and other programs' share, in %.
+    /// The periods are `sample_secs` long, but for the end of the run and
+    /// the latecomers' part.
+    pub run_percent: Vec<f64>,
+    pub others_percent: Vec<f64>,
 }
 
 /// The B8 pass marks: whether this run met each.
@@ -307,6 +361,14 @@ pub async fn run(s: &Scenario) -> Result<Report> {
         latecomers = latecomers.len(),
         "nodes started"
     );
+    let mut hosts = HashMap::new();
+    hosts.insert(creator.node_id(), Host::creator(s.creator_mbps));
+    for (prefix, nodes) in [("F", &followers), ("S", &strangers), ("L", &latecomers)] {
+        for (i, node) in nodes.iter().enumerate() {
+            let host = Host::node(format!("{prefix}{i}"), in_turn(&s.follower_mbps, i));
+            hosts.insert(node.node_id(), host);
+        }
+    }
 
     follow_all(&creator, &followers).await?;
     info!("every follower subscribed");
@@ -329,6 +391,7 @@ pub async fn run(s: &Scenario) -> Result<Report> {
         bail!("post failed");
     };
     let posted = Instant::now();
+    let mut load = Load::start();
     let ClientResponse::Item { item } = call(&creator, ClientRequest::Show { id: post }).await?
     else {
         bail!("can't show the post");
@@ -440,6 +503,7 @@ pub async fn run(s: &Scenario) -> Result<Report> {
         if so_far.len() < periods {
             let sent = sent(&peers(&creator).await?);
             so_far.resize(periods, sent);
+            load.sample();
             info!(
                 secs = now.as_secs(),
                 holding = held.iter().flatten().count(),
@@ -460,6 +524,7 @@ pub async fn run(s: &Scenario) -> Result<Report> {
         tokio::time::sleep(TICK).await;
     }
     let ended_secs = posted.elapsed().as_secs_f64();
+    load.sample();
     // Outages end with the run.
     if let Some(net) = &net {
         for i in cut.drain() {
@@ -496,11 +561,19 @@ pub async fn run(s: &Scenario) -> Result<Report> {
 
     let latecomer_took_secs = latecomers_fetch(&creator, &latecomers, post, video).await?;
     tokio::time::sleep(SETTLE).await;
+    if !latecomers.is_empty() {
+        load.sample();
+    }
     let mut latecomer_records = Vec::new();
     for node in &latecomers {
         latecomer_records.push(peers(node).await?);
     }
     let from_latecomers = tally(&latecomer_records, creator.node_id());
+    let latecomer_sources = latecomer_records
+        .iter()
+        .map(|seen| received(seen, &hosts))
+        .collect();
+    let follower_sources = by_speed(&follower_records, &hosts);
     let latecomer_ids: HashSet<EndpointId> = latecomers.iter().map(Node::node_id).collect();
     let creator_sent_to_latecomers = total(
         peers(&creator)
@@ -554,6 +627,9 @@ pub async fn run(s: &Scenario) -> Result<Report> {
         latecomer_took_secs,
         latecomer_downloads: from_latecomers.downloads,
         creator_sent_to_latecomers,
+        latecomer_sources,
+        follower_sources,
+        machine: load.machine,
         network: s.network.as_ref().zip(net).map(|(n, net)| NetworkReport {
             settings: n.clone(),
             flaky_followers: flaky,
@@ -839,6 +915,56 @@ impl Report {
                 out,
                 "latecomers' downloads: {}",
                 outcomes(&self.latecomer_downloads),
+            );
+            for (i, sources) in self.latecomer_sources.iter().enumerate() {
+                let took = self.latecomer_took_secs.get(i).copied().flatten();
+                let _ = writeln!(
+                    out,
+                    "latecomer {i}, {}: {}",
+                    time(took),
+                    sources
+                        .iter()
+                        .map(|r| r.line(false))
+                        .collect::<Vec<_>>()
+                        .join("; "),
+                );
+            }
+        }
+        if !self.follower_sources.is_empty() {
+            let _ = writeln!(
+                out,
+                "followers received, by the sending nodes' upload: {}",
+                self.follower_sources
+                    .iter()
+                    .map(|r| r.line(true))
+                    .collect::<Vec<_>>()
+                    .join("; "),
+            );
+        }
+        if let Some(m) = &self.machine {
+            let average =
+                |shares: &[f64]| total(shares.iter().copied()) / shares.len().max(1) as f64;
+            let most = |shares: &[f64]| shares.iter().copied().fold(0.0, f64::max);
+            let busiest = m
+                .run_percent
+                .iter()
+                .zip(&m.others_percent)
+                .map(|(r, o)| r + o);
+            let warning = if most(&m.others_percent) >= BUSY_OTHERS_PERCENT
+                || busiest.fold(0.0, f64::max) >= FULL_PERCENT
+            {
+                "; a busy machine, so compare this run's times with care"
+            } else {
+                ""
+            };
+            let _ = writeln!(
+                out,
+                "machine: {} CPUs; this run took {:.0}% of them on average, most {:.0}%; other programs {:.0}%, most {:.0}%{warning}",
+                m.cpus,
+                average(&m.run_percent),
+                most(&m.run_percent),
+                average(&m.others_percent),
+                most(&m.others_percent),
             );
         }
         let _ = write!(
@@ -1142,6 +1268,205 @@ fn tally(records: &[Vec<PeerRecord>], creator: EndpointId) -> Tally {
     t
 }
 
+/// A node in the run, as the report names it.
+struct Host {
+    name: String,
+    upload_mbps: u64,
+    creator: bool,
+}
+
+impl Host {
+    fn creator(upload_mbps: u64) -> Self {
+        Self {
+            name: "creator".to_string(),
+            upload_mbps,
+            creator: true,
+        }
+    }
+
+    fn node(name: String, upload_mbps: u64) -> Self {
+        Self {
+            name,
+            upload_mbps,
+            creator: false,
+        }
+    }
+}
+
+/// What one node's records say it received from each node it downloaded
+/// from, or tried to, most first.
+fn received(seen: &[PeerRecord], hosts: &HashMap<EndpointId, Host>) -> Vec<Received> {
+    let mut list: Vec<Received> = seen
+        .iter()
+        .filter(|p| {
+            p.counts.received_bytes > 0.0
+                || p.counts.completed + p.counts.busy + p.counts.failed > 0.0
+        })
+        .map(|p| {
+            let (from, upload_mbps) = match hosts.get(&p.node) {
+                Some(h) => (h.name.clone(), h.upload_mbps),
+                None => (p.node.fmt_short().to_string(), 0),
+            };
+            Received {
+                from,
+                upload_mbps,
+                nodes: 1,
+                bytes: p.counts.received_bytes,
+                ms: p.counts.receive_ms,
+                completed: p.counts.completed,
+                busy: p.counts.busy,
+                failed: p.counts.failed,
+            }
+        })
+        .collect();
+    list.sort_by(|a, b| b.bytes.total_cmp(&a.bytes));
+    list
+}
+
+/// What a group of nodes received, added up by the upload speed of the
+/// nodes it came from, slowest first, with the creator last on its own.
+fn by_speed(records: &[Vec<PeerRecord>], hosts: &HashMap<EndpointId, Host>) -> Vec<Received> {
+    // Keyed by (from the creator, speed); the senders seen, to count them.
+    let mut totals: std::collections::BTreeMap<(bool, u64), (Received, HashSet<EndpointId>)> =
+        Default::default();
+    for seen in records {
+        for p in seen {
+            let Some(host) = hosts.get(&p.node) else {
+                continue;
+            };
+            let (t, senders) = totals
+                .entry((host.creator, host.upload_mbps))
+                .or_insert_with(|| {
+                    let from = if host.creator {
+                        "creator".to_string()
+                    } else {
+                        format!("{} Mbit/s nodes", host.upload_mbps)
+                    };
+                    let r = Received {
+                        from,
+                        upload_mbps: host.upload_mbps,
+                        ..Received::default()
+                    };
+                    (r, HashSet::new())
+                });
+            let c = &p.counts;
+            if c.received_bytes > 0.0 {
+                senders.insert(p.node);
+            }
+            t.bytes += c.received_bytes;
+            t.ms += c.receive_ms;
+            t.completed += c.completed;
+            t.busy += c.busy;
+            t.failed += c.failed;
+        }
+    }
+    totals
+        .into_values()
+        .map(|(mut t, senders)| {
+            t.nodes = senders.len();
+            t
+        })
+        .collect()
+}
+
+impl Received {
+    /// One entry of a summary line, for one node or, with `total`, for
+    /// what [`by_speed`] added up.
+    fn line(&self, total: bool) -> String {
+        let mut line = if !total {
+            format!("{} ({} Mbit/s up)", self.from, self.upload_mbps)
+        } else if self.from == "creator" {
+            self.from.clone()
+        } else {
+            format!("{} ({} sending)", self.from, self.nodes)
+        };
+        let _ = write!(
+            line,
+            " {:.1} MB at {:.2} Mbit/s, {:.0} completed",
+            self.bytes / 1e6,
+            self.mbps(),
+            self.completed,
+        );
+        if self.busy > 0.0 {
+            let _ = write!(line, ", {:.0} busy", self.busy);
+        }
+        if self.failed > 0.0 {
+            let _ = write!(line, ", {:.0} failed", self.failed);
+        }
+        line
+    }
+}
+
+/// CPU time so far, in clock ticks: the whole machine's busy and total
+/// time over all its CPUs, and this process's.
+#[derive(Clone, Copy)]
+struct CpuTimes {
+    busy: u64,
+    total: u64,
+    ours: u64,
+}
+
+/// Reads [`CpuTimes`] from `/proc`, on Linux.
+fn cpu_times() -> Option<CpuTimes> {
+    let stat = std::fs::read_to_string("/proc/stat").ok()?;
+    let line = stat.lines().next()?.strip_prefix("cpu ")?;
+    // user, nice, system, idle, iowait, irq, softirq, steal.
+    let n: Vec<u64> = line
+        .split_whitespace()
+        .take(8)
+        .map(|f| f.parse().ok())
+        .collect::<Option<_>>()?;
+    let total: u64 = n.iter().sum();
+    let idle = n.get(3)? + n.get(4)?;
+    let own = std::fs::read_to_string("/proc/self/stat").ok()?;
+    // After the program's name, which can hold spaces: state is the first
+    // field, user time the 12th and system time the 13th.
+    let fields: Vec<&str> = own[own.rfind(')')? + 1..].split_whitespace().collect();
+    let ours = fields.get(11)?.parse::<u64>().ok()? + fields.get(12)?.parse::<u64>().ok()?;
+    Some(CpuTimes {
+        busy: total - idle,
+        total,
+        ours,
+    })
+}
+
+/// Samples how busy the machine is, period by period.
+struct Load {
+    last: Option<CpuTimes>,
+    machine: Option<Machine>,
+}
+
+impl Load {
+    fn start() -> Self {
+        let last = cpu_times();
+        Self {
+            last,
+            machine: last.map(|_| Machine {
+                cpus: std::thread::available_parallelism().map_or(1, usize::from),
+                ..Machine::default()
+            }),
+        }
+    }
+
+    /// Adds the period since the last sample.
+    fn sample(&mut self) {
+        let (Some(last), Some(machine), Some(now)) = (self.last, &mut self.machine, cpu_times())
+        else {
+            return;
+        };
+        let total = now.total.saturating_sub(last.total);
+        if total == 0 {
+            return;
+        }
+        let ours = now.ours.saturating_sub(last.ours);
+        let others = now.busy.saturating_sub(last.busy).saturating_sub(ours);
+        let share = |ticks: u64| 100.0 * ticks as f64 / total as f64;
+        machine.run_percent.push(share(ours));
+        machine.others_percent.push(share(others));
+        self.last = Some(now);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1408,5 +1733,81 @@ mod tests {
             ],
             [3.0, 6.0, 9.0, 12.0, 15.0, 18.0]
         );
+    }
+
+    #[test]
+    fn what_came_from_where_is_added_up_by_speed() {
+        let key = || osp_proto::SecretKey::generate().public();
+        let (creator, slow1, slow2, fast, stranger) = (key(), key(), key(), key(), key());
+        let hosts = HashMap::from([
+            (creator, Host::creator(1)),
+            (slow1, Host::node("F1".into(), 1)),
+            (slow2, Host::node("F2".into(), 1)),
+            (fast, Host::node("F3".into(), 10)),
+        ]);
+        let record = |node, received_bytes, receive_ms, failed| PeerRecord {
+            node,
+            actor: None,
+            name: None,
+            followed: false,
+            follower: false,
+            host: false,
+            contacted: true,
+            first_contact_secs_ago: 0,
+            last_contact_secs_ago: 0,
+            counts: osp_proto::rpc::PeerCounts {
+                received_bytes,
+                receive_ms,
+                completed: f64::from(received_bytes > 0.0),
+                failed,
+                ..Default::default()
+            },
+        };
+        let records = [
+            vec![
+                record(slow1, 1e6, 8000.0, 0.0),
+                record(fast, 4e6, 4000.0, 0.0),
+                record(creator, 1e6, 1000.0, 0.0),
+                // Asked, but never downloaded from: left out.
+                record(stranger, 0.0, 0.0, 0.0),
+            ],
+            vec![
+                record(slow1, 1e6, 8000.0, 0.0),
+                record(slow2, 0.0, 0.0, 1.0),
+            ],
+        ];
+
+        let one = received(&records[0], &hosts);
+        let names: Vec<&str> = one.iter().map(|r| r.from.as_str()).collect();
+        assert_eq!(names, ["F3", "F1", "creator"], "most bytes first");
+        assert_eq!(one[0].mbps(), 8.0);
+        assert_eq!(one[1].mbps(), 1.0);
+
+        let speeds = by_speed(&records, &hosts);
+        let names: Vec<&str> = speeds.iter().map(|r| r.from.as_str()).collect();
+        assert_eq!(names, ["1 Mbit/s nodes", "10 Mbit/s nodes", "creator"]);
+        let slow = &speeds[0];
+        assert_eq!((slow.bytes, slow.ms, slow.failed), (2e6, 16000.0, 1.0));
+        assert_eq!(slow.nodes, 1, "the node that only failed sent nothing");
+        assert_eq!(slow.mbps(), 1.0);
+        assert_eq!(speeds[2].bytes, 1e6);
+        assert_eq!(Received::default().mbps(), 0.0, "nothing came, not NaN");
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn the_machine_load_counts_this_process() {
+        let mut load = Load::start();
+        let busy_until = Instant::now() + Duration::from_millis(300);
+        let mut n = 0u64;
+        while Instant::now() < busy_until {
+            n = std::hint::black_box(n.wrapping_add(1));
+        }
+        load.sample();
+        let m = load.machine.expect("readable on Linux");
+        assert!(m.cpus >= 1);
+        let (run, others) = (m.run_percent[0], m.others_percent[0]);
+        assert!(run > 0.0, "{run}");
+        assert!(others >= 0.0 && run + others <= 100.0, "{run} {others}");
     }
 }
