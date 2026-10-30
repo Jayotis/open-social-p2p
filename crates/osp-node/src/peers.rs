@@ -95,6 +95,7 @@ fn add(c: &mut PeerCounts, event: Event) {
                 Outcome::BadData => c.bad_data += 1.0,
                 Outcome::Unreachable => c.unreached += 1.0,
                 Outcome::Failed => c.failed += 1.0,
+                Outcome::HandedOn => c.handed_on += 1.0,
                 // We stopped it; that says nothing about the node.
                 Outcome::Stopped => {}
             }
@@ -183,15 +184,23 @@ mod tests {
             Outcome::BadData,
             Outcome::Unreachable,
             Outcome::Failed,
+            Outcome::HandedOn,
             Outcome::Stopped,
         ] {
             add(&mut c, download(outcome, 0));
         }
-        assert_eq!(c.tries, 9.0);
+        assert_eq!(c.tries, 10.0);
         assert_eq!(c.unreached, 2.0);
         assert_eq!(
-            (c.completed, c.busy, c.not_hosting, c.bad_data, c.failed),
-            (1.0, 1.0, 1.0, 1.0, 1.0)
+            (
+                c.completed,
+                c.busy,
+                c.not_hosting,
+                c.bad_data,
+                c.failed,
+                c.handed_on
+            ),
+            (1.0, 1.0, 1.0, 1.0, 1.0, 1.0)
         );
         // Only attempts that brought bytes count toward speed.
         assert_eq!(
