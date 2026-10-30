@@ -188,3 +188,17 @@ The harness now reports where each latecomer's bytes came from (the bytes, the r
 **What it shows.** Switching by the rates removes the wait on slow hosts once a fast one is among the three, but most downloads never draw one. The rest is choosing which hosts to ask: the others named in the `WhoHosts` reply, of which a download uses three of up to six, and the record of how hosts did before.
 
 **Handed on, not failed.** Added on 2026-10-30, before these runs. A host that is busy holds a new request for up to 10 s, waiting for a place, before it refuses (`BUSY_WAIT`), and a download hands a part on once its node has sent nothing for 2 s. So the 71 failed downloads were most likely requests waiting for a place, not failures. Such an attempt is now its own outcome, handed on, counted apart in the peer record (`ac4a2d9`). The slow-hosts run again with it; and once with the wait before handing a part on raised to 12 s, longer than a busy host takes to refuse, to see what waiting longer costs (a build for this run only, not committed). Expected with `ac4a2d9`: failed downloads near 0 and about as many handed on as there were failed before. With 12 s: refusals heard as busy again, and the followers' times, the latecomers with a fast host and the busy refusals compared with `ac4a2d9`.
+
+**Results**, 2026-10-30, one round on the same machine; other programs took at most 6% of its CPUs.
+
+| Wait before handing on | Latecomers that drew a fast host | The rest | Followers: 50% / 95% / all | Creator's copies | Followers' requests refused as busy | Followers' failed / handed on |
+| --- | --- | --- | --- | --- | --- | --- |
+| 2 s (`ac4a2d9`) | 2: 6.7 s and 10.4 s | 8: 144.0 to 145.3 s | 1,768 / 2,327 / 2,558 s | 48.6 | 3,515 | 6 / 46 |
+| 12 s | 3: 5.0, 11.0 and 14.2 s | 7: 144.0 to 145.0 s | 1,523 / 2,107 / 2,232 s | 33.1 | 1,955 | 6 / 10 |
+
+- **Handed on, as expected.** With `ac4a2d9`, 6 downloads failed and 46 were handed on, against 71 failed with the same download code before (`576aaaf`): slow starts are now told apart from failures.
+- **12 s did better in this pair on every count.** Followers had the video sooner, the creator sent 15.5 fewer copies, fewer requests were refused as busy, the 100 Mbit/s nodes sent more (394 transfers and 3,382 MB, against 132 and 2,189 MB), and fewer parts were handed on. Latecomers with a fast host were as quick.
+- **But the 2 s run is the odd one out.** `ac4a2d9` downloads exactly as `576aaaf` does (it changes only what is recorded), and `576aaaf`'s run did better than both: all followers at 2,064 s, 25.8 creator's copies, 721 refused as busy. In the 2 s run the creator's copies climbed from 35 to 48 between minutes 15 and 19, which nothing in the code explains. The runs vary more than the two waits differ, so this pair doesn't settle it.
+- **Unchanged:** latecomers whose three hosts were all slow took 144 to 145 s either way.
+
+**Decision**, 2026-10-30: the wait becomes 12 s (`SLOW_START`), without repeating the pair, to keep moving. A busy host's refusal is then heard as one, so the peer record counts busy hosts as busy and fewer requests are made, and this pair showed no cost. Revisit if real use shows downloads held up by nodes that send nothing; the constant's comment says so.
