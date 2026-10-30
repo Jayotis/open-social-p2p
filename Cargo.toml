@@ -32,7 +32,7 @@ noq-udp = { version = "1.4", default-features = false } # the same
 postcard = { version = "1", default-features = false, features = ["use-std"] }
 qr2term = "0.3"
 ring = "0.17" # already used by iroh; encrypts backup files (ADR 0009)
-rusqlite = { version = "0.40", features = ["bundled"] }
+rusqlite = { version = "0.41", features = ["bundled"] }
 rustix = { version = "1", features = ["fs"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
