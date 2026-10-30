@@ -230,6 +230,8 @@ pub struct Outcomes {
     pub not_hosting: f64,
     pub bad_data: f64,
     pub failed: f64,
+    /// Handed to a faster node before sending anything.
+    pub handed_on: f64,
     /// Times a node couldn't connect to another, to download or to ask.
     pub unreached: f64,
 }
@@ -251,6 +253,7 @@ pub struct Received {
     /// Attempts that ended without the file, most often a node that sent
     /// nothing for 30 s.
     pub failed: f64,
+    pub handed_on: f64,
 }
 
 impl Received {
@@ -758,8 +761,8 @@ impl Report {
         };
         let outcomes = |d: &Outcomes| {
             format!(
-                "{:.0} completed, {:.0} busy, {:.0} not hosting, {:.0} bad data, {:.0} failed; couldn't connect {:.0} times",
-                d.completed, d.busy, d.not_hosting, d.bad_data, d.failed, d.unreached,
+                "{:.0} completed, {:.0} busy, {:.0} not hosting, {:.0} bad data, {:.0} failed, {:.0} handed on; couldn't connect {:.0} times",
+                d.completed, d.busy, d.not_hosting, d.bad_data, d.failed, d.handed_on, d.unreached,
             )
         };
         let marks = self.marks();
@@ -1262,6 +1265,7 @@ fn tally(records: &[Vec<PeerRecord>], creator: EndpointId) -> Tally {
             d.not_hosting += c.not_hosting;
             d.bad_data += c.bad_data;
             d.failed += c.failed;
+            d.handed_on += c.handed_on;
             d.unreached += c.unreached;
         }
     }
@@ -1299,8 +1303,8 @@ fn received(seen: &[PeerRecord], hosts: &HashMap<EndpointId, Host>) -> Vec<Recei
     let mut list: Vec<Received> = seen
         .iter()
         .filter(|p| {
-            p.counts.received_bytes > 0.0
-                || p.counts.completed + p.counts.busy + p.counts.failed > 0.0
+            let c = &p.counts;
+            c.received_bytes > 0.0 || c.completed + c.busy + c.failed + c.handed_on > 0.0
         })
         .map(|p| {
             let (from, upload_mbps) = match hosts.get(&p.node) {
@@ -1316,6 +1320,7 @@ fn received(seen: &[PeerRecord], hosts: &HashMap<EndpointId, Host>) -> Vec<Recei
                 completed: p.counts.completed,
                 busy: p.counts.busy,
                 failed: p.counts.failed,
+                handed_on: p.counts.handed_on,
             }
         })
         .collect();
@@ -1358,6 +1363,7 @@ fn by_speed(records: &[Vec<PeerRecord>], hosts: &HashMap<EndpointId, Host>) -> V
             t.completed += c.completed;
             t.busy += c.busy;
             t.failed += c.failed;
+            t.handed_on += c.handed_on;
         }
     }
     totals
@@ -1392,6 +1398,9 @@ impl Received {
         }
         if self.failed > 0.0 {
             let _ = write!(line, ", {:.0} failed", self.failed);
+        }
+        if self.handed_on > 0.0 {
+            let _ = write!(line, ", {:.0} handed on", self.handed_on);
         }
         line
     }
@@ -1708,6 +1717,7 @@ mod tests {
                 bad_data: 4.0,
                 failed: 5.0,
                 unreached: 6.0,
+                handed_on: 7.0,
                 ..Default::default()
             },
         };
@@ -1729,9 +1739,10 @@ mod tests {
                 d.not_hosting,
                 d.bad_data,
                 d.failed,
-                d.unreached
+                d.unreached,
+                d.handed_on
             ],
-            [3.0, 6.0, 9.0, 12.0, 15.0, 18.0]
+            [3.0, 6.0, 9.0, 12.0, 15.0, 18.0, 21.0]
         );
     }
 

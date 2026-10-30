@@ -354,6 +354,10 @@ pub struct PeerCounts {
     pub not_hosting: f64,
     pub bad_data: f64,
     pub failed: f64,
+    /// Attempts that hadn't sent anything when the rest of their part went
+    /// to a faster node: most often waiting for a place at a busy node.
+    /// Neither a failure nor a refusal.
+    pub handed_on: f64,
     /// Media bytes received from it, and the time taken by the attempts
     /// that brought them.
     pub received_bytes: f64,
@@ -382,6 +386,7 @@ impl PeerCounts {
             not_hosting: self.not_hosting * factor,
             bad_data: self.bad_data * factor,
             failed: self.failed * factor,
+            handed_on: self.handed_on * factor,
             received_bytes: self.received_bytes * factor,
             receive_ms: self.receive_ms * factor,
             first_byte_ms: self.first_byte_ms * factor,

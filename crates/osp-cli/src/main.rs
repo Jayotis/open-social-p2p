@@ -843,12 +843,15 @@ fn print_peers(peers: &[PeerRecord]) {
         if !asked.is_empty() {
             println!("  {}", asked.join("; "));
         }
-        let attempts = c.completed + c.busy + c.not_hosting + c.bad_data + c.failed;
+        let attempts = c.completed + c.busy + c.not_hosting + c.bad_data + c.failed + c.handed_on;
         if attempts > 0.0 || c.received_bytes > 0.0 {
             let mut line = format!(
                 "  downloads from it: {:.0} completed, {:.0} busy, {:.0} not hosting, {:.0} bad data, {:.0} failed",
                 c.completed, c.busy, c.not_hosting, c.bad_data, c.failed
             );
+            if c.handed_on > 0.0 {
+                line += &format!(", {:.0} handed on before it sent anything", c.handed_on);
+            }
             if c.received_bytes > 0.0 {
                 line += &format!("; {}", size(c.received_bytes as u64));
                 if c.receive_ms > 0.0 {

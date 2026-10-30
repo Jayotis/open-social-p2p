@@ -41,7 +41,7 @@ Download outcomes (b), a table of fading counters (b), and `osp peers` (b).
 | --- | --- |
 | **Reachability** | Connection attempts this node makes to the peer, and how many fail or time out |
 | **Answers** | Social requests sent to the peer, how many got a reply in time, and how long replies took. An error reply counts as an answer: the node is up and responding |
-| **Downloads from it** | Attempts to download media from it, by outcome: completed, busy, doesn't host it, bad data, failed (anything else, such as a dropped connection or a timeout). For completed and partly completed ones, the bytes received, the time taken, and the time to the first byte |
+| **Downloads from it** | Attempts to download media from it, by outcome: completed, busy, doesn't host it, bad data, failed (anything else, such as a dropped connection or a timeout), and handed on (it hadn't sent anything when the rest of its part of a file went to a faster node, most often because it was busy and the request was waiting for a place; neither a failure nor a refusal). For completed and partly completed ones, the bytes received, the time taken, and the time to the first byte |
 | **Media served to it** | Bytes sent to it, transfers, and requests from it refused as busy |
 | **When** | First and last contact |
 

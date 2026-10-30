@@ -641,7 +641,7 @@ impl ContentStore {
                                 break if attempt.bytes > 0 {
                                     Outcome::Completed
                                 } else {
-                                    Outcome::Failed
+                                    Outcome::HandedOn
                                 };
                             }
                             // Stalled, or out of time.
@@ -1140,6 +1140,10 @@ pub(crate) enum Outcome {
     /// Anything else: a dropped connection, an error, nothing sent for a
     /// while, or out of time.
     Failed,
+    /// It hadn't sent anything when all of its part went to a faster node
+    /// (`SLOW_START`): most often it was waiting for a place, as a busy
+    /// node makes a request wait up to `BUSY_WAIT` before refusing.
+    HandedOn,
     /// We stopped it: more arrived than the post says the blob has. That
     /// says nothing about the node, which can only send the blob the hash names.
     Stopped,
@@ -1757,6 +1761,27 @@ mod tests {
             self.provider_with(data, Some(events)).await
         }
 
+        /// Like a busy node, holds each request for `wait` before it sends
+        /// anything.
+        async fn waiting_provider(&self, data: &[u8], wait: Duration) -> (Provider, Hash) {
+            let mask = EventMask {
+                get: RequestMode::Intercept,
+                ..EventMask::DEFAULT
+            };
+            let (events, mut rx) = EventSender::channel(8, mask);
+            tokio::spawn(async move {
+                while let Some(msg) = rx.recv().await {
+                    if let ProviderMessage::GetRequestReceived(msg) = msg {
+                        tokio::spawn(async move {
+                            tokio::time::sleep(wait).await;
+                            msg.tx.send(Ok(())).await.ok();
+                        });
+                    }
+                }
+            });
+            self.provider_with(data, Some(events)).await
+        }
+
         async fn provider_with(
             &self,
             data: &[u8],
@@ -2295,6 +2320,38 @@ mod tests {
         let counts = f.record(silent.id());
         assert!(counts.received_bytes <= BLOCK as f64, "{counts:?}");
         assert_eq!(counts.completed.round(), 1.0, "{counts:?}");
+        let out = f.dir.path().join("out");
+        store.export(&blob, &out).await.unwrap();
+        assert!(std::fs::read(&out).unwrap() == data);
+    }
+
+    #[tokio::test]
+    async fn a_node_still_waiting_to_send_is_handed_on_not_failed() {
+        let f = Fixture::new().await;
+        let store = f.open_with_quotas(64).await;
+        let data = noise(12);
+        let size = data.len() as u64;
+        let (waiting, hash) = f.waiting_provider(&data, Duration::from_secs(60)).await;
+        let (fast, _) = f.provider(&data, None).await;
+        let (also_fast, _) = f.provider(&data, None).await;
+        let blob = to_blob_hash(hash);
+        let sources = Sources {
+            at_once: vec![waiting.id(), fast.id(), also_fast.id()],
+            in_turn: Vec::new(),
+        };
+        let started = Instant::now();
+        store
+            .download(&blob, sources, BlobClass::Cache, size)
+            .await
+            .unwrap();
+        // After `SLOW_START` with nothing sent, the rest of its part went
+        // to the others; its record says so, not that it failed.
+        let took = started.elapsed();
+        assert!(took < Duration::from_secs(10), "{took:?}");
+        let counts = f.record(waiting.id());
+        assert_eq!(counts.handed_on.round(), 1.0, "{counts:?}");
+        assert_eq!(counts.failed, 0.0, "{counts:?}");
+        assert_eq!(counts.received_bytes, 0.0, "{counts:?}");
         let out = f.dir.path().join("out");
         store.export(&blob, &out).await.unwrap();
         assert!(std::fs::read(&out).unwrap() == data);
