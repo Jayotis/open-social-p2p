@@ -202,3 +202,18 @@ The harness now reports where each latecomer's bytes came from (the bytes, the r
 - **Unchanged:** latecomers whose three hosts were all slow took 144 to 145 s either way.
 
 **Decision**, 2026-10-30: the wait becomes 12 s (`SLOW_START`), without repeating the pair, to keep moving. A busy host's refusal is then heard as one, so the peer record counts busy hosts as busy and fewer requests are made, and this pair showed no cost. Revisit if real use shows downloads held up by nodes that send nothing; the constant's comment says so.
+
+## Places to suit the upload
+
+Added on 2026-10-30, before any of these runs. With no upload cap, a node served 8 transfers at once whatever its line, so a node uploading at 1 Mbit/s sent each of 8 copies at an eighth of that. The home run with upload caps, where each node had one place per 1.5 Mbit/s of its line, spread the video sooner (95% at 727 s against 775 s) and the creator sent fewer copies (19.0 against 25.0), but real nodes set no cap unless their owner does ([above](#results)). Now (`0f7a881`) a node with no cap starts with 2 places and measures what it sends: the most in any 5 seconds, leaving out each transfer's first 1.25 MB, which QUIC takes at once. It adds places by the cap's rule as faster speeds are measured, and never takes them away ([ADR 0003](../decisions/0003-native-social-protocol-v0.md)). The report now gives each node's places and the speed it measured when the run ended, by the followers' upload.
+
+Before the runs, in short runs and tests: a node at 2 Mbit/s measured 1.9; one at 30 Mbit/s, sending 3 MB copies one after another, measured 17.7 and had 8 places, reading low since each copy's first 1.25 MB isn't counted. In a 30-follower trial of the slow-hosts run, the creator measured 19.9 Mbit/s and had 8 places, and every 1 Mbit/s follower that served measured 1.0 and kept 2. The 100 Mbit/s followers weren't measured with an earlier version that left out each transfer's first second, not its first 1.25 MB: their parts took about a second each.
+
+**The runs.** The home run and the slow-hosts run, each with `0f7a881` and with `954e720`, the code before it, in the same round: home before, home with the change, slow hosts before, slow hosts with the change. Two rounds, since the runs vary from one to the next as much as the [last pair](#switching-away-from-slow-hosts) differed.
+
+**What counts as better.** No new pass marks. The home run is judged on B8's marks, as before, and should meet them with the change too.
+
+- **The places match the lines:** at the end, followers at 5, 10 and 20 Mbit/s have 3, 6 and 8 places, as a cap at their speed would give, those at 1 Mbit/s have 2, and the creator 8. A node that served little may not have been measured, and keeps 2.
+- **Home:** the followers' times and the creator's copies move toward the run with caps, and are no worse than the run before the change in the same round, within the variation the [repeats](#repeats) showed.
+- **Slow hosts:** the 1 Mbit/s hosts serve 2 at once instead of 8, so each copy they take on finishes sooner and the rest go to other hosts. The followers' times should be shorter than before the change; the creator's copies may rise, since more requests are refused as busy, and should stay within what earlier slow-hosts runs showed (23.2 to 48.6 copies on 2026-10-30). The latecomers' times are recorded.
+- **Busy refusals** will rise in both: refusing early is the point. Not a failure in itself.
