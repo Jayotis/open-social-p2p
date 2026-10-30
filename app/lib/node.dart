@@ -230,7 +230,7 @@ class HomeNode extends ChangeNotifier with WidgetsBindingObserver {
     if (paired == null) return;
     switch (state) {
       case AppLifecycleState.resumed:
-        app.networkChanged();
+        app.resumed();
         _start();
       case AppLifecycleState.paused:
         _stop();

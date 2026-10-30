@@ -326,6 +326,13 @@ impl OspApp {
         self.client.network_change().await;
     }
 
+    /// Call when the app comes back to the foreground. The network may have
+    /// changed meanwhile, and iOS may have taken back the app's sockets.
+    pub async fn resumed(&self) {
+        self.client.resumed();
+        self.client.network_change().await;
+    }
+
     /// Closes the connection while the app is in the background.
     pub async fn disconnect(&self) {
         self.client.disconnect().await;
@@ -335,6 +342,12 @@ impl OspApp {
     #[frb(sync)]
     pub fn recent_log(&self, lines: u32) -> String {
         logging::tail(&self.dir, lines as usize)
+    }
+
+    /// The app's log file, to share.
+    #[frb(sync)]
+    pub fn log_file(&self) -> String {
+        logging::path(&self.dir).to_string_lossy().into_owned()
     }
 
     /// Runs a post until it ends, and reports how, unless `discard_post`
