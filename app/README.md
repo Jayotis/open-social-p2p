@@ -70,7 +70,7 @@ Back up both key files like the Android keystore. Then start `ios-adhoc` on a br
 
 ```sh
 sudo apt install ideviceinstaller   # once
-ideviceinstaller -i osp_app.ipa
+ideviceinstaller install osp_app.ipa
 ```
 
 `Cargo.lock` holds `libc` at 0.2.189: from 0.2.190 it defines `in6_ifreq` for macOS only, and `netdev` 0.46, under iroh's `netwatch`, uses it on iOS too, so the build fails. CI's `ios` job checks those crates for the iPhone, and Dependabot leaves `libc` alone until that's fixed upstream. The Rust code is linked into the app as a static library, which doesn't bring along the Apple frameworks its crates use, so [`osp_mobile.podspec`](rust_builder/ios/osp_mobile.podspec) lists them; a crate that starts using another one fails the link with `Undefined symbol` until it's added there.
