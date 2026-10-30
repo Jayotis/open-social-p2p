@@ -767,6 +767,17 @@ fn print_status(s: &StatusInfo) {
     if let Some(free) = s.disk_free_bytes {
         println!("Disk:      {} free", size(free));
     }
+    // An older node doesn't say.
+    if s.transfer_places > 0 {
+        let measured = match s.upload_measured_mbps {
+            Some(mbps) => format!(", for an upload measured at {mbps:.1} Mbit/s"),
+            None => String::new(),
+        };
+        println!(
+            "Serving:   {} media transfers at once{measured}",
+            s.transfer_places
+        );
+    }
     for p in &s.peers {
         let rtt = p.rtt_ms.map(|r| format!("{r} ms")).unwrap_or_default();
         let direction = match p.direction {
