@@ -29,6 +29,12 @@ final class BackgroundUpload {
   private var text = ""
   private var percent: Int?
 
+  // The task's progress is in millionths: sending fills the first 90%,
+  // and the node preparing the post the rest (see `startNudging`).
+  private static let units: Int64 = 1_000_000
+  private static let sentUnits: Int64 = 900_000
+  private var nudge: Timer?
+
   /// Starts keeping the app running. Only works while the app is on
   /// screen, after the owner tapped something.
   func start() {
@@ -36,14 +42,15 @@ final class BackgroundUpload {
     wanted = true
     title = "Sending your post"
     text = ""
-    percent = nil
+    percent = 0
     beginShortTask()
     if #available(iOS 26, *) {
       submitTask()
     }
   }
 
-  /// Updates the Live Activity. `percent` nil leaves the progress as it was.
+  /// Updates the Live Activity. `percent` nil means there's nothing to
+  /// measure: the node is preparing the post.
   func show(title: String, text: String, percent: Int?) {
     self.title = title
     self.text = text
@@ -97,7 +104,7 @@ final class BackgroundUpload {
         self.finishTask(success: false)
       }
     }
-    task.progress.totalUnitCount = 100
+    task.progress.totalUnitCount = Self.units
     update()
   }
 
@@ -106,12 +113,39 @@ final class BackgroundUpload {
     guard let task = task as? BGContinuedProcessingTask else { return }
     task.updateTitle(title, subtitle: text)
     if let percent {
-      // All sent isn't done yet: the node still prepares the post.
-      task.progress.completedUnitCount = Int64(min(percent, 99))
+      stopNudging()
+      task.progress.completedUnitCount = Self.sentUnits * Int64(min(percent, 100)) / 100
+    } else {
+      task.progress.completedUnitCount = max(task.progress.completedUnitCount, Self.sentUnits)
+      startNudging()
     }
   }
 
+  // iOS ends a task whose progress stands still for about 30 seconds, and
+  // while the node prepares the post (a long video can take minutes) there
+  // is nothing to measure. So the progress creeps on, ever slower, without
+  // reaching the end in the 30 minutes the app waits for the node. While
+  // waiting for the node, nothing moves, and iOS may end the task: the
+  // post carries on when the app is next opened.
+  private func startNudging() {
+    guard nudge == nil else { return }
+    nudge = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
+      guard #available(iOS 26, *),
+        let task = self?.task as? BGContinuedProcessingTask
+      else { return }
+      let done = task.progress.completedUnitCount
+      let step = max(1, (Self.units - done) / 40)
+      task.progress.completedUnitCount = min(Self.units - 1, done + step)
+    }
+  }
+
+  private func stopNudging() {
+    nudge?.invalidate()
+    nudge = nil
+  }
+
   private func finishTask(success: Bool) {
+    stopNudging()
     guard let task else { return }
     self.task = nil
     if #available(iOS 26, *), success, let task = task as? BGContinuedProcessingTask {
