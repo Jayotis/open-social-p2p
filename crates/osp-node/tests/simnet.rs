@@ -13,11 +13,12 @@ use iroh::{
     endpoint::{Connection, presets},
     protocol::{AcceptError, ProtocolHandler, Router},
 };
+use iroh_blobs::{Hash, store::mem::MemStore};
 use osp_node::{
     Config, Node, SimSettings,
     simnet::{self, Link, SimNet},
 };
-use osp_proto::rpc::{ClientRequest, ClientResponse};
+use osp_proto::rpc::{ClientRequest, ClientResponse, StatusInfo};
 
 const ALPN: &[u8] = b"osp-test/simnet";
 const MBPS: u64 = 1_000_000;
@@ -260,4 +261,114 @@ async fn nodes_follow_each_other_over_the_simulated_network() {
     );
     b.shutdown().await.unwrap();
     a.shutdown().await.unwrap();
+}
+
+/// Posts a 2048×2048 photo of noise, which comes out at about 3 MB, and
+/// returns its blob.
+async fn post_noise_photo(node: &Node, dir: &std::path::Path) -> Hash {
+    let photo = dir.join("noise.png");
+    let status = tokio::process::Command::new("ffmpeg")
+        .args([
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+        ])
+        .arg("nullsrc=s=2048x2048,geq=random(1)*255:random(1)*255:random(1)*255")
+        .args(["-frames:v", "1"])
+        .arg(&photo)
+        .status()
+        .await
+        .expect("ffmpeg must be installed");
+    assert!(status.success());
+    let post = ClientRequest::Post {
+        content: "noise".into(),
+        attachments: vec![photo],
+        uploads: vec![],
+        upload: None,
+    };
+    call(node, post).await;
+    let ClientResponse::Feed { items } = call(node, ClientRequest::Feed { limit: 1 }).await else {
+        panic!("no feed");
+    };
+    Hash::from_bytes(*items[0].attachments[0].attachment.blob.as_bytes())
+}
+
+async fn status(node: &Node) -> StatusInfo {
+    let ClientResponse::Status(status) = call(node, ClientRequest::Status).await else {
+        panic!("no status");
+    };
+    status
+}
+
+/// A node with no upload cap that uploads at `mbps`, with a photo posted,
+/// and another node on the network to fetch it.
+async fn serving_photo(
+    dir: &std::path::Path,
+    net: &SimNet,
+    mbps: u64,
+) -> (Node, Hash, Connection, Endpoint) {
+    let link = Link {
+        up_bps: mbps * MBPS,
+        ..delay(10)
+    };
+    let node = start(dir, "a", net, link).await;
+    let photo = post_noise_photo(&node, dir).await;
+    // The fewest places until it has measured anything.
+    let before = status(&node).await;
+    assert_eq!(
+        (before.transfer_places, before.upload_measured_mbps),
+        (2, None)
+    );
+    let other = endpoint(net, delay(10)).await;
+    let conn = other
+        .connect(sim_addr(node.node_id()), iroh_blobs::ALPN)
+        .await
+        .unwrap();
+    (node, photo, conn, other)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_node_with_no_upload_cap_measures_a_slow_upload() {
+    let dir = tempfile::tempdir().unwrap();
+    let net = SimNet::new(1);
+    let (node, photo, conn, _other) = serving_photo(dir.path(), &net, 2).await;
+    // 12 s or so at 2 Mbit/s.
+    MemStore::new().remote().fetch(conn, photo).await.unwrap();
+
+    // Measured at about the line's speed, a little under for the overhead.
+    // Counting what QUIC takes at once at the start would read far faster.
+    let after = status(&node).await;
+    let mbps = after.upload_measured_mbps.expect("measured");
+    assert!((1.4..=2.1).contains(&mbps), "{mbps} Mbit/s");
+    assert_eq!(after.transfer_places, 2);
+    node.shutdown().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_node_with_no_upload_cap_takes_on_more_once_it_measures_a_fast_upload() {
+    let dir = tempfile::tempdir().unwrap();
+    let net = SimNet::new(1);
+    let (node, photo, conn, _other) = serving_photo(dir.path(), &net, 30).await;
+    // Each copy takes a second or so at 30 Mbit/s: one after another until
+    // a measurement ends.
+    let start = Instant::now();
+    let measured = loop {
+        assert!(start.elapsed() < Duration::from_secs(30), "never measured");
+        MemStore::new()
+            .remote()
+            .fetch(conn.clone(), photo)
+            .await
+            .unwrap();
+        if let Some(mbps) = status(&node).await.upload_measured_mbps {
+            break mbps;
+        }
+    };
+    // Below the line's speed, since a copy's start isn't measured.
+    assert!((12.0..=31.0).contains(&measured), "{measured} Mbit/s");
+    assert_eq!(status(&node).await.transfer_places, 8);
+    node.shutdown().await.unwrap();
 }

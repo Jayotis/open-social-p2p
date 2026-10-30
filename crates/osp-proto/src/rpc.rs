@@ -250,6 +250,14 @@ pub struct StatusInfo {
     /// Free space on the disk that holds the node's home, if known.
     #[serde(default)]
     pub disk_free_bytes: Option<u64>,
+    /// Media transfers the node serves to other nodes at once.
+    #[serde(default)]
+    pub transfer_places: usize,
+    /// With no upload cap, the fastest the node has been measured sending
+    /// media to other nodes, in Mbit/s, once it has been. Its transfer
+    /// places follow from it.
+    #[serde(default)]
+    pub upload_measured_mbps: Option<f64>,
     /// Things the owner should look at, in plain words. Empty when all is well.
     #[serde(default)]
     pub problems: Vec<String>,

@@ -46,6 +46,10 @@ const MAX_NEW_PER_DAY: u64 = 500;
 const TRANSFER_LIMIT: usize = 8;
 const STRANGER_TRANSFER_LIMIT: usize = 4;
 const TRANSFER_LIMIT_PER_NODE: usize = 2;
+/// An upload cap that gives a node `TRANSFER_LIMIT` places, one per
+/// 1.5 Mbit/s, without slowing loopback. With no cap, a node has the
+/// fewest places until it has measured its upload.
+const EVERY_PLACE_MBPS: u64 = 1000;
 const BUSY_WAIT: Duration = Duration::from_secs(10);
 /// Matches `STALL_TIMEOUT` in `store.rs`.
 const STALL_TIMEOUT: Duration = Duration::from_secs(30);
@@ -59,6 +63,15 @@ const SYNC_WAIT_STEPS: usize = 150;
 async fn start(root: &Path, name: &str) -> Node {
     let home = root.join(name.to_lowercase());
     Node::init(&home, &Config::local_test(name)).unwrap();
+    Node::spawn(&home).await.unwrap()
+}
+
+/// A node with every transfer place, for serving media.
+async fn start_with_every_place(root: &Path, name: &str) -> Node {
+    let home = root.join(name.to_lowercase());
+    let mut config = Config::local_test(name);
+    config.serving.max_upload_mbps = EVERY_PLACE_MBPS;
+    Node::init(&home, &config).unwrap();
     Node::spawn(&home).await.unwrap()
 }
 
@@ -823,7 +836,7 @@ async fn follower_downloading(addr: &EndpointAddr) -> (Stranger, Connection) {
 #[tokio::test(flavor = "multi_thread")]
 async fn media_transfers_take_turns_and_strangers_get_only_some_places() {
     let dir = tempfile::tempdir().unwrap();
-    let node = start(dir.path(), "Mona").await;
+    let node = start_with_every_place(dir.path(), "Mona").await;
     let addr = node.addr().await;
     let (_, blob, _) = post_noise_photo(&node, dir.path()).await;
 
@@ -898,7 +911,7 @@ async fn fetch_part(conn: &Connection, blob: BlobHash, ranges: ChunkRanges) -> b
 async fn a_node_fetching_in_parts_keeps_its_place_for_its_next_part() {
     const MB: u64 = 1 << 20;
     let dir = tempfile::tempdir().unwrap();
-    let node = start(dir.path(), "Mina").await;
+    let node = start_with_every_place(dir.path(), "Mina").await;
     let addr = node.addr().await;
     let (_, blob, size) = post_noise_photo(&node, dir.path()).await;
     assert!(size > 2 * MB + MB / 4, "{size} bytes");
@@ -1017,7 +1030,7 @@ async fn last_thumbnail(node: &Node) -> BlobHash {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_node_with_every_place_taken_sends_downloads_to_another_host() {
     let dir = tempfile::tempdir().unwrap();
-    let node = start(dir.path(), "Nora").await;
+    let node = start_with_every_place(dir.path(), "Nora").await;
     let addr = node.addr().await;
     let (id, blob, size) = post_noise_photo(&node, dir.path()).await;
 
@@ -1124,7 +1137,7 @@ async fn a_node_with_every_place_taken_sends_downloads_to_another_host() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_prefetch_refused_as_busy_is_tried_again_later() {
     let dir = tempfile::tempdir().unwrap();
-    let node = start(dir.path(), "Quinn").await;
+    let node = start_with_every_place(dir.path(), "Quinn").await;
     let addr = node.addr().await;
     let (_, photo, _) = post_noise_photo(&node, dir.path()).await;
     let thumb = last_thumbnail(&node).await;
@@ -1291,7 +1304,7 @@ async fn a_download_moves_on_from_a_host_that_sends_nothing() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_follower_refused_as_busy_is_sent_to_a_follower_with_a_copy() {
     let dir = tempfile::tempdir().unwrap();
-    let node = start(dir.path(), "Sven").await;
+    let node = start_with_every_place(dir.path(), "Sven").await;
     let addr = node.addr().await;
     let (_, photo, size) = post_noise_photo(&node, dir.path()).await;
     let ClientResponse::Ticket { ticket } = call(&node, ClientRequest::Invite).await else {

@@ -218,6 +218,7 @@ impl Core {
         for peer in &mut peers {
             peer.device = self.db.is_device(&peer.node)?;
         }
+        let (transfer_places, upload_measured_mbps) = self.store.serving();
         Ok(StatusInfo {
             name: self.config.name.clone(),
             identity: self.signer.identity(),
@@ -239,6 +240,8 @@ impl Core {
             uptime_secs: self.started.elapsed().as_secs(),
             devices: self.db.devices()?.len(),
             disk_free_bytes,
+            transfer_places,
+            upload_measured_mbps,
         })
     }
 

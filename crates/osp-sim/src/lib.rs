@@ -10,7 +10,7 @@
 //! [B8 test plan]: ../../docs/testing/b8-creator-upload.md
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     fmt::Write as _,
     path::{Path, PathBuf},
     time::{Duration, Instant},
@@ -217,6 +217,10 @@ pub struct Report {
     /// What the followers received, by the upload speed of the nodes it
     /// came from, the creator apart.
     pub follower_sources: Vec<Received>,
+    /// How many transfers the creator served at once when the run ended,
+    /// and the same for each follower that stayed, in follower order.
+    pub creator_serving: Serving,
+    pub follower_serving: Vec<Option<Serving>>,
     /// How busy the machine was, where it can be read.
     pub machine: Option<Machine>,
     /// The simulated network, if the run had one.
@@ -265,6 +269,14 @@ impl Received {
             0.0
         }
     }
+}
+
+/// A node's media transfer places, and with no upload cap, the fastest it
+/// was measured sending, in Mbit/s, if it was.
+#[derive(Debug, Clone, Copy, Default, Serialize)]
+pub struct Serving {
+    pub places: usize,
+    pub measured_mbps: Option<f64>,
 }
 
 /// How busy the machine's CPUs were, from the post on, as shares of all of
@@ -585,6 +597,14 @@ pub async fn run(s: &Scenario) -> Result<Report> {
             .filter(|p| latecomer_ids.contains(&p.node))
             .map(|p| p.counts.sent_bytes),
     );
+    let creator_serving = serving(&creator).await?;
+    let mut follower_serving = Vec::new();
+    for node in &followers {
+        follower_serving.push(match node {
+            Some(node) => Some(serving(node).await?),
+            None => None,
+        });
+    }
 
     let running = followers
         .into_iter()
@@ -632,6 +652,8 @@ pub async fn run(s: &Scenario) -> Result<Report> {
         creator_sent_to_latecomers,
         latecomer_sources,
         follower_sources,
+        creator_serving,
+        follower_serving,
         machine: load.machine,
         network: s.network.as_ref().zip(net).map(|(n, net)| NetworkReport {
             settings: n.clone(),
@@ -944,6 +966,20 @@ impl Report {
                     .join("; "),
             );
         }
+        // Reports from before the places were measured have none.
+        if self.creator_serving.places > 0 {
+            let c = &self.creator_serving;
+            let measured = match c.measured_mbps {
+                Some(mbps) => format!(", measured {mbps:.1} Mbit/s"),
+                None => String::new(),
+            };
+            let _ = writeln!(
+                out,
+                "transfer places when the run ended: creator {}{measured}; followers at {}",
+                c.places,
+                places_by_speed(&self.follower_mbps, &self.follower_serving).join("; "),
+            );
+        }
         if let Some(m) = &self.machine {
             let average =
                 |shares: &[f64]| total(shares.iter().copied()) / shares.len().max(1) as f64;
@@ -1080,6 +1116,63 @@ async fn peers(node: &Node) -> Result<Vec<PeerRecord>> {
         bail!("no peer record");
     };
     Ok(peers)
+}
+
+async fn serving(node: &Node) -> Result<Serving> {
+    let ClientResponse::Status(status) = call(node, ClientRequest::Status).await? else {
+        bail!("no status");
+    };
+    Ok(Serving {
+        places: status.transfer_places,
+        measured_mbps: status.upload_measured_mbps,
+    })
+}
+
+/// The followers' transfer places, grouped by their upload speed, for
+/// people to read: "1 Mbit/s: places 2 (270), measured 0.9 Mbit/s (0.5 to
+/// 1.0)". Followers that stopped aren't counted.
+fn places_by_speed(follower_mbps: &[u64], serving: &[Option<Serving>]) -> Vec<String> {
+    let mut speeds = follower_mbps.to_vec();
+    speeds.sort();
+    speeds.dedup();
+    speeds
+        .into_iter()
+        .map(|speed| {
+            let nodes: Vec<Serving> = serving
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| in_turn(follower_mbps, *i) == speed)
+                .filter_map(|(_, s)| *s)
+                .collect();
+            let mut places: BTreeMap<usize, usize> = BTreeMap::new();
+            for node in &nodes {
+                *places.entry(node.places).or_default() += 1;
+            }
+            let places: Vec<String> = places
+                .iter()
+                .map(|(places, nodes)| format!("{places} ({nodes})"))
+                .collect();
+            let mut measured: Vec<f64> = nodes.iter().filter_map(|n| n.measured_mbps).collect();
+            measured.sort_by(f64::total_cmp);
+            let measured = match (measured.first(), measured.last()) {
+                (Some(least), Some(most)) => format!(
+                    "measured {:.1} Mbit/s ({least:.1} to {most:.1})",
+                    measured[measured.len() / 2]
+                ),
+                _ => "not measured".to_string(),
+            };
+            let unmeasured = nodes.iter().filter(|n| n.measured_mbps.is_none()).count();
+            let unmeasured = if unmeasured > 0 && unmeasured < nodes.len() {
+                format!(", {unmeasured} not measured")
+            } else {
+                String::new()
+            };
+            format!(
+                "{speed} Mbit/s: places {}, {measured}{unmeasured}",
+                places.join(", ")
+            )
+        })
+        .collect()
 }
 
 /// Media bytes sent to every peer together.
@@ -1803,6 +1896,39 @@ mod tests {
         assert_eq!(slow.mbps(), 1.0);
         assert_eq!(speeds[2].bytes, 1e6);
         assert_eq!(Received::default().mbps(), 0.0, "nothing came, not NaN");
+    }
+
+    #[test]
+    fn places_are_grouped_by_upload_speed() {
+        let node = |places, measured_mbps| {
+            Some(Serving {
+                places,
+                measured_mbps,
+            })
+        };
+        // In turn: 1, 10, 1, 10, 1. The last stopped.
+        let serving = [
+            node(2, Some(0.9)),
+            node(6, Some(9.5)),
+            node(2, Some(0.7)),
+            node(8, Some(12.4)),
+            None,
+        ];
+        assert_eq!(
+            places_by_speed(&[1, 10], &serving),
+            [
+                "1 Mbit/s: places 2 (2), measured 0.9 Mbit/s (0.7 to 0.9)",
+                "10 Mbit/s: places 6 (1), 8 (1), measured 12.4 Mbit/s (9.5 to 12.4)",
+            ]
+        );
+        let serving = [node(2, None), node(2, None), node(2, Some(0.8))];
+        assert_eq!(
+            places_by_speed(&[1, 10], &serving),
+            [
+                "1 Mbit/s: places 2 (2), measured 0.8 Mbit/s (0.8 to 0.8), 1 not measured",
+                "10 Mbit/s: places 2 (1), not measured",
+            ]
+        );
     }
 
     #[test]

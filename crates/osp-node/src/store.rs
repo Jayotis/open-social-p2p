@@ -122,14 +122,25 @@ const TAG_PREFIX: &str = "osp/";
 /// up, may go to strangers: nodes that neither follow us nor are our
 /// devices. A crowd of strangers then can't crowd out our followers.
 const MAX_TRANSFERS: usize = 8;
-/// With an upload cap, one transfer place for each this many megabits a
-/// second: the v1-720p video bitrate (ADR 0005). Each transfer then goes
-/// fast enough to finish a video in minutes, and early copies become
-/// sources for others sooner, rather than every transfer crawling along
-/// together until they time out.
+/// One transfer place for each this many megabits a second of upload, the
+/// cap's or, with no cap, the fastest measured (`LargePlaces`): the
+/// v1-720p video bitrate (ADR 0005). Each transfer then goes fast enough
+/// to finish a video in minutes, and early copies become sources for
+/// others sooner, rather than every transfer crawling along together until
+/// they time out.
 const MBPS_PER_TRANSFER: f64 = 1.5;
-/// Fewest transfer places, however slow the upload.
+/// Fewest transfer places, however slow the upload. A node with no upload
+/// cap starts with these, until it has measured its upload.
 const MIN_TRANSFERS: usize = 2;
+/// With no upload cap, the media the node serves is measured over this long
+/// at a time. (The owner's phone reads media another way, which isn't.)
+const MEASURE_OVER: Duration = Duration::from_secs(5);
+/// The first this many bytes of each transfer aren't measured: QUIC takes
+/// them at once, into its send buffer, faster than a home connection can
+/// send them. It's as much as the node fetching lets us send ahead, QUIC's
+/// default stream window; after that, each byte is taken as one arrives.
+/// A small blob is all taken at once, so it is never measured.
+const SEND_AHEAD: u64 = 1_250_000;
 /// Most at once for any one node.
 const MAX_TRANSFERS_PER_NODE: usize = 2;
 /// How long a request over one of those limits waits for a place. After
@@ -172,6 +183,8 @@ pub(crate) struct ContentStore {
     reserved: Mutex<BTreeMap<BlobClass, u64>>,
     /// Most nodes one blob is fetched from at once (`MAX_SOURCES`).
     max_sources: usize,
+    /// The places for serving large transfers, once `protocol` has set them up.
+    large_places: OnceLock<LargePlaces>,
 }
 
 impl ContentStore {
@@ -213,6 +226,7 @@ impl ContentStore {
             replica_quota: quotas.replica_quota_mb << 20,
             reserved: Mutex::new(BTreeMap::new()),
             max_sources: max_sources.max(1),
+            large_places: OnceLock::new(),
         };
         this.reconcile().await?;
         let over = this.db.evictable_bytes()?.saturating_sub(this.cache_quota);
@@ -244,14 +258,23 @@ impl ContentStore {
             ..EVENT_MASK
         };
         let (events, rx) = EventSender::channel(64, mask);
+        let places = Places::new(serving.max_upload_mbps);
+        let _ = self.large_places.set(places.large.clone());
         let task = tokio::spawn(enforce_serving_rules(
             rx,
             self.db.clone(),
             pacer,
-            Places::new(serving.max_upload_mbps),
+            places,
             swarm.share_prefetched,
         ));
         (BlobsProtocol::new(&self.store, Some(events)), task)
+    }
+
+    /// Large transfers served at once, and with no upload cap, the fastest
+    /// the node has been measured sending to other nodes, in Mbit/s, once
+    /// it has been.
+    pub fn serving(&self) -> (usize, Option<f64>) {
+        self.large_places.get().map_or((0, None), LargePlaces::now)
     }
 
     /// Copies a local file into the store and records it under `class`.
@@ -1294,7 +1317,8 @@ fn to_blob_hash(hash: Hash) -> BlobHash {
 /// transfer limits, and is refused as busy if none frees up in time. A
 /// small blob needs only a small place (`SMALL_BLOB`). A node's places are
 /// kept for its next request for a blob it is fetching in parts
-/// (`KEEP_PLACES`). With an upload cap, `pacer` spaces out what is sent.
+/// (`KEEP_PLACES`). With an upload cap, `pacer` spaces out what is sent;
+/// with none, what is sent is measured, for the places (`LargePlaces`).
 async fn enforce_serving_rules(
     mut rx: mpsc::Receiver<ProviderMessage>,
     db: Arc<Db>,
@@ -1373,6 +1397,7 @@ async fn enforce_serving_rules(
         let key = peer.zip(large);
         let needed = places.needed(peer, small, &db);
         let keep = places.kept.clone();
+        let meter = places.large.clone();
         let db = db.clone();
         tokio::spawn(async move {
             let held = match key {
@@ -1399,8 +1424,21 @@ async fn enforce_serving_rules(
                 // are given back then. The last update has what was sent.
                 let mut updates = updates;
                 let mut sent = None;
+                // How far into the blob the bytes sent so far reach, and
+                // how many have been sent.
+                let mut reached = None;
+                let mut written = 0;
+                let past_ahead = |bytes: u64| bytes.saturating_sub(SEND_AHEAD);
                 while let Ok(Some(update)) = updates.recv().await {
                     match update {
+                        RequestUpdate::Progress(progress) => {
+                            let end = progress.end_offset;
+                            let from = reached.replace(end).unwrap_or(end);
+                            let before = written;
+                            written += end.saturating_sub(from);
+                            let measured = past_ahead(written) - past_ahead(before);
+                            meter.count(measured, Instant::now());
+                        }
                         RequestUpdate::Completed(done) => {
                             sent = Some(done.stats.payload_bytes_sent)
                         }
@@ -1479,8 +1517,7 @@ impl KeptPlaces {
 
 /// The transfer limits. Each limit is a semaphore with one permit per place.
 struct Places {
-    all: Arc<Semaphore>,
-    strangers: Arc<Semaphore>,
+    large: LargePlaces,
     small: Arc<Semaphore>,
     per_node: HashMap<Option<EndpointId>, Arc<Semaphore>>,
     kept: KeptPlaces,
@@ -1489,10 +1526,8 @@ struct Places {
 impl Places {
     /// The limits for an upload cap of `max_upload_mbps`, 0 for none.
     fn new(max_upload_mbps: u64) -> Self {
-        let all = transfer_places(max_upload_mbps);
         Self {
-            all: Arc::new(Semaphore::new(all)),
-            strangers: Arc::new(Semaphore::new(all.div_ceil(2))),
+            large: LargePlaces::new(max_upload_mbps),
             small: Arc::new(Semaphore::new(MAX_SMALL_TRANSFERS)),
             per_node: HashMap::new(),
             kept: KeptPlaces::default(),
@@ -1514,20 +1549,137 @@ impl Places {
             needed.push(self.small.clone());
             return needed;
         }
+        let (all, strangers) = self.large.limits();
         if !is_follower_or_device(db, peer) {
-            needed.push(self.strangers.clone());
+            needed.push(strangers);
         }
-        needed.push(self.all.clone());
+        needed.push(all);
         needed
     }
 }
 
-/// Media transfers served at once with an upload cap of `mbps`, 0 for none.
-fn transfer_places(mbps: u64) -> usize {
-    if mbps == 0 {
-        return MAX_TRANSFERS;
+/// The places for large transfers. With an upload cap there are as many as
+/// suit it. With none, there are the fewest until the node has measured
+/// what it sends to other nodes, then as many as a cap at the fastest it
+/// has sent would give. So a slow connection takes on only what it can
+/// send in good time and refuses the rest as busy, sooner than sending
+/// everything slowly, while a fast one soon serves as many as ever.
+///
+/// Places are only ever added. A measurement only shows the upload is at
+/// least that fast, since the nodes fetching may have been the slower end,
+/// or too few to keep it busy.
+#[derive(Clone)]
+struct LargePlaces(Arc<Mutex<Large>>);
+
+struct Large {
+    all: Arc<Semaphore>,
+    /// Half of them, rounded up, for strangers.
+    strangers: Arc<Semaphore>,
+    /// How many places `all` has.
+    places: usize,
+    /// `None` with an upload cap.
+    meter: Option<Meter>,
+}
+
+/// What the node has sent to other nodes, measured over `MEASURE_OVER` at
+/// a time. A measurement that spans a quiet spell reads slow, so it adds
+/// no places.
+#[derive(Default)]
+struct Meter {
+    /// When the current measurement began.
+    since: Option<Instant>,
+    /// Bytes sent since then.
+    bytes: u64,
+    /// The fastest measured, in Mbit/s.
+    fastest: Option<f64>,
+}
+
+impl LargePlaces {
+    /// The places for an upload cap of `max_upload_mbps`, 0 for none.
+    fn new(max_upload_mbps: u64) -> Self {
+        let (places, meter) = if max_upload_mbps > 0 {
+            (transfer_places(max_upload_mbps as f64), None)
+        } else {
+            (MIN_TRANSFERS, Some(Meter::default()))
+        };
+        Self(Arc::new(Mutex::new(Large {
+            all: Arc::new(Semaphore::new(places)),
+            strangers: Arc::new(Semaphore::new(places.div_ceil(2))),
+            places,
+            meter,
+        })))
     }
-    let places = (mbps as f64 / MBPS_PER_TRANSFER) as usize;
+
+    /// The limits for all large transfers, and for strangers'.
+    fn limits(&self) -> (Arc<Semaphore>, Arc<Semaphore>) {
+        let large = self.lock();
+        (large.all.clone(), large.strangers.clone())
+    }
+
+    /// How many large transfers are served at once, and the fastest the
+    /// node has been measured sending, in Mbit/s, once it has been.
+    fn now(&self) -> (usize, Option<f64>) {
+        let large = self.lock();
+        (large.places, large.meter.as_ref().and_then(|m| m.fastest))
+    }
+
+    /// Counts `bytes` sent to another node, at `now`. Adds places if a
+    /// measurement ends faster than any before.
+    fn count(&self, bytes: u64, now: Instant) {
+        if bytes == 0 {
+            return;
+        }
+        let mut large = self.lock();
+        let Some(mbps) = large.meter.as_mut().and_then(|m| m.count(bytes, now)) else {
+            return;
+        };
+        let places = transfer_places(mbps);
+        if places > large.places {
+            large.all.add_permits(places - large.places);
+            large
+                .strangers
+                .add_permits(places.div_ceil(2) - large.places.div_ceil(2));
+            info!(
+                mbps = %format!("{mbps:.1}"),
+                places, "measured the upload: serving more media transfers at once"
+            );
+            large.places = places;
+        }
+    }
+
+    fn lock(&self) -> MutexGuard<'_, Large> {
+        self.0.lock().unwrap_or_else(|e| e.into_inner())
+    }
+}
+
+impl Meter {
+    /// Counts `bytes` sent at `now`. When a measurement ends faster than
+    /// any before, its speed in Mbit/s.
+    fn count(&mut self, bytes: u64, now: Instant) -> Option<f64> {
+        let Some(since) = self.since else {
+            // The first bytes start the clock: when they began isn't known.
+            self.since = Some(now);
+            return None;
+        };
+        self.bytes += bytes;
+        let took = now.duration_since(since);
+        if took < MEASURE_OVER {
+            return None;
+        }
+        let mbps = self.bytes as f64 * 8.0 / took.as_secs_f64() / 1e6;
+        self.since = Some(now);
+        self.bytes = 0;
+        if self.fastest.is_some_and(|fastest| fastest >= mbps) {
+            return None;
+        }
+        self.fastest = Some(mbps);
+        Some(mbps)
+    }
+}
+
+/// Media transfers served at once for an upload of `mbps`.
+fn transfer_places(mbps: f64) -> usize {
+    let places = (mbps / MBPS_PER_TRANSFER) as usize;
     places.clamp(MIN_TRANSFERS, MAX_TRANSFERS)
 }
 
@@ -1622,21 +1774,89 @@ mod tests {
     /// Short, so a test sees the collector run.
     const GC_SOON: Duration = Duration::from_millis(100);
 
+    /// Free places for all large transfers, and for strangers'.
+    fn free(large: &LargePlaces) -> (usize, usize) {
+        let (all, strangers) = large.limits();
+        (all.available_permits(), strangers.available_permits())
+    }
+
     #[test]
     fn a_slow_upload_offers_fewer_transfers_at_once() {
-        let places = |mbps| {
-            let p = Places::new(mbps);
-            (p.all.available_permits(), p.strangers.available_permits())
-        };
-        // No cap: as many as ever. A cap: one per 1.5 Mbit/s, within limits.
-        assert_eq!(places(0), (8, 4));
+        let places = |mbps| free(&Places::new(mbps).large);
+        // A cap: one per 1.5 Mbit/s, within limits. No cap: the fewest, for
+        // now.
         assert_eq!(places(1), (2, 1));
         assert_eq!(places(5), (3, 2));
         assert_eq!(places(10), (6, 3));
         assert_eq!(places(12), (8, 4));
         assert_eq!(places(1000), (8, 4));
+        assert_eq!(places(0), (2, 1));
         // Small files keep their own places.
         assert_eq!(Places::new(1).small.available_permits(), 8);
+    }
+
+    #[test]
+    fn with_no_cap_places_follow_the_fastest_upload_measured() {
+        const MB_PER_MBIT: u64 = 1_000_000 / 8;
+        let large = LargePlaces::new(0);
+        let start = Instant::now();
+        let at = |tenths: u64| start + Duration::from_millis(tenths * 100);
+        // `mbps` sent for `tenths` of a second from `from`, counted every
+        // tenth.
+        let send = |mbps: u64, from: u64, tenths: u64| {
+            for tenth in from + 1..=from + tenths {
+                large.count(mbps * MB_PER_MBIT / 10, at(tenth));
+            }
+        };
+        // Nothing sent doesn't start the clock; the first bytes do.
+        large.count(0, at(0));
+        large.count(10_000_000, at(10));
+        assert_eq!(large.now(), (2, None));
+
+        // Not until a measurement has taken `MEASURE_OVER`.
+        send(6, 10, 49);
+        assert_eq!(large.now(), (2, None));
+        send(6, 59, 1);
+        let (places, measured) = large.now();
+        assert_eq!(places, 4, "6 Mbit/s is four transfers at 1.5");
+        assert!((measured.unwrap() - 6.0).abs() < 0.01, "{measured:?}");
+        assert_eq!(free(&large), (4, 2));
+
+        // Slower afterwards: no fewer places, and still the fastest.
+        send(1, 60, 100);
+        assert_eq!(large.now(), (4, measured));
+        // A measurement over a quiet spell reads slow: still four.
+        send(6, 610, 1);
+        assert_eq!(large.now().0, 4);
+
+        // Faster: more, up to the most.
+        send(9, 611, 50);
+        assert_eq!(free(&large), (6, 3));
+        send(100, 661, 50);
+        assert_eq!(free(&large), (8, 4));
+        assert!(large.now().1.unwrap() > 99.0);
+
+        // Places in use are added to as well.
+        let large = LargePlaces::new(0);
+        let (all, strangers) = large.limits();
+        let held = (
+            all.try_acquire_many(2).unwrap(),
+            strangers.try_acquire().unwrap(),
+        );
+        large.count(1, at(0));
+        large.count(20 * MB_PER_MBIT * 5, at(50));
+        assert_eq!(free(&large), (6, 3));
+        drop(held);
+        assert_eq!(free(&large), (8, 4));
+    }
+
+    #[test]
+    fn with_a_cap_nothing_is_measured() {
+        let large = LargePlaces::new(5);
+        let start = Instant::now();
+        large.count(1, start);
+        large.count(100_000_000, start + MEASURE_OVER);
+        assert_eq!(large.now(), (3, None));
     }
 
     #[test]
