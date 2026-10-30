@@ -99,6 +99,6 @@ The Rust side is checked with the rest of the workspace (`cargo clippy`, `cargo 
 ## Notes
 
 - The device key, the pairing and the saved feed live in the app's private storage. Android backups are turned off, and on an iPhone the key is kept for this device only, out of backups, so the key never leaves the phone; a new phone pairs again.
-- The video player loads media from `http://127.0.0.1:<port>/<token>/...`, served by the Rust side from the home node. On Android the network security config allows plain HTTP only to 127.0.0.1; on an iPhone `NSAllowsLocalNetworking` in `Info.plist` allows it.
+- The video player loads media from `http://127.0.0.1:<port>/<token>/...`, served by the Rust side from the home node. On Android the network security config allows plain HTTP only to 127.0.0.1; on an iPhone `NSAllowsLocalNetworking` in `Info.plist` allows it. iOS takes back the sockets of an app it suspends, so the server opens a new socket, on the same port, when the app comes back to the foreground or its socket fails.
 - A post being sent keeps the app running in the background, with a notification showing its progress. If the app stops anyway, the feed offers to carry on with the post when the app is next opened ([ADR 0008](../docs/decisions/0008-device-pairing-and-client-protocol.md)).
-- The app's log is under *Home node status → Diagnostics log*.
+- The app's log is under *Home node status → Diagnostics log*. *Share* there sends the whole file, by mail for example.

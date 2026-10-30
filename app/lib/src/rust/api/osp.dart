@@ -48,6 +48,9 @@ abstract class OspApp implements RustOpaqueInterface {
   /// The node owner's follow ticket, to show as a QR code.
   Future<String> invite();
 
+  /// The app's log file, to share.
+  String logFile();
+
   /// A URL on this phone that serves a blob from the home node.
   Future<String> mediaUrl({required String blob, required String mediaType});
 
@@ -85,6 +88,10 @@ abstract class OspApp implements RustOpaqueInterface {
 
   /// Reshares a post; with `host`, the node also keeps and serves its media.
   Future<void> reshare({required String postId, required bool host});
+
+  /// Call when the app comes back to the foreground. The network may have
+  /// changed meanwhile, and iOS may have taken back the app's sockets.
+  Future<void> resumed();
 
   SavedFeed? savedFeed();
 

@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:share_plus/share_plus.dart';
 
 import '../format.dart';
 import '../node.dart';
@@ -204,10 +205,29 @@ class _LogView extends StatelessWidget {
             return Column(
               crossAxisAlignment: CrossAxisAlignment.end,
               children: [
-                TextButton.icon(
-                  onPressed: () => Clipboard.setData(ClipboardData(text: log)),
-                  icon: const Icon(Icons.copy),
-                  label: const Text('Copy'),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.end,
+                  children: [
+                    TextButton.icon(
+                      onPressed: () =>
+                          Clipboard.setData(ClipboardData(text: log)),
+                      icon: const Icon(Icons.copy),
+                      label: const Text('Copy'),
+                    ),
+                    // The whole file, not just what's shown, by mail say.
+                    TextButton.icon(
+                      onPressed: log.isEmpty
+                          ? null
+                          : () => SharePlus.instance.share(
+                              ShareParams(
+                                files: [XFile(node.app.logFile())],
+                                fileNameOverrides: ['osp-app-log.txt'],
+                              ),
+                            ),
+                      icon: const Icon(Icons.ios_share),
+                      label: const Text('Share'),
+                    ),
+                  ],
                 ),
                 Padding(
                   padding: const EdgeInsets.all(12),
