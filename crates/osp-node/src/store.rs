@@ -16,7 +16,7 @@ use std::{
     ops::Range,
     path::{Path, PathBuf},
     sync::{
-        Arc, Mutex, MutexGuard,
+        Arc, Mutex, MutexGuard, OnceLock,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::{Duration, Instant},
@@ -86,6 +86,20 @@ const MIN_PART: u64 = 1 << 20;
 /// Parts start on a multiple of this, the blob store's block size: a node
 /// always sends whole blocks, so two parts never share one.
 const BLOCK: u64 = 16 << 10;
+/// A node's rate for its part is judged once it has been sending for this
+/// long.
+const RATE_AFTER: Duration = Duration::from_millis(500);
+/// A node that has sent nothing of its part for this long has stalled, as
+/// far as handing its part to another node goes.
+const SLOW_START: Duration = Duration::from_secs(2);
+/// A part is split by its node's and the taker's rates only if that brings
+/// its end at least this much sooner: equal nodes with little to go aren't
+/// worth a new request.
+const SPLIT_GAIN: Duration = Duration::from_secs(2);
+/// How often a node with nothing to do looks again for a part to take, as
+/// the others' rates become known; and how often a node whose part was
+/// all taken, while it sends nothing, is checked on.
+const RECHECK: Duration = Duration::from_millis(250);
 
 /// How often the garbage collector deletes blobs nothing keeps any more:
 /// evicted ones, and the remains of failed downloads.
@@ -469,8 +483,9 @@ impl ContentStore {
     /// from up to `max_sources` of `nodes` at once, in their order. Each
     /// node is asked for one stretch of the blob, its part, so it keeps
     /// one transfer place throughout, as for a whole blob. A node that
-    /// finishes takes over the back half of the part with the most still
-    /// to come. What a node that fails didn't send goes to a node that has
+    /// finishes takes over the end of the part that will take longest
+    /// (`split_slowest`), and looks again every `RECHECK` while there's
+    /// none worth taking. What a node that fails didn't send goes to a node that has
     /// sent its part, whose place is kept for it (`KEEP_PLACES`); only if
     /// none is left fetching does it go to a node not asked yet, which
     /// may well be as busy. So no more nodes fetch at once than the first
@@ -487,8 +502,9 @@ impl ContentStore {
         let have = self.store.observe(hash).await?;
         let sources = nodes.len().min(self.max_sources);
         let mut todo = plan_parts(&missing(&have, declared), sources);
-        // Nodes that sent their part, and nodes not asked yet.
-        let mut done: Vec<EndpointId> = Vec::new();
+        // Nodes that sent their part, with the rate they sent it at, and
+        // nodes not asked yet.
+        let mut done: Vec<(EndpointId, Option<f64>)> = Vec::new();
         let mut unasked: VecDeque<EndpointId> = nodes.iter().copied().collect();
         let mut running: Vec<Arc<Part>> = Vec::new();
         let mut attempts = FuturesUnordered::new();
@@ -499,12 +515,14 @@ impl ContentStore {
                 // that, one is asked only when no node is fetching.
                 let asked = nodes.len() - unasked.len();
                 let next = match done.last() {
-                    Some(node) => Some(*node),
-                    None if asked < sources || attempts.is_empty() => unasked.front().copied(),
+                    Some(&(node, rate)) => Some((node, rate)),
+                    None if asked < sources || attempts.is_empty() => {
+                        unasked.front().map(|node| (*node, None))
+                    }
                     None => None,
                 };
-                let Some(node) = next else { break };
-                let Some(range) = todo.pop_front().or_else(|| split_largest(&running)) else {
+                let Some((node, rate)) = next else { break };
+                let Some(range) = todo.pop_front().or_else(|| split_slowest(&running, rate)) else {
                     break;
                 };
                 // Off the list it came from.
@@ -517,13 +535,22 @@ impl ContentStore {
                 running.push(part.clone());
                 attempts.push(self.fetch_part(hash, node, part, deadline));
             }
-            let Some((part, attempt)) = attempts.next().await else {
+            let next = if done.is_empty() {
+                attempts.next().await
+            } else {
+                match tokio::time::timeout(RECHECK, attempts.next()).await {
+                    Ok(next) => next,
+                    // A part may be worth taking now.
+                    Err(_) => continue,
+                }
+            };
+            let Some((part, attempt)) = next else {
                 break;
             };
             running.retain(|p| !Arc::ptr_eq(p, &part));
             self.record(hash, &attempt);
             if attempt.outcome == Outcome::Completed {
-                done.push(attempt.node);
+                done.push((attempt.node, attempt.rate()));
             } else {
                 failed.push((attempt.node, attempt.outcome));
                 let rest = part.reached()..part.end();
@@ -598,14 +625,36 @@ impl ContentStore {
                     .remote()
                     .execute_get(conn.clone(), request)
                     .stream();
+                let mut stalls_at = Instant::now() + STALL_TIMEOUT;
                 loop {
-                    let wait = left().min(STALL_TIMEOUT);
+                    let mut wait = left().min(stalls_at.saturating_duration_since(Instant::now()));
+                    if let Stop::PastPart(_) = stop {
+                        wait = wait.min(RECHECK);
+                    }
                     match tokio::time::timeout(wait, progress.next()).await {
-                        // Stalled, out of time, or it ended without saying how.
-                        Err(_) | Ok(None) => break Outcome::Failed,
+                        Err(_) => {
+                            // All of the part was taken from a node that
+                            // went quiet: it sent its share, if any.
+                            if let Stop::PastPart(part) = stop
+                                && part.reached() >= part.end()
+                            {
+                                break if attempt.bytes > 0 {
+                                    Outcome::Completed
+                                } else {
+                                    Outcome::Failed
+                                };
+                            }
+                            // Stalled, or out of time.
+                            if Instant::now() >= stalls_at || left().is_zero() {
+                                break Outcome::Failed;
+                            }
+                        }
+                        // It ended without saying how.
+                        Ok(None) => break Outcome::Failed,
                         Ok(Some(GetProgressItem::Progress(bytes))) => {
                             attempt.first_byte.get_or_insert_with(|| started.elapsed());
                             attempt.bytes = bytes;
+                            stalls_at = Instant::now() + STALL_TIMEOUT;
                             match stop {
                                 Stop::PastDeclared { local, declared } => {
                                     if local + bytes > declared {
@@ -904,6 +953,9 @@ struct Part {
     /// Where the bytes the node has sent so far end.
     reached: AtomicU64,
     end: AtomicU64,
+    /// When the node was asked, and when its first bytes came.
+    asked: Instant,
+    first_bytes: OnceLock<Instant>,
 }
 
 impl Part {
@@ -912,6 +964,22 @@ impl Part {
             start: range.start,
             reached: AtomicU64::new(range.start),
             end: AtomicU64::new(range.end),
+            asked: Instant::now(),
+            first_bytes: OnceLock::new(),
+        }
+    }
+
+    /// Bytes a second the node has sent the part at since its first bytes,
+    /// or 0 if none came within `SLOW_START`. None while it's too soon to
+    /// tell.
+    fn rate(&self) -> Option<f64> {
+        match self.first_bytes.get() {
+            Some(first) => {
+                let secs = first.elapsed().as_secs_f64();
+                let sent = self.reached() - self.start;
+                (secs >= RATE_AFTER.as_secs_f64()).then(|| sent as f64 / secs)
+            }
+            None => (self.asked.elapsed() >= SLOW_START).then_some(0.0),
         }
     }
 
@@ -932,6 +1000,7 @@ impl Part {
     /// run past its end. Stopping at the end itself could drop the last
     /// block: its bytes are counted before they're stored.
     fn arrived(&self, bytes: u64) -> bool {
+        self.first_bytes.get_or_init(Instant::now);
         let reached = self.start + bytes;
         self.reached.store(reached, Ordering::Relaxed);
         reached > self.end()
@@ -979,16 +1048,55 @@ fn plan_parts(missing: &[Range<u64>], sources: usize) -> VecDeque<Range<u64>> {
     parts
 }
 
-/// For a node with nothing to do: takes the back half of the part with
-/// the most still to come, from the node fetching it. None if every part
-/// has less than two `MIN_PART`s to go.
-fn split_largest(running: &[Arc<Part>]) -> Option<Range<u64>> {
-    let part = running.iter().max_by_key(|part| part.left())?;
-    if part.left() < 2 * MIN_PART {
+/// For a node with nothing to do, which sent its last part at `rate` bytes
+/// a second: takes over the end of a part from the node fetching it.
+///
+/// Once rates are known, that is the part that will take longest, split so
+/// both nodes finish together: a node sending at a hundredth of the taker's
+/// rate keeps a hundredth of the rest, and a stalled one none of it. Only
+/// if that ends the part `SPLIT_GAIN` sooner. Until then, it is the back
+/// half of the part with the most still to come, if that is at least two
+/// `MIN_PART`s.
+fn split_slowest(running: &[Arc<Part>], rate: Option<f64>) -> Option<Range<u64>> {
+    let timed = running
+        .iter()
+        .filter(|part| part.left() > 0)
+        .filter_map(|part| Some((part, part.rate()?)))
+        .max_by(|(a, a_rate), (b, b_rate)| {
+            // Seconds to go at its rate, endless for a stalled node.
+            let secs = |part: &Part, rate: f64| {
+                if rate > 0.0 {
+                    part.left() as f64 / rate
+                } else {
+                    f64::INFINITY
+                }
+            };
+            secs(a, *a_rate).total_cmp(&secs(b, *b_rate))
+        });
+    let (part, keep) = match (timed, rate) {
+        (Some((part, own)), Some(taker)) if taker > 0.0 => {
+            let left = part.left() as f64;
+            let gain = left / own - left / (own + taker);
+            if gain < SPLIT_GAIN.as_secs_f64() {
+                return None;
+            }
+            (part, (left * own / (own + taker)) as u64)
+        }
+        _ => {
+            let part = running.iter().max_by_key(|part| part.left())?;
+            if part.left() < 2 * MIN_PART {
+                return None;
+            }
+            (part, part.left() / 2)
+        }
+    };
+    let (reached, end) = (part.reached(), part.end());
+    // A node that keeps next to nothing stops at once; the taker may fetch
+    // part of a block again.
+    let middle = ((reached + keep) / BLOCK * BLOCK).max(part.start);
+    if middle >= end {
         return None;
     }
-    let (reached, end) = (part.reached(), part.end());
-    let middle = (reached + (end - reached) / 2) / BLOCK * BLOCK;
     part.end.store(middle, Ordering::Relaxed);
     Some(middle..end)
 }
@@ -1038,6 +1146,12 @@ pub(crate) enum Outcome {
 }
 
 impl Attempt {
+    /// Bytes a second, if any came.
+    fn rate(&self) -> Option<f64> {
+        let secs = self.took.as_secs_f64();
+        (self.bytes > 0 && secs > 0.0).then(|| self.bytes as f64 / secs)
+    }
+
     fn log(&self, hash: Hash) {
         let node = self.node.fmt_short();
         let blob = to_blob_hash(hash).fmt_short();
@@ -1892,14 +2006,15 @@ mod tests {
     }
 
     #[test]
-    fn a_node_with_nothing_to_do_takes_half_of_the_largest_part() {
+    fn before_rates_are_known_a_node_takes_half_of_the_largest_part() {
         const MB: u64 = 1 << 20;
         let slow = Arc::new(Part::new(0..10 * MB));
         let fast = Arc::new(Part::new(10 * MB..12 * MB));
         assert!(!slow.arrived(MB));
+        assert_eq!(slow.rate(), None, "too soon to tell");
         let running = [slow.clone(), fast.clone()];
         // 9 MB left of one part: the back half goes.
-        let taken = split_largest(&running).unwrap();
+        let taken = split_slowest(&running, Some(1e9)).unwrap();
         assert_eq!(taken.start % BLOCK, 0);
         assert_eq!(taken.end, 10 * MB);
         assert_eq!(slow.end(), taken.start);
@@ -1910,8 +2025,63 @@ mod tests {
         assert!(slow.arrived(taken.start + BLOCK));
         // Under 2 MiB left anywhere isn't worth splitting.
         assert!(!fast.arrived(MB / 2));
-        assert_eq!(split_largest(&[fast]), None);
-        assert_eq!(split_largest(&[]), None);
+        assert_eq!(split_slowest(&[fast], None), None);
+        assert_eq!(split_slowest(&[], None), None);
+    }
+
+    /// A part whose node was asked `secs` ago and has sent `sent` bytes of
+    /// it, at an even rate from the start.
+    fn part_sending(range: Range<u64>, sent: u64, secs: u64) -> Arc<Part> {
+        let ago = Instant::now() - Duration::from_secs(secs);
+        let part = Part {
+            asked: ago,
+            ..Part::new(range)
+        };
+        if sent > 0 {
+            part.first_bytes.set(ago).unwrap();
+            assert!(!part.arrived(sent));
+        }
+        Arc::new(part)
+    }
+
+    #[test]
+    fn a_node_takes_the_slowest_part_by_the_rates() {
+        const MB: u64 = 1 << 20;
+        // 1 MB in 8 s, 9 MB to go: 72 s more. 2 MB to go at 8 MB/s.
+        let slow = part_sending(0..10 * MB, MB, 8);
+        let fast = part_sending(10 * MB..20 * MB, 8 * MB, 1);
+        let running = [fast.clone(), slow.clone()];
+        // A taker at 10 MB/s takes all but about 1/77 of the slow rest.
+        let taken = split_slowest(&running, Some(10.0 * MB as f64)).unwrap();
+        assert_eq!(taken.end, 10 * MB);
+        assert_eq!(slow.end(), taken.start);
+        assert_eq!(taken.start % BLOCK, 0);
+        assert!(
+            taken.start > MB + 96 * 1024 && taken.start <= MB + 128 * 1024,
+            "{taken:?}"
+        );
+        assert_eq!(fast.end(), 20 * MB, "untouched");
+
+        // Equal fast nodes with little to go: not worth a new request.
+        let fast = part_sending(0..10 * MB, 8 * MB, 1);
+        assert_eq!(split_slowest(&[fast], Some(8.0 * MB as f64)), None);
+    }
+
+    #[test]
+    fn a_stalled_nodes_part_is_all_taken() {
+        const MB: u64 = 1 << 20;
+        let stalled = part_sending(4 * MB..8 * MB, 0, 3);
+        assert_eq!(stalled.rate(), Some(0.0));
+        let taken = split_slowest(std::slice::from_ref(&stalled), Some(1e6)).unwrap();
+        assert_eq!(taken, 4 * MB..8 * MB);
+        assert!(stalled.reached() >= stalled.end(), "nothing left to it");
+        // Emptied, it isn't picked again over a part with something to go.
+        let slow = part_sending(0..4 * MB, MB, 8);
+        let taken = split_slowest(&[stalled.clone(), slow], Some(1e7)).unwrap();
+        assert_eq!(taken.end, 4 * MB);
+        // Asked a moment ago, it may just be starting.
+        let starting = part_sending(4 * MB..8 * MB, 0, 0);
+        assert_eq!(starting.rate(), None);
     }
 
     #[tokio::test]
@@ -2059,13 +2229,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_node_that_finishes_its_part_takes_over_half_of_a_slow_one() {
+    async fn a_node_that_finishes_its_part_takes_over_most_of_a_slow_one() {
         let f = Fixture::new().await;
         let store = f.open_with_quotas(64).await;
         let data = noise(12);
         let size = data.len() as u64;
-        // 16 KiB every 20 ms: its 4 MiB part would take over 5 seconds.
-        let (slow, hash) = f.slow_provider(&data, Duration::from_millis(20)).await;
+        // 16 KiB every 40 ms: its 4 MiB part would take 10 seconds, half of
+        // it 5.
+        let (slow, hash) = f.slow_provider(&data, Duration::from_millis(40)).await;
         let (fast, _) = f.provider(&data, None).await;
         let (also_fast, _) = f.provider(&data, None).await;
         let (unasked, _) = f.provider(&data, None).await;
@@ -2080,16 +2251,50 @@ mod tests {
             .await
             .unwrap();
         let took = started.elapsed();
-        // The slow node sent about half its part, and stopped when told.
+        // The slow node sent a small share of its part, and stopped once
+        // its rate showed how slow it was.
         let counts = f.record(slow.id());
         assert!(counts.completed.round() >= 1.0, "{counts:?}");
-        assert!(counts.received_bytes < (3 << 20) as f64, "{counts:?}");
-        assert!(took < Duration::from_secs(5), "{took:?}");
-        // The rest went to a node that had just sent its part, not to one
+        assert!(counts.received_bytes < (1 << 20) as f64, "{counts:?}");
+        // Half its part would have taken it over 5 s more.
+        assert!(took < Duration::from_secs(4), "{took:?}");
+        // The rest went to nodes that had just sent their parts, not to one
         // not asked yet.
         let completed = f.record(fast.id()).completed + f.record(also_fast.id()).completed;
-        assert_eq!(completed.round(), 3.0);
+        assert!(completed.round() >= 3.0, "{completed}");
         assert_eq!(f.record(unasked.id()).tries, 0.0);
+        let out = f.dir.path().join("out");
+        store.export(&blob, &out).await.unwrap();
+        assert!(std::fs::read(&out).unwrap() == data);
+    }
+
+    #[tokio::test]
+    async fn a_node_that_goes_quiet_has_its_whole_part_taken() {
+        let f = Fixture::new().await;
+        let store = f.open_with_quotas(64).await;
+        let data = noise(12);
+        let size = data.len() as u64;
+        // After its first block, the next would come a minute later.
+        let (silent, hash) = f.slow_provider(&data, Duration::from_secs(60)).await;
+        let (fast, _) = f.provider(&data, None).await;
+        let (also_fast, _) = f.provider(&data, None).await;
+        let blob = to_blob_hash(hash);
+        let sources = Sources {
+            at_once: vec![silent.id(), fast.id(), also_fast.id()],
+            in_turn: Vec::new(),
+        };
+        let started = Instant::now();
+        store
+            .download(&blob, sources, BlobClass::Cache, size)
+            .await
+            .unwrap();
+        // Once its rate showed, all the rest of its part went to the
+        // others, and it wasn't waited for until it stalled (30 s).
+        let took = started.elapsed();
+        assert!(took < Duration::from_secs(10), "{took:?}");
+        let counts = f.record(silent.id());
+        assert!(counts.received_bytes <= BLOCK as f64, "{counts:?}");
+        assert_eq!(counts.completed.round(), 1.0, "{counts:?}");
         let out = f.dir.path().join("out");
         store.export(&blob, &out).await.unwrap();
         assert!(std::fs::read(&out).unwrap() == data);
