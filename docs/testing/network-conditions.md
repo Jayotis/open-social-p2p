@@ -171,3 +171,18 @@ The harness now reports where each latecomer's bytes came from (the bytes, the r
 **The runs.** The slow-hosts run as before (`--swarm --net --latecomers 10 --follower-mbps 1,1,1,1,1,1,1,1,1,100`), with `576aaaf` and with `6291a72`, the code before the change, in the same round.
 
 **What counts as better.** No new pass marks: the B8 marks stay as they are. The change helps a latecomer only when one of the three hosts it draws is fast, so the figures to compare are those latecomers' times, against the same in the run without the change, and against the 17 s or so a slow host's last 2 MiB took. Nothing should get worse: the followers' times and the creator's copies should stay within the variation the repeats showed, and the followers' busy refusals shouldn't grow much, since every takeover is a new request to a host.
+
+**Results**, 2026-10-30, one round on the same machine: the run without the change, the change, and the run without it again. During the first, other programs took up to 30% of the machine's CPUs while its followers fetched (its report says so); its latecomers came after that. In the other two, other programs took at most 1%.
+
+| Code | Latecomers that drew a fast host | The rest | Followers: 50% / 95% / all | Creator's copies | Followers' requests refused as busy | Followers' failed downloads |
+| --- | --- | --- | --- | --- | --- | --- |
+| `6291a72`, before | 2: 23.1 s and 22.7 s | 8: 144.0 to 145.1 s | 1,223 / 2,010 / 2,162 s | 23.2 | 1,016 | 20 |
+| `576aaaf`, the change | 2: **6.4 s and 8.5 s** | 8: 144.0 to 145.1 s | 1,120 / 1,936 / 2,064 s | 25.8 | 721 | 71 |
+| `6291a72`, before, again | none | 10: 144.2 to 145.3 s | 1,235 / 1,963 / 2,200 s | 29.2 | 1,837 | 0 |
+
+- **A fast host now does nearly all of it.** Before, a latecomer that drew one 100 Mbit/s host got 47 MB from it, taking over half a part seven times, and still waited on its two slow hosts for the last 2.6 to 2.7 MB each, about 22 s at 1 Mbit/s. With the change, the slow hosts sent 0.5 to 0.8 MB each and the fast one the other 51 MB, in three requests: 6.4 and 8.5 s instead of 23.
+- **Most latecomers didn't draw one.** With one host in ten fast, three hosts drawn at random are all slow nearly three times in four: 8, 8 and 10 latecomers of 10 in these runs. They took 144 to 145 s whatever the code, so half the latecomers still took 144 s.
+- **Nothing got worse for the followers.** Their times were within or better than the range of the earlier slow-hosts runs (1,159 to 1,438 s for half, 1,955 to 2,188 for 95%, 2,133 to 2,275 for all), the creator's 25.8 copies were within it (25.8 to 36.8), and busy refusals were fewer.
+- **Followers' failed downloads rose to 71, all from 1 Mbit/s hosts.** Most likely these are hosts serving several others at once that hadn't sent a byte 2 seconds after being asked: the change hands such a part to another node and records the attempt as failed. The followers still got the video sooner. A host's record now counts a slow start as a failure, which matters once source choice uses the records.
+
+**What it shows.** Switching by the rates removes the wait on slow hosts once a fast one is among the three, but most downloads never draw one. The rest is choosing which hosts to ask: the others named in the `WhoHosts` reply, of which a download uses three of up to six, and the record of how hosts did before.
