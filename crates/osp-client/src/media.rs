@@ -9,9 +9,19 @@
 //!
 //! Only what players need is supported: GET and HEAD, single byte ranges,
 //! one request per connection.
+//!
+//! iOS takes back the sockets of an app it suspends, and a listening socket
+//! it has taken back fails from then on. So the server opens a new one when
+//! its socket fails, and when the app comes back to the foreground
+//! (`reopen`), on the same port if it can, so URLs already handed out keep
+//! working.
 
 use std::{
-    sync::{Arc, Weak},
+    net::Ipv4Addr,
+    sync::{
+        Arc, Weak,
+        atomic::{AtomicU16, Ordering},
+    },
     time::Duration,
 };
 
@@ -20,9 +30,10 @@ use osp_proto::BlobHash;
 use tokio::{
     io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWriteExt, BufReader},
     net::{TcpListener, TcpStream},
+    sync::Notify,
     task::JoinHandle,
 };
-use tracing::debug;
+use tracing::{debug, info, warn};
 
 use crate::Client;
 
@@ -31,23 +42,37 @@ const MAX_HEAD: usize = 8 * 1024;
 const HEAD_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub(crate) struct MediaServer {
-    port: u16,
+    /// Can change when the socket is replaced.
+    port: Arc<AtomicU16>,
     token: String,
+    reopen: Arc<Notify>,
     task: JoinHandle<()>,
 }
 
 impl MediaServer {
     /// Holds the client weakly, so the server never keeps it alive.
     pub async fn start(client: Weak<Client>) -> Result<Self> {
-        let listener = TcpListener::bind("127.0.0.1:0")
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
             .await
             .context("starting the media server")?;
-        let port = listener.local_addr()?.port();
+        let port = Arc::new(AtomicU16::new(listener.local_addr()?.port()));
         let mut bytes = [0u8; 16];
         getrandom::fill(&mut bytes).map_err(|e| anyhow::anyhow!("no random numbers: {e}"))?;
         let token = data_encoding::HEXLOWER.encode(&bytes);
-        let task = tokio::spawn(serve(listener, client, token.clone()));
-        Ok(Self { port, token, task })
+        let reopen = Arc::new(Notify::new());
+        let task = tokio::spawn(serve(
+            listener,
+            port.clone(),
+            reopen.clone(),
+            client,
+            token.clone(),
+        ));
+        Ok(Self {
+            port,
+            token,
+            reopen,
+            task,
+        })
     }
 
     pub fn url(&self, blob: &BlobHash, media_type: &str) -> String {
@@ -56,7 +81,14 @@ impl MediaServer {
             "image/webp" => "webp",
             _ => "bin",
         };
-        format!("http://127.0.0.1:{}/{}/{blob}.{ext}", self.port, self.token)
+        let port = self.port.load(Ordering::Relaxed);
+        format!("http://127.0.0.1:{port}/{}/{blob}.{ext}", self.token)
+    }
+
+    /// Replaces the listening socket, for when the app comes back to the
+    /// foreground.
+    pub fn reopen(&self) {
+        self.reopen.notify_one();
     }
 }
 
@@ -66,12 +98,30 @@ impl Drop for MediaServer {
     }
 }
 
-async fn serve(listener: TcpListener, client: Weak<Client>, token: String) {
+async fn serve(
+    mut listener: TcpListener,
+    port: Arc<AtomicU16>,
+    reopen: Arc<Notify>,
+    client: Weak<Client>,
+    token: String,
+) {
     let token = Arc::new(token);
     loop {
-        let Ok((stream, _)) = listener.accept().await else {
-            tokio::time::sleep(Duration::from_millis(100)).await;
-            continue;
+        let accepted = tokio::select! {
+            accepted = listener.accept() => Some(accepted),
+            () = reopen.notified() => None,
+        };
+        let stream = match accepted {
+            Some(Ok((stream, _))) => stream,
+            Some(Err(e)) => {
+                warn!("the media server's socket failed ({e}); opening a new one");
+                listener = replace(listener, &port).await;
+                continue;
+            }
+            None => {
+                listener = replace(listener, &port).await;
+                continue;
+            }
         };
         let (client, token) = (client.clone(), token.clone());
         tokio::spawn(async move {
@@ -79,6 +129,33 @@ async fn serve(listener: TcpListener, client: Weak<Client>, token: String) {
                 debug!("media request failed: {e:#}");
             }
         });
+    }
+}
+
+/// Closes a listening socket and opens another, on the same port if it's
+/// free. Requests already being served carry on.
+async fn replace(old: TcpListener, port: &AtomicU16) -> TcpListener {
+    let same = port.load(Ordering::Relaxed);
+    drop(old);
+    loop {
+        for wanted in [same, 0] {
+            let opened = TcpListener::bind((Ipv4Addr::LOCALHOST, wanted))
+                .await
+                .and_then(|l| l.local_addr().map(|addr| (l, addr.port())));
+            match opened {
+                Ok((listener, now)) => {
+                    if now == same {
+                        debug!("reopened the media server's socket");
+                    } else {
+                        info!("the media server moved from port {same} to {now}");
+                    }
+                    port.store(now, Ordering::Relaxed);
+                    return listener;
+                }
+                Err(e) => debug!("couldn't open the media server's socket on port {wanted}: {e}"),
+            }
+        }
+        tokio::time::sleep(Duration::from_secs(1)).await;
     }
 }
 
@@ -100,7 +177,10 @@ async fn handle(stream: TcpStream, client: &Weak<Client>, token: &str) -> Result
         .context("request head timed out")??;
     let req = match parse(&head, token) {
         Ok(req) => req,
-        Err(status) => return respond_error(&mut writer, status).await,
+        Err(status) => {
+            debug!("refused a media request: {status}");
+            return respond_error(&mut writer, status).await;
+        }
     };
     let Some(client) = client.upgrade() else {
         return respond_error(&mut writer, "503 Service Unavailable").await;
@@ -295,6 +375,43 @@ mod tests {
         assert_eq!(parse(&post, TOKEN), Err("405 Method Not Allowed"));
         let bad_blob = format!("GET /{TOKEN}/../etc/passwd HTTP/1.1\r\n\r\n");
         assert_eq!(parse(&bad_blob, TOKEN), Err("404 Not Found"));
+    }
+
+    /// Sends a GET for `url` and returns the response's status line.
+    async fn status_line(url: &str) -> std::io::Result<String> {
+        let rest = url.strip_prefix("http://").unwrap();
+        let (addr, path) = rest.split_once('/').unwrap();
+        let mut stream = TcpStream::connect(addr).await?;
+        stream
+            .write_all(format!("GET /{path} HTTP/1.1\r\n\r\n").as_bytes())
+            .await?;
+        let mut resp = String::new();
+        stream.read_to_string(&mut resp).await?;
+        Ok(resp.lines().next().unwrap_or("").to_string())
+    }
+
+    #[tokio::test]
+    async fn replaces_a_socket_on_the_same_port() {
+        let old = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+        let before = old.local_addr().unwrap().port();
+        let port = AtomicU16::new(before);
+        let new = replace(old, &port).await;
+        assert_eq!(new.local_addr().unwrap().port(), before);
+        assert_eq!(port.load(Ordering::Relaxed), before);
+    }
+
+    #[tokio::test]
+    async fn serves_the_same_urls_after_reopening() {
+        // No client: every request gets a 503, which is enough to show
+        // the socket is served.
+        let server = MediaServer::start(Weak::new()).await.unwrap();
+        let url = server.url(&blob(), "video/mp4");
+        assert!(status_line(&url).await.unwrap().contains("503"));
+
+        server.reopen();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(server.url(&blob(), "video/mp4"), url);
+        assert!(status_line(&url).await.unwrap().contains("503"));
     }
 
     #[test]

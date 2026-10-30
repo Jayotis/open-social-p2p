@@ -659,6 +659,14 @@ impl Client {
         self.endpoint.network_change().await;
     }
 
+    /// Call when the app comes back to the foreground: iOS may have taken
+    /// back the media server's socket while the app was suspended.
+    pub fn resumed(&self) {
+        if let Some(media) = self.media.get() {
+            media.reopen();
+        }
+    }
+
     /// Closes the connection to the home node, for example while the app is
     /// in the background. The next request reconnects.
     pub async fn disconnect(&self) {
