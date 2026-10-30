@@ -200,10 +200,11 @@ class _ComposeScreenState extends State<ComposeScreen> {
     if (p?.stage == PostStage.processing) {
       _background.show('Your home node is preparing your post', '');
     } else if (_waiting) {
+      // Not null: nothing is happening, rather than nothing to measure.
       _background.show(
         'Sending your post',
         'Waiting for your home node…',
-        percent: percent,
+        percent: percent ?? 0,
       );
     } else if (p != null) {
       _background.show(
