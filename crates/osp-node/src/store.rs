@@ -90,8 +90,14 @@ const BLOCK: u64 = 16 << 10;
 /// long.
 const RATE_AFTER: Duration = Duration::from_millis(500);
 /// A node that has sent nothing of its part for this long has stalled, as
-/// far as handing its part to another node goes.
-const SLOW_START: Duration = Duration::from_secs(2);
+/// far as handing its part to another node goes. Longer than a busy node
+/// takes to refuse (`BUSY_WAIT`), so a node waiting for a place is heard as
+/// busy rather than handed on. Chosen over 2 s from one pair of simulated
+/// runs (docs/testing/network-conditions.md, "Switching away from slow
+/// hosts"), where it did better but the runs varied more than they
+/// differed: if real use shows downloads waiting on silent nodes, try it
+/// shorter.
+const SLOW_START: Duration = Duration::from_secs(12);
 /// A part is split by its node's and the taker's rates only if that brings
 /// its end at least this much sooner: equal nodes with little to go aren't
 /// worth a new request.
@@ -1141,8 +1147,9 @@ pub(crate) enum Outcome {
     /// while, or out of time.
     Failed,
     /// It hadn't sent anything when all of its part went to a faster node
-    /// (`SLOW_START`): most often it was waiting for a place, as a busy
-    /// node makes a request wait up to `BUSY_WAIT` before refusing.
+    /// (`SLOW_START`). A node merely waiting for a place refuses as busy
+    /// before that (`BUSY_WAIT`), so it was slow to start: overloaded, or
+    /// on a poor connection.
     HandedOn,
     /// We stopped it: more arrived than the post says the blob has. That
     /// says nothing about the node, which can only send the blob the hash names.
@@ -2095,7 +2102,7 @@ mod tests {
     #[test]
     fn a_stalled_nodes_part_is_all_taken() {
         const MB: u64 = 1 << 20;
-        let stalled = part_sending(4 * MB..8 * MB, 0, 3);
+        let stalled = part_sending(4 * MB..8 * MB, 0, SLOW_START.as_secs() + 1);
         assert_eq!(stalled.rate(), Some(0.0));
         let taken = split_slowest(std::slice::from_ref(&stalled), Some(1e6)).unwrap();
         assert_eq!(taken, 4 * MB..8 * MB);
@@ -2347,7 +2354,10 @@ mod tests {
         // After `SLOW_START` with nothing sent, the rest of its part went
         // to the others; its record says so, not that it failed.
         let took = started.elapsed();
-        assert!(took < Duration::from_secs(10), "{took:?}");
+        // Not before a busy node would have refused, so that refusal is
+        // heard as one.
+        assert!(took > BUSY_WAIT, "{took:?}");
+        assert!(took < SLOW_START + Duration::from_secs(8), "{took:?}");
         let counts = f.record(waiting.id());
         assert_eq!(counts.handed_on.round(), 1.0, "{counts:?}");
         assert_eq!(counts.failed, 0.0, "{counts:?}");
