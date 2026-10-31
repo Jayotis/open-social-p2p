@@ -159,8 +159,8 @@ const MIGRATIONS: &[&str] = &[
 /// can't grow the table without bound by naming hosts.
 const MAX_HOSTS_PER_BLOB: i64 = 20;
 
-/// Followers remembered as holding a copy of one of our blobs, the most
-/// recent first. Plenty to pick a few from.
+/// Followers remembered as holding a copy of one of our blobs. Plenty to
+/// pick a few from.
 const MAX_SWARM_PER_BLOB: i64 = 100;
 
 /// A blob's `accessed_ms` is updated at most this often, so a phone
@@ -1127,18 +1127,50 @@ impl Db {
 
     // ---- the follower swarm (doc 13) ----
 
-    /// Notes that a follower holds a copy of `blob`, keeping only the most
-    /// recent few for each blob.
+    /// Whether `node` is noted as holding a copy of `blob`.
+    pub fn in_swarm(&self, blob: &BlobHash, node: &EndpointId) -> Result<bool> {
+        let found: Option<i64> = self
+            .conn()
+            .query_row(
+                "SELECT 1 FROM swarm WHERE blob = ?1 AND node = ?2",
+                params![blob.to_string(), node.to_string()],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(found.is_some())
+    }
+
+    /// Whether `add_swarm_member` would keep the follower `node` for
+    /// `blob`: there's room, or a member that stopped sharing, or one that
+    /// has followed us for less time.
+    pub fn swarm_has_room_for(&self, blob: &BlobHash, node: &EndpointId) -> Result<bool> {
+        let room = self.conn().query_row(
+            "SELECT COUNT(*) < ?3 OR EXISTS (
+                 SELECT 1 FROM swarm s LEFT JOIN followers f ON f.node = s.node
+                 WHERE s.blob = ?1 AND (f.shares IS NOT 1
+                     OR f.since > (SELECT since FROM followers WHERE node = ?2)))
+             FROM swarm WHERE blob = ?1",
+            params![blob.to_string(), node.to_string(), MAX_SWARM_PER_BLOB],
+            |row| row.get(0),
+        )?;
+        Ok(room)
+    }
+
+    /// Notes that a follower holds a copy of `blob`. Noting it again
+    /// changes nothing. Only so many are kept for each blob: the followers
+    /// that have followed us longest, of those that still share, so a crowd
+    /// of new followers can't push out the ones that came before them.
     pub fn add_swarm_member(&self, blob: &BlobHash, node: &EndpointId) -> Result<()> {
         let conn = self.conn();
         conn.execute(
             "INSERT INTO swarm (blob, node, seen_ms) VALUES (?1, ?2, ?3)
-             ON CONFLICT(blob, node) DO UPDATE SET seen_ms = excluded.seen_ms",
+             ON CONFLICT(blob, node) DO NOTHING",
             params![blob.to_string(), node.to_string(), now_ms()],
         )?;
         conn.execute(
             "DELETE FROM swarm WHERE blob = ?1 AND node NOT IN
-             (SELECT node FROM swarm WHERE blob = ?1 ORDER BY seen_ms DESC LIMIT ?2)",
+             (SELECT s.node FROM swarm s LEFT JOIN followers f ON f.node = s.node
+              WHERE s.blob = ?1 ORDER BY f.shares IS 1 DESC, f.since, s.seen_ms LIMIT ?2)",
             params![blob.to_string(), MAX_SWARM_PER_BLOB],
         )?;
         Ok(())
@@ -1587,6 +1619,60 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM swarm", [], |row| row.get(0))
             .unwrap();
         assert_eq!(kept, MAX_SWARM_PER_BLOB);
+    }
+
+    #[test]
+    fn a_full_swarm_keeps_the_followers_that_came_first() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(&dir.path().join("t.db")).unwrap();
+        let blob = BlobHash::from_bytes([5; 32]);
+        // A follower that shares, following us since `day`.
+        let follower = |day: i64| {
+            let addr = some_addr();
+            db.add_follower(&addr, true).unwrap();
+            let since = params![addr.id.to_string(), day * DAY_MS];
+            let sql = "UPDATE followers SET since = ?2 WHERE node = ?1";
+            db.conn().execute(sql, since).unwrap();
+            addr
+        };
+        let add = |addr: &EndpointAddr| {
+            let room = db.swarm_has_room_for(&blob, &addr.id).unwrap();
+            db.add_swarm_member(&blob, &addr.id).unwrap();
+            let kept = db.in_swarm(&blob, &addr.id).unwrap();
+            assert_eq!(room, kept, "it was said to fit, or not, and wasn't");
+            kept
+        };
+        let members: Vec<EndpointAddr> = (1..=MAX_SWARM_PER_BLOB).map(follower).collect();
+        assert!(members.iter().all(add));
+
+        // Full: one following for less time than all of them isn't kept.
+        let late = follower(MAX_SWARM_PER_BLOB + 1);
+        assert!(!add(&late));
+        // One following for longer takes the place of the newest follower.
+        let early = follower(0);
+        assert!(add(&early));
+        let last = &members[members.len() - 1];
+        assert!(!db.in_swarm(&blob, &last.id).unwrap());
+        // A member that stopped sharing gives up its place to anyone.
+        db.add_follower(&members[0], false).unwrap();
+        assert!(add(&late));
+        assert!(!db.in_swarm(&blob, &members[0].id).unwrap());
+        // Another blob has room of its own.
+        let other = BlobHash::from_bytes([6; 32]);
+        assert!(db.swarm_has_room_for(&other, &last.id).unwrap());
+
+        // Noted again, a member keeps the time it was first noted.
+        let seen = |node: &EndpointId| -> i64 {
+            let sql = "SELECT seen_ms FROM swarm WHERE blob = ?1 AND node = ?2";
+            let keys = params![blob.to_string(), node.to_string()];
+            db.conn().query_row(sql, keys, |row| row.get(0)).unwrap()
+        };
+        let sql = "UPDATE swarm SET seen_ms = 1 WHERE node = ?1";
+        db.conn()
+            .execute(sql, params![early.id.to_string()])
+            .unwrap();
+        db.add_swarm_member(&blob, &early.id).unwrap();
+        assert_eq!(seen(&early.id), 1);
     }
 
     fn some_addr() -> EndpointAddr {

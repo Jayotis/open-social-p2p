@@ -33,7 +33,7 @@ use iroh_blobs::{
     },
     get::{
         GetError,
-        fsm::{AtBlobHeaderNextError, DecodeError},
+        fsm::{self, AtBlobHeaderNextError, DecodeError},
     },
     protocol::{ChunkRanges, ChunkRangesExt, ERR_LIMIT, ERR_PERMISSION, GetRequest},
     provider::events::{
@@ -106,6 +106,10 @@ const SPLIT_GAIN: Duration = Duration::from_secs(2);
 /// the others' rates become known; and how often a node whose part was
 /// all taken, while it sends nothing, is checked on.
 const RECHECK: Duration = Duration::from_millis(250);
+/// Longest a node that says it hosts one of our blobs has to send the piece
+/// we ask for (`check_hosting`), connecting included. Its request waits for
+/// the answer, for up to 30 s (`REQUEST_TIMEOUT` in `social.rs`).
+const HOSTING_CHECK_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// How often the garbage collector deletes blobs nothing keeps any more:
 /// evicted ones, and the remains of failed downloads.
@@ -154,6 +158,11 @@ const KEEP_PLACES: Duration = Duration::from_secs(2);
 /// Blobs this small, such as thumbnails, have places of their own, so they
 /// aren't held up behind videos. Each takes a moment to send.
 pub(crate) const SMALL_BLOB: u64 = 1 << 20;
+/// A request for no more than this much of a larger blob takes a moment
+/// too, so it takes a small place: a node checking that we host the blob
+/// asks for one block of it (`check_hosting`), and a slow node's places
+/// may all be busy.
+const SMALL_REQUEST: u64 = BLOCK;
 /// Most small transfers at once. They don't count toward `MAX_TRANSFERS`.
 const MAX_SMALL_TRANSFERS: usize = 8;
 
@@ -351,6 +360,39 @@ impl ContentStore {
             .context("downloaded blob is incomplete")?;
         self.keep(h, class, size).await?;
         Ok(size)
+    }
+
+    /// Checks that `node` serves a blob we hold, as it says it does (doc
+    /// 13): asks it for one 1 KiB chunk picked at random, which is checked
+    /// against the hash as it arrives. A node without the blob can't send
+    /// it, unless it fetches that chunk from a node with it.
+    pub async fn check_hosting(&self, hash: &BlobHash, node: EndpointId) -> Result<()> {
+        let hash = to_hash(hash);
+        let size = self
+            .size(hash)
+            .await?
+            .context("this node doesn't hold it")?;
+        let chunks = size.div_ceil(1024).max(1);
+        let chunk = ((crate::sync::random_fraction() * chunks as f64) as u64).min(chunks - 1);
+        let request = GetRequest::blob_ranges(hash, ChunkRanges::chunk(chunk));
+        let check = async {
+            let conn = self.pool.get_or_connect(node).await?;
+            let connected = fsm::start((*conn).clone(), request, Default::default())
+                .next()
+                .await?;
+            let fsm::ConnectedNext::StartRoot(start) = connected.next().await? else {
+                bail!("it sent no blob");
+            };
+            // The size it gives is checked too: the hash covers it.
+            let fsm::EndBlobNext::Closing(closing) = start.next().drain().await?.next() else {
+                bail!("it sent more than the blob");
+            };
+            closing.next().await?;
+            Ok(())
+        };
+        tokio::time::timeout(HOSTING_CHECK_TIMEOUT, check)
+            .await
+            .context("it took too long")?
     }
 
     /// Promises disk space to a file a device is uploading, until the
@@ -1315,7 +1357,8 @@ fn to_blob_hash(hash: Hash) -> BlobHash {
 ///
 /// A request that may be served still waits for a place within the
 /// transfer limits, and is refused as busy if none frees up in time. A
-/// small blob needs only a small place (`SMALL_BLOB`). A node's places are
+/// small blob, or a block of a large one, needs only a small place
+/// (`SMALL_BLOB`, `SMALL_REQUEST`). A node's places are
 /// kept for its next request for a blob it is fetching in parts
 /// (`KEEP_PLACES`). With an upload cap, `pacer` spaces out what is sent;
 /// with none, what is sent is measured, for the places (`LargePlaces`).
@@ -1341,13 +1384,15 @@ async fn enforce_serving_rules(
                     .is_blob()
                     .then(|| may_serve(&db, request.hash, peer, share_prefetched))
                     .flatten();
-                let small = size.is_some_and(|s| s <= SMALL_BLOB);
-                let large = (!small).then_some(request.hash);
                 let whole = matches!(request.ranges.as_single(), Some((0, r)) if r.is_all());
                 let ranges = request
                     .ranges
                     .as_single()
                     .map_or_else(ChunkRanges::all, |(_, r)| r.clone());
+                let small = size.is_some_and(|s| {
+                    s <= SMALL_BLOB || sent_between(&ranges, 0, u64::MAX) <= SMALL_REQUEST
+                });
+                let large = (!small).then_some(request.hash);
                 let (ok, part) = (size.is_some(), !whole);
                 (peer, ok, small, large, part, ranges, msg.tx, msg.rx)
             }
@@ -2177,6 +2222,60 @@ mod tests {
         assert_eq!(done.outcome, Outcome::Completed);
         assert_eq!(done.bytes, KB);
         assert!(done.first_byte.is_some_and(|t| t <= done.took), "{done:?}");
+    }
+
+    #[tokio::test]
+    async fn a_node_that_says_it_hosts_a_blob_must_send_a_piece_of_it() {
+        let f = Fixture::new().await;
+        let store = f.open().await;
+        let data = vec![7; 40 * KB as usize];
+        let ours = f.add(&store, 7, 40 * KB, BlobClass::Own).await;
+        let (honest, _) = f.provider(&data, None).await;
+        // A piece picked at random each time.
+        for _ in 0..5 {
+            store.check_hosting(&ours, honest.id()).await.unwrap();
+        }
+
+        let (busy, _) = f.provider(&data, Some(AbortReason::RateLimited)).await;
+        let (refusing, _) = f.provider(&data, Some(AbortReason::Permission)).await;
+        let (without_it, _) = f.provider(b"something else", None).await;
+        let silent = f.serve(Fake(Vec::new())).await;
+        let nowhere = SecretKey::generate().public();
+        // Smaller sizes, so that the chunk asked for is past the end: one
+        // with nothing more, and one with the first byte of ours.
+        let just_a_size = f.serve(Fake(KB.to_le_bytes().to_vec())).await;
+        let one_byte = f
+            .serve(Fake([&1u64.to_le_bytes()[..], &[7]].concat()))
+            .await;
+        for node in [
+            busy.id(),
+            refusing.id(),
+            without_it.id(),
+            silent.id(),
+            nowhere,
+            just_a_size.id(),
+            one_byte.id(),
+        ] {
+            let checked = store.check_hosting(&ours, node).await;
+            assert!(checked.is_err(), "{}", node.fmt_short());
+        }
+        // The liar sends 1 KB that doesn't match the hash, and the right
+        // size for a 1 KB blob.
+        let small = f.add(&store, 8, KB, BlobClass::Own).await;
+        let liar = f.serve(Fake::liar()).await;
+        let checked = store.check_hosting(&small, liar.id()).await;
+        let error = format!("{:#}", checked.unwrap_err());
+        assert!(error.contains("hash mismatch"), "{error}");
+        // A blob we don't hold can't be checked.
+        let (other, hash) = f.provider(b"not ours", None).await;
+        let checked = store.check_hosting(&to_blob_hash(hash), other.id()).await;
+        assert!(checked.is_err());
+
+        // One that takes too long fails too.
+        let (slow, _) = f.waiting_provider(&data, Duration::from_secs(20)).await;
+        let started = Instant::now();
+        assert!(store.check_hosting(&ours, slow.id()).await.is_err());
+        assert!(started.elapsed() < Duration::from_secs(19));
     }
 
     #[tokio::test]

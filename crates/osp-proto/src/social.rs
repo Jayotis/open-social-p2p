@@ -47,7 +47,8 @@ pub enum SocialRequest {
     /// "I hold a verified copy of `blob`, media of one of your posts or of
     /// a post you reshared and host, and serve it to anyone." From a
     /// follower that subscribed with `shares_prefetched`, so your node can
-    /// name it in `WhoHosts`.
+    /// name it in `WhoHosts`, once it has fetched a piece of the blob from
+    /// the follower to check. The reply waits for the check.
     Hosting { blob: BlobHash },
     /// "The identity you follow now lives on this node" (ADR 0009). Sent to
     /// followers when a node takes over an identity. `profile` is its signed

@@ -17,7 +17,9 @@ use iroh::{
     Endpoint, EndpointAddr, EndpointId, RelayMode, SecretKey,
     address_lookup::MemoryLookup,
     endpoint::{Connection, presets},
+    protocol::Router,
 };
+use iroh_blobs::{BlobsProtocol, Hash, store::mem::MemStore};
 use osp_node::{BlobClass, Config, Home, Node, SimSettings};
 use osp_proto::{
     Attachment, BlobHash, SOCIAL_ALPN,
@@ -28,6 +30,8 @@ use osp_proto::{
 
 /// Matches `MAX_SWARM_SAMPLES_PER_HOUR` in `social.rs`.
 const SWARM_SAMPLES_PER_HOUR: usize = 60;
+/// Matches `MAX_HOSTING_CHECKS_PER_HOUR` in `social.rs`.
+const HOSTING_CHECKS_PER_HOUR: usize = 60;
 /// Long enough for anything on loopback.
 const PROMPTLY: Duration = Duration::from_secs(30);
 
@@ -125,6 +129,8 @@ async fn prefetched(node: &Node, blob: &BlobHash) {
 struct Peer {
     endpoint: Endpoint,
     conn: Connection,
+    /// Serves blobs, for a peer that does.
+    _serving: Option<Router>,
 }
 
 impl Peer {
@@ -142,7 +148,11 @@ impl Peer {
             .await
             .unwrap();
         let conn = endpoint.connect(node.clone(), SOCIAL_ALPN).await.unwrap();
-        Self { endpoint, conn }
+        Self {
+            endpoint,
+            conn,
+            _serving: None,
+        }
     }
 
     /// A peer that follows the node, sharing or not.
@@ -154,6 +164,27 @@ impl Peer {
         };
         assert!(matches!(peer.ask(&req).await, SocialResponse::Ok));
         peer
+    }
+
+    /// A follower that shares, serving what is in `media` to anyone.
+    async fn follower_serving(node: &EndpointAddr, media: &MemStore) -> Self {
+        let mut peer = Self::follower(node, true).await;
+        let router = Router::builder(peer.endpoint.clone())
+            .accept(iroh_blobs::ALPN, BlobsProtocol::new(media, None))
+            .spawn();
+        peer._serving = Some(router);
+        peer
+    }
+
+    /// Downloads `blob` from `node` into `media`.
+    async fn fetch(&self, node: &EndpointAddr, blob: BlobHash, media: &MemStore) {
+        let conn = self
+            .endpoint
+            .connect(node.clone(), iroh_blobs::ALPN)
+            .await
+            .unwrap();
+        let hash = Hash::from_bytes(*blob.as_bytes());
+        media.remote().fetch(conn, hash).await.unwrap();
     }
 
     async fn ask(&self, req: &SocialRequest) -> SocialResponse {
@@ -282,18 +313,21 @@ async fn the_author_names_followers_with_a_copy_only_to_followers() {
     let stranger = Peer::new(&addr).await;
     assert_eq!(stranger.who_hosts(photo.blob).await, [alice.node_id()]);
 
-    // Only a follower that shares may say it holds a copy, and only of
-    // Alice's own media.
-    let sharing = Peer::follower(&addr, true).await;
+    // Only a follower that shares may say it holds a copy, only of Alice's
+    // own media, and only one it sends a piece of when Alice's node asks.
+    let media = MemStore::new();
+    let sharing = Peer::follower_serving(&addr, &media).await;
     let other = BlobHash::from_bytes([7; 32]);
     for (peer, blob) in [
         (&stranger, photo.blob),
         (&follower, photo.blob),
         (&sharing, other),
+        (&sharing, photo.blob),
     ] {
         let resp = peer.hosting(blob).await;
         assert!(matches!(resp, SocialResponse::Error { .. }), "{resp:?}");
     }
+    sharing.fetch(&addr, photo.blob, &media).await;
     assert!(matches!(
         sharing.hosting(photo.blob).await,
         SocialResponse::Ok
@@ -323,6 +357,58 @@ async fn the_author_names_followers_with_a_copy_only_to_followers() {
     for node in [alice, bob, carol] {
         node.shutdown().await.unwrap();
     }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_follower_that_says_it_holds_a_copy_is_checked_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let alice = start(dir.path(), "Alice", false).await;
+    let addr = alice.addr().await;
+    let photo = post_photo(&alice, dir.path(), false).await;
+    let follower = Peer::follower(&addr, false).await;
+    let media = MemStore::new();
+    let sharing = Peer::follower_serving(&addr, &media).await;
+    let named = async || follower.who_hosts(photo.blob).await;
+
+    // Without a copy, it isn't named.
+    let resp = sharing.hosting(photo.blob).await;
+    assert!(
+        matches!(&resp, SocialResponse::Error { message } if message.contains("piece")),
+        "{resp:?}"
+    );
+    assert!(!named().await.contains(&sharing.endpoint.id()));
+    // With one, it is.
+    sharing.fetch(&addr, photo.blob, &media).await;
+    assert!(matches!(
+        sharing.hosting(photo.blob).await,
+        SocialResponse::Ok
+    ));
+    assert!(named().await.contains(&sharing.endpoint.id()));
+
+    // Saying so again isn't checked: it isn't counted against the checks
+    // it may have an hour.
+    for _ in 0..HOSTING_CHECKS_PER_HOUR {
+        assert!(matches!(
+            sharing.hosting(photo.blob).await,
+            SocialResponse::Ok
+        ));
+    }
+    // Its other claims are, until it has had all of them.
+    let thumb = photo.thumbnail.expect("a thumbnail").blob;
+    for _ in 2..HOSTING_CHECKS_PER_HOUR {
+        let resp = sharing.hosting(thumb).await;
+        assert!(
+            matches!(&resp, SocialResponse::Error { message } if message.contains("piece")),
+            "{resp:?}"
+        );
+    }
+    let resp = sharing.hosting(thumb).await;
+    assert!(
+        matches!(&resp, SocialResponse::Error { message } if message.contains("this hour")),
+        "{resp:?}"
+    );
+
+    alice.shutdown().await.unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -416,7 +502,10 @@ async fn a_resharer_that_hosts_names_its_followers_with_a_copy() {
     let other = post_photo(&alice, dir.path(), true).await;
     call(&bob, ClientRequest::Sync).await;
     prefetched(&bob, &other.blob).await;
-    let sharing = Peer::follower(&addr, true).await;
+    let media = MemStore::new();
+    let sharing = Peer::follower_serving(&addr, &media).await;
+    sharing.fetch(&addr, photo.blob, &media).await;
+    sharing.fetch(&alice.addr().await, other.blob, &media).await;
     let resp = sharing.hosting(other.blob).await;
     assert!(matches!(resp, SocialResponse::Error { .. }), "{resp:?}");
     assert!(matches!(
