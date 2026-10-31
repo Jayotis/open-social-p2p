@@ -72,6 +72,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   UnsentPost dco_decode_box_autoadd_unsent_post(dynamic raw);
 
   @protected
+  Followed dco_decode_followed(dynamic raw);
+
+  @protected
   int dco_decode_i_32(dynamic raw);
 
   @protected
@@ -81,6 +84,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   List<String> dco_decode_list_String(dynamic raw);
 
   @protected
+  List<Followed> dco_decode_list_followed(dynamic raw);
+
+  @protected
   List<Media> dco_decode_list_media(dynamic raw);
 
   @protected
@@ -88,6 +94,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   Uint8List dco_decode_list_prim_u_8_strict(dynamic raw);
+
+  @protected
+  List<TrustEntry> dco_decode_list_trust_entry(dynamic raw);
 
   @protected
   List<UnsentFile> dco_decode_list_unsent_file(dynamic raw);
@@ -130,6 +139,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   SavedFeed dco_decode_saved_feed(dynamic raw);
+
+  @protected
+  TrustEntry dco_decode_trust_entry(dynamic raw);
+
+  @protected
+  TrustList dco_decode_trust_list(dynamic raw);
 
   @protected
   int dco_decode_u_32(dynamic raw);
@@ -197,6 +212,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   UnsentPost sse_decode_box_autoadd_unsent_post(SseDeserializer deserializer);
 
   @protected
+  Followed sse_decode_followed(SseDeserializer deserializer);
+
+  @protected
   int sse_decode_i_32(SseDeserializer deserializer);
 
   @protected
@@ -206,6 +224,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   List<String> sse_decode_list_String(SseDeserializer deserializer);
 
   @protected
+  List<Followed> sse_decode_list_followed(SseDeserializer deserializer);
+
+  @protected
   List<Media> sse_decode_list_media(SseDeserializer deserializer);
 
   @protected
@@ -213,6 +234,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   Uint8List sse_decode_list_prim_u_8_strict(SseDeserializer deserializer);
+
+  @protected
+  List<TrustEntry> sse_decode_list_trust_entry(SseDeserializer deserializer);
 
   @protected
   List<UnsentFile> sse_decode_list_unsent_file(SseDeserializer deserializer);
@@ -259,6 +283,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   SavedFeed sse_decode_saved_feed(SseDeserializer deserializer);
+
+  @protected
+  TrustEntry sse_decode_trust_entry(SseDeserializer deserializer);
+
+  @protected
+  TrustList sse_decode_trust_list(SseDeserializer deserializer);
 
   @protected
   int sse_decode_u_32(SseDeserializer deserializer);
@@ -345,6 +375,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_followed(Followed self, SseSerializer serializer);
+
+  @protected
   void sse_encode_i_32(int self, SseSerializer serializer);
 
   @protected
@@ -352,6 +385,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_list_String(List<String> self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_list_followed(List<Followed> self, SseSerializer serializer);
 
   @protected
   void sse_encode_list_media(List<Media> self, SseSerializer serializer);
@@ -362,6 +398,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_list_prim_u_8_strict(
     Uint8List self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_trust_entry(
+    List<TrustEntry> self,
     SseSerializer serializer,
   );
 
@@ -421,6 +463,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_saved_feed(SavedFeed self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_trust_entry(TrustEntry self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_trust_list(TrustList self, SseSerializer serializer);
 
   @protected
   void sse_encode_u_32(int self, SseSerializer serializer);

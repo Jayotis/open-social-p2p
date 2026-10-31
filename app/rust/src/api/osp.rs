@@ -14,7 +14,7 @@ use flutter_rust_bridge::frb;
 use osp_client::{
     device_key_from_hex,
     osp_proto::{
-        rpc::{ClientRequest, ClientResponse, FeedItem},
+        rpc::{ClientRequest, ClientResponse, FeedItem, Reached, TrustInfo},
         BlobHash, MediaKind, ObjectId,
     },
     Client, ClientOptions, NoContact, Pairing,
@@ -65,6 +65,47 @@ pub struct NodeStatus {
     /// `direct`, `relay` or `none`.
     pub path: String,
     pub rtt_ms: Option<u32>,
+    /// Requests to be a trusted follower waiting for an answer.
+    pub trust_requests: u32,
+}
+
+/// A request to be a trusted follower, or someone trusted (ADR 0013).
+pub struct TrustEntry {
+    /// The node asking, or trusted: what `answer_trust` takes.
+    pub node: String,
+    pub identity: String,
+    /// What the person says: their name, and the note with their request
+    /// (empty if trusted without one). Neither is checked: show them as
+    /// their words, as plain text.
+    pub name: String,
+    pub note: String,
+    /// Seconds since they asked, while waiting; since they were trusted.
+    pub secs_ago: i64,
+    /// Whether the owner follows this identity, which is the check that
+    /// it's who they say: the owner added their follow code.
+    pub followed: bool,
+    /// Whether this person is trusted on another of their nodes.
+    pub trusted_elsewhere: bool,
+    /// How long the node has followed the owner's, in seconds; `None` if
+    /// it no longer does.
+    pub follower_secs: Option<i64>,
+    /// `direct` or `relay` if the node reached the owner's in the last few
+    /// minutes, `none` otherwise.
+    pub reached: String,
+    /// How many of the owner's files it holds a copy of.
+    pub copies: u32,
+}
+
+/// Requests waiting, newest first, and the nodes trusted.
+pub struct TrustList {
+    pub requests: Vec<TrustEntry>,
+    pub trusted: Vec<TrustEntry>,
+}
+
+/// Someone the node follows.
+pub struct Followed {
+    pub identity: String,
+    pub name: String,
 }
 
 pub struct Post {
@@ -197,6 +238,7 @@ impl OspApp {
                 .map(|c| c.path.clone())
                 .unwrap_or_else(|| "none".to_string()),
             rtt_ms: conn.and_then(|c| c.rtt_ms).map(|r| r as u32),
+            trust_requests: s.trust_requests as u32,
         })
     }
 
@@ -304,6 +346,75 @@ impl OspApp {
         Ok(())
     }
 
+    /// Who the node follows, by name.
+    pub async fn following(&self) -> Result<Vec<Followed>> {
+        let ClientResponse::Following { follows } =
+            self.client.request(&ClientRequest::Following).await?
+        else {
+            bail!("unexpected reply to Following");
+        };
+        let mut followed: Vec<Followed> = follows
+            .into_iter()
+            .map(|f| Followed {
+                identity: f.actor.to_string(),
+                name: f.name.unwrap_or_else(|| f.actor.fmt_short().to_string()),
+            })
+            .collect();
+        followed.sort_by_key(|f| f.name.to_lowercase());
+        Ok(followed)
+    }
+
+    /// Requests to be a trusted follower waiting, newest first, and who is
+    /// trusted.
+    pub async fn trust_list(&self) -> Result<TrustList> {
+        let ClientResponse::Trust { requests, trusted } =
+            self.client.request(&ClientRequest::TrustRequests).await?
+        else {
+            bail!("unexpected reply to TrustRequests");
+        };
+        Ok(TrustList {
+            requests: requests.into_iter().map(trust_entry).collect(),
+            trusted: trusted.into_iter().map(trust_entry).collect(),
+        })
+    }
+
+    /// Allows or declines the request from `node`. The node isn't told.
+    pub async fn answer_trust(&self, node: String, allow: bool) -> Result<()> {
+        let node = node.parse()?;
+        self.client
+            .request(&ClientRequest::AnswerTrust { node, allow })
+            .await?;
+        Ok(())
+    }
+
+    /// Trusts someone the node follows, without a request.
+    pub async fn trust(&self, identity: String) -> Result<()> {
+        let actor = identity.parse()?;
+        self.client
+            .request(&ClientRequest::TrustFollowed { actor })
+            .await?;
+        Ok(())
+    }
+
+    /// Stops trusting someone, on every node they were trusted on.
+    pub async fn untrust(&self, identity: String) -> Result<()> {
+        let actor = identity.parse()?;
+        self.client
+            .request(&ClientRequest::Untrust { actor })
+            .await?;
+        Ok(())
+    }
+
+    /// Asks someone the node follows to trust the owner, with a note saying
+    /// who they are. Their node never says whether it did.
+    pub async fn ask_trust(&self, identity: String, note: String) -> Result<()> {
+        let actor = identity.parse()?;
+        self.client
+            .request(&ClientRequest::AskTrust { actor, note })
+            .await?;
+        Ok(())
+    }
+
     /// The node owner's follow ticket, to show as a QR code.
     pub async fn invite(&self) -> Result<String> {
         match self.client.request(&ClientRequest::Invite).await? {
@@ -407,6 +518,26 @@ fn progress(stage: PostStage, sent: u64, total: u64) -> PostProgress {
         message: None,
         kept: false,
         no_contact: false,
+    }
+}
+
+fn trust_entry(t: TrustInfo) -> TrustEntry {
+    TrustEntry {
+        node: t.node.to_string(),
+        identity: t.actor.to_string(),
+        name: t.name,
+        note: t.note,
+        secs_ago: t.secs_ago as i64,
+        followed: t.followed,
+        trusted_elsewhere: t.trusted_elsewhere,
+        follower_secs: t.follower_secs.map(|s| s as i64),
+        reached: match t.reached {
+            Some(Reached::Direct) => "direct",
+            Some(Reached::Relay) => "relay",
+            None => "none",
+        }
+        .to_string(),
+        copies: t.copies as u32,
     }
 }
 
