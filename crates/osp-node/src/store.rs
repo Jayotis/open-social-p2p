@@ -1330,9 +1330,9 @@ async fn enforce_serving_rules(
     while let Some(msg) = rx.recv().await {
         // Requests for data: who asked, whether the rules allow it, whether
         // it is small, the large blob it is for and whether it asks for
-        // only part of it, and the channels for the answer and for news of
-        // the transfer.
-        let (peer, allowed, small, large, part, answer, updates) = match msg {
+        // only part of it, the ranges of the blob it asks for, and the
+        // channels for the answer and for news of the transfer.
+        let (peer, allowed, small, large, part, ranges, answer, updates) = match msg {
             ProviderMessage::GetRequestReceived(msg) => {
                 let peer = peers.get(&msg.inner.connection_id).copied().flatten();
                 let request = &msg.inner.request;
@@ -1344,7 +1344,12 @@ async fn enforce_serving_rules(
                 let small = size.is_some_and(|s| s <= SMALL_BLOB);
                 let large = (!small).then_some(request.hash);
                 let whole = matches!(request.ranges.as_single(), Some((0, r)) if r.is_all());
-                (peer, size.is_some(), small, large, !whole, msg.tx, msg.rx)
+                let ranges = request
+                    .ranges
+                    .as_single()
+                    .map_or_else(ChunkRanges::all, |(_, r)| r.clone());
+                let (ok, part) = (size.is_some(), !whole);
+                (peer, ok, small, large, part, ranges, msg.tx, msg.rx)
             }
             ProviderMessage::GetManyRequestReceived(msg) => {
                 let peer = peers.get(&msg.inner.connection_id).copied().flatten();
@@ -1354,7 +1359,8 @@ async fn enforce_serving_rules(
                     .hashes
                     .iter()
                     .all(|h| may_serve(&db, *h, peer, share_prefetched).is_some());
-                (peer, ok, false, None, false, msg.tx, msg.rx)
+                let all = ChunkRanges::all();
+                (peer, ok, false, None, false, all, msg.tx, msg.rx)
             }
             ProviderMessage::ClientConnected(msg) => {
                 peers.insert(msg.inner.connection_id, msg.inner.endpoint_id);
@@ -1435,7 +1441,7 @@ async fn enforce_serving_rules(
                             let end = progress.end_offset;
                             let from = reached.replace(end).unwrap_or(end);
                             let before = written;
-                            written += end.saturating_sub(from);
+                            written += sent_between(&ranges, from, end);
                             let measured = past_ahead(written) - past_ahead(before);
                             meter.count(measured, Instant::now());
                         }
@@ -1677,6 +1683,24 @@ impl Meter {
     }
 }
 
+/// How many bytes a transfer of `ranges` of a blob sends to get from
+/// `from` in the blob to `to`: those of `ranges` between the two. A
+/// transfer of ranges with gaps between them skips the gaps, and a node
+/// that has fetched most of a blob asks for what is left that way.
+fn sent_between(ranges: &ChunkRanges, from: u64, to: u64) -> u64 {
+    // Start, end, start, end... in 1 KiB chunks, with no last end when the
+    // final range runs on to the end of the blob.
+    ranges
+        .boundaries()
+        .chunks(2)
+        .map(|range| {
+            let start = range[0].to_bytes().max(from);
+            let end = range.get(1).map_or(u64::MAX, |end| end.to_bytes()).min(to);
+            end.saturating_sub(start)
+        })
+        .sum()
+}
+
 /// Media transfers served at once for an upload of `mbps`.
 fn transfer_places(mbps: f64) -> usize {
     let places = (mbps / MBPS_PER_TRANSFER) as usize;
@@ -1857,6 +1881,25 @@ mod tests {
         large.count(1, start);
         large.count(100_000_000, start + MEASURE_OVER);
         assert_eq!(large.now(), (3, None));
+    }
+
+    #[test]
+    fn a_transfer_with_gaps_sends_only_its_ranges() {
+        const MB: u64 = 1 << 20;
+        let all = ChunkRanges::all();
+        assert_eq!(sent_between(&all, 0, 5 * MB), 5 * MB);
+        assert_eq!(sent_between(&all, 3 * MB, 5 * MB), 2 * MB);
+        // A part, and what is left of a blob after two parts arrived.
+        let part = ChunkRanges::bytes(10 * MB..20 * MB);
+        assert_eq!(sent_between(&part, 10 * MB, 11 * MB), MB);
+        let left = ChunkRanges::bytes(0..2 * MB) | ChunkRanges::bytes(40 * MB..42 * MB);
+        assert_eq!(sent_between(&left, 0, MB), MB);
+        // Across the gap: only what's either side of it.
+        assert_eq!(sent_between(&left, MB, 40 * MB + 16 * KB), MB + 16 * KB);
+        assert_eq!(sent_between(&left, 40 * MB, 42 * MB), 2 * MB);
+        // Progress that seems to go back, as when a request for several
+        // blobs moves on to the next: nothing.
+        assert_eq!(sent_between(&all, 5 * MB, MB), 0);
     }
 
     #[test]
