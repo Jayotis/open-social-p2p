@@ -291,3 +291,8 @@ The checks themselves cost the author's node at most one 16 KiB block per follow
 **What it shows.** Checking a follower's copy before naming it costs nothing measurable on home connections. Keeping the followers that have followed longest once 100 are named does: those first named go on being named while followers that got the video later, with their places free, never are, so fewer followers do the hosting, and more requests are refused as busy.
 
 **Told once more.** Added on 2026-10-31. A follower that couldn't tell the author's node, or a hosting resharer's, that it holds a copy, because the node refused, as when the check failed, or couldn't be reached, now tells it once more after 2½ to 7½ minutes (`525e6ea`). None of the runs above have it.
+
+**Half and half.** Added on 2026-10-31, before this run. Once 100 are named for a file, half the places now go to the followers that have followed longest, as before, so a crowd of new followers still can't push them out, and half to those named last, so followers that got the video later, with their places free, are named too (`f2cfa3a`, which tells once more too). The home run with it, and with `d76a178`, the code before the check, in the same round.
+
+- **Expected:** close to the runs before the check, as the run with a list of 300 was: the followers' times, the creator's copies, the busy refusals and the number of followers sending copies to others within what the runs before the check showed in rounds 1 and 2, and no worse than the run before it in this round.
+- **Checks failed:** counted from the log, as before. A follower that fails one now tells the author's node once more and is checked again, so the log shows a follower failing both times twice, and one passing the second time once.
