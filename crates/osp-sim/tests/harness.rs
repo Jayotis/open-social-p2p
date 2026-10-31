@@ -24,6 +24,7 @@ async fn a_small_run_measures_the_creators_upload() {
         drop_out_after: Duration::ZERO,
         strangers: 0,
         latecomers: 0,
+        latecomers_after: Duration::ZERO,
         time_limit: Duration::from_secs(90),
         sample: Duration::from_secs(1),
         label: "test".into(),
@@ -107,6 +108,7 @@ fn with_the_swarm(dir: &Path) -> Scenario {
         drop_out_after: Duration::ZERO,
         strangers: 0,
         latecomers: 0,
+        latecomers_after: Duration::ZERO,
         time_limit: Duration::from_secs(90),
         sample: Duration::from_secs(1),
         label: "test".into(),
@@ -141,6 +143,8 @@ async fn latecomers_fetch_from_several_followers_at_once() {
         // Over 2 MiB, so it comes in parts.
         video_bytes: 3_000_000,
         latecomers: 2,
+        // Later than the run ends, about 20 s after posting.
+        latecomers_after: Duration::from_secs(30),
         ..with_the_swarm(dir.path())
     };
     let report = osp_sim::run(&scenario).await.unwrap();
@@ -151,6 +155,7 @@ async fn latecomers_fetch_from_several_followers_at_once() {
         "{summary}"
     );
     assert!(summary.contains("2 of 2 held the video"), "{summary}");
+    assert!(report.latecomers_started_secs >= 30.0, "{summary}");
     assert!(report.latecomer_time(100).is_some(), "{summary}");
     // Each got the thumbnail from the creator, and the video in two parts
     // or more from followers holding a copy.

@@ -52,6 +52,8 @@ const LATECOMER_TIMEOUT: Duration = Duration::from_secs(300);
 /// How often the harness looks at the latecomer fetching: often enough to
 /// time a download of seconds.
 const LATECOMER_TICK: Duration = Duration::from_millis(250);
+/// The followers last to hold the video whose sources the report shows.
+const LAST_SHOWN: usize = 3;
 const MBPS: u64 = 1_000_000;
 /// A run is flagged as on a busy machine when other programs took this
 /// share of its CPUs in some period, or everything together this much.
@@ -100,6 +102,9 @@ pub struct Scenario {
     /// swarm is. Like followers, they upload at the followers' speeds and
     /// share what they fetch. Nothing else counts them.
     pub latecomers: usize,
+    /// The first latecomer follows no sooner than this long after posting,
+    /// so followers that stopped have been gone a while.
+    pub latecomers_after: Duration,
     /// The run ends when every follower that stays and every stranger holds
     /// the video, or this long after posting.
     pub time_limit: Duration,
@@ -207,6 +212,8 @@ pub struct Report {
     /// and how long each took from following to holding the video, if it
     /// did within `LATECOMER_TIMEOUT`.
     pub latecomers: usize,
+    /// When the first latecomer followed, after posting.
+    pub latecomers_started_secs: f64,
     pub latecomer_took_secs: Vec<Option<f64>>,
     pub latecomer_downloads: Outcomes,
     /// Media bytes the creator sent to latecomers. Not part of
@@ -217,6 +224,11 @@ pub struct Report {
     /// What the followers received, by the upload speed of the nodes it
     /// came from, the creator apart.
     pub follower_sources: Vec<Received>,
+    /// The followers that held the video last, or never did, last first:
+    /// each one's place in follower order, and what it received from each
+    /// node, most first. Says whether they waited on busy or unreachable
+    /// nodes.
+    pub last_to_hold: Vec<(usize, Vec<Received>)>,
     /// How many transfers the creator served at once when the run ended,
     /// and the same for each follower that stayed, in follower order.
     pub creator_serving: Serving,
@@ -258,6 +270,8 @@ pub struct Received {
     /// nothing for 30 s.
     pub failed: f64,
     pub handed_on: f64,
+    /// Times the node couldn't be reached, to download from it or to ask.
+    pub unreached: f64,
 }
 
 impl Received {
@@ -574,6 +588,10 @@ pub async fn run(s: &Scenario) -> Result<Report> {
             .map(|p| p.counts.sent_bytes),
     );
 
+    if !latecomers.is_empty() {
+        tokio::time::sleep(s.latecomers_after.saturating_sub(posted.elapsed())).await;
+    }
+    let latecomers_started_secs = posted.elapsed().as_secs_f64();
     let latecomer_took_secs = latecomers_fetch(&creator, &latecomers, post, video).await?;
     tokio::time::sleep(SETTLE).await;
     if !latecomers.is_empty() {
@@ -589,6 +607,10 @@ pub async fn run(s: &Scenario) -> Result<Report> {
         .map(|seen| received(seen, &hosts))
         .collect();
     let follower_sources = by_speed(&follower_records, &hosts);
+    let last_to_hold = last_to_hold(&held, &dropped_out, LAST_SHOWN)
+        .into_iter()
+        .map(|i| (i, received(&follower_records[i], &hosts)))
+        .collect();
     let latecomer_ids: HashSet<EndpointId> = latecomers.iter().map(Node::node_id).collect();
     let creator_sent_to_latecomers = total(
         peers(&creator)
@@ -647,11 +669,13 @@ pub async fn run(s: &Scenario) -> Result<Report> {
         creator_sent_to_strangers,
         strangers_received_from_creator: from_strangers.from_creator,
         latecomers: s.latecomers,
+        latecomers_started_secs,
         latecomer_took_secs,
         latecomer_downloads: from_latecomers.downloads,
         creator_sent_to_latecomers,
         latecomer_sources,
         follower_sources,
+        last_to_hold,
         creator_serving,
         follower_serving,
         machine: load.machine,
@@ -929,7 +953,8 @@ impl Report {
             };
             let _ = writeln!(
                 out,
-                "latecomers, following one after another after the run and fetching at once: {} of {} held the video; half within {}, all within {}; the creator sent them {:.2} copies",
+                "latecomers, following one after another from {:.0} s after posting and fetching at once: {} of {} held the video; half within {}, all within {}; the creator sent them {:.2} copies",
+                self.latecomers_started_secs,
                 self.latecomer_took_secs.iter().flatten().count(),
                 self.latecomers,
                 time(self.latecomer_time(50)),
@@ -954,6 +979,21 @@ impl Report {
                         .join("; "),
                 );
             }
+        }
+        for (i, sources) in &self.last_to_hold {
+            let held = match self.held_after_secs[*i] {
+                Some(t) => format!("{t:.0} s"),
+                None => "never".to_string(),
+            };
+            let _ = writeln!(
+                out,
+                "last to hold the video: F{i}, {held}: {}",
+                sources
+                    .iter()
+                    .map(|r| r.line(false))
+                    .collect::<Vec<_>>()
+                    .join("; "),
+            );
         }
         if !self.follower_sources.is_empty() {
             let _ = writeln!(
@@ -1397,7 +1437,8 @@ fn received(seen: &[PeerRecord], hosts: &HashMap<EndpointId, Host>) -> Vec<Recei
         .iter()
         .filter(|p| {
             let c = &p.counts;
-            c.received_bytes > 0.0 || c.completed + c.busy + c.failed + c.handed_on > 0.0
+            c.received_bytes > 0.0
+                || c.completed + c.busy + c.failed + c.handed_on + c.unreached > 0.0
         })
         .map(|p| {
             let (from, upload_mbps) = match hosts.get(&p.node) {
@@ -1414,11 +1455,24 @@ fn received(seen: &[PeerRecord], hosts: &HashMap<EndpointId, Host>) -> Vec<Recei
                 busy: p.counts.busy,
                 failed: p.counts.failed,
                 handed_on: p.counts.handed_on,
+                unreached: p.counts.unreached,
             }
         })
         .collect();
     list.sort_by(|a, b| b.bytes.total_cmp(&a.bytes));
     list
+}
+
+/// The `n` followers that stayed and held the video last, or never did,
+/// last first, by their place in follower order.
+fn last_to_hold(held: &[Option<f64>], dropped_out: &[usize], n: usize) -> Vec<usize> {
+    let mut stayed: Vec<usize> = (0..held.len())
+        .filter(|i| !dropped_out.contains(i))
+        .collect();
+    let when = |i: &usize| held[*i].unwrap_or(f64::INFINITY);
+    stayed.sort_by(|a, b| when(b).total_cmp(&when(a)));
+    stayed.truncate(n);
+    stayed
 }
 
 /// What a group of nodes received, added up by the upload speed of the
@@ -1457,6 +1511,7 @@ fn by_speed(records: &[Vec<PeerRecord>], hosts: &HashMap<EndpointId, Host>) -> V
             t.busy += c.busy;
             t.failed += c.failed;
             t.handed_on += c.handed_on;
+            t.unreached += c.unreached;
         }
     }
     totals
@@ -1494,6 +1549,9 @@ impl Received {
         }
         if self.handed_on > 0.0 {
             let _ = write!(line, ", {:.0} handed on", self.handed_on);
+        }
+        if self.unreached > 0.0 {
+            let _ = write!(line, ", couldn't connect {:.0} times", self.unreached);
         }
         line
     }
@@ -1603,6 +1661,15 @@ mod tests {
         assert_eq!(r.time_until(95), Some(285.0));
         assert_eq!(r.time_until(96), None, "never reached");
         assert_eq!(r.holding(), 285);
+    }
+
+    #[test]
+    fn the_last_to_hold_the_video_are_those_that_stayed_never_holding_it_first() {
+        let held = [Some(5.0), None, Some(9.0), Some(1.0), None, Some(7.0)];
+        // Follower 1 dropped out without it.
+        assert_eq!(last_to_hold(&held, &[1], 3), [4, 2, 5]);
+        assert_eq!(last_to_hold(&held, &[1, 4], 2), [2, 5]);
+        assert_eq!(last_to_hold(&held, &[], 10).len(), 6);
     }
 
     #[test]
@@ -1752,6 +1819,7 @@ mod tests {
             drop_out_after: Duration::ZERO,
             strangers: 0,
             latecomers: 0,
+            latecomers_after: Duration::ZERO,
             time_limit: Duration::ZERO,
             sample: Duration::ZERO,
             label: String::new(),
@@ -1843,11 +1911,13 @@ mod tests {
     fn what_came_from_where_is_added_up_by_speed() {
         let key = || osp_proto::SecretKey::generate().public();
         let (creator, slow1, slow2, fast, stranger) = (key(), key(), key(), key(), key());
+        let gone = key();
         let hosts = HashMap::from([
             (creator, Host::creator(1)),
             (slow1, Host::node("F1".into(), 1)),
             (slow2, Host::node("F2".into(), 1)),
             (fast, Host::node("F3".into(), 10)),
+            (gone, Host::node("F4".into(), 1)),
         ]);
         let record = |node, received_bytes, receive_ms, failed| PeerRecord {
             node,
@@ -1878,6 +1948,11 @@ mod tests {
             vec![
                 record(slow1, 1e6, 8000.0, 0.0),
                 record(slow2, 0.0, 0.0, 1.0),
+                {
+                    let mut gone = record(gone, 0.0, 0.0, 0.0);
+                    gone.counts.unreached = 2.0;
+                    gone
+                },
             ],
         ];
 
@@ -1887,11 +1962,18 @@ mod tests {
         assert_eq!(one[0].mbps(), 8.0);
         assert_eq!(one[1].mbps(), 1.0);
 
+        // A node that was never reached is listed.
+        let two = received(&records[1], &hosts);
+        let names: Vec<&str> = two.iter().map(|r| r.from.as_str()).collect();
+        assert_eq!(names, ["F1", "F2", "F4"]);
+        assert!(two[2].line(false).ends_with("couldn't connect 2 times"));
+
         let speeds = by_speed(&records, &hosts);
         let names: Vec<&str> = speeds.iter().map(|r| r.from.as_str()).collect();
         assert_eq!(names, ["1 Mbit/s nodes", "10 Mbit/s nodes", "creator"]);
         let slow = &speeds[0];
         assert_eq!((slow.bytes, slow.ms, slow.failed), (2e6, 16000.0, 1.0));
+        assert_eq!(slow.unreached, 2.0);
         assert_eq!(slow.nodes, 1, "the node that only failed sent nothing");
         assert_eq!(slow.mbps(), 1.0);
         assert_eq!(speeds[2].bytes, 1e6);
