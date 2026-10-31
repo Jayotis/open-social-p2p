@@ -452,7 +452,7 @@ impl Core {
 
     /// Notes that `remote` sent us a request, if it's a follower, for
     /// ranking the followers named as hosts.
-    fn note_heard(&self, remote: EndpointId, direct: bool) {
+    fn note_heard(&self, remote: EndpointId, direct: Option<bool>) {
         match self.db.is_follower(&remote) {
             Ok(true) => self.heard.note(remote, direct, Instant::now()),
             Ok(false) => {}
@@ -602,8 +602,10 @@ enum Contact {
 }
 
 impl Heard {
-    /// Notes a request from `node` at `now`, `direct` or not.
-    fn note(&self, node: EndpointId, direct: bool, now: Instant) {
+    /// Notes a request from `node` at `now`, `direct` or not. Without a
+    /// selected path, it came the way `node` was last heard, or directly if
+    /// it's new: nothing says it came through a relay.
+    fn note(&self, node: EndpointId, direct: Option<bool>, now: Instant) {
         let mut heard = self.lock();
         // Followers that stopped following are never noted again; this
         // forgets them.
@@ -611,7 +613,8 @@ impl Heard {
             heard.retain(|_, (at, _)| now.duration_since(*at) < HEARD_LATELY);
         }
         if heard.len() < MAX_FOLLOWERS || heard.contains_key(&node) {
-            heard.insert(node, (now, direct));
+            let last = heard.get(&node).map(|&(_, direct)| direct);
+            heard.insert(node, (now, direct.or(last).unwrap_or(true)));
         }
     }
 
@@ -685,13 +688,13 @@ mod tests {
         let heard = Heard::default();
         let [quiet, relayed, direct, earlier, unknown] = [(); 5].map(|_| some_addr());
         let start = Instant::now();
-        heard.note(earlier.id, true, start);
+        heard.note(earlier.id, Some(true), start);
         let later = start + HEARD_LATELY;
-        heard.note(relayed.id, false, later);
-        heard.note(direct.id, true, later);
+        heard.note(relayed.id, Some(false), later);
+        heard.note(direct.id, Some(true), later);
         // Heard directly once, now only through a relay.
-        heard.note(quiet.id, true, later);
-        heard.note(quiet.id, false, later);
+        heard.note(quiet.id, Some(true), later);
+        heard.note(quiet.id, Some(false), later);
 
         let mut followers = [&unknown, &earlier, &quiet, &relayed, &direct].map(|a| a.clone());
         let counts = heard.rank(&mut followers, later + Duration::from_secs(1), HEARD_LATELY);
@@ -705,26 +708,41 @@ mod tests {
     }
 
     #[test]
+    fn a_request_without_a_selected_path_isnt_taken_as_relayed() {
+        let heard = Heard::default();
+        let [relayed, new] = [(); 2].map(|_| some_addr());
+        let now = Instant::now();
+        heard.note(relayed.id, Some(false), now);
+        // Between paths: as last heard, or directly for a new one.
+        heard.note(relayed.id, None, now);
+        heard.note(new.id, None, now);
+
+        let mut followers = [&relayed, &new].map(|a| a.clone());
+        assert_eq!(heard.rank(&mut followers, now, HEARD_LATELY), [1, 1, 0]);
+        assert_eq!(followers.map(|a| a.id), [new.id, relayed.id]);
+    }
+
+    #[test]
     fn a_full_record_forgets_followers_not_heard_from_lately() {
         let heard = Heard::default();
         let start = Instant::now();
         let old = some_addr();
-        heard.note(old.id, true, start);
+        heard.note(old.id, Some(true), start);
         for _ in 1..MAX_FOLLOWERS {
-            heard.note(some_addr().id, true, start + HEARD_LATELY);
+            heard.note(some_addr().id, Some(true), start + HEARD_LATELY);
         }
         assert_eq!(heard.lock().len(), MAX_FOLLOWERS);
         // Full: one more makes room by forgetting the old one.
         let new = some_addr();
-        heard.note(new.id, true, start + HEARD_LATELY);
+        heard.note(new.id, Some(true), start + HEARD_LATELY);
         assert!(heard.lock().contains_key(&new.id));
         assert!(!heard.lock().contains_key(&old.id));
         // Full of followers heard from lately: no room, so a new one isn't
         // noted, but one already noted still is.
         let noted = *heard.lock().keys().next().unwrap();
         let soon = start + HEARD_LATELY + Duration::from_secs(1);
-        heard.note(some_addr().id, false, soon);
-        heard.note(noted, false, soon);
+        heard.note(some_addr().id, Some(false), soon);
+        heard.note(noted, Some(false), soon);
         assert_eq!(heard.lock().len(), MAX_FOLLOWERS);
         assert_eq!(heard.lock()[&noted], (soon, false));
     }
