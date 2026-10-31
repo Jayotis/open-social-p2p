@@ -62,7 +62,8 @@ pub(crate) const FOLLOWER_SILENCE: Duration = Duration::from_secs(30 * 24 * 60 *
 /// Followers holding a copy that one `WhoHosts` reply names, at most. A
 /// small sample: it says who follows us (doc 13).
 const SWARM_SAMPLE: usize = 6;
-/// Of those, trusted followers, at most (ADR 0013).
+/// Of those, trusted followers, at most, while there are others to name
+/// (ADR 0013).
 const MAX_TRUSTED_NAMED: usize = 3;
 /// A follower that sent us a request within this long is named as a host
 /// before those that didn't, as likely still online. A node asks the nodes
@@ -637,7 +638,8 @@ impl Heard {
     /// whether it's trusted (ADR 0013). First up to `MAX_TRUSTED_NAMED`
     /// trusted followers heard from within `lately` of `now`, at random;
     /// then the others as for anyone, those heard from lately first, but
-    /// never more trusted ones than that. Those picked are then put in
+    /// no more trusted ones than that unless nobody else is left to fill
+    /// the places. Those picked are then put in
     /// order of how they were heard from, directly before through a relay,
     /// keeping the order they came in within each, so trusted followers
     /// aren't always among the first a downloader asks.
@@ -665,18 +667,25 @@ impl Heard {
         let mut others: Vec<usize> = (0..members.len()).filter(|&i| !picked[i]).collect();
         others.sort_by_key(|&i| contacts[i]);
         let mut count = trusted;
+        let mut held_back = Vec::new();
         for i in others {
             if count == SWARM_SAMPLE {
                 break;
             }
             if members[i].1 {
                 if trusted == MAX_TRUSTED_NAMED {
+                    held_back.push(i);
                     continue;
                 }
                 trusted += 1;
             }
             picked[i] = true;
             count += 1;
+        }
+        // Places nobody else holding a copy can fill.
+        for i in held_back.into_iter().take(SWARM_SAMPLE - count) {
+            picked[i] = true;
+            trusted += 1;
         }
         let mut pool = [0; 3];
         for c in &contacts {
@@ -808,11 +817,11 @@ mod tests {
             assert_eq!(named.count(), MAX_TRUSTED_NAMED);
         }
 
-        // With too few others, the places left stay empty.
-        let mut members = heard_from(&heard, 5, true, now);
+        // With too few others, more trusted followers fill the places left.
+        let mut members = heard_from(&heard, 7, true, now);
         members.extend(heard_from(&heard, 1, false, now));
         let picked = heard.pick_hosts(members, now, HEARD_LATELY);
-        assert_eq!((picked.named.len(), picked.trusted), (4, 3));
+        assert_eq!((picked.named.len(), picked.trusted), (SWARM_SAMPLE, 5));
     }
 
     #[test]

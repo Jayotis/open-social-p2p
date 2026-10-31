@@ -58,7 +58,7 @@ The owner allows or declines each (`AnswerTrust`), and can take trust back later
 
 **What trust changes now.** Only which followers are named as hosts. It's the owner's preference, not a claim that the video spreads faster.
 
-- Each answer names at most 3 trusted followers among its 6, picked at random from those heard from lately; the other places are filled as now. The 6 are then put in the usual order, direct before relayed, at random within each, so trusted followers aren't always among the first 3 that every downloader asks.
+- Each answer names at most 3 trusted followers among its 6, picked at random from those heard from lately; the other places are filled as now. If too few other followers hold a copy to fill them, more trusted followers do (added 2026-10-31, while building it). The 6 are then put in the usual order, direct before relayed, at random within each, so trusted followers aren't always among the first 3 that every downloader asks.
 - A trusted follower not heard from lately gets no advantage: trust never outweighs signs that a node is offline. A slow one is left by the downloader like any slow host. When hosts are chosen by measured speed ([doc 13](../13-hosting-roles-and-follower-swarm.md), not built yet), that applies to trusted followers too.
 - Of the 100 places kept for each file, up to 25 go to trusted followers holding it, so an owner who trusts many can't fill the list. The rest are split as now, between the followers that have followed longest and those noted last; a trusted follower past the 25 takes its chances there.
 
