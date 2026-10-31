@@ -388,3 +388,25 @@ The report now also lists the three followers last to hold the video, with what 
 - **If the order of the runs is the cause,** `24f649a`, run first, is the fastest of the three and has no failed downloads, and `6406df4` is slower than it.
 - **If the database read is the cause,** `24f649a` again has dozens of failed downloads and is slower than `6406df4`, and `e786108` is close to `6406df4`, with at most a few failed. `e786108` is then the change to merge.
 - **If both rankings are slower and have dozens of failed downloads,** the cause is something else in the change, found before merging.
+
+**Results of the fourth round**, 2026-10-31, on the same machine, not restarted since the third: it waited on its disk for 274, 290 and 280 s during the three runs and had 66 MB in swap from the end of the first; other programs took at most 5% of its CPUs. The earlier rounds' home runs are repeated from above.
+
+| Round | Code | Followers: 50% / 95% / all | Creator's copies | Followers' requests refused as busy | Followers that sent copies to others | Followers' downloads that failed | Followers' tries that couldn't connect | Latecomers: half / all |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | `6406df4`, before | 694 / 875 / 1,232 s | 23.9 | 1,747 | 129 | 0 | 10 | 17.2 / 31.1 s |
+| 1 | `0edaca4`, heard from lately first | 771 / 946 / 1,158 s | 25.8 | 2,180 | 132 | 32 | 11 | 13.5 / 21.3 s |
+| 2 | `6406df4`, before | 675 / 833 / 925 s | 25.1 | 1,771 | 131 | 0 | 3 | 16.4 / 29.8 s |
+| 2 | `0edaca4`, heard from lately first | 789 / 960 / 1,397 s | 24.5 | 1,926 | 128 | 57 | 38 | 15.7 / 23.9 s |
+| 3 | `6406df4`, before | 615 / 809 / 852 s | 23.4 | 1,336 | 141 | 0 | 3 | 12.7 / 30.2 s |
+| 3 | `24f649a`, heard from lately first, with the log | 760 / 939 / 1,110 s | 25.9 | 2,337 | 135 | 88 | 13 | 16.1 / 24.1 s |
+| 4 | `24f649a`, heard from lately first, with the log, run first | 691 / 855 / 1,006 s | 26.3 | 2,208 | 134 | 17 | 5 | 16.3 / 23.4 s |
+| 4 | `6406df4`, before | 614 / 792 / 853 s | 22.5 | 1,578 | 132 | 1 | 9 | 13.3 / 18.3 s |
+| 4 | `e786108`, heard from lately first, without the database read | 668 / 819 / 855 s | 25.3 | 1,784 | 118 | 0 | 16 | 15.7 / 23.6 s |
+
+- **The order of the runs isn't the cause.** Run first, `24f649a` was still slower than the code before it: 95% of the followers held the video at 855 s against 792 s, and the last at 1,006 s against 853 s. 17 of its followers' downloads failed, fewer than in the earlier rounds but more than the code before it has had in any home run (at most 2).
+- **The database read is.** Without it, `e786108` had no failed downloads, and 95% of its followers held the video at 819 s, 27 s after the code before it and within that code's four runs (792 to 875 s). With the read, the ranking took 855 to 960 s in four runs and had 17 to 88 downloads fail. All three runs met every B8 mark.
+- **Fewer followers sent the copies with either ranking,** though. With `e786108`, 118 followers sent copies to others, against 132 with the code before it, and the 60 that sent the most sent 87% of the followers' copies (86% with `24f649a`), against 82%. In every round that share was higher with the ranking (86 to 89%) than without it (79 to 85%). The log shows no cause in who is named. No follower counted as not heard from lately in either ranking's samples. With the fix, none counted as reached through a relay (8 of 18,506 listings did with `24f649a`). So both named followers at random from the same ones as the code before. What still differs is that each sample reads the whole list of followers holding the file, up to 100, instead of six. One run can't tell that apart from the variation between runs; it's to be looked at again along with the full list's slowdown.
+- **Checks failed** 1, 2 and 2 times, in the order of the table: no difference.
+- **Half and half:** `6406df4` had 95% at 792 s, 132 followers sending copies to others and 1,578 requests refused as busy. Its four runs took 792 to 875 s to 95%, against 617 s in the half-and-half run with the same node code. The half-and-half run was a fast one, and whether half and half undoes the full list's slowdown is open.
+
+**What it shows.** Naming followers heard from lately first keeps latecomers from asking followers that have gone offline: with a third of the followers stopped, half the latecomers had the video within 21 s instead of 30, and none of their tries failed to connect. Where every follower is online, it names the same followers as before. Checking on every request whether the node asking was a follower slowed the swarm and made downloads fail, in a simulator that runs all the nodes on 12 threads. Without that check (`e786108`), the ranking came within the code before's variation. The check isn't needed: a node that isn't a follower is noted but never named. A flood of new nodes, 10,000 within 5 minutes, can fill the record; followers not in it yet are then named at random, as after a restart.
