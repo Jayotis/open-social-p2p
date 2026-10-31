@@ -431,3 +431,22 @@ Recorded too, without a mark: the trusted followers' share of the copies, agains
 - **Followers that aren't trusted sent most of the copies:** 82%, against 78 to 84% in the fourth round, so trusting the slowest third didn't crowd them out. The trusted followers sent 18%, within the 16 to 22% the same followers sent before: each reply names some of them, but a download takes over from a slow host, so most of the bytes still come from fast ones.
 
 **What it shows.** Trusting followers, even the slowest third, leaves the swarm as fast as before and its load spread as before. It changes who is named, not how much the slow hosts send.
+
+## Messages over Tor
+
+Added on 2026-10-31, before these runs, as one of M4's first tests ([roadmap](../06-roadmap.md)). In M4, messages between nodes (following, telling followers of a post, outbox pages, `WhoHosts`, hosting checks) go over Tor's onion services, while media stays off Tor. Onion services connect and answer far more slowly than a direct connection, and M3's timers were set for direct ones. These runs show which timers break.
+
+**The delay.** `--tor-delay` delays each social request as Tor would. The figures come from a test between two home nodes on different networks, talking only through Tor with iroh's experimental Tor transport (`iroh-tor-transport` 0.1.0):
+
+- **A first connection to a node** waits 10 to 25 s, drawn evenly; the test took 11 to 24 s, 14 s in the middle. The circuits are set up in the background, as the real transport does, so a connection given up on still readies them. After that, a new connection takes one round trip.
+- **Each pair of nodes has a usual round trip** of 0.7 to 2.5 s; in the test, round trips on one connection were 1 to 2 s in the middle. One request in ten takes 2 to 4 times as long, and one in fifty 4 to 8 times; in the test, one in ten took over 3 to 6 s, and the slowest 19 s.
+- **Replies arrive at 80 kB/s** after the round trip. In the test, 1 MB took 3 to 15 s on most circuits, and up to 150 s on a poor one.
+- **Media isn't delayed.**
+
+Not simulated: Tor restarting (it ends a node's onion service until the node sets it up again; in the test, peers got through 1 to 1.5 minutes after that), circuits failing and being replaced, and what hundreds of open circuits cost.
+
+**The runs.** The home run twice on the same code, back to back, one run each: as it is, and with `--tor-delay`.
+
+**Pass marks.** For the run with the delay, the home run's three [marks](#pass-marks). Recorded too, against the run without: followers the creator couldn't tell of the post, syncs that failed, and the busy and failed counts.
+
+**Timers B8 doesn't reach,** found by reading the code: when the phone opens media that wasn't fetched ahead of time, the node asks the nodes it follows who hosts it, waiting at most 3 s for each (`ASK_FIRST_WAIT`), then fetches. Over Tor, that's shorter than a first connection and close to a slow round trip, so the node would often skip the nodes it follows and fetch from the author, the case the swarm exists to avoid.

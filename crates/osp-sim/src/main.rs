@@ -115,6 +115,10 @@ struct Cli {
     /// megabits per second (ADR 0013): each asks, and the creator allows it.
     #[arg(long, value_delimiter = ',')]
     trust_mbps: Vec<u64>,
+    /// Delay social requests between nodes as if they went over Tor; media
+    /// isn't delayed.
+    #[arg(long)]
+    tor_delay: bool,
     /// Write the full report here, as JSON.
     #[arg(long)]
     out: Option<PathBuf>,
@@ -176,6 +180,7 @@ async fn main() -> Result<()> {
         time_limit: Duration::from_secs(cli.minutes * 60),
         sample: Duration::from_secs(60),
         trust_mbps: cli.trust_mbps,
+        tor_delay: cli.tor_delay,
         label: cli.label,
     };
     let result = osp_sim::run(&scenario).await;

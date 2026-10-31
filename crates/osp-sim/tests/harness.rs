@@ -28,6 +28,7 @@ async fn a_small_run_measures_the_creators_upload() {
         time_limit: Duration::from_secs(90),
         sample: Duration::from_secs(1),
         trust_mbps: Vec::new(),
+        tor_delay: false,
         label: "test".into(),
     };
     let report = osp_sim::run(&scenario).await.unwrap();
@@ -113,6 +114,7 @@ fn with_the_swarm(dir: &Path) -> Scenario {
         time_limit: Duration::from_secs(90),
         sample: Duration::from_secs(1),
         trust_mbps: Vec::new(),
+        tor_delay: false,
         label: "test".into(),
     }
 }
@@ -122,6 +124,7 @@ async fn a_small_run_with_the_swarm_on() {
     let dir = tempfile::tempdir().unwrap();
     let scenario = Scenario {
         trust_mbps: vec![5],
+        tor_delay: false,
         ..with_the_swarm(dir.path())
     };
     let report = osp_sim::run(&scenario).await.unwrap();

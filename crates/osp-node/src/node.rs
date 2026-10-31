@@ -83,6 +83,9 @@ pub struct SimSettings {
     /// of IP sockets (`simnet`). Its config should have relays disabled.
     #[cfg(feature = "sim")]
     pub network: Option<crate::simnet::SimLink>,
+    /// Social requests are delayed as if they went over Tor.
+    #[cfg(feature = "sim")]
+    pub tor_delay: Option<crate::simnet::TorDelay>,
 }
 
 impl Default for SimSettings {
@@ -98,6 +101,8 @@ impl Default for SimSettings {
             heard_lately: social::HEARD_LATELY,
             #[cfg(feature = "sim")]
             network: None,
+            #[cfg(feature = "sim")]
+            tor_delay: None,
         }
     }
 }
@@ -170,6 +175,10 @@ pub(crate) struct Core {
     /// many ffmpegs. Posts waiting for it take their turn in order.
     pub transcode_lock: tokio::sync::Mutex<()>,
     pub sim: SimSettings,
+    /// With `SimSettings::tor_delay`: when the Tor-like circuits to each
+    /// node are, or will be, ready.
+    #[cfg(feature = "sim")]
+    pub tor_ready: Mutex<HashMap<EndpointId, Instant>>,
 }
 
 impl Node {
@@ -386,6 +395,8 @@ impl Node {
             media_posts: Semaphore::new(control::MAX_MEDIA_POSTS),
             transcode_lock: tokio::sync::Mutex::new(()),
             sim,
+            #[cfg(feature = "sim")]
+            tor_ready: Mutex::new(HashMap::new()),
         });
 
         core.start_uploads()?;
