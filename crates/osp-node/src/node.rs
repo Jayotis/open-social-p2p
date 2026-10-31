@@ -63,6 +63,10 @@ pub struct SimSettings {
     /// A node in the follower swarm waits a random while, up to this long,
     /// before fetching a large file. Tests shorten it.
     pub prefetch_spread: Duration,
+    /// A node in the follower swarm that couldn't tell a node keeping track
+    /// of copies that it holds one tells it again after about this long.
+    /// Tests shorten it.
+    pub tell_again_after: Duration,
     /// Longest a post is held back from the feed while its media is on its
     /// way. Tests shorten it.
     pub max_hold: Duration,
@@ -81,6 +85,7 @@ impl Default for SimSettings {
             new_followers_per_hour: social::MAX_NEW_FOLLOWERS_PER_HOUR,
             first_retry_wait: sync::FIRST_RETRY_WAIT,
             prefetch_spread: sync::PREFETCH_SPREAD,
+            tell_again_after: sync::TELL_AGAIN_AFTER,
             max_hold: sync::MAX_HOLD,
             download_sources: store::MAX_SOURCES,
             #[cfg(feature = "sim")]

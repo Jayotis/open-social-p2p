@@ -72,6 +72,11 @@ const MAX_RETRIES: u32 = 6;
 /// before fetching a large file, so followers' fetches spread out and the
 /// early ones can serve the rest (doc 13).
 pub(crate) const PREFETCH_SPREAD: Duration = Duration::from_secs(10 * 60);
+/// A node in the follower swarm tells the nodes keeping track of copies
+/// when it holds one. One it couldn't tell, as when that node was too busy
+/// to check its copy, it tells once more after about this long, varied by
+/// up to half either way (doc 13).
+pub(crate) const TELL_AGAIN_AFTER: Duration = Duration::from_secs(5 * 60);
 /// Prefetches waiting, spread out or to be tried again, at most; more are
 /// dropped and fetched when they're opened.
 pub(crate) const MAX_WAITING: usize = 1_000;
@@ -508,8 +513,9 @@ impl Core {
                     wanted,
                     due: Instant::now() + wait,
                     failures: 0,
+                    telling_again: false,
                 });
-            } else if let Some(later) = self.fetch_ahead(wanted, 0).await {
+            } else if let Some(later) = self.fetch_ahead(wanted, 0, false).await {
                 self.fetch_later(later);
             }
         }
@@ -528,30 +534,44 @@ impl Core {
     /// Fetches one file ahead of time, which failed or was refused as busy
     /// `failures` times so far. If it fails again, says when to try again,
     /// unless that has happened `MAX_RETRIES` times. Otherwise the file is
-    /// here or won't be, and posts held back for it are shown.
-    async fn fetch_ahead(&self, wanted: Wanted, failures: u32) -> Option<Later> {
+    /// here or won't be, and posts held back for it are shown; if it's here
+    /// but a node keeping track of copies couldn't be told, says when to
+    /// tell it again, unless this was `telling_again`.
+    async fn fetch_ahead(
+        &self,
+        wanted: Wanted,
+        failures: u32,
+        telling_again: bool,
+    ) -> Option<Later> {
         let hash = wanted.blob;
-        let later = self.try_fetch_ahead(wanted, failures).await;
-        if later.is_none() {
+        let later = self.try_fetch_ahead(wanted, failures, telling_again).await;
+        if later.as_ref().is_none_or(|l| l.telling_again) {
             self.prefetch_done(&hash);
         }
         later
     }
 
-    async fn try_fetch_ahead(&self, wanted: Wanted, failures: u32) -> Option<Later> {
+    async fn try_fetch_ahead(
+        &self,
+        wanted: Wanted,
+        failures: u32,
+        telling_again: bool,
+    ) -> Option<Later> {
         let blob = wanted.blob.fmt_short();
         let fetched = if self.joins_swarm(&wanted) {
             self.fetch_from_swarm(&wanted).await
         } else {
             self.ensure_blob(&wanted.blob, BlobClass::Prefetch, wanted.size)
                 .await
+                .map(|_| Vec::new())
         };
         match fetched {
-            Ok(_) => {
+            Ok(untold) => {
                 if failures > 0 {
                     info!(%blob, failures, "prefetched on a later try");
                 }
-                None
+                let wait = self.sim.tell_again_after;
+                tell_again(wanted, untold, telling_again, wait)
             }
             // The nodes with it couldn't send it just then: they may be
             // busy, offline for a while, or on a poor connection. A file
@@ -567,6 +587,7 @@ impl Core {
                     wanted,
                     due: Instant::now() + wait,
                     failures: failures + 1,
+                    telling_again,
                 })
             }
             Err(e) => {
@@ -588,8 +609,8 @@ impl Core {
     /// first, from several at once. Then the nodes known to host it and
     /// the trackers are asked for anything still missing, one at a time,
     /// and the author's own nodes last. Then tells the trackers that this
-    /// node holds a copy too.
-    async fn fetch_from_swarm(&self, wanted: &Wanted) -> Result<u64> {
+    /// node holds a copy too, and returns those it couldn't tell.
+    async fn fetch_from_swarm(&self, wanted: &Wanted) -> Result<Vec<EndpointAddr>> {
         let blob = &wanted.blob;
         let mut sources = Sources::default();
         if self.store.stored_size(blob).await?.is_none() {
@@ -617,19 +638,20 @@ impl Core {
             sources.spare(&authors);
             sources.in_turn.sort_by_key(|id| authors.contains(id));
         }
-        let size = self
-            .store
+        self.store
             .download(blob, sources, BlobClass::Prefetch, wanted.size)
             .await?;
+        let mut untold = Vec::new();
         for tracker in &wanted.trackers {
             let told = self
                 .social_request(tracker, &SocialRequest::Hosting { blob: *blob })
                 .await;
             if let Err(e) = told {
                 debug!(blob = %blob.fmt_short(), "couldn't tell a tracker we hold a copy: {e:#}");
+                untold.push(tracker.clone());
             }
         }
-        Ok(size)
+        Ok(untold)
     }
 
     /// The home nodes `actor`'s profile lists, if we have it.
@@ -921,6 +943,9 @@ pub(crate) struct Later {
     wanted: Wanted,
     due: Instant,
     failures: u32,
+    /// The file was fetched before, and its trackers, those that couldn't
+    /// be told this node holds a copy, are told again, and not after that.
+    telling_again: bool,
 }
 
 /// Fetches, one at a time, the files `prefetch` puts off until later.
@@ -948,7 +973,8 @@ pub(crate) async fn later_loop(core: Arc<Core>, mut later: mpsc::Receiver<Later>
                     let Some(l) = waiting.remove(&blob) else {
                         continue;
                     };
-                    if let Some(again) = core.fetch_ahead(l.wanted, l.failures).await {
+                    let again = core.fetch_ahead(l.wanted, l.failures, l.telling_again).await;
+                    if let Some(again) = again {
                         waiting.insert(blob, again);
                     }
                 }
@@ -979,6 +1005,26 @@ fn retry_wait(first: Duration, failures: u32) -> Duration {
     first
         .saturating_mul(1 << failures.min(16))
         .min(MAX_RETRY_WAIT)
+}
+
+/// Once a file fetched ahead of time is here: when to tell the trackers
+/// that couldn't be told this node holds a copy (`untold`) again, after
+/// about `wait`. Only once: not if this was `telling_again`.
+fn tell_again(
+    wanted: Wanted,
+    untold: Vec<EndpointAddr>,
+    telling_again: bool,
+    wait: Duration,
+) -> Option<Later> {
+    (!untold.is_empty() && !telling_again).then(|| Later {
+        wanted: Wanted {
+            trackers: untold,
+            ..wanted
+        },
+        due: Instant::now() + jitter(wait),
+        failures: 0,
+        telling_again: true,
+    })
 }
 
 /// Waits until `at`, or forever if there's nothing to wait for.
@@ -1182,6 +1228,7 @@ mod tests {
             },
             due,
             failures: 0,
+            telling_again: false,
         };
         let mut waiting = HashMap::new();
         assert_eq!(
@@ -1234,5 +1281,32 @@ mod tests {
                 "{varied:?}"
             );
         }
+    }
+
+    #[test]
+    fn trackers_not_told_of_a_copy_are_told_once_more() {
+        let [authors_node, resharer] =
+            [(); 2].map(|_| EndpointAddr::new(iroh::SecretKey::generate().public()));
+        let wanted = Wanted {
+            blob: BlobHash::from_bytes([1; 32]),
+            size: 50 << 20,
+            author: iroh::SecretKey::generate().public(),
+            trackers: vec![authors_node.clone(), resharer.clone()],
+        };
+        let minute = Duration::from_secs(60);
+
+        // Only the one that wasn't told, after about a minute.
+        let before = Instant::now();
+        let again = tell_again(wanted.clone(), vec![resharer.clone()], false, minute);
+        let again = again.expect("told again");
+        let ids: Vec<EndpointId> = again.wanted.trackers.iter().map(|t| t.id).collect();
+        assert_eq!(ids, [resharer.id]);
+        assert!(again.telling_again);
+        let wait = again.due - before;
+        assert!(wait >= minute / 2 && wait <= minute * 3 / 2, "{wait:?}");
+
+        // Not when every tracker was told, and not a third time.
+        assert!(tell_again(wanted.clone(), Vec::new(), false, minute).is_none());
+        assert!(tell_again(wanted, vec![resharer], true, minute).is_none());
     }
 }
