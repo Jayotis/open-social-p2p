@@ -251,9 +251,19 @@ impl Core {
                     && self.swarm_samples.allow(remote, MAX_SWARM_SAMPLES_PER_HOUR)
                 {
                     let mut members = self.db.swarm_members(&blob, &remote)?;
-                    self.heard
-                        .rank(&mut members, Instant::now(), self.sim.heard_lately);
+                    let [direct, relayed, not_lately] =
+                        self.heard
+                            .rank(&mut members, Instant::now(), self.sim.heard_lately);
                     members.truncate(SWARM_SAMPLE);
+                    let named: Vec<String> = members
+                        .iter()
+                        .map(|a| a.id.fmt_short().to_string())
+                        .collect();
+                    debug!(
+                        remote = %remote.fmt_short(),
+                        direct, relayed, not_lately, ?named,
+                        "named followers as hosts"
+                    );
                     nodes.extend(members);
                 }
                 for addr in self.db.hosts(&blob)? {
@@ -607,9 +617,10 @@ impl Heard {
 
     /// Orders followers by how they were last heard from, within `lately`
     /// of `now`, best first, keeping the order they came in within each.
-    fn rank(&self, followers: &mut [EndpointAddr], now: Instant, lately: Duration) {
+    /// Returns how many fell in each `Contact`, best first.
+    fn rank(&self, followers: &mut [EndpointAddr], now: Instant, lately: Duration) -> [usize; 3] {
         let heard = self.lock();
-        followers.sort_by_key(|addr| match heard.get(&addr.id) {
+        let contact = |addr: &EndpointAddr| match heard.get(&addr.id) {
             Some((at, direct)) if now.duration_since(*at) < lately => {
                 if *direct {
                     Contact::Direct
@@ -618,7 +629,13 @@ impl Heard {
                 }
             }
             _ => Contact::NotLately,
-        });
+        };
+        followers.sort_by_key(contact);
+        let mut counts = [0; 3];
+        for addr in followers.iter() {
+            counts[contact(addr) as usize] += 1;
+        }
+        counts
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<EndpointId, (Instant, bool)>> {
@@ -677,7 +694,8 @@ mod tests {
         heard.note(quiet.id, false, later);
 
         let mut followers = [&unknown, &earlier, &quiet, &relayed, &direct].map(|a| a.clone());
-        heard.rank(&mut followers, later + Duration::from_secs(1), HEARD_LATELY);
+        let counts = heard.rank(&mut followers, later + Duration::from_secs(1), HEARD_LATELY);
+        assert_eq!(counts, [1, 2, 2]);
         let ids = followers.map(|a| a.id);
         // In the order they came within each.
         assert_eq!(
