@@ -1,7 +1,8 @@
 //! The simulated network (`osp_node::simnet`): real QUIC between endpoints
 //! in this process, over connections with a delay, a speed each way and
-//! packet loss, which can be cut off; and two nodes following each other
-//! over it.
+//! packet loss, which can be cut off; two nodes following each other over
+//! it; and a follower whose copy an author's node was too busy to hear of
+//! telling it again.
 //!
 //! A packet is never delivered early, so the lower bounds on times here are
 //! exact; the upper bounds leave room for a busy machine.
@@ -10,7 +11,7 @@ use std::time::{Duration, Instant};
 
 use iroh::{
     Endpoint, EndpointAddr, EndpointId, RelayMode, SecretKey, TransportAddr,
-    endpoint::{Connection, presets},
+    endpoint::{Connection, RecvStream, SendStream, presets},
     protocol::{AcceptError, ProtocolHandler, Router},
 };
 use iroh_blobs::{
@@ -19,10 +20,15 @@ use iroh_blobs::{
     store::mem::MemStore,
 };
 use osp_node::{
-    Config, Node, SimSettings,
+    BlobClass, Config, Node, SimSettings,
     simnet::{self, Link, SimNet},
 };
-use osp_proto::rpc::{ClientRequest, ClientResponse, StatusInfo};
+use osp_proto::{
+    BlobHash, SOCIAL_ALPN,
+    framing::{read_frame, write_frame},
+    rpc::{ClientRequest, ClientResponse, StatusInfo},
+    social::{SocialRequest, SocialResponse},
+};
 
 const ALPN: &[u8] = b"osp-test/simnet";
 const MBPS: u64 = 1_000_000;
@@ -397,4 +403,189 @@ async fn a_node_with_no_upload_cap_takes_on_more_once_it_measures_a_fast_upload(
     assert!((12.0..=31.0).contains(&measured), "{measured} Mbit/s");
     assert_eq!(status(&node).await.transfer_places, 8);
     node.shutdown().await.unwrap();
+}
+
+/// A node that shares what it prefetches and fetches large files at once,
+/// not spread out. One it couldn't tell it holds a copy, it tells again
+/// within seconds, not minutes.
+async fn start_sharing(root: &std::path::Path, name: &str, net: &SimNet, link: Link) -> Node {
+    let home = root.join(name);
+    let mut config = Config::local_test(name);
+    config.swarm.share_prefetched = true;
+    Node::init(&home, &config).unwrap();
+    let sim = SimSettings {
+        prefetch_spread: Duration::ZERO,
+        tell_again_after: Duration::from_secs(4),
+        network: Some(net.link(link)),
+        ..SimSettings::default()
+    };
+    Node::spawn_sim(&home, sim).await.unwrap()
+}
+
+async fn feed_len(node: &Node) -> usize {
+    let ClientResponse::Feed { items } = call(node, ClientRequest::Feed { limit: 10 }).await else {
+        panic!("no feed");
+    };
+    items.len()
+}
+
+async fn ask(conn: &Connection, req: &SocialRequest) -> SocialResponse {
+    let (mut send, mut recv) = conn.open_bi().await.unwrap();
+    write_frame(&mut send, req).await.unwrap();
+    send.finish().unwrap();
+    read_frame(&mut recv).await.unwrap()
+}
+
+/// Requests begun and never finished, on one connection.
+type Unfinished = (Endpoint, Connection, Vec<(SendStream, RecvStream)>);
+
+/// Takes all 32 of `node`'s places for social requests, as other nodes'
+/// requests would: 4 on each of 8 connections, each begun and never
+/// finished. Closing the endpoints gives them back.
+async fn take_social_places(net: &SimNet, node: EndpointId) -> Vec<Unfinished> {
+    let mut taken = Vec::new();
+    for _ in 0..8 {
+        let ep = endpoint(net, delay(10)).await;
+        let conn = ep.connect(sim_addr(node), SOCIAL_ALPN).await.unwrap();
+        let mut requests = Vec::new();
+        for _ in 0..4 {
+            let (mut send, recv) = conn.open_bi().await.unwrap();
+            // The first byte of a request's length: the node waits for more.
+            send.write_all(&[0]).await.unwrap();
+            requests.push((send, recv));
+        }
+        taken.push((ep, conn, requests));
+    }
+    taken
+}
+
+/// Alice, who posted a photo; a follower of hers, to ask whom her node
+/// names; and Carol, who follows her and shares, whose node has the photo
+/// but couldn't tell Alice's: others' requests took all its places for
+/// them, and keep them until `end_others_requests`.
+struct Unheard {
+    alice: Node,
+    carol: Node,
+    blob: BlobHash,
+    follower: (Endpoint, Connection),
+    taken: Vec<Unfinished>,
+    _dir: tempfile::TempDir,
+}
+
+impl Unheard {
+    async fn set_up() -> Self {
+        let dir = tempfile::tempdir().unwrap();
+        let net = SimNet::new(1);
+        let alice = start(dir.path(), "alice", &net, delay(10)).await;
+        let follower = endpoint(&net, delay(10)).await;
+        let conn = follower
+            .connect(sim_addr(alice.node_id()), SOCIAL_ALPN)
+            .await
+            .unwrap();
+        let subscribe = SocialRequest::Subscribe {
+            addr: follower.addr(),
+            shares_prefetched: false,
+        };
+        assert!(matches!(ask(&conn, &subscribe).await, SocialResponse::Ok));
+
+        // Carol follows Alice, then Alice posts a photo. Carol downloads at
+        // 2 Mbit/s: 12 s or so for the photo, and her node holds the new
+        // post out of her feed until it's here.
+        let slow = Link {
+            down_bps: 2 * MBPS,
+            ..delay(10)
+        };
+        let carol = start_sharing(dir.path(), "carol", &net, slow).await;
+        let ClientResponse::Ticket { ticket } = call(&alice, ClientRequest::Invite).await else {
+            panic!("no ticket");
+        };
+        call(&carol, ClientRequest::Follow { ticket }).await;
+        call(&carol, ClientRequest::Sync).await;
+        let photo = post_noise_photo(&alice, dir.path()).await;
+        let blob = BlobHash::from_bytes(*photo.as_bytes());
+        call(&carol, ClientRequest::Sync).await;
+        assert_eq!(feed_len(&carol).await, 0);
+
+        // Once Carol's node has asked who else holds a copy, others'
+        // requests take all of Alice's node's places for them.
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        let taken = take_social_places(&net, alice.node_id()).await;
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        let resp = ask(&conn, &SocialRequest::WhoHosts { blob }).await;
+        assert!(
+            matches!(&resp, SocialResponse::Error { message } if message.contains("busy")),
+            "{resp:?}"
+        );
+
+        // So when Carol's node has the photo, Alice's is too busy to hear
+        // it. The post shows all the same.
+        let started = Instant::now();
+        while feed_len(&carol).await == 0 {
+            assert!(started.elapsed() < Duration::from_secs(60), "still held");
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        assert_eq!(carol.blob_class(&blob).unwrap(), Some(BlobClass::Prefetch));
+        Self {
+            alice,
+            carol,
+            blob,
+            follower: (follower, conn),
+            taken,
+            _dir: dir,
+        }
+    }
+
+    /// Gives Alice's node its places back. Merely dropping an endpoint
+    /// may not tell the other end, which then keeps the requests open until
+    /// the connection times out.
+    async fn end_others_requests(&mut self) {
+        for (endpoint, ..) in self.taken.drain(..) {
+            endpoint.close().await;
+        }
+    }
+
+    /// Whether Alice's node names Carol's as holding a copy, or `None` if
+    /// it's too busy to say.
+    async fn carol_named(&self) -> Option<bool> {
+        let req = SocialRequest::WhoHosts { blob: self.blob };
+        match ask(&self.follower.1, &req).await {
+            SocialResponse::Hosts { nodes } => {
+                Some(nodes.iter().any(|a| a.id == self.carol.node_id()))
+            }
+            _ => None,
+        }
+    }
+
+    async fn shut_down(self) {
+        self.carol.shutdown().await.unwrap();
+        self.alice.shutdown().await.unwrap();
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_follower_whose_copy_went_unheard_tells_the_authors_node_again() {
+    let mut unheard = Unheard::set_up().await;
+
+    // Once the others are done, Carol's node tells Alice's again, within
+    // 6 s, which then names her to its followers.
+    unheard.end_others_requests().await;
+    let started = Instant::now();
+    while unheard.carol_named().await != Some(true) {
+        assert!(started.elapsed() < Duration::from_secs(30), "never named");
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    unheard.shut_down().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_follower_whose_copy_went_unheard_tells_the_authors_node_again_only_once() {
+    let mut unheard = Unheard::set_up().await;
+
+    // Carol's node tells Alice's again within 6 s, while it's still busy,
+    // and not after that.
+    tokio::time::sleep(Duration::from_secs(9)).await;
+    unheard.end_others_requests().await;
+    tokio::time::sleep(Duration::from_secs(8)).await;
+    assert_eq!(unheard.carol_named().await, Some(false));
+    unheard.shut_down().await;
 }
