@@ -420,3 +420,14 @@ Added on 2026-10-31, before this run, as [ADR 0013](../decisions/0013-trusted-fo
 **Pass marks.** The home run's three [marks](#pass-marks), and one more: followers that aren't trusted still send copies. The 200 at 10 and 20 Mbit/s send at least half of the copies followers send between them. In the fourth round's home runs above, they sent 78 to 84%.
 
 Recorded too, without a mark: the trusted followers' share of the copies, against 16 to 22% for the same followers then, and the latecomers' times.
+
+**Results**, 2026-10-31, one run with `1ae33fa`; other programs took at most 4% of the machine's CPUs.
+
+| Code | Followers: 50% / 95% / all | Creator's copies | Followers' requests refused as busy | Followers' failed downloads | Copies sent by followers not trusted (10 and 20 Mbit/s) | By the trusted (5 Mbit/s) | Latecomers: half / all | Pass marks |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `1ae33fa`, 5 Mbit/s followers trusted | 545 / 731 / 812 s | 22.4 | 1,360 | 1 | 236.4 of 288.6 (82%) | 52.2 (18%) | 14.1 / 16.4 s | **all met** |
+
+- **Every mark held.** 95% of the followers held the video at 731 s and all at 812 s, within the code before's four home runs above or quicker (792 to 875 s for 95%), and the creator sent 22.4 copies.
+- **Followers that aren't trusted sent most of the copies:** 82%, against 78 to 84% in the fourth round, so trusting the slowest third didn't crowd them out. The trusted followers sent 18%, within the 16 to 22% the same followers sent before: each reply names some of them, but a download takes over from a slow host, so most of the bytes still come from fast ones.
+
+**What it shows.** Trusting followers, even the slowest third, leaves the swarm as fast as before and its load spread as before. It changes who is named, not how much the slow hosts send.
