@@ -6,7 +6,7 @@
 import '../frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `node_info`, `post`, `progress`, `report_to`, `run_post`
+// These functions are ignored because they are not marked as `pub`: `node_info`, `post`, `progress`, `report_to`, `run_post`, `trust_entry`
 // These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `clone`, `clone`
 
 /// A new device key, as 64 hex digits, for the app to keep in the phone's
@@ -23,6 +23,13 @@ bool isFollowTicket({required String text}) =>
 
 // Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<OspApp>>
 abstract class OspApp implements RustOpaqueInterface {
+  /// Allows or declines the request from `node`. The node isn't told.
+  Future<void> answerTrust({required String node, required bool allow});
+
+  /// Asks someone the node follows to trust the owner, with a note saying
+  /// who they are. Their node never says whether it did.
+  Future<void> askTrust({required String identity, required String note});
+
   /// Carries on sending the pending post where it stopped.
   Stream<PostProgress> continuePost();
 
@@ -40,6 +47,9 @@ abstract class OspApp implements RustOpaqueInterface {
 
   /// Follows someone by their follow ticket (`OSP1...`).
   Future<void> follow({required String ticket});
+
+  /// Who the node follows, by name.
+  Future<List<Followed>> following();
 
   /// Forgets the node on this phone. Unpair it on the node too
   /// (`osp unpair`) to revoke its access.
@@ -101,10 +111,39 @@ abstract class OspApp implements RustOpaqueInterface {
   /// objects arrived.
   Future<int> sync_();
 
+  /// Trusts someone the node follows, without a request.
+  Future<void> trust({required String identity});
+
+  /// Requests to be a trusted follower waiting, newest first, and who is
+  /// trusted.
+  Future<TrustList> trustList();
+
+  /// Stops trusting someone, on every node they were trusted on.
+  Future<void> untrust({required String identity});
+
   /// Waits until the node has the start of a blob, asking it to fetch
   /// the blob if it hasn't, so a player can start on it. The rest
   /// reaches the player as it arrives.
   Future<void> waitForMedia({required String blob});
+}
+
+/// Someone the node follows.
+class Followed {
+  final String identity;
+  final String name;
+
+  const Followed({required this.identity, required this.name});
+
+  @override
+  int get hashCode => identity.hashCode ^ name.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is Followed &&
+          runtimeType == other.runtimeType &&
+          identity == other.identity &&
+          name == other.name;
 }
 
 class Media {
@@ -206,6 +245,9 @@ class NodeStatus {
   final String path;
   final int? rttMs;
 
+  /// Requests to be a trusted follower waiting for an answer.
+  final int trustRequests;
+
   const NodeStatus({
     required this.name,
     required this.version,
@@ -218,6 +260,7 @@ class NodeStatus {
     required this.problems,
     required this.path,
     this.rttMs,
+    required this.trustRequests,
   });
 
   @override
@@ -232,7 +275,8 @@ class NodeStatus {
       relayConnected.hashCode ^
       problems.hashCode ^
       path.hashCode ^
-      rttMs.hashCode;
+      rttMs.hashCode ^
+      trustRequests.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -249,7 +293,8 @@ class NodeStatus {
           relayConnected == other.relayConnected &&
           problems == other.problems &&
           path == other.path &&
-          rttMs == other.rttMs;
+          rttMs == other.rttMs &&
+          trustRequests == other.trustRequests;
 }
 
 class Post {
@@ -380,6 +425,101 @@ class SavedFeed {
           runtimeType == other.runtimeType &&
           posts == other.posts &&
           saved == other.saved;
+}
+
+/// A request to be a trusted follower, or someone trusted (ADR 0013).
+class TrustEntry {
+  /// The node asking, or trusted: what `answer_trust` takes.
+  final String node;
+  final String identity;
+
+  /// What the person says: their name, and the note with their request
+  /// (empty if trusted without one). Neither is checked: show them as
+  /// their words, as plain text.
+  final String name;
+  final String note;
+
+  /// Seconds since they asked, while waiting; since they were trusted.
+  final PlatformInt64 secsAgo;
+
+  /// Whether the owner follows this identity, which is the check that
+  /// it's who they say: the owner added their follow code.
+  final bool followed;
+
+  /// Whether this person is trusted on another of their nodes.
+  final bool trustedElsewhere;
+
+  /// How long the node has followed the owner's, in seconds; `None` if
+  /// it no longer does.
+  final PlatformInt64? followerSecs;
+
+  /// `direct` or `relay` if the node reached the owner's in the last few
+  /// minutes, `none` otherwise.
+  final String reached;
+
+  /// How many of the owner's files it holds a copy of.
+  final int copies;
+
+  const TrustEntry({
+    required this.node,
+    required this.identity,
+    required this.name,
+    required this.note,
+    required this.secsAgo,
+    required this.followed,
+    required this.trustedElsewhere,
+    this.followerSecs,
+    required this.reached,
+    required this.copies,
+  });
+
+  @override
+  int get hashCode =>
+      node.hashCode ^
+      identity.hashCode ^
+      name.hashCode ^
+      note.hashCode ^
+      secsAgo.hashCode ^
+      followed.hashCode ^
+      trustedElsewhere.hashCode ^
+      followerSecs.hashCode ^
+      reached.hashCode ^
+      copies.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is TrustEntry &&
+          runtimeType == other.runtimeType &&
+          node == other.node &&
+          identity == other.identity &&
+          name == other.name &&
+          note == other.note &&
+          secsAgo == other.secsAgo &&
+          followed == other.followed &&
+          trustedElsewhere == other.trustedElsewhere &&
+          followerSecs == other.followerSecs &&
+          reached == other.reached &&
+          copies == other.copies;
+}
+
+/// Requests waiting, newest first, and the nodes trusted.
+class TrustList {
+  final List<TrustEntry> requests;
+  final List<TrustEntry> trusted;
+
+  const TrustList({required this.requests, required this.trusted});
+
+  @override
+  int get hashCode => requests.hashCode ^ trusted.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is TrustList &&
+          runtimeType == other.runtimeType &&
+          requests == other.requests &&
+          trusted == other.trusted;
 }
 
 class UnsentFile {

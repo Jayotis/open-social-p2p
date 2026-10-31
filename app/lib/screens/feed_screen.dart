@@ -8,6 +8,7 @@ import '../widgets/post_card.dart';
 import 'compose_screen.dart';
 import 'people_screen.dart';
 import 'status_screen.dart';
+import 'trust_screen.dart';
 
 /// The home screen: your feed, gathered by your home node.
 class FeedScreen extends StatelessWidget {
@@ -24,6 +25,8 @@ class FeedScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final online = node.reachability == Reachability.online;
+    // Requests to be a trusted follower waiting for an answer.
+    final asking = node.status?.trustRequests ?? 0;
     return Scaffold(
       appBar: AppBar(
         title: const Text('Feed'),
@@ -34,16 +37,34 @@ class FeedScreen extends StatelessWidget {
             icon: _StatusDot(node: node),
           ),
           PopupMenuButton<String>(
+            icon: Badge(
+              isLabelVisible: asking > 0,
+              label: Text('$asking'),
+              child: const Icon(Icons.more_vert),
+            ),
             onSelected: (choice) => switch (choice) {
               'people' => _open(context, PeopleScreen(node: node)),
+              'trust' => _open(context, TrustScreen(node: node)),
               _ => _open(context, StatusScreen(node: node)),
             },
-            itemBuilder: (_) => const [
-              PopupMenuItem(
+            itemBuilder: (_) => [
+              const PopupMenuItem(
                 value: 'people',
                 child: Text('Follow and be followed'),
               ),
-              PopupMenuItem(value: 'status', child: Text('Home node status')),
+              PopupMenuItem(
+                value: 'trust',
+                child: Badge(
+                  isLabelVisible: asking > 0,
+                  label: Text('$asking'),
+                  offset: const Offset(16, -4),
+                  child: const Text('Trusted followers'),
+                ),
+              ),
+              const PopupMenuItem(
+                value: 'status',
+                child: Text('Home node status'),
+              ),
             ],
           ),
         ],
