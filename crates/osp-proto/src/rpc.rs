@@ -133,6 +133,29 @@ pub enum ClientRequest {
     },
     /// What this node measured about the peer nodes it deals with (ADR 0011).
     Peers,
+    /// Requests to be a trusted follower still waiting for an answer, newest
+    /// first, and the nodes trusted (ADR 0013).
+    TrustRequests,
+    /// Allows or declines the request from `node` to be a trusted follower.
+    AnswerTrust {
+        node: EndpointId,
+        allow: bool,
+    },
+    /// Trusts someone this node follows, without a request: the nodes their
+    /// profile lists that follow this one.
+    TrustFollowed {
+        actor: PublicKey,
+    },
+    /// Takes trust back from a person, on every node it was allowed for.
+    Untrust {
+        actor: PublicKey,
+    },
+    /// Asks someone this node follows to trust its owner, with a note
+    /// saying who they are. Their node never says whether it did.
+    AskTrust {
+        actor: PublicKey,
+        note: String,
+    },
 }
 
 fn default_feed_limit() -> u32 {
@@ -208,6 +231,11 @@ pub enum ClientResponse {
     Peers {
         peers: Vec<PeerRecord>,
     },
+    /// Requests waiting, newest first, and the nodes trusted.
+    Trust {
+        requests: Vec<TrustInfo>,
+        trusted: Vec<TrustInfo>,
+    },
     Error {
         message: String,
     },
@@ -261,6 +289,9 @@ pub struct StatusInfo {
     /// Things the owner should look at, in plain words. Empty when all is well.
     #[serde(default)]
     pub problems: Vec<String>,
+    /// Requests to be a trusted follower waiting for an answer (ADR 0013).
+    #[serde(default)]
+    pub trust_requests: usize,
 }
 
 /// How this node's network maps its outgoing UDP, which decides whether
@@ -333,6 +364,11 @@ pub struct PeerRecord {
     pub follower: bool,
     /// Named as a host of some media this node knows of.
     pub host: bool,
+    /// A node trusted, or asking to be (ADR 0013).
+    #[serde(default)]
+    pub trusted: bool,
+    #[serde(default)]
+    pub asks_trust: bool,
     /// Whether this node ever contacted it, rather than only the other way round.
     pub contacted: bool,
     pub first_contact_secs_ago: u64,
@@ -404,6 +440,41 @@ impl PeerCounts {
             refused_busy: self.refused_busy * factor,
         }
     }
+}
+
+/// A request to be a trusted follower, or a node trusted (ADR 0013), with
+/// what this node knows of it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TrustInfo {
+    pub node: EndpointId,
+    /// Whose node it is: the identity whose profile listed it.
+    pub actor: PublicKey,
+    /// What the person says: their profile's name, and the note sent with
+    /// the request (empty if trusted without one). Neither is checked.
+    pub name: String,
+    pub note: String,
+    /// Since it asked, while waiting; since it was trusted otherwise.
+    pub secs_ago: u64,
+    /// Whether this node follows that identity. That's the check: the
+    /// owner added its follow code themselves.
+    pub followed: bool,
+    /// Whether that person is trusted on another node.
+    pub trusted_elsewhere: bool,
+    /// How long the node has followed this one; `None` if it no longer does.
+    pub follower_secs: Option<u64>,
+    /// How it reached this node in the last few minutes, if it did.
+    pub reached: Option<Reached>,
+    /// How many of this node's files it holds a copy of, as checked when it
+    /// said so (`Hosting`).
+    pub copies: usize,
+}
+
+/// How a node reached this one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Reached {
+    Direct,
+    Relay,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

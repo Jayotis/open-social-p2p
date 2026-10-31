@@ -62,6 +62,8 @@ pub(crate) const FOLLOWER_SILENCE: Duration = Duration::from_secs(30 * 24 * 60 *
 /// Followers holding a copy that one `WhoHosts` reply names, at most. A
 /// small sample: it says who follows us (doc 13).
 const SWARM_SAMPLE: usize = 6;
+/// Of those, trusted followers, at most (ADR 0013).
+const MAX_TRUSTED_NAMED: usize = 3;
 /// A follower that sent us a request within this long is named as a host
 /// before those that didn't, as likely still online. A node asks the nodes
 /// it follows for new posts every minute by default.
@@ -249,21 +251,22 @@ impl Core {
                     && self.db.is_follower(&remote)?
                     && self.swarm_samples.allow(remote, MAX_SWARM_SAMPLES_PER_HOUR)
                 {
-                    let mut members = self.db.swarm_members(&blob, &remote)?;
-                    let [direct, relayed, not_lately] =
+                    let members = self.db.swarm_members(&blob, &remote)?;
+                    let picked =
                         self.heard
-                            .rank(&mut members, Instant::now(), self.sim.heard_lately);
-                    members.truncate(SWARM_SAMPLE);
-                    let named: Vec<String> = members
+                            .pick_hosts(members, Instant::now(), self.sim.heard_lately);
+                    let [direct, relayed, not_lately] = picked.pool;
+                    let named: Vec<String> = picked
+                        .named
                         .iter()
                         .map(|a| a.id.fmt_short().to_string())
                         .collect();
                     debug!(
                         remote = %remote.fmt_short(),
-                        direct, relayed, not_lately, ?named,
+                        direct, relayed, not_lately, trusted = picked.trusted, ?named,
                         "named followers as hosts"
                     );
-                    nodes.extend(members);
+                    nodes.extend(picked.named);
                 }
                 for addr in self.db.hosts(&blob)? {
                     let known = nodes.iter().any(|a| a.id == addr.id);
@@ -329,6 +332,10 @@ impl Core {
                     }
                 }
                 SocialResponse::Objects { objects }
+            }
+            SocialRequest::AskTrust { profile, note } => {
+                self.asked_trust(remote, &profile, &note)?;
+                SocialResponse::Ok
             }
         })
     }
@@ -583,13 +590,23 @@ pub(crate) struct Heard(Mutex<HashMap<EndpointId, (Instant, bool)>>);
 
 /// How a follower was last heard from, best first.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-enum Contact {
+pub(crate) enum Contact {
     /// Lately, straight from its node.
     Direct,
     /// Lately, through a relay: what it sends is slower, and costs the relay.
     Relayed,
     /// Not lately, or not since this node started.
     NotLately,
+}
+
+/// The followers with a copy that one `WhoHosts` reply names.
+pub(crate) struct Picked {
+    pub named: Vec<EndpointAddr>,
+    /// How many of the followers they were picked from fell in each
+    /// `Contact`, best first.
+    pub pool: [usize; 3],
+    /// How many of those named are trusted.
+    pub trusted: usize,
 }
 
 impl Heard {
@@ -610,31 +627,96 @@ impl Heard {
         }
     }
 
-    /// Orders followers by how they were last heard from, within `lately`
-    /// of `now`, best first, keeping the order they came in within each.
-    /// Returns how many fell in each `Contact`, best first.
-    fn rank(&self, followers: &mut [EndpointAddr], now: Instant, lately: Duration) -> [usize; 3] {
-        let heard = self.lock();
-        let contact = |addr: &EndpointAddr| match heard.get(&addr.id) {
-            Some((at, direct)) if now.duration_since(*at) < lately => {
-                if *direct {
-                    Contact::Direct
-                } else {
-                    Contact::Relayed
-                }
-            }
-            _ => Contact::NotLately,
+    /// How `node` was last heard from, within `lately` of `now`.
+    pub(crate) fn contact(&self, node: &EndpointId, now: Instant, lately: Duration) -> Contact {
+        contact(&self.lock(), node, now, lately)
+    }
+
+    /// Picks the followers with a copy that one `WhoHosts` reply names, at
+    /// most `SWARM_SAMPLE`, from `members` in random order, each with
+    /// whether it's trusted (ADR 0013). First up to `MAX_TRUSTED_NAMED`
+    /// trusted followers heard from within `lately` of `now`, at random;
+    /// then the others as for anyone, those heard from lately first, but
+    /// never more trusted ones than that. Those picked are then put in
+    /// order of how they were heard from, directly before through a relay,
+    /// keeping the order they came in within each, so trusted followers
+    /// aren't always among the first a downloader asks.
+    pub(crate) fn pick_hosts(
+        &self,
+        members: Vec<(EndpointAddr, bool)>,
+        now: Instant,
+        lately: Duration,
+    ) -> Picked {
+        let contacts: Vec<Contact> = {
+            let heard = self.lock();
+            members
+                .iter()
+                .map(|(addr, _)| contact(&heard, &addr.id, now, lately))
+                .collect()
         };
-        followers.sort_by_key(contact);
-        let mut counts = [0; 3];
-        for addr in followers.iter() {
-            counts[contact(addr) as usize] += 1;
+        let mut picked = vec![false; members.len()];
+        let mut trusted = 0;
+        for (i, (_, is_trusted)) in members.iter().enumerate() {
+            if trusted < MAX_TRUSTED_NAMED && *is_trusted && contacts[i] != Contact::NotLately {
+                picked[i] = true;
+                trusted += 1;
+            }
         }
-        counts
+        let mut others: Vec<usize> = (0..members.len()).filter(|&i| !picked[i]).collect();
+        others.sort_by_key(|&i| contacts[i]);
+        let mut count = trusted;
+        for i in others {
+            if count == SWARM_SAMPLE {
+                break;
+            }
+            if members[i].1 {
+                if trusted == MAX_TRUSTED_NAMED {
+                    continue;
+                }
+                trusted += 1;
+            }
+            picked[i] = true;
+            count += 1;
+        }
+        let mut pool = [0; 3];
+        for c in &contacts {
+            pool[*c as usize] += 1;
+        }
+        let mut named: Vec<(Contact, EndpointAddr)> = members
+            .into_iter()
+            .zip(contacts)
+            .zip(picked)
+            .filter_map(|(((addr, _), contact), picked)| picked.then_some((contact, addr)))
+            .collect();
+        named.sort_by_key(|(contact, _)| *contact);
+        Picked {
+            named: named.into_iter().map(|(_, addr)| addr).collect(),
+            pool,
+            trusted,
+        }
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<EndpointId, (Instant, bool)>> {
         self.0.lock().unwrap_or_else(|e| e.into_inner())
+    }
+}
+
+/// How `node` was last heard from, by `heard`, within `lately` of `now`.
+fn contact(
+    heard: &HashMap<EndpointId, (Instant, bool)>,
+    node: &EndpointId,
+    now: Instant,
+    lately: Duration,
+) -> Contact {
+    match heard.get(node) {
+        Some((at, direct)) if now.duration_since(*at) < lately => {
+            if *direct {
+                Contact::Direct
+            } else {
+                Contact::Relayed
+            }
+        }
+        _ => Contact::NotLately,
     }
 }
 
@@ -669,10 +751,111 @@ async fn request_on(conn: &Connection, req: &SocialRequest) -> Result<SocialResp
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
+
     use super::*;
 
     fn some_addr() -> EndpointAddr {
         EndpointAddr::new(iroh::SecretKey::generate().public())
+    }
+
+    fn untrusted<const N: usize>(followers: [&EndpointAddr; N]) -> Vec<(EndpointAddr, bool)> {
+        followers.iter().map(|a| ((*a).clone(), false)).collect()
+    }
+
+    fn ids(picked: &Picked) -> Vec<EndpointId> {
+        picked.named.iter().map(|a| a.id).collect()
+    }
+
+    /// `n` followers, trusted or not, noted as heard from at `at`, directly.
+    fn heard_from(
+        heard: &Heard,
+        n: usize,
+        trusted: bool,
+        at: Instant,
+    ) -> Vec<(EndpointAddr, bool)> {
+        (0..n)
+            .map(|_| {
+                let addr = some_addr();
+                heard.note(addr.id, Some(true), at);
+                (addr, trusted)
+            })
+            .collect()
+    }
+
+    /// The followers in `members` that are trusted.
+    fn trusted_in(members: &[(EndpointAddr, bool)]) -> HashSet<EndpointId> {
+        members
+            .iter()
+            .filter(|(_, trusted)| *trusted)
+            .map(|(addr, _)| addr.id)
+            .collect()
+    }
+
+    #[test]
+    fn at_most_three_trusted_followers_are_named_from_those_heard_from_lately() {
+        let heard = Heard::default();
+        let now = Instant::now();
+        let mut members = heard_from(&heard, 10, true, now);
+        members.extend(heard_from(&heard, 10, false, now));
+        let trusted = trusted_in(&members);
+        for _ in 0..20 {
+            members.reverse();
+            let picked = heard.pick_hosts(members.clone(), now, HEARD_LATELY);
+            assert_eq!(picked.named.len(), SWARM_SAMPLE);
+            assert_eq!(picked.trusted, MAX_TRUSTED_NAMED);
+            let named = ids(&picked).into_iter().filter(|id| trusted.contains(id));
+            assert_eq!(named.count(), MAX_TRUSTED_NAMED);
+        }
+
+        // With too few others, the places left stay empty.
+        let mut members = heard_from(&heard, 5, true, now);
+        members.extend(heard_from(&heard, 1, false, now));
+        let picked = heard.pick_hosts(members, now, HEARD_LATELY);
+        assert_eq!((picked.named.len(), picked.trusted), (4, 3));
+    }
+
+    #[test]
+    fn trusted_followers_arent_put_ahead_of_others_heard_the_same_way() {
+        let heard = Heard::default();
+        let now = Instant::now();
+        let [a, x, relayed, y, b, z] = [(); 6].map(|_| some_addr());
+        for addr in [&a, &x, &y, &b, &z] {
+            heard.note(addr.id, Some(true), now);
+        }
+        heard.note(relayed.id, Some(false), now);
+        let members = [(&a, false), (&x, true), (&relayed, false)]
+            .into_iter()
+            .chain([(&y, true), (&b, false), (&z, true)])
+            .map(|(addr, trusted)| (addr.clone(), trusted))
+            .collect();
+        // In the order they came, as random from the database, within each.
+        let picked = heard.pick_hosts(members, now, HEARD_LATELY);
+        assert_eq!(picked.trusted, 3);
+        assert_eq!(ids(&picked), [a.id, x.id, y.id, b.id, z.id, relayed.id]);
+    }
+
+    #[test]
+    fn trusted_followers_not_heard_from_lately_arent_preferred() {
+        let heard = Heard::default();
+        let now = Instant::now();
+        let long_ago = now - 2 * HEARD_LATELY;
+        let mut members = heard_from(&heard, 3, true, long_ago);
+        members.extend(heard_from(&heard, 6, false, now));
+        let picked = heard.pick_hosts(members.clone(), now, HEARD_LATELY);
+        assert_eq!(picked.trusted, 0);
+        assert!(
+            ids(&picked)
+                .iter()
+                .all(|id| !trusted_in(&members).contains(id))
+        );
+
+        // Nor held back: with none heard from lately, as after a restart,
+        // they're named like anyone else.
+        // Here they came first, so they're named first.
+        let picked = heard.pick_hosts(members, now + 2 * HEARD_LATELY, HEARD_LATELY);
+        assert_eq!(picked.pool, [0, 0, 9]);
+        assert_eq!((picked.named.len(), picked.trusted), (SWARM_SAMPLE, 3));
     }
 
     #[test]
@@ -688,13 +871,12 @@ mod tests {
         heard.note(quiet.id, Some(true), later);
         heard.note(quiet.id, Some(false), later);
 
-        let mut followers = [&unknown, &earlier, &quiet, &relayed, &direct].map(|a| a.clone());
-        let counts = heard.rank(&mut followers, later + Duration::from_secs(1), HEARD_LATELY);
-        assert_eq!(counts, [1, 2, 2]);
-        let ids = followers.map(|a| a.id);
+        let followers = untrusted([&unknown, &earlier, &quiet, &relayed, &direct]);
+        let picked = heard.pick_hosts(followers, later + Duration::from_secs(1), HEARD_LATELY);
+        assert_eq!(picked.pool, [1, 2, 2]);
         // In the order they came within each.
         assert_eq!(
-            ids,
+            ids(&picked),
             [direct.id, quiet.id, relayed.id, unknown.id, earlier.id]
         );
     }
@@ -709,9 +891,9 @@ mod tests {
         heard.note(relayed.id, None, now);
         heard.note(new.id, None, now);
 
-        let mut followers = [&relayed, &new].map(|a| a.clone());
-        assert_eq!(heard.rank(&mut followers, now, HEARD_LATELY), [1, 1, 0]);
-        assert_eq!(followers.map(|a| a.id), [new.id, relayed.id]);
+        let picked = heard.pick_hosts(untrusted([&relayed, &new]), now, HEARD_LATELY);
+        assert_eq!(picked.pool, [1, 1, 0]);
+        assert_eq!(ids(&picked), [new.id, relayed.id]);
     }
 
     #[test]

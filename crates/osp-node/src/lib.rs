@@ -23,6 +23,7 @@ pub mod simnet;
 mod social;
 mod store;
 mod sync;
+mod trust;
 mod uploads;
 
 pub use config::{Config, RelayChoice};

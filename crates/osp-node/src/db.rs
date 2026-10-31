@@ -17,7 +17,7 @@ use osp_proto::{
 };
 use rusqlite::{Connection, OptionalExtension, params};
 
-use crate::peers;
+use crate::{peers, trust};
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS objects (
@@ -153,6 +153,20 @@ const MIGRATIONS: &[&str] = &[
         updated_ms INTEGER NOT NULL,
         PRIMARY KEY (device, id)
     )",
+    // 11: trusted followers (ADR 0013): each node that asked to be trusted
+    // or was trusted, the identity and name of the profile that listed it,
+    // the note it sent, whether it is waiting, allowed or declined, and
+    // when it asked (never, if trusted without a request) and was answered.
+    "CREATE TABLE trust (
+        node        TEXT PRIMARY KEY,
+        actor       TEXT NOT NULL,
+        name        TEXT NOT NULL,
+        note        TEXT NOT NULL,
+        state       TEXT NOT NULL,
+        asked_ms    INTEGER,
+        answered_ms INTEGER
+    );
+    CREATE INDEX trust_by_actor ON trust(actor);",
 ];
 
 /// Hosts remembered per blob. More than enough to find a copy; a peer
@@ -162,13 +176,15 @@ const MAX_HOSTS_PER_BLOB: i64 = 20;
 /// Followers remembered as holding a copy of one of our blobs. Plenty to
 /// pick a few from.
 const MAX_SWARM_PER_BLOB: i64 = 100;
-/// Of those, the places kept for the followers that have followed us
-/// longest; the rest go to those noted last (`add_swarm_member`).
-const SWARM_LONGEST: i64 = MAX_SWARM_PER_BLOB / 2;
+/// Of those, the most kept for trusted followers (ADR 0013), so an owner
+/// who trusts many can't fill the list (`add_swarm_member`).
+const MAX_TRUSTED_SWARM_PER_BLOB: i64 = 25;
 
 /// A blob's `accessed_ms` is updated at most this often, so a phone
 /// seeking through a video doesn't write to the database on every request.
 const TOUCH_EVERY_MS: i64 = 60_000;
+
+const HOUR_MS: i64 = 60 * 60 * 1000;
 
 /// Why a blob is kept, which decides who it is served to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -244,6 +260,19 @@ pub struct PeerRow {
     pub first_ms: i64,
     pub last_ms: i64,
     pub counts: PeerCounts,
+}
+
+/// A request to be a trusted follower, or a node trusted (ADR 0013).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TrustRow {
+    pub node: EndpointId,
+    /// The identity whose profile listed the node, and its name there.
+    pub actor: PublicKey,
+    pub name: String,
+    /// Sent with the request; empty if trusted without one.
+    pub note: String,
+    /// When it asked, while waiting; when it was trusted, once allowed.
+    pub at_ms: i64,
 }
 
 /// An upload from a paired device (`uploads.rs`).
@@ -1144,11 +1173,13 @@ impl Db {
     }
 
     /// Notes that a follower holds a copy of `blob`. Noting it again
-    /// changes nothing. Only so many are kept for each blob, those that
-    /// still share first: half the followers that have followed us longest,
-    /// so a crowd of new followers can't push them out, and half those
-    /// noted last, so followers that got it later, with their uploads free,
-    /// are named too. A new one is always kept, as the last noted.
+    /// changes nothing. Only so many are kept for each blob: up to
+    /// `MAX_TRUSTED_SWARM_PER_BLOB` trusted followers that share, those
+    /// that have followed us longest (ADR 0013); then, of the others, those
+    /// that still share first, half the followers that have followed us
+    /// longest, so a crowd of new followers can't push them out, and half
+    /// those noted last, so followers that got it later, with their uploads
+    /// free, are named too. A new one is always kept, as the last noted.
     pub fn add_swarm_member(&self, blob: &BlobHash, node: &EndpointId) -> Result<()> {
         let conn = self.conn();
         conn.execute(
@@ -1158,39 +1189,212 @@ impl Db {
         )?;
         conn.execute(
             "WITH members AS (
-                 SELECT s.node, f.shares IS 1 AS sharing, f.since, s.seen_ms
+                 SELECT s.node, f.shares IS 1 AS sharing, f.since, s.seen_ms,
+                     t.node IS NOT NULL AS trusted
                  FROM swarm s LEFT JOIN followers f ON f.node = s.node
+                     LEFT JOIN trust t ON t.node = s.node AND t.state = 'allowed'
                  WHERE s.blob = ?1),
+             trusted AS (
+                 SELECT node FROM members WHERE trusted AND sharing
+                 ORDER BY since, seen_ms LIMIT ?2),
+             others AS (
+                 SELECT * FROM members WHERE node NOT IN (SELECT node FROM trusted)),
              longest AS (
-                 SELECT node FROM members ORDER BY sharing DESC, since, seen_ms LIMIT ?2),
+                 SELECT node FROM others ORDER BY sharing DESC, since, seen_ms
+                 LIMIT (?3 - (SELECT COUNT(*) FROM trusted)) / 2),
              latest AS (
-                 SELECT node FROM members WHERE node NOT IN (SELECT node FROM longest)
-                 ORDER BY sharing DESC, seen_ms DESC LIMIT ?3)
+                 SELECT node FROM others WHERE node NOT IN (SELECT node FROM longest)
+                 ORDER BY sharing DESC, seen_ms DESC
+                 LIMIT ?3 - (SELECT COUNT(*) FROM trusted) - (SELECT COUNT(*) FROM longest))
              DELETE FROM swarm WHERE blob = ?1
+                 AND node NOT IN (SELECT node FROM trusted)
                  AND node NOT IN (SELECT node FROM longest)
                  AND node NOT IN (SELECT node FROM latest)",
             params![
                 blob.to_string(),
-                SWARM_LONGEST,
-                MAX_SWARM_PER_BLOB - SWARM_LONGEST
+                MAX_TRUSTED_SWARM_PER_BLOB,
+                MAX_SWARM_PER_BLOB
             ],
         )?;
         Ok(())
     }
 
     /// The followers, other than `except`, that hold a copy of `blob` and
-    /// still say they share, in random order.
-    pub fn swarm_members(&self, blob: &BlobHash, except: &EndpointId) -> Result<Vec<EndpointAddr>> {
+    /// still say they share, in random order, each with whether it's
+    /// trusted (ADR 0013).
+    pub fn swarm_members(
+        &self,
+        blob: &BlobHash,
+        except: &EndpointId,
+    ) -> Result<Vec<(EndpointAddr, bool)>> {
         let conn = self.conn();
         let mut stmt = conn.prepare(
-            "SELECT f.node_addr FROM swarm s JOIN followers f ON f.node = s.node
+            "SELECT f.node_addr, t.node IS NOT NULL
+             FROM swarm s JOIN followers f ON f.node = s.node
+                 LEFT JOIN trust t ON t.node = s.node AND t.state = 'allowed'
              WHERE s.blob = ?1 AND f.shares = 1 AND s.node != ?2
              ORDER BY RANDOM()",
         )?;
         let rows = stmt.query_map(params![blob.to_string(), except.to_string()], |row| {
-            row.get::<_, String>(0)
+            Ok((row.get::<_, String>(0)?, row.get::<_, bool>(1)?))
         })?;
-        rows.map(|r| Ok(serde_json::from_str(&r?)?)).collect()
+        rows.map(|r| {
+            let (addr, trusted) = r?;
+            Ok((serde_json::from_str(&addr)?, trusted))
+        })
+        .collect()
+    }
+
+    /// How many blobs `node` is noted as holding a copy of.
+    pub fn swarm_copies(&self, node: &EndpointId) -> Result<usize> {
+        let n: i64 = self.conn().query_row(
+            "SELECT COUNT(*) FROM swarm WHERE node = ?1",
+            params![node.to_string()],
+            |row| row.get(0),
+        )?;
+        Ok(n as usize)
+    }
+
+    // ---- trusted followers (ADR 0013) ----
+
+    /// Records a request from `ask.node` to be a trusted follower, within
+    /// the limits: one per node, a repeat replacing the note; none from a
+    /// node allowed, or declined in the last `trust::DECLINED_IGNORED`; at
+    /// most `per_hour` new ones an hour; and `trust::MAX_WAITING` waiting,
+    /// the oldest going to make room. `ask.at_ms` is when it came. Returns
+    /// whether it was kept.
+    pub fn add_trust_request(&self, ask: &TrustRow, per_hour: usize) -> Result<bool> {
+        let now = ask.at_ms;
+        let conn = self.conn();
+        let tx = conn.unchecked_transaction()?;
+        forget_old_trust_requests(&tx, now)?;
+        let node = ask.node.to_string();
+        let state: Option<String> = tx
+            .query_row(
+                "SELECT state FROM trust WHERE node = ?1",
+                params![node],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let kept = match state.as_deref() {
+            Some("waiting") => {
+                tx.execute(
+                    "UPDATE trust SET actor = ?2, name = ?3, note = ?4 WHERE node = ?1",
+                    params![node, ask.actor.to_string(), ask.name, ask.note],
+                )?;
+                true
+            }
+            Some(_) => false,
+            None => {
+                let this_hour: i64 = tx.query_row(
+                    "SELECT COUNT(*) FROM trust WHERE asked_ms >= ?1",
+                    params![now - HOUR_MS],
+                    |row| row.get(0),
+                )?;
+                let fits = (this_hour as usize) < per_hour;
+                if fits {
+                    tx.execute(
+                        "DELETE FROM trust WHERE state = 'waiting' AND node NOT IN
+                         (SELECT node FROM trust WHERE state = 'waiting'
+                          ORDER BY asked_ms DESC LIMIT ?1)",
+                        params![trust::MAX_WAITING as i64 - 1],
+                    )?;
+                    tx.execute(
+                        "INSERT INTO trust (node, actor, name, note, state, asked_ms)
+                         VALUES (?1, ?2, ?3, ?4, 'waiting', ?5)",
+                        params![node, ask.actor.to_string(), ask.name, ask.note, now],
+                    )?;
+                }
+                fits
+            }
+        };
+        tx.commit()?;
+        Ok(kept)
+    }
+
+    /// Requests to be a trusted follower still waiting, newest first.
+    pub fn trust_requests(&self, now: i64) -> Result<Vec<TrustRow>> {
+        let conn = self.conn();
+        forget_old_trust_requests(&conn, now)?;
+        trust_rows(
+            &conn,
+            "SELECT node, actor, name, note, asked_ms FROM trust
+             WHERE state = 'waiting' ORDER BY asked_ms DESC",
+        )
+    }
+
+    /// How many requests to be a trusted follower are waiting.
+    pub fn trust_request_count(&self, now: i64) -> Result<usize> {
+        let conn = self.conn();
+        forget_old_trust_requests(&conn, now)?;
+        let n: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM trust WHERE state = 'waiting'",
+            [],
+            |row| row.get(0),
+        )?;
+        Ok(n as usize)
+    }
+
+    /// The nodes trusted, the most recently trusted first.
+    pub fn trusted(&self) -> Result<Vec<TrustRow>> {
+        trust_rows(
+            &self.conn(),
+            "SELECT node, actor, name, note, answered_ms FROM trust
+             WHERE state = 'allowed' ORDER BY answered_ms DESC",
+        )
+    }
+
+    /// Allows or declines the request waiting from `node`. False if none is.
+    pub fn answer_trust(&self, node: &EndpointId, allow: bool, now: i64) -> Result<bool> {
+        let state = if allow { "allowed" } else { "declined" };
+        let n = self.conn().execute(
+            "UPDATE trust SET state = ?2, answered_ms = ?3 WHERE node = ?1 AND state = 'waiting'",
+            params![node.to_string(), state, now],
+        )?;
+        Ok(n > 0)
+    }
+
+    /// Trusts `nodes` as `actor`'s, whether or not they asked, or were declined.
+    pub fn trust_nodes(
+        &self,
+        actor: &PublicKey,
+        name: &str,
+        nodes: &[EndpointId],
+        now: i64,
+    ) -> Result<()> {
+        let conn = self.conn();
+        let tx = conn.unchecked_transaction()?;
+        for node in nodes {
+            tx.execute(
+                "INSERT INTO trust (node, actor, name, note, state, answered_ms)
+                 VALUES (?1, ?2, ?3, '', 'allowed', ?4)
+                 ON CONFLICT(node) DO UPDATE SET actor = excluded.actor, name = excluded.name,
+                     state = 'allowed', answered_ms = excluded.answered_ms",
+                params![node.to_string(), actor.to_string(), name, now],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Takes trust back from `actor` on every node. Returns on how many.
+    pub fn untrust(&self, actor: &PublicKey) -> Result<usize> {
+        Ok(self.conn().execute(
+            "DELETE FROM trust WHERE actor = ?1 AND state = 'allowed'",
+            params![actor.to_string()],
+        )?)
+    }
+
+    /// When `node` first followed us, if it does.
+    pub fn follower_since(&self, node: &EndpointId) -> Result<Option<i64>> {
+        Ok(self
+            .conn()
+            .query_row(
+                "SELECT since FROM followers WHERE node = ?1",
+                params![node.to_string()],
+                |row| row.get(0),
+            )
+            .optional()?)
     }
 
     // ---- devices ----
@@ -1486,6 +1690,47 @@ fn parse_upload(columns: UploadColumns) -> Result<UploadRow> {
     })
 }
 
+/// Forgets requests to be a trusted follower waiting since before
+/// `trust::WAITING_KEPT`, or from a node that no longer follows us, and
+/// declines older than `trust::DECLINED_IGNORED`, so that node may ask again.
+fn forget_old_trust_requests(conn: &Connection, now: i64) -> Result<()> {
+    conn.execute(
+        "DELETE FROM trust WHERE (state = 'waiting'
+             AND (asked_ms < ?1 OR node NOT IN (SELECT node FROM followers)))
+             OR (state = 'declined' AND answered_ms < ?2)",
+        params![
+            now - trust::WAITING_KEPT.as_millis() as i64,
+            now - trust::DECLINED_IGNORED.as_millis() as i64
+        ],
+    )?;
+    Ok(())
+}
+
+/// `trust` rows from `sql`, which selects node, actor, name, note and a time.
+fn trust_rows(conn: &Connection, sql: &str) -> Result<Vec<TrustRow>> {
+    let mut stmt = conn.prepare(sql)?;
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, String>(3)?,
+            row.get::<_, i64>(4)?,
+        ))
+    })?;
+    rows.map(|r| {
+        let (node, actor, name, note, at_ms) = r?;
+        Ok(TrustRow {
+            node: node.parse()?,
+            actor: actor.parse()?,
+            name,
+            note,
+            at_ms,
+        })
+    })
+    .collect()
+}
+
 /// Runs the migrations this database hasn't had yet, each in one transaction.
 fn migrate(conn: &Connection) -> Result<()> {
     let done: i64 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
@@ -1595,7 +1840,7 @@ mod tests {
 
         let members = |except: &EndpointId| -> Vec<EndpointId> {
             let members = db.swarm_members(&blob, except).unwrap();
-            members.into_iter().map(|a| a.id).collect()
+            members.into_iter().map(|(a, _)| a.id).collect()
         };
         let listed = members(&sharing[0].id);
         assert_eq!(listed.len(), 2, "{listed:?}");
@@ -1662,7 +1907,7 @@ mod tests {
         // A follower following for less time than all of them is kept, as
         // the last noted, in place of the one noted longest ago of the
         // half kept for that.
-        let half = SWARM_LONGEST as usize;
+        let half = (MAX_SWARM_PER_BLOB / 2) as usize;
         let late = follower(MAX_SWARM_PER_BLOB + 1);
         assert!(add(&late, 1_000));
         assert_eq!(kept(&members[half..half + 1]), [false]);
@@ -1707,6 +1952,145 @@ mod tests {
             .unwrap();
         db.add_swarm_member(&blob, &early.id).unwrap();
         assert_eq!(seen(&early.id), 1);
+    }
+
+    #[test]
+    fn a_full_swarm_keeps_up_to_a_quarter_for_trusted_followers() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(&dir.path().join("t.db")).unwrap();
+        let blob = BlobHash::from_bytes([5; 32]);
+        // A follower that shares, following us since `day`, noted as
+        // holding a copy at `order`, and trusted or not.
+        let member = |day: i64, order: i64, trusted: bool| {
+            let addr = some_addr();
+            db.add_follower(&addr, true).unwrap();
+            let sql = "UPDATE followers SET since = ?2 WHERE node = ?1";
+            let since = params![addr.id.to_string(), day * DAY_MS];
+            db.conn().execute(sql, since).unwrap();
+            if trusted {
+                let actor = iroh::SecretKey::generate().public();
+                db.trust_nodes(&actor, "a friend", &[addr.id], 0).unwrap();
+            }
+            db.add_swarm_member(&blob, &addr.id).unwrap();
+            let sql = "UPDATE swarm SET seen_ms = ?2 WHERE node = ?1";
+            let seen = params![addr.id.to_string(), order];
+            db.conn().execute(sql, seen).unwrap();
+            addr
+        };
+        let kept = |addrs: &[EndpointAddr]| -> usize {
+            addrs
+                .iter()
+                .filter(|a| db.in_swarm(&blob, &a.id).unwrap())
+                .count()
+        };
+        let members: Vec<EndpointAddr> = (1..=MAX_SWARM_PER_BLOB)
+            .map(|day| member(day, day, false))
+            .collect();
+        // Trusted followers that followed later than all of them, and then
+        // a crowd of new followers.
+        let trusted: Vec<EndpointAddr> =
+            (0..30).map(|i| member(200 + i, 1_000 + i, true)).collect();
+        let crowd: Vec<EndpointAddr> = (0..60).map(|i| member(300 + i, 2_000 + i, false)).collect();
+
+        // A quarter for the trusted followers that have followed longest;
+        // of the rest, half for followers that have followed longest, and
+        // half for the crowd, noted last. Trusted ones past the quarter
+        // took their chances there, and the crowd came later.
+        let longest = (MAX_SWARM_PER_BLOB - MAX_TRUSTED_SWARM_PER_BLOB) as usize / 2;
+        let quarter = MAX_TRUSTED_SWARM_PER_BLOB as usize;
+        assert_eq!(kept(&trusted[..quarter]), quarter);
+        assert_eq!(kept(&trusted[quarter..]), 0);
+        assert_eq!(kept(&members[..longest]), longest);
+        assert_eq!(kept(&members[longest..]), 0);
+        assert_eq!(
+            kept(&crowd),
+            MAX_SWARM_PER_BLOB as usize - quarter - longest
+        );
+        let in_swarm = db.swarm_members(&blob, &crowd[0].id).unwrap();
+        assert_eq!(in_swarm.iter().filter(|(_, t)| *t).count(), quarter);
+    }
+
+    #[test]
+    fn requests_to_be_trusted_are_limited() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(&dir.path().join("t.db")).unwrap();
+        let follower = || {
+            let addr = some_addr();
+            db.add_follower(&addr, true).unwrap();
+            addr.id
+        };
+        let ask = |node: EndpointId, note: &str, at_ms: i64| {
+            let row = TrustRow {
+                node,
+                actor: iroh::SecretKey::generate().public(),
+                name: "Sam".to_string(),
+                note: note.to_string(),
+                at_ms,
+            };
+            db.add_trust_request(&row, trust::MAX_NEW_REQUESTS_PER_HOUR)
+                .unwrap()
+        };
+        let waiting = |now: i64| -> Vec<EndpointId> {
+            db.trust_requests(now)
+                .unwrap()
+                .iter()
+                .map(|r| r.node)
+                .collect()
+        };
+        let start = 100 * DAY_MS;
+
+        // One per node: asking again replaces the note, and keeps its place.
+        let sam = follower();
+        assert!(ask(sam, "hi", start));
+        assert!(ask(sam, "Sam, from the climbing club", start + 1));
+        let requests = db.trust_requests(start + 1).unwrap();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].note, "Sam, from the climbing club");
+        assert_eq!(requests[0].at_ms, start);
+
+        // Ten new ones an hour; a repeat isn't new.
+        for i in 1..10 {
+            assert!(ask(follower(), "", start + i));
+        }
+        assert!(!ask(follower(), "", start + 10));
+        assert!(ask(sam, "again", start + 11));
+        assert_eq!(db.trust_request_count(start + 11).unwrap(), 10);
+
+        // Fifty waiting: the oldest go, and the newest come first.
+        let mut last = sam;
+        for hour in 1..=5 {
+            for i in 0..9 {
+                last = follower();
+                assert!(ask(last, "", start + hour * HOUR_MS + 10 + i));
+            }
+        }
+        let now = start + 6 * HOUR_MS;
+        assert_eq!(db.trust_request_count(now).unwrap(), trust::MAX_WAITING);
+        assert!(!waiting(now).contains(&sam));
+        assert_eq!(waiting(now)[0], last);
+
+        // Declined, a node's requests are dropped for 30 days.
+        let carol = waiting(now)[1];
+        assert!(db.answer_trust(&carol, false, now).unwrap());
+        assert!(!db.answer_trust(&carol, true, now).unwrap());
+        let later = now + 6 * HOUR_MS;
+        assert!(!ask(carol, "please", later));
+        assert!(!waiting(later).contains(&carol));
+        // Allowed, its requests change nothing.
+        let dave = waiting(later)[0];
+        assert!(db.answer_trust(&dave, true, later).unwrap());
+        assert!(!ask(dave, "me again", later));
+        assert_eq!(db.trusted().unwrap()[0].node, dave);
+        assert!(!waiting(later).contains(&dave));
+
+        // A request waiting 30 days goes; a node declined then may ask again.
+        let month = later + trust::WAITING_KEPT.as_millis() as i64;
+        assert!(waiting(month).is_empty());
+        assert!(ask(carol, "please", month));
+        assert_eq!(waiting(month), [carol]);
+        // So does one from a node that no longer follows us, forgotten as silent.
+        db.drop_silent_followers(i64::MAX).unwrap();
+        assert!(waiting(month).is_empty());
     }
 
     fn some_addr() -> EndpointAddr {
