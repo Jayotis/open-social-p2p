@@ -241,3 +241,17 @@ Before the runs, in short runs and tests: a node at 2 Mbit/s measured 1.9; one a
 - **The creator read 44 to 47 Mbit/s on its 20 Mbit/s line** in three of the four runs. After a download in parts falls short, a node asks one host at a time for what is left of the blob, the author's node last, and what is left can have gaps between its ranges; the meter counted the bytes in the gaps as sent. It now counts only the bytes asked for (`bd056b6`). The creator has 8 places from 12 Mbit/s up, so this didn't change its places in these runs; on a slow node it could have given more places than the line can serve. A test on the simulated network catches it: a 1 Mbit/s node asked for the start and end of a photo read 2.6 Mbit/s before the fix.
 
 **What it shows.** Places sized to the measured upload change little on home connections, where every follower can serve a copy in minutes, but with nine hosts in ten at 1 Mbit/s every follower had the video within 23 minutes, against 35 and 55. The slow hosts take on only what they can send in good time, and the rest goes elsewhere. Left in the slow-hosts run: latecomers whose three hosts are all slow (144 s), the 95% mark, and the creator's copies, over B8's 30.
+
+## Checking that a follower holds its copy
+
+Added on 2026-10-31, before this run. A follower that shares tells the author's node when it holds a copy (`Hosting`), and the author's node named it to other followers without checking. Now (`3aa2591`) the author's node first asks the follower for one 1 KiB chunk of the file, picked at random, and checks it against the hash, and names the follower only if it arrives within 15 seconds. The follower serves a request that small from the places for small files, so it can answer while its other places are busy ([ADR 0003](../decisions/0003-native-social-protocol-v0.md)). A follower named once isn't checked again, and once 100 are named for a file, the ones that have followed longest stay ([doc 13](../13-hosting-roles-and-follower-swarm.md#how-a-post-spreads)).
+
+**The runs.** The home run with `3aa2591`, and with `d76a178`, the code before it, in the same round. Both log each social request a node refuses as busy, nearly all of which go to the author's node, and the run with the change each check a follower fails (`osp_node::social=debug` added to `RUST_LOG`).
+
+**What counts as better.** No new pass marks. On home connections every follower holds a real copy, so the change should cost nothing:
+
+- **No follower fails the check.** A follower that fails holds a copy that no one is sent to.
+- **B8's marks are met.** The followers' times, the creator's copies and the busy refusals are within the variation the [repeats](#repeats) showed, and no worse than the run before the change.
+- **Social requests refused as busy** don't rise much: a follower's `Hosting` request now waits for the check, keeping one of the author's node's 32 places for social requests a little longer.
+
+The checks themselves cost the author's node at most one 16 KiB block per follower, under 5 MB for 300, a tenth of one copy of the video.
