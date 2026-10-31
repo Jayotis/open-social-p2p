@@ -309,3 +309,20 @@ The checks themselves cost the author's node at most one 16 KiB block per follow
 - No social request was refused as busy.
 
 **What it shows.** With half the list kept for the followers that have followed longest and half for those named last, the swarm spread the video as fast as before the check, or faster, while a crowd of new followers still can't push out the half that came first. Checking a follower's copy costs nothing measurable. A check fails now and then, at the busiest time, when a follower's piece takes over 15 s: five in round 1, none in round 2, two here.
+
+## Naming followers heard from lately first
+
+Added on 2026-10-31, before these runs. The author's node named the followers with a copy of a file at random, from up to 100. A follower whose node had stopped stayed on that list and went on being named, and a downloader that asked it waited for a connection that never came, while the list's other followers were online. Now (`0edaca4`) the author's node names first the followers that sent it a request in the last 5 minutes (a node asks the nodes it follows for new posts every minute), those whose requests came straight from their node before those that came through a relay, and picks at random within each ([ADR 0003](../decisions/0003-native-social-protocol-v0.md)). It goes only by what it saw itself, never by what other nodes say about a follower. On the simulated network every connection is direct, so here only followers that stop make a difference.
+
+The report now also lists the three followers last to hold the video, with what each received from each node and how its tries ended, so a straggler like the [one above](#checking-that-a-follower-holds-its-copy) can be explained, and how often each source couldn't be reached. Both builds have this (`6406df4`).
+
+**The runs.** In this order, in one round, each with `6406df4` (the code before, with the new report) and then with `0edaca4`:
+
+1. The home run.
+2. **A third offline:** the home run, but once every follower holds the video, 100 of the 300 stop, at 900 s after posting (`--drop-out 100 --drop-out-secs 900`), and the latecomers follow from 1,260 s on (`--latecomers-after-secs 1260`), when the followers that stopped have been silent for 6 minutes. This is someone opening a post after many of the followers holding it have gone offline, as at night. B8's drop-out run stops a fifth of the followers at 480 s instead, while they're still fetching; there, the half of the list kept for the followers named last soon fills with followers still running, so a ranking would change little.
+
+**What counts as better.** No new pass marks; B8's marks should be met in all four.
+
+- **A third offline:** before the change, about a third of the followers named to a latecomer had stopped, so each latecomer could expect to ask one of them among the three it asks at once. With the change, none of the six named should have stopped: the latecomers' "couldn't connect" should fall from several to none, and their times should be no worse.
+- **Home:** every follower is heard from every minute, directly, so the names are as random as before: the followers' times, the creator's copies and the busy refusals within the [repeats](#repeats)' variation, and no worse than the run before the change in this round.
+- **The last followers to hold the video:** recorded. If they were refused as busy and tried again a minute or more later, that explains the straggler above.
