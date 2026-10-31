@@ -4,7 +4,7 @@
 use std::{
     collections::HashMap,
     fmt,
-    sync::{Arc, MutexGuard},
+    sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 
@@ -64,6 +64,10 @@ const SWARM_SAMPLE: usize = 6;
 /// Samples one follower gets per hour. More asks get only the hosts anyone
 /// may know: this node, and resharers that host.
 const MAX_SWARM_SAMPLES_PER_HOUR: u32 = 60;
+/// Copies of one follower's that this node checks per hour (`Hosting`). A
+/// follower tells us of a copy once for each post it fetches ahead of
+/// time, and one already noted isn't checked again.
+const MAX_HOSTING_CHECKS_PER_HOUR: u32 = 60;
 const HOUR: Duration = Duration::from_secs(60 * 60);
 /// How far ahead of our clock a profile or key certificate may be dated.
 /// The newer one wins (ADR 0009, ADR 0010), so one dated years ahead could
@@ -236,7 +240,7 @@ impl Core {
                 // or reshared, only to followers.
                 if class.is_some_and(|c| c.is_public())
                     && self.db.is_follower(&remote)?
-                    && self.may_sample_swarm(remote)
+                    && self.swarm_samples.allow(remote, MAX_SWARM_SAMPLES_PER_HOUR)
                 {
                     nodes.extend(self.db.swarm_sample(&blob, &remote, SWARM_SAMPLE)?);
                 }
@@ -258,7 +262,29 @@ impl Core {
                     "{} isn't media this node hosts",
                     blob.fmt_short()
                 );
-                self.db.add_swarm_member(&blob, &remote)?;
+                // Noted before, it keeps its place and isn't checked again.
+                // Nor is a node checked that wouldn't be kept.
+                if !self.db.in_swarm(&blob, &remote)?
+                    && self.db.swarm_has_room_for(&blob, &remote)?
+                {
+                    ensure!(
+                        self.hosting_checks
+                            .allow(remote, MAX_HOSTING_CHECKS_PER_HOUR),
+                        "this node has checked enough of your copies this hour; try again later"
+                    );
+                    if let Err(e) = self.store.check_hosting(&blob, remote).await {
+                        debug!(
+                            node = %remote.fmt_short(),
+                            blob = %blob.fmt_short(),
+                            "a follower said it holds a copy, but didn't send a piece of it: {e:#}"
+                        );
+                        bail!(
+                            "this node couldn't get a piece of {} from yours: {e:#}",
+                            blob.fmt_short()
+                        );
+                    }
+                    self.db.add_swarm_member(&blob, &remote)?;
+                }
                 SocialResponse::Ok
             }
             SocialRequest::Moved { profile, addr } => {
@@ -384,26 +410,6 @@ impl Core {
         Ok(())
     }
 
-    /// Whether `node` may have another sample of the followers holding a
-    /// copy, within `MAX_SWARM_SAMPLES_PER_HOUR`.
-    fn may_sample_swarm(&self, node: EndpointId) -> bool {
-        let mut samples = self.lock_swarm_samples();
-        let now = Instant::now();
-        if samples.len() >= MAX_FOLLOWERS {
-            samples.retain(|_, (since, _)| now.duration_since(*since) < HOUR);
-        }
-        let (since, count) = samples.entry(node).or_insert((now, 0));
-        if now.duration_since(*since) >= HOUR {
-            (*since, *count) = (now, 0);
-        }
-        *count += 1;
-        *count <= MAX_SWARM_SAMPLES_PER_HOUR
-    }
-
-    fn lock_swarm_samples(&self) -> MutexGuard<'_, HashMap<EndpointId, (Instant, u32)>> {
-        self.swarm_samples.lock().unwrap_or_else(|e| e.into_inner())
-    }
-
     /// Records a subscriber, and whether it shares what it prefetches. A
     /// node we already have just gets these refreshed; a new one must fit
     /// within the limits on followers.
@@ -522,6 +528,29 @@ impl Core {
         &self,
     ) -> std::sync::MutexGuard<'_, std::collections::HashMap<EndpointId, Connection>> {
         self.conns.lock().unwrap_or_else(|e| e.into_inner())
+    }
+}
+
+/// How many times each node has done something this hour, to limit it:
+/// since when, and how many.
+#[derive(Default)]
+pub(crate) struct PerHour(Mutex<HashMap<EndpointId, (Instant, u32)>>);
+
+impl PerHour {
+    /// Counts one more for `node`, and says whether that is within `max`
+    /// this hour.
+    fn allow(&self, node: EndpointId, max: u32) -> bool {
+        let mut counts = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let now = Instant::now();
+        if counts.len() >= MAX_FOLLOWERS {
+            counts.retain(|_, (since, _)| now.duration_since(*since) < HOUR);
+        }
+        let (since, count) = counts.entry(node).or_insert((now, 0));
+        if now.duration_since(*since) >= HOUR {
+            (*since, *count) = (now, 0);
+        }
+        *count += 1;
+        *count <= max
     }
 }
 

@@ -995,7 +995,7 @@ fn jitter(d: Duration) -> Duration {
 }
 
 /// A random number from 0 to 1.
-fn random_fraction() -> f64 {
+pub(crate) fn random_fraction() -> f64 {
     let mut bytes = [0; 8];
     // Without random numbers, the middle is as good as anything.
     match getrandom::fill(&mut bytes) {

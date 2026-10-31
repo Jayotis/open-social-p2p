@@ -43,7 +43,7 @@ use crate::{
     media,
     network::{self, ConnTracker},
     relays::{self, Checked, RelayPolicy},
-    social::{self, SocialProtocol},
+    social::{self, PerHour, SocialProtocol},
     store::{self, ContentStore, Sources},
     sync,
     uploads::{LiveUpload, UploadKey},
@@ -138,9 +138,10 @@ pub(crate) struct Core {
     pub opening: Mutex<HashMap<BlobHash, watch::Receiver<store::Download>>>,
     /// When we last asked each followed identity's node to notify us.
     pub subscribed: Mutex<HashMap<PublicKey, Instant>>,
-    /// Followers given samples of the swarm (`WhoHosts`): since when, and
-    /// how many, this hour.
-    pub swarm_samples: Mutex<HashMap<EndpointId, (Instant, u32)>>,
+    /// Followers given samples of the swarm (`WhoHosts`) this hour.
+    pub swarm_samples: PerHour,
+    /// Followers whose copies were checked (`Hosting`) this hour.
+    pub hosting_checks: PerHour,
     /// Followers are told we moved by one task at a time.
     pub tell_moved_lock: tokio::sync::Mutex<()>,
     pub started: Instant,
@@ -360,7 +361,8 @@ impl Node {
             uploads: Mutex::new(HashMap::new()),
             opening: Mutex::new(HashMap::new()),
             subscribed: Mutex::new(HashMap::new()),
-            swarm_samples: Mutex::new(HashMap::new()),
+            swarm_samples: PerHour::default(),
+            hosting_checks: PerHour::default(),
             tell_moved_lock: tokio::sync::Mutex::new(()),
             started: Instant::now(),
             media_tools,

@@ -51,6 +51,9 @@ const TRANSFER_LIMIT_PER_NODE: usize = 2;
 /// fewest places until it has measured its upload.
 const EVERY_PLACE_MBPS: u64 = 1000;
 const BUSY_WAIT: Duration = Duration::from_secs(10);
+/// Matches `BLOCK` in `store.rs`: a request for one is served as a small
+/// blob is (`SMALL_REQUEST`).
+const BLOCK: u64 = 16 << 10;
 /// Matches `STALL_TIMEOUT` in `store.rs`.
 const STALL_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -1075,6 +1078,14 @@ async fn a_node_with_every_place_taken_sends_downloads_to_another_host() {
     let peer = stranger(&addr, iroh_blobs::ALPN).await;
     let (ok, took) = fetch(&peer, thumb).await;
     assert!(ok && took < PROMPTLY, "the thumbnail took {took:?}");
+    // So does one block of the photo, which a node checking that we hold a
+    // copy asks for. Two wait for a place, like the whole photo.
+    let block = |n: u64| ChunkRanges::bytes(BLOCK..(1 + n) * BLOCK);
+    let started = Instant::now();
+    assert!(fetch_part(&peer, blob, block(1)).await);
+    assert!(started.elapsed() < PROMPTLY, "{:?}", started.elapsed());
+    let conn = peer.conn.clone();
+    let two_blocks = tokio::spawn(async move { fetch_part(&conn, blob, block(2)).await });
 
     // A node downloading the photo is refused too, and moves on to the
     // other host.
@@ -1096,6 +1107,7 @@ async fn a_node_with_every_place_taken_sends_downloads_to_another_host() {
         took >= BUSY_WAIT - Duration::from_secs(1),
         "refused after {took:?}"
     );
+    assert!(!two_blocks.await.unwrap(), "two blocks were sent");
 
     // Both sides recorded it (ADR 0011). Counts fade a little even within a
     // test, so they're rounded.
