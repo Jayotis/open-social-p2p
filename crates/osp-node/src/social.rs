@@ -128,8 +128,7 @@ impl ProtocolHandler for SocialProtocol {
                 if let Err(e) = served {
                     debug!(remote = %remote.fmt_short(), "social request failed: {e:#}");
                 }
-                // After it, so a node that just subscribed counts.
-                core.note_heard(remote, direct);
+                core.heard.note(remote, direct, Instant::now());
                 drop((overall, here));
             });
         }
@@ -450,16 +449,6 @@ impl Core {
         self.db.add_follower(addr, shares)
     }
 
-    /// Notes that `remote` sent us a request, if it's a follower, for
-    /// ranking the followers named as hosts.
-    fn note_heard(&self, remote: EndpointId, direct: Option<bool>) {
-        match self.db.is_follower(&remote) {
-            Ok(true) => self.heard.note(remote, direct, Instant::now()),
-            Ok(false) => {}
-            Err(e) => debug!(remote = %remote.fmt_short(), "couldn't look up a follower: {e:#}"),
-        }
-    }
-
     /// Sends one request to another node, reusing an open connection when
     /// we have one, and records how the node did (ADR 0011). An error reply
     /// still counts as an answer: the node is up and responding.
@@ -587,6 +576,8 @@ impl PerHour {
 /// from its node or through a relay, so the followers named as hosts are
 /// those most likely to serve well (doc 13). Kept in memory only: after a
 /// restart, followers are named at random until they're heard from again.
+/// Other nodes are noted too, as checking which are followers would read
+/// the database on every request; only followers are ranked.
 #[derive(Default)]
 pub(crate) struct Heard(Mutex<HashMap<EndpointId, (Instant, bool)>>);
 
@@ -607,8 +598,9 @@ impl Heard {
     /// it's new: nothing says it came through a relay.
     fn note(&self, node: EndpointId, direct: Option<bool>, now: Instant) {
         let mut heard = self.lock();
-        // Followers that stopped following are never noted again; this
-        // forgets them.
+        // Nodes that stopped asking are never noted again; this forgets
+        // them. A full record of nodes heard from lately notes no new ones:
+        // they're ranked as after a restart.
         if heard.len() >= MAX_FOLLOWERS && !heard.contains_key(&node) {
             heard.retain(|_, (at, _)| now.duration_since(*at) < HEARD_LATELY);
         }
