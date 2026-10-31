@@ -27,6 +27,7 @@ async fn a_small_run_measures_the_creators_upload() {
         latecomers_after: Duration::ZERO,
         time_limit: Duration::from_secs(90),
         sample: Duration::from_secs(1),
+        trust_mbps: Vec::new(),
         label: "test".into(),
     };
     let report = osp_sim::run(&scenario).await.unwrap();
@@ -111,6 +112,7 @@ fn with_the_swarm(dir: &Path) -> Scenario {
         latecomers_after: Duration::ZERO,
         time_limit: Duration::from_secs(90),
         sample: Duration::from_secs(1),
+        trust_mbps: Vec::new(),
         label: "test".into(),
     }
 }
@@ -118,13 +120,22 @@ fn with_the_swarm(dir: &Path) -> Scenario {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_small_run_with_the_swarm_on() {
     let dir = tempfile::tempdir().unwrap();
-    let scenario = with_the_swarm(dir.path());
+    let scenario = Scenario {
+        trust_mbps: vec![5],
+        ..with_the_swarm(dir.path())
+    };
     let report = osp_sim::run(&scenario).await.unwrap();
     println!("{}", report.summary());
     assert!(
         report
             .summary()
             .contains("swarm on, fetches spread over 10 s")
+    );
+    // A follower in three uploads at 5 Mbit/s, and asked to be trusted.
+    assert!(
+        report
+            .summary()
+            .contains("trusted: 4 followers, those uploading at 5 Mbit/s")
     );
     assert_eq!(report.holding(), 12, "{}", report.summary());
 

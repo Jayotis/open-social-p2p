@@ -45,7 +45,7 @@ use crate::{
     relays::{self, Checked, RelayPolicy},
     social::{self, Heard, PerHour, SocialProtocol},
     store::{self, ContentStore, Sources},
-    sync,
+    sync, trust,
     uploads::{LiveUpload, UploadKey},
 };
 
@@ -57,6 +57,9 @@ pub struct SimSettings {
     /// New followers accepted per hour. The harness starts a creator with
     /// hundreds of followers at once, as if they had come over months.
     pub new_followers_per_hour: usize,
+    /// New requests to be a trusted follower accepted per hour (ADR 0013).
+    /// The harness has many followers ask at once.
+    pub trust_requests_per_hour: usize,
     /// How long a prefetch refused as busy waits before it is tried again;
     /// later waits are longer. Tests shorten it.
     pub first_retry_wait: Duration,
@@ -86,6 +89,7 @@ impl Default for SimSettings {
     fn default() -> Self {
         Self {
             new_followers_per_hour: social::MAX_NEW_FOLLOWERS_PER_HOUR,
+            trust_requests_per_hour: trust::MAX_NEW_REQUESTS_PER_HOUR,
             first_retry_wait: sync::FIRST_RETRY_WAIT,
             prefetch_spread: sync::PREFETCH_SPREAD,
             tell_again_after: sync::TELL_AGAIN_AFTER,

@@ -161,6 +161,23 @@ impl Core {
             ClientRequest::Peers => ClientResponse::Peers {
                 peers: self.peer_records()?,
             },
+            ClientRequest::TrustRequests => self.trust_list()?,
+            ClientRequest::AnswerTrust { node, allow } => {
+                self.answer_trust(&node, allow)?;
+                ClientResponse::Ok
+            }
+            ClientRequest::TrustFollowed { actor } => {
+                self.trust_followed(&actor)?;
+                ClientResponse::Ok
+            }
+            ClientRequest::Untrust { actor } => {
+                self.untrust(&actor)?;
+                ClientResponse::Ok
+            }
+            ClientRequest::AskTrust { actor, note } => {
+                self.ask_trust(&actor, &note).await?;
+                ClientResponse::Ok
+            }
             ClientRequest::Pair { .. }
             | ClientRequest::ReadBlob { .. }
             | ClientRequest::ResumeUpload { .. }
@@ -183,6 +200,13 @@ impl Core {
         let followed: HashSet<_> = self.db.follows()?.iter().map(|f| f.addr.id).collect();
         let followers: HashSet<_> = self.db.followers()?.iter().map(|a| a.id).collect();
         let hosts: HashSet<_> = self.db.host_nodes()?.into_iter().collect();
+        let trusted: HashSet<_> = self.db.trusted()?.iter().map(|t| t.node).collect();
+        let asking: HashSet<_> = self
+            .db
+            .trust_requests(now)?
+            .iter()
+            .map(|t| t.node)
+            .collect();
         let secs_ago = |ms: i64| ((now - ms) / 1000).max(0) as u64;
         Ok(self
             .db
@@ -197,6 +221,8 @@ impl Core {
                     followed: followed.contains(&peer.node),
                     follower: followers.contains(&peer.node),
                     host: hosts.contains(&peer.node),
+                    trusted: trusted.contains(&peer.node),
+                    asks_trust: asking.contains(&peer.node),
                     contacted: peer.ours,
                     first_contact_secs_ago: secs_ago(peer.first_ms),
                     last_contact_secs_ago: secs_ago(peer.last_ms),
@@ -242,6 +268,7 @@ impl Core {
             disk_free_bytes,
             transfer_places,
             upload_measured_mbps,
+            trust_requests: self.db.trust_request_count(now_ms())?,
         })
     }
 

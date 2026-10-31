@@ -111,6 +111,10 @@ struct Cli {
     /// stranger holds the video by then.
     #[arg(long, default_value_t = 60)]
     minutes: u64,
+    /// The creator trusts the followers with these upload speeds, in
+    /// megabits per second (ADR 0013): each asks, and the creator allows it.
+    #[arg(long, value_delimiter = ',')]
+    trust_mbps: Vec<u64>,
     /// Write the full report here, as JSON.
     #[arg(long)]
     out: Option<PathBuf>,
@@ -171,6 +175,7 @@ async fn main() -> Result<()> {
         latecomers_after: Duration::from_secs(cli.latecomers_after_secs),
         time_limit: Duration::from_secs(cli.minutes * 60),
         sample: Duration::from_secs(60),
+        trust_mbps: cli.trust_mbps,
         label: cli.label,
     };
     let result = osp_sim::run(&scenario).await;

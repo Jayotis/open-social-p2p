@@ -410,3 +410,13 @@ The report now also lists the three followers last to hold the video, with what 
 - **Half and half:** `6406df4` had 95% at 792 s, 132 followers sending copies to others and 1,578 requests refused as busy. Its four runs took 792 to 875 s to 95%, against 617 s in the half-and-half run with the same node code. The half-and-half run was a fast one, and whether half and half undoes the full list's slowdown is open.
 
 **What it shows.** Naming followers heard from lately first keeps latecomers from asking followers that have gone offline: with a third of the followers stopped, half the latecomers had the video within 21 s instead of 30, and none of their tries failed to connect. Where every follower is online, it names the same followers as before. Checking on every request whether the node asking was a follower slowed the swarm and made downloads fail, in a simulator that runs all the nodes on 12 threads. Without that check (`e786108`), the ranking came within the code before's variation. The check isn't needed: a node that isn't a follower is noted but never named. A flood of new nodes, 10,000 within 5 minutes, can fill the record; followers not in it yet are then named at random, as after a restart.
+
+## Trusted followers
+
+Added on 2026-10-31, before this run, as [ADR 0013](../decisions/0013-trusted-followers.md)'s validation. An owner can now trust some of their followers. Each `WhoHosts` reply then names at most 3 trusted followers among its 6, picked from those heard from lately, and the 6 are put in the usual order, so trusted followers aren't always among the first 3 a download uses. Of the 100 places kept for a file, up to 25 go to trusted followers. The run checks that this costs the swarm nothing it needs, in the case worst for it: the trusted followers are the slowest.
+
+**The run.** The home run, with the creator trusting the 100 followers that upload at 5 Mbit/s, a third of them. Before the post, each asks and the creator allows it (`--trust-mbps 5`). One run.
+
+**Pass marks.** The home run's three [marks](#pass-marks), and one more: followers that aren't trusted still send copies. The 200 at 10 and 20 Mbit/s send at least half of the copies followers send between them. In the fourth round's home runs above, they sent 78 to 84%.
+
+Recorded too, without a mark: the trusted followers' share of the copies, against 16 to 22% for the same followers then, and the latecomers' times.

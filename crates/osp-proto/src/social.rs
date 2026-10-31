@@ -22,6 +22,10 @@ pub const MAX_GET_OBJECTS: usize = 50;
 /// replies (outbox pages) may use the full frame size.
 pub const MAX_REQUEST_LEN: u32 = 64 * 1024;
 
+/// Longest note sent with a request to be a trusted follower, in
+/// characters (ADR 0013).
+pub const MAX_TRUST_NOTE_CHARS: usize = 200;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum SocialRequest {
@@ -63,6 +67,12 @@ pub enum SocialRequest {
     /// revoked a signing key, for copies signed by the new key in place of
     /// the ones it dropped (ADR 0010). IDs the node doesn't have are skipped.
     GetObjects { ids: Vec<ObjectId> },
+    /// "My owner asks to be one of your trusted followers" (ADR 0013), from
+    /// a follower. `profile` is its owner's signed profile, which must list
+    /// the sending node; `note` says who they are, in at most
+    /// [`MAX_TRUST_NOTE_CHARS`] characters. A valid request gets `Ok`
+    /// whatever becomes of it, so the asking node never learns the answer.
+    AskTrust { profile: SignedObject, note: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

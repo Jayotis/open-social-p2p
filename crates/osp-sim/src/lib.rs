@@ -110,6 +110,9 @@ pub struct Scenario {
     pub time_limit: Duration,
     /// How often to note the creator's upload so far.
     pub sample: Duration,
+    /// The creator trusts the followers with these upload speeds, in
+    /// megabits per second (ADR 0013): each asks, and it allows each.
+    pub trust_mbps: Vec<u64>,
     /// Free text kept with the report, such as the commit tested.
     pub label: String,
 }
@@ -168,6 +171,10 @@ pub struct Report {
     pub swarm: bool,
     pub prefetch_spread_secs: f64,
     pub download_sources: usize,
+    /// The upload speeds of the followers the creator trusted, and how many
+    /// it trusted (ADR 0013).
+    pub trust_mbps: Vec<u64>,
+    pub trusted: usize,
     pub time_limit_secs: u64,
     /// The video, and its media altogether (the video and its thumbnail).
     pub video_bytes: u64,
@@ -356,6 +363,9 @@ pub async fn run(s: &Scenario) -> Result<Report> {
     let lifted = SimSettings {
         new_followers_per_hour: (s.followers + s.latecomers)
             .max(SimSettings::default().new_followers_per_hour),
+        trust_requests_per_hour: s
+            .followers
+            .max(SimSettings::default().trust_requests_per_hour),
         network: s.creator_link(net.as_ref()),
         ..SimSettings::default()
     };
@@ -401,6 +411,10 @@ pub async fn run(s: &Scenario) -> Result<Report> {
 
     follow_all(&creator, &followers).await?;
     info!("every follower subscribed");
+    let trusted = trust_all(&creator, &followers, s).await?;
+    if trusted > 0 {
+        info!(trusted, "the creator trusted followers");
+    }
     if !strangers.is_empty() {
         follow_all(&followers[RESHARER], &strangers).await?;
         info!("every stranger subscribed to the resharer");
@@ -647,6 +661,8 @@ pub async fn run(s: &Scenario) -> Result<Report> {
         swarm: s.swarm,
         prefetch_spread_secs: s.prefetch_spread.as_secs_f64(),
         download_sources: s.download_sources,
+        trust_mbps: s.trust_mbps.clone(),
+        trusted,
         time_limit_secs: s.time_limit.as_secs(),
         video_bytes,
         media_bytes,
@@ -837,6 +853,14 @@ impl Report {
             self.creator_mbps,
             slashed(&self.follower_mbps),
         );
+        if !self.trust_mbps.is_empty() {
+            let _ = writeln!(
+                out,
+                "trusted: {} followers, those uploading at {} Mbit/s",
+                self.trusted,
+                slashed(&self.trust_mbps),
+            );
+        }
         if let Some(net) = &self.network {
             let n = &net.settings;
             let _ = writeln!(
@@ -1310,6 +1334,29 @@ async fn follow_all(followed: &Node, nodes: &[Node]) -> Result<()> {
         .await?;
     }
     wait_for_followers(followed, nodes.len()).await
+}
+
+/// Has each follower with an upload speed in `s.trust_mbps` ask `creator`
+/// to trust it, and the creator allow it (ADR 0013). Returns how many.
+async fn trust_all(creator: &Node, followers: &[Node], s: &Scenario) -> Result<usize> {
+    let mut trusted = 0;
+    for (i, node) in followers.iter().enumerate() {
+        if !s.trust_mbps.contains(&in_turn(&s.follower_mbps, i)) {
+            continue;
+        }
+        let ask = ClientRequest::AskTrust {
+            actor: creator.identity(),
+            note: String::new(),
+        };
+        call(node, ask).await?;
+        let allow = ClientRequest::AnswerTrust {
+            node: node.node_id(),
+            allow: true,
+        };
+        call(creator, allow).await?;
+        trusted += 1;
+    }
+    Ok(trusted)
 }
 
 /// Has each latecomer in turn follow the creator and fetch the video at
@@ -1822,6 +1869,7 @@ mod tests {
             latecomers_after: Duration::ZERO,
             time_limit: Duration::ZERO,
             sample: Duration::ZERO,
+            trust_mbps: Vec::new(),
             label: String::new(),
         };
         let net = SimNet::new(1);
@@ -1866,6 +1914,8 @@ mod tests {
             followed: false,
             follower: false,
             host: false,
+            trusted: false,
+            asks_trust: false,
             contacted: true,
             first_contact_secs_ago: 0,
             last_contact_secs_ago: 0,
@@ -1926,6 +1976,8 @@ mod tests {
             followed: false,
             follower: false,
             host: false,
+            trusted: false,
+            asks_trust: false,
             contacted: true,
             first_contact_secs_ago: 0,
             last_contact_secs_ago: 0,

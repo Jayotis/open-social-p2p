@@ -18,7 +18,10 @@ use osp_node::{Config, Home, Node, RelayChoice};
 use osp_proto::{
     EarlierKeys, EndpointId, ObjectId, PublicKey,
     framing::{read_frame, write_frame},
-    rpc::{ClientRequest, ClientResponse, DeviceInfo, Direction, FeedItem, PeerRecord, StatusInfo},
+    rpc::{
+        ClientRequest, ClientResponse, DeviceInfo, Direction, FeedItem, PeerRecord, Reached,
+        StatusInfo, TrustInfo,
+    },
 };
 use tokio::net::UnixStream;
 
@@ -148,6 +151,37 @@ enum Command {
     /// Check your recovery words, or take the identity key off an older node
     #[command(subcommand)]
     Keys(KeysCommand),
+    /// Trusted followers: answer requests, trust people you follow, or ask
+    #[command(subcommand)]
+    Trust(TrustCommand),
+}
+
+/// People are given by their name (ignoring case), or by the start of their
+/// identity or node ID.
+#[derive(Subcommand)]
+enum TrustCommand {
+    /// List the requests to be a trusted follower waiting for your answer
+    Requests,
+    /// Trust the follower whose request this is. Your node then names it to
+    /// your other followers as a host more often, so more of them can see
+    /// that this person follows you.
+    Allow { who: String },
+    /// Decline a request. The follower isn't told; its requests are ignored
+    /// for 30 days.
+    Decline { who: String },
+    /// Trust someone you follow, without a request: their nodes that follow you
+    Add { who: String },
+    /// Stop trusting someone, on every node they were trusted on
+    Remove { who: String },
+    /// List who you trust
+    List,
+    /// Ask someone you follow to trust you. You won't be told their answer.
+    Ask {
+        who: String,
+        /// Who you are, so they can tell, in up to 200 characters
+        #[arg(long, default_value = "")]
+        note: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -247,6 +281,58 @@ async fn main() -> Result<()> {
         Command::Unpair { device } => {
             let id = find_device(&home, &device).await?;
             ClientRequest::Unpair { device: id }
+        }
+        Command::Trust(TrustCommand::Requests) => {
+            let (requests, _) = trust_list(&home).await?;
+            if cli.json {
+                println!("{}", serde_json::to_string_pretty(&requests)?);
+            } else {
+                print_trust_requests(&requests);
+            }
+            return Ok(());
+        }
+        Command::Trust(TrustCommand::List) => {
+            let (_, trusted) = trust_list(&home).await?;
+            if cli.json {
+                println!("{}", serde_json::to_string_pretty(&trusted)?);
+            } else {
+                print_trusted(&trusted);
+            }
+            return Ok(());
+        }
+        Command::Trust(TrustCommand::Allow { who }) => ClientRequest::AnswerTrust {
+            node: find_request(&home, &who).await?,
+            allow: true,
+        },
+        Command::Trust(TrustCommand::Decline { who }) => ClientRequest::AnswerTrust {
+            node: find_request(&home, &who).await?,
+            allow: false,
+        },
+        Command::Trust(TrustCommand::Add { who }) => ClientRequest::TrustFollowed {
+            actor: find_followed(&home, &who).await?,
+        },
+        Command::Trust(TrustCommand::Remove { who }) => {
+            let (_, trusted) = trust_list(&home).await?;
+            let actors: Vec<PublicKey> = trusted
+                .iter()
+                .filter(|t| matches_person(&who, &t.name, &t.actor, Some(&t.node)))
+                .map(|t| t.actor)
+                .collect();
+            ClientRequest::Untrust {
+                actor: only_one(&who, actors, "trusted person", "osp trust list")?,
+            }
+        }
+        Command::Trust(TrustCommand::Ask { who, note }) => {
+            let ask = ClientRequest::AskTrust {
+                actor: find_followed(&home, &who).await?,
+                note,
+            };
+            let resp = send(&home, ask).await?;
+            if let (false, ClientResponse::Ok) = (cli.json, &resp) {
+                println!("Asked. Their node doesn't say whether they trust you.");
+                return Ok(());
+            }
+            return print(resp, cli.json);
         }
         Command::Service(ServiceCommand::Install) => return service::install(&home).await,
         Command::Service(ServiceCommand::Uninstall) => return service::uninstall(),
@@ -643,6 +729,66 @@ async fn find_device(home: &Path, query: &str) -> Result<EndpointId> {
     }
 }
 
+async fn trust_list(home: &Path) -> Result<(Vec<TrustInfo>, Vec<TrustInfo>)> {
+    match send(home, ClientRequest::TrustRequests).await? {
+        ClientResponse::Trust { requests, trusted } => Ok((requests, trusted)),
+        ClientResponse::Error { message } => bail!(message),
+        other => bail!("unexpected reply {other:?}"),
+    }
+}
+
+/// The node of a request waiting, by its person's name, or the start of
+/// their identity or the node's ID.
+async fn find_request(home: &Path, who: &str) -> Result<EndpointId> {
+    let (requests, _) = trust_list(home).await?;
+    let nodes = requests
+        .iter()
+        .filter(|r| matches_person(who, &r.name, &r.actor, Some(&r.node)))
+        .map(|r| r.node)
+        .collect();
+    only_one(who, nodes, "request", "osp trust requests")
+}
+
+/// Someone this node follows, by name or the start of their identity.
+async fn find_followed(home: &Path, who: &str) -> Result<PublicKey> {
+    let follows = match send(home, ClientRequest::Following).await? {
+        ClientResponse::Following { follows } => follows,
+        ClientResponse::Error { message } => bail!(message),
+        other => bail!("unexpected reply {other:?}"),
+    };
+    let actors = follows
+        .iter()
+        .filter(|f| matches_person(who, f.name.as_deref().unwrap_or(""), &f.actor, None))
+        .map(|f| f.actor)
+        .collect();
+    only_one(who, actors, "person you follow", "osp following")
+}
+
+/// Whether `who` is this name (ignoring case), or the start of this
+/// identity or node ID.
+fn matches_person(who: &str, name: &str, actor: &PublicKey, node: Option<&EndpointId>) -> bool {
+    let who = who.trim().to_lowercase();
+    !who.is_empty()
+        && (name.to_lowercase() == who
+            || actor.to_string().starts_with(&who)
+            || node.is_some_and(|n| n.to_string().starts_with(&who)))
+}
+
+/// The one thing found, once duplicates are dropped.
+fn only_one<T: PartialEq + Copy>(who: &str, found: Vec<T>, what: &str, see: &str) -> Result<T> {
+    let mut unique = Vec::new();
+    for one in found {
+        if !unique.contains(&one) {
+            unique.push(one);
+        }
+    }
+    match unique[..] {
+        [one] => Ok(one),
+        [] => bail!("no {what} matches {who:?} (see `{see}`)"),
+        _ => bail!("{who:?} matches several; give more of the ID (see `{see}`)"),
+    }
+}
+
 async fn send(home: &Path, req: ClientRequest) -> Result<ClientResponse> {
     let socket = Home::new(home).socket();
     let stream = UnixStream::connect(&socket).await.with_context(|| {
@@ -720,6 +866,11 @@ fn print(resp: ClientResponse, json: bool) -> Result<()> {
             }
         }
         ClientResponse::Peers { peers } => print_peers(&peers),
+        ClientResponse::Trust { requests, trusted } => {
+            print_trust_requests(&requests);
+            println!();
+            print_trusted(&trusted);
+        }
         ClientResponse::Paired { name, .. } => println!("Paired with {name}'s node."),
         ClientResponse::Blob { size: bytes } => println!("{}", size(bytes)),
         ClientResponse::Resume { received } => println!("{} received", size(received)),
@@ -793,6 +944,15 @@ fn print_status(s: &StatusInfo) {
             rtt
         );
     }
+    match s.trust_requests {
+        0 => {}
+        1 => {
+            println!("Trust:     a request to be a trusted follower waiting (`osp trust requests`)")
+        }
+        n => println!(
+            "Trust:     {n} requests to be a trusted follower waiting (`osp trust requests`)"
+        ),
+    }
     if s.problems.is_empty() {
         println!("Health:    no problems");
     }
@@ -819,6 +979,12 @@ fn print_peers(peers: &[PeerRecord]) {
         }
         if p.host {
             what.push("hosts media");
+        }
+        if p.trusted {
+            what.push("trusted");
+        }
+        if p.asks_trust {
+            what.push("asks to be trusted");
         }
         println!();
         println!(
@@ -887,6 +1053,79 @@ fn print_peers(peers: &[PeerRecord]) {
             );
         }
     }
+}
+
+fn print_trust_requests(requests: &[TrustInfo]) {
+    if requests.is_empty() {
+        println!("No requests to be a trusted follower are waiting.");
+        return;
+    }
+    println!("Requests to be a trusted follower, newest first. Each name and note is what");
+    println!("that person says: only following them yourself shows it's them.");
+    for r in requests {
+        println!();
+        println!("{}  node {}", shown(&r.name), r.node.fmt_short());
+        if !r.note.is_empty() {
+            println!("  says: {}", r.note);
+        }
+        println!("  asked {} ago", uptime(r.secs_ago));
+        if r.followed {
+            println!("  you follow them, so this identity is the one you added");
+        } else {
+            println!("  you don't follow them: to be sure it's them, get their follow code in");
+            println!("  person or another way you trust, follow them, then allow");
+        }
+        if r.trusted_elsewhere {
+            println!("  already trusted on another node");
+        }
+        println!("  {}", follower_line(r));
+    }
+    println!();
+    println!("Allowing one names it to your other followers as a host more often, so more");
+    println!("of them can see that this person follows you. `osp trust allow <name>` or");
+    println!("`osp trust decline <name>`; they aren't told either way.");
+}
+
+fn print_trusted(trusted: &[TrustInfo]) {
+    if trusted.is_empty() {
+        println!("You don't trust anyone yet. `osp trust add <name>` trusts someone you follow;");
+        println!("followers can also ask (`osp trust requests`).");
+        return;
+    }
+    println!("Trusted followers, most recently trusted first:");
+    for t in trusted {
+        println!();
+        let followed = if t.followed { ", you follow them" } else { "" };
+        println!(
+            "{}  node {}  trusted {} ago{followed}",
+            shown(&t.name),
+            t.node.fmt_short(),
+            uptime(t.secs_ago)
+        );
+        println!("  {}", follower_line(t));
+    }
+}
+
+fn shown(name: &str) -> &str {
+    if name.is_empty() { "(no name)" } else { name }
+}
+
+/// How long a node has followed, how it reached this one lately, and the
+/// copies it holds.
+fn follower_line(t: &TrustInfo) -> String {
+    let following = match t.follower_secs {
+        Some(secs) => format!("follows you for {}", uptime(secs)),
+        None => "no longer follows you".to_string(),
+    };
+    let reached = match t.reached {
+        Some(Reached::Direct) => "reached you directly lately",
+        Some(Reached::Relay) => "reached you through a relay lately",
+        None => "not heard from lately",
+    };
+    format!(
+        "{following}; {reached}; holds copies of {} of your files",
+        t.copies
+    )
 }
 
 fn percent(part: f64, whole: f64) -> String {
