@@ -1178,24 +1178,18 @@ impl Db {
         Ok(())
     }
 
-    /// Up to `n` followers, other than `except`, picked at random from those
-    /// that hold a copy of `blob` and still say they share.
-    pub fn swarm_sample(
-        &self,
-        blob: &BlobHash,
-        except: &EndpointId,
-        n: usize,
-    ) -> Result<Vec<EndpointAddr>> {
+    /// The followers, other than `except`, that hold a copy of `blob` and
+    /// still say they share, in random order.
+    pub fn swarm_members(&self, blob: &BlobHash, except: &EndpointId) -> Result<Vec<EndpointAddr>> {
         let conn = self.conn();
         let mut stmt = conn.prepare(
             "SELECT f.node_addr FROM swarm s JOIN followers f ON f.node = s.node
              WHERE s.blob = ?1 AND f.shares = 1 AND s.node != ?2
-             ORDER BY RANDOM() LIMIT ?3",
+             ORDER BY RANDOM()",
         )?;
-        let rows = stmt.query_map(
-            params![blob.to_string(), except.to_string(), n as i64],
-            |row| row.get::<_, String>(0),
-        )?;
+        let rows = stmt.query_map(params![blob.to_string(), except.to_string()], |row| {
+            row.get::<_, String>(0)
+        })?;
         rows.map(|r| Ok(serde_json::from_str(&r?)?)).collect()
     }
 
@@ -1579,7 +1573,7 @@ mod tests {
     }
 
     #[test]
-    fn the_swarm_is_sampled_from_followers_that_share_and_capped() {
+    fn the_swarm_lists_followers_that_share_in_random_order_and_is_capped() {
         let dir = tempfile::tempdir().unwrap();
         let db = Db::open(&dir.path().join("t.db")).unwrap();
         let blob = BlobHash::from_bytes([5; 32]);
@@ -1599,17 +1593,19 @@ mod tests {
         assert!(!db.follower_shares(&quiet.id).unwrap());
         assert!(!db.follower_shares(&gone.id).unwrap());
 
-        let sampled: Vec<EndpointId> = db
-            .swarm_sample(&blob, &sharing[0].id, 10)
-            .unwrap()
-            .into_iter()
-            .map(|a| a.id)
-            .collect();
-        assert_eq!(sampled.len(), 2, "{sampled:?}");
-        assert!(sampled.contains(&sharing[1].id) && sampled.contains(&sharing[2].id));
-        assert_eq!(db.swarm_sample(&blob, &quiet.id, 1).unwrap().len(), 1);
+        let members = |except: &EndpointId| -> Vec<EndpointId> {
+            let members = db.swarm_members(&blob, except).unwrap();
+            members.into_iter().map(|a| a.id).collect()
+        };
+        let listed = members(&sharing[0].id);
+        assert_eq!(listed.len(), 2, "{listed:?}");
+        assert!(listed.contains(&sharing[1].id) && listed.contains(&sharing[2].id));
+        assert_eq!(members(&quiet.id).len(), 3);
         let other = BlobHash::from_bytes([6; 32]);
-        assert!(db.swarm_sample(&other, &quiet.id, 10).unwrap().is_empty());
+        assert!(db.swarm_members(&other, &quiet.id).unwrap().is_empty());
+        // Not always in the same order, so the same ones aren't always named.
+        let first = members(&quiet.id)[0];
+        assert!((0..50).any(|_| members(&quiet.id)[0] != first));
 
         for _ in 0..MAX_SWARM_PER_BLOB + 5 {
             let addr = some_addr();

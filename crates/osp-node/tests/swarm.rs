@@ -8,19 +8,20 @@
 //! Requires ffmpeg.
 
 use std::{
-    net::SocketAddr,
+    net::{Ipv4Addr, SocketAddr},
     path::Path,
     time::{Duration, Instant},
 };
 
 use iroh::{
-    Endpoint, EndpointAddr, EndpointId, RelayMode, SecretKey,
+    Endpoint, EndpointAddr, EndpointId, RelayMode, RelayUrl, SecretKey, TransportAddr,
     address_lookup::MemoryLookup,
     endpoint::{Connection, presets},
     protocol::Router,
 };
 use iroh_blobs::{BlobsProtocol, Hash, store::mem::MemStore};
-use osp_node::{BlobClass, Config, Home, Node, SimSettings};
+use iroh_relay::server::{RelayConfig, Server, ServerConfig};
+use osp_node::{BlobClass, Config, Home, Node, RelayChoice, SimSettings};
 use osp_proto::{
     Attachment, BlobHash, SOCIAL_ALPN,
     framing::{read_frame, write_frame},
@@ -42,15 +43,30 @@ async fn start(root: &Path, name: &str, share_prefetched: bool) -> Node {
 }
 
 async fn start_spread(root: &Path, name: &str, share_prefetched: bool, spread: Duration) -> Node {
-    let home = root.join(name.to_lowercase());
     let mut config = Config::local_test(name);
     config.swarm.share_prefetched = share_prefetched;
-    Node::init(&home, &config).unwrap();
     let sim = SimSettings {
         prefetch_spread: spread,
         ..SimSettings::default()
     };
+    start_with(root, &config, sim).await
+}
+
+async fn start_with(root: &Path, config: &Config, sim: SimSettings) -> Node {
+    let home = root.join(config.name.to_lowercase());
+    Node::init(&home, config).unwrap();
     Node::spawn_sim(&home, sim).await.unwrap()
+}
+
+/// A plain-http relay on loopback. Keep the server; dropping it stops it.
+async fn local_relay() -> (Server, RelayUrl) {
+    let mut config = ServerConfig::default();
+    config.relay = Some(RelayConfig::new((Ipv4Addr::LOCALHOST, 0)));
+    let server = Server::spawn(config).await.unwrap();
+    let url = format!("http://{}", server.http_addr().unwrap())
+        .parse()
+        .unwrap();
+    (server, url)
 }
 
 /// Stops a node, changes whether it shares, and starts it again.
@@ -215,6 +231,16 @@ impl Peer {
     async fn hosting(&self, blob: BlobHash) -> SocialResponse {
         self.ask(&SocialRequest::Hosting { blob }).await
     }
+}
+
+/// The path `node` uses to reach `peer` now: "direct", "relay", or "" with
+/// no connection.
+async fn path_to(node: &Node, peer: &Node) -> String {
+    let ClientResponse::Status(status) = call(node, ClientRequest::Status).await else {
+        panic!("no status");
+    };
+    let info = status.peers.into_iter().find(|p| p.node == peer.node_id());
+    info.map(|p| p.path).unwrap_or_default()
 }
 
 /// What `node` measured about `other` (ADR 0011).
@@ -409,6 +435,104 @@ async fn a_follower_that_says_it_holds_a_copy_is_checked_once() {
     );
 
     alice.shutdown().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn followers_heard_from_lately_are_named_first() {
+    let dir = tempfile::tempdir().unwrap();
+    let lately = Duration::from_secs(2);
+    let sim = SimSettings {
+        heard_lately: lately,
+        ..SimSettings::default()
+    };
+    let alice = start_with(dir.path(), &Config::local_test("Alice"), sim).await;
+    let addr = alice.addr().await;
+    let photo = post_photo(&alice, dir.path(), false).await;
+    // More followers with a copy than one answer names.
+    let mut sharing = Vec::new();
+    for _ in 0..8 {
+        let media = MemStore::new();
+        let peer = Peer::follower_serving(&addr, &media).await;
+        peer.fetch(&addr, photo.blob, &media).await;
+        assert!(matches!(peer.hosting(photo.blob).await, SocialResponse::Ok));
+        sharing.push((peer, media));
+    }
+
+    // Once none has been heard from lately, one asks for something.
+    tokio::time::sleep(lately).await;
+    let live = &sharing[3].0;
+    let resp = live.ask(&SocialRequest::GetProfile).await;
+    assert!(matches!(resp, SocialResponse::Profile { .. }), "{resp:?}");
+    let follower = Peer::follower(&addr, false).await;
+    for _ in 0..5 {
+        let hosts = follower.who_hosts(photo.blob).await;
+        assert_eq!(hosts.len(), 7, "Alice's node and six followers: {hosts:?}");
+        assert_eq!(hosts[1], live.endpoint.id(), "{hosts:?}");
+    }
+
+    alice.shutdown().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn followers_reached_directly_are_named_before_those_through_a_relay() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_relay, url) = local_relay().await;
+    // Nodes that use the relay: their follow codes name only the relay.
+    let start_on_relay = async |name: &str, share_prefetched: bool, relay_only: bool| {
+        let mut config = Config::local_test(name);
+        config.network.relay = RelayChoice::Custom(vec![url.to_string()]);
+        if relay_only {
+            config.network.relay_only = true;
+            config.network.bind = None;
+        }
+        config.swarm.share_prefetched = share_prefetched;
+        let sim = SimSettings {
+            prefetch_spread: Duration::ZERO,
+            ..SimSettings::default()
+        };
+        start_with(dir.path(), &config, sim).await
+    };
+    let alice = start_on_relay("Alice", false, false).await;
+    let photo = post_photo(&alice, dir.path(), false).await;
+    // Peers made here don't use the relay: they're given her IP addresses.
+    let ClientResponse::Status(status) = call(&alice, ClientRequest::Status).await else {
+        panic!("no status");
+    };
+    let ips = status
+        .local_addrs
+        .iter()
+        .map(|a| TransportAddr::Ip(a.parse().unwrap()));
+    let addr = EndpointAddr::from_parts(alice.node_id(), ips);
+    // Bob's node reaches Alice's only through the relay; Carol's finds a
+    // direct path once they're connected.
+    let bob = start_on_relay("Bob", true, true).await;
+    let carol = start_on_relay("Carol", true, false).await;
+    for node in [&bob, &carol] {
+        follow(node, &alice).await;
+        prefetched(node, &photo.blob).await;
+    }
+    let follower = Peer::follower(&addr, false).await;
+    for node in [&bob, &carol] {
+        follower.wait_for_host(photo.blob, node.node_id()).await;
+    }
+    let started = Instant::now();
+    while path_to(&alice, &carol).await != "direct" {
+        assert!(started.elapsed() < PROMPTLY, "no direct path to Carol");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(path_to(&alice, &bob).await, "relay");
+    // Heard from since.
+    call(&carol, ClientRequest::Sync).await;
+
+    for _ in 0..10 {
+        let hosts = follower.who_hosts(photo.blob).await;
+        let place = |node: &Node| hosts.iter().position(|h| *h == node.node_id()).unwrap();
+        assert!(place(&carol) < place(&bob), "{hosts:?}");
+    }
+
+    for node in [alice, bob, carol] {
+        node.shutdown().await.unwrap();
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]

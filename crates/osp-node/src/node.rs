@@ -43,7 +43,7 @@ use crate::{
     media,
     network::{self, ConnTracker},
     relays::{self, Checked, RelayPolicy},
-    social::{self, PerHour, SocialProtocol},
+    social::{self, Heard, PerHour, SocialProtocol},
     store::{self, ContentStore, Sources},
     sync,
     uploads::{LiveUpload, UploadKey},
@@ -73,6 +73,9 @@ pub struct SimSettings {
     /// Most nodes a file is fetched from at once, each sending a part of
     /// it. The harness sets 1 to compare with fetching from one at a time.
     pub download_sources: usize,
+    /// A follower that sent a request within this long is named as a host
+    /// before those that didn't. Tests shorten it.
+    pub heard_lately: Duration,
     /// The node sends and receives through this simulated network instead
     /// of IP sockets (`simnet`). Its config should have relays disabled.
     #[cfg(feature = "sim")]
@@ -88,6 +91,7 @@ impl Default for SimSettings {
             tell_again_after: sync::TELL_AGAIN_AFTER,
             max_hold: sync::MAX_HOLD,
             download_sources: store::MAX_SOURCES,
+            heard_lately: social::HEARD_LATELY,
             #[cfg(feature = "sim")]
             network: None,
         }
@@ -147,6 +151,8 @@ pub(crate) struct Core {
     pub swarm_samples: PerHour,
     /// Followers whose copies were checked (`Hosting`) this hour.
     pub hosting_checks: PerHour,
+    /// When followers last sent us a request, and how.
+    pub heard: Heard,
     /// Followers are told we moved by one task at a time.
     pub tell_moved_lock: tokio::sync::Mutex<()>,
     pub started: Instant,
@@ -368,6 +374,7 @@ impl Node {
             subscribed: Mutex::new(HashMap::new()),
             swarm_samples: PerHour::default(),
             hosting_checks: PerHour::default(),
+            heard: Heard::default(),
             tell_moved_lock: tokio::sync::Mutex::new(()),
             started: Instant::now(),
             media_tools,
