@@ -13,7 +13,11 @@ use iroh::{
     endpoint::{Connection, presets},
     protocol::{AcceptError, ProtocolHandler, Router},
 };
-use iroh_blobs::{Hash, store::mem::MemStore};
+use iroh_blobs::{
+    Hash,
+    protocol::{ChunkRanges, ChunkRangesExt, GetRequest},
+    store::mem::MemStore,
+};
 use osp_node::{
     Config, Node, SimSettings,
     simnet::{self, Link, SimNet},
@@ -345,6 +349,28 @@ async fn a_node_with_no_upload_cap_measures_a_slow_upload() {
     let mbps = after.upload_measured_mbps.expect("measured");
     assert!((1.4..=2.1).contains(&mbps), "{mbps} Mbit/s");
     assert_eq!(after.transfer_places, 2);
+    node.shutdown().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_node_with_no_upload_cap_measures_ranges_with_gaps_by_what_it_sends() {
+    let dir = tempfile::tempdir().unwrap();
+    let net = SimNet::new(1);
+    let (node, photo, conn, _other) = serving_photo(dir.path(), &net, 1).await;
+    let ClientResponse::Feed { items } = call(&node, ClientRequest::Feed { limit: 1 }).await else {
+        panic!("no feed");
+    };
+    let size = items[0].attachments[0].attachment.size;
+    // The start and end of the photo, with the bytes between as a gap, as
+    // a node asks for what is left of a blob: 18 s or so at 1 Mbit/s.
+    let ranges = ChunkRanges::bytes(0..1_750_000) | ChunkRanges::bytes(size - 500_000..size);
+    let request = GetRequest::blob_ranges(photo, ranges);
+    let got = MemStore::new().remote().execute_get(conn, request);
+    got.complete().await.unwrap();
+
+    // About the line's speed. Counting the gap as sent read 2.6 Mbit/s.
+    let mbps = status(&node).await.upload_measured_mbps.expect("measured");
+    assert!((0.7..=1.1).contains(&mbps), "{mbps} Mbit/s");
     node.shutdown().await.unwrap();
 }
 
