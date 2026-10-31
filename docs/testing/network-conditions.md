@@ -296,3 +296,16 @@ The checks themselves cost the author's node at most one 16 KiB block per follow
 
 - **Expected:** close to the runs before the check, as the run with a list of 300 was: the followers' times, the creator's copies, the busy refusals and the number of followers sending copies to others within what the runs before the check showed in rounds 1 and 2, and no worse than the run before it in this round.
 - **Checks failed:** counted from the log, as before. A follower that fails one now tells the author's node once more and is checked again, so the log shows a follower failing both times twice, and one passing the second time once.
+
+**Results**, 2026-10-31, one round on the same machine; other programs took at most 4% of its CPUs.
+
+| Code | Followers: 50% / 95% / all | Creator's copies | Followers' requests refused as busy | Followers that sent copies to others | Latecomers: half / all | Checks failed |
+| --- | --- | --- | --- | --- | --- | --- |
+| `d76a178`, before the check | 587 / 699 / 823 s | 23.9 | 1,657 | 183 | 16.0 / 33.5 s | none made |
+| `f2cfa3a`, half and half | 478 / 617 / 662 s | 20.7 | 826 | 209 | 14.3 / 23.0 s | 2 |
+
+- **No worse than before the check, as expected, and in this pair better on every count.** 95% of the followers held the video 82 s sooner than in the run before it, and all of them 161 s sooner; the creator sent 20.7 copies, against 23.9; half as many requests were refused as busy; and 209 followers sent copies to others, against 183. Against all three runs before the check (rounds 1 to 3) too, it was the quickest to 95% and to all, the creator sent the fewest copies, and the fewest requests were refused as busy. One pair can't say how much of that is the change and how much the run; the run before it in this round was the slowest of the three.
+- **Two checks failed,** for two followers, a second apart, 7 minutes after posting: each piece took over 15 s. Each was due to tell the author's node once more 589 to 890 s after posting. The nodes ran until 817 s, after the latecomers, and neither failed again; the log records only failures, so whether each was named in the end isn't known.
+- No social request was refused as busy.
+
+**What it shows.** With half the list kept for the followers that have followed longest and half for those named last, the swarm spread the video as fast as before the check, or faster, while a crowd of new followers still can't push out the half that came first. Checking a follower's copy costs nothing measurable. A check fails now and then, at the busiest time, when a follower's piece takes over 15 s: five in round 1, none in round 2, two here.
