@@ -255,3 +255,20 @@ Added on 2026-10-31, before this run. A follower that shares tells the author's 
 - **Social requests refused as busy** don't rise much: a follower's `Hosting` request now waits for the check, keeping one of the author's node's 32 places for social requests a little longer.
 
 The checks themselves cost the author's node at most one 16 KiB block per follower, under 5 MB for 300, a tenth of one copy of the video.
+
+**Results**, 2026-10-31, one round on the same machine; other programs took at most 2% of its CPUs.
+
+| Code | Followers: 50% / 95% / all | Creator's copies | Followers' requests refused as busy | Followers that sent copies to others | Latecomers: half / all |
+| --- | --- | --- | --- | --- | --- |
+| `d76a178`, before | 524 / 666 / 755 s | 23.2 | 1,180 | 209 | 15.5 / 26.6 s |
+| `3aa2591`, the check | 671 / 813 / 922 s | 26.2 | 2,214 | 135 | 15.9 / 30.9 s |
+
+- **B8's marks were met in both,** and the check's times are within the [repeats](#repeats)' range (95% at 613 to 879 s). But it was 147 s slower to 95% than the run before it, its creator's 26.2 copies are just over the repeats' 26.1, and its 2,214 busy refusals are more than in any earlier home run (at most 2,076).
+- **No social request was refused as busy** in either run: waiting for the check didn't fill the author's node's places.
+- **Five followers failed the check,** so that mark was missed. The author's node couldn't connect to four of them within 10 s, and the fifth's piece took over 15 s. All five came 10 to 12 minutes after posting, while the creator was sending the most, three of them at the same moment. A follower told the author's node only once, so these five were never named.
+- **Fewer followers did the hosting.** 135 followers sent copies to others, against 209 before and 155 to 205 in the four home runs of [the last section](#places-to-suit-the-upload); one sent 17.4 copies, more than any follower in an earlier home run (at most 15.9). Every latecomer's hosts were among the first 145 followers to follow, where before they came from all over. The likely reason is the new rule for a full list, not the check. The list kept the 100 most recently named, so a follower that had just got the video, with its places free, was named at once; now the 100 that have followed longest stay. The harness has every follower follow at the start, one after another, so once 100 are named, a follower is named only in place of one that followed after it, and the list settles on the first to follow.
+
+**A second round, and a run with a larger list.** Added on 2026-10-31, during the second round's first run, before any of its results. One pair can differ by as much as runs vary ([repeats](#repeats)), so both runs are repeated in a second round, in the same order. Then the check once more with the list's limit raised from 100 to 300, in a build for that run only, so that with 300 followers the list never fills: that run shows what the check costs by itself.
+
+- If the gap holds in the second round and the run with the larger list comes out close to the runs before the change, the rule for a full list is what slows the spread, and needs another look.
+- If the run with the larger list is as slow as the check's, the check itself costs that time.
