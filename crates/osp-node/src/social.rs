@@ -263,10 +263,7 @@ impl Core {
                     blob.fmt_short()
                 );
                 // Noted before, it keeps its place and isn't checked again.
-                // Nor is a node checked that wouldn't be kept.
-                if !self.db.in_swarm(&blob, &remote)?
-                    && self.db.swarm_has_room_for(&blob, &remote)?
-                {
+                if !self.db.in_swarm(&blob, &remote)? {
                     ensure!(
                         self.hosting_checks
                             .allow(remote, MAX_HOSTING_CHECKS_PER_HOUR),
