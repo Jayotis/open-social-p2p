@@ -272,3 +272,22 @@ The checks themselves cost the author's node at most one 16 KiB block per follow
 
 - If the gap holds in the second round and the run with the larger list comes out close to the runs before the change, the rule for a full list is what slows the spread, and needs another look.
 - If the run with the larger list is as slow as the check's, the check itself costs that time.
+
+**Results**, 2026-10-31, in the planned order; other programs took at most 4% of the machine's CPUs. Round 1 is repeated from above.
+
+| Round | Code | Followers: 50% / 95% / all | Creator's copies | Followers' requests refused as busy | Followers that sent copies to others | Latecomers: half / all | Checks failed |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | `d76a178`, before | 524 / 666 / 755 s | 23.2 | 1,180 | 209 | 15.5 / 26.6 s | none made |
+| 1 | `3aa2591`, the check | 671 / 813 / 922 s | 26.2 | 2,214 | 135 | 15.9 / 30.9 s | 5 |
+| 2 | `d76a178`, before | 527 / 667 / 737 s | 22.9 | 1,213 | 195 | 16.0 / 30.5 s | none made |
+| 2 | `3aa2591`, the check | 627 / 740 / 874 s | 26.0 | 2,189 | 130 | 13.7 / 26.4 s | 0 |
+| — | `3aa2591`, the check, with a list of 300 | 526 / 622 / 1,020 s | 22.5 | 1,125 | 172 | 15.2 / 30.5 s | 0 |
+
+- **The gap held.** With the check and a list of 100, 95% of the followers held the video 73 s later than in the run before it in round 2, and 147 s later in round 1; all of them, 137 and 167 s later. The creator sent 26.0 and 26.2 copies, against 22.9 and 23.2; busy refusals nearly doubled; and 130 and 135 followers sent copies to others, against 195 and 209. The two runs before the change came out close to each other, and so did the two with it.
+- **With a list that never fills, the check cost nothing measurable.** Half the followers held the video at 526 s and 95% at 622 s, as soon as or sooner than in either run before the change; the creator sent 22.5 copies, and 1,125 requests were refused as busy. The rule for a full list slowed the spread, not the check.
+- **One follower came last, alone,** at 1,020 s, four minutes after the one before it. It failed no check, and the logs, which leave out busy refusals and the tries after them, don't say why; most likely its download was refused as busy and tried again later. Every follower still had the video within 30 minutes.
+- **No check failed in round 2** or in the run with a list of 300, so the five failures of round 1 didn't recur. No social request was refused as busy in any run.
+
+**What it shows.** Checking a follower's copy before naming it costs nothing measurable on home connections. Keeping the followers that have followed longest once 100 are named does: those first named go on being named while followers that got the video later, with their places free, never are, so fewer followers do the hosting, and more requests are refused as busy.
+
+**Told once more.** Added on 2026-10-31. A follower that couldn't tell the author's node, or a hosting resharer's, that it holds a copy, because the node refused, as when the check failed, or couldn't be reached, now tells it once more after 2½ to 7½ minutes (`525e6ea`). None of the runs above have it.
