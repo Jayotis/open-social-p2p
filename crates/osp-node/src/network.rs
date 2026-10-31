@@ -104,6 +104,14 @@ impl ConnTracker {
     }
 }
 
+/// Whether a connection's data goes straight to the other node now, not
+/// through a relay.
+pub(crate) fn is_direct(conn: &Connection) -> bool {
+    conn.paths()
+        .iter()
+        .any(|p| p.is_selected() && !p.is_relay())
+}
+
 fn selected_path(conn: &Connection) -> (String, Option<u64>) {
     let paths = conn.paths();
     let selected = paths.iter().find(|p| p.is_selected());

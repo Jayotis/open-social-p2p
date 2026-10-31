@@ -27,6 +27,7 @@ use tracing::{debug, info};
 
 use crate::{
     db::now_ms,
+    network,
     node::{Core, check_addr, remember},
     peers::{self, Event},
 };
@@ -61,6 +62,10 @@ pub(crate) const FOLLOWER_SILENCE: Duration = Duration::from_secs(30 * 24 * 60 *
 /// Followers holding a copy that one `WhoHosts` reply names, at most. A
 /// small sample: it says who follows us (doc 13).
 const SWARM_SAMPLE: usize = 6;
+/// A follower that sent us a request within this long is named as a host
+/// before those that didn't, as likely still online. A node asks the nodes
+/// it follows for new posts every minute by default.
+pub(crate) const HEARD_LATELY: Duration = Duration::from_secs(5 * 60);
 /// Samples one follower gets per hour. More asks get only the hosts anyone
 /// may know: this node, and resharers that host.
 const MAX_SWARM_SAMPLES_PER_HOUR: u32 = 60;
@@ -113,6 +118,7 @@ impl ProtocolHandler for SocialProtocol {
                 tell_busy(send).await;
                 continue;
             };
+            let direct = network::is_direct(&conn);
             let core = self.core.clone();
             tokio::spawn(async move {
                 let served =
@@ -122,6 +128,8 @@ impl ProtocolHandler for SocialProtocol {
                 if let Err(e) = served {
                     debug!(remote = %remote.fmt_short(), "social request failed: {e:#}");
                 }
+                // After it, so a node that just subscribed counts.
+                core.note_heard(remote, direct);
                 drop((overall, here));
             });
         }
@@ -242,7 +250,11 @@ impl Core {
                     && self.db.is_follower(&remote)?
                     && self.swarm_samples.allow(remote, MAX_SWARM_SAMPLES_PER_HOUR)
                 {
-                    nodes.extend(self.db.swarm_sample(&blob, &remote, SWARM_SAMPLE)?);
+                    let mut members = self.db.swarm_members(&blob, &remote)?;
+                    self.heard
+                        .rank(&mut members, Instant::now(), self.sim.heard_lately);
+                    members.truncate(SWARM_SAMPLE);
+                    nodes.extend(members);
                 }
                 for addr in self.db.hosts(&blob)? {
                     let known = nodes.iter().any(|a| a.id == addr.id);
@@ -428,6 +440,16 @@ impl Core {
         self.db.add_follower(addr, shares)
     }
 
+    /// Notes that `remote` sent us a request, if it's a follower, for
+    /// ranking the followers named as hosts.
+    fn note_heard(&self, remote: EndpointId, direct: bool) {
+        match self.db.is_follower(&remote) {
+            Ok(true) => self.heard.note(remote, direct, Instant::now()),
+            Ok(false) => {}
+            Err(e) => debug!(remote = %remote.fmt_short(), "couldn't look up a follower: {e:#}"),
+        }
+    }
+
     /// Sends one request to another node, reusing an open connection when
     /// we have one, and records how the node did (ADR 0011). An error reply
     /// still counts as an answer: the node is up and responding.
@@ -551,6 +573,59 @@ impl PerHour {
     }
 }
 
+/// When each follower last sent us a request, and whether it came straight
+/// from its node or through a relay, so the followers named as hosts are
+/// those most likely to serve well (doc 13). Kept in memory only: after a
+/// restart, followers are named at random until they're heard from again.
+#[derive(Default)]
+pub(crate) struct Heard(Mutex<HashMap<EndpointId, (Instant, bool)>>);
+
+/// How a follower was last heard from, best first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Contact {
+    /// Lately, straight from its node.
+    Direct,
+    /// Lately, through a relay: what it sends is slower, and costs the relay.
+    Relayed,
+    /// Not lately, or not since this node started.
+    NotLately,
+}
+
+impl Heard {
+    /// Notes a request from `node` at `now`, `direct` or not.
+    fn note(&self, node: EndpointId, direct: bool, now: Instant) {
+        let mut heard = self.lock();
+        // Followers that stopped following are never noted again; this
+        // forgets them.
+        if heard.len() >= MAX_FOLLOWERS && !heard.contains_key(&node) {
+            heard.retain(|_, (at, _)| now.duration_since(*at) < HEARD_LATELY);
+        }
+        if heard.len() < MAX_FOLLOWERS || heard.contains_key(&node) {
+            heard.insert(node, (now, direct));
+        }
+    }
+
+    /// Orders followers by how they were last heard from, within `lately`
+    /// of `now`, best first, keeping the order they came in within each.
+    fn rank(&self, followers: &mut [EndpointAddr], now: Instant, lately: Duration) {
+        let heard = self.lock();
+        followers.sort_by_key(|addr| match heard.get(&addr.id) {
+            Some((at, direct)) if now.duration_since(*at) < lately => {
+                if *direct {
+                    Contact::Direct
+                } else {
+                    Contact::Relayed
+                }
+            }
+            _ => Contact::NotLately,
+        });
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<EndpointId, (Instant, bool)>> {
+        self.0.lock().unwrap_or_else(|e| e.into_inner())
+    }
+}
+
 /// A profile's date in Unix milliseconds, if it has one and it isn't
 /// further ahead of our clock than `MAX_DATED_AHEAD`.
 pub(crate) fn profile_date(person: &Person) -> Result<i64> {
@@ -578,4 +653,61 @@ async fn request_on(conn: &Connection, req: &SocialRequest) -> Result<SocialResp
     tokio::time::timeout(REQUEST_TIMEOUT, read_frame(&mut recv))
         .await
         .context("no reply in time")?
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn some_addr() -> EndpointAddr {
+        EndpointAddr::new(iroh::SecretKey::generate().public())
+    }
+
+    #[test]
+    fn followers_heard_from_lately_come_first_directly_before_through_a_relay() {
+        let heard = Heard::default();
+        let [quiet, relayed, direct, earlier, unknown] = [(); 5].map(|_| some_addr());
+        let start = Instant::now();
+        heard.note(earlier.id, true, start);
+        let later = start + HEARD_LATELY;
+        heard.note(relayed.id, false, later);
+        heard.note(direct.id, true, later);
+        // Heard directly once, now only through a relay.
+        heard.note(quiet.id, true, later);
+        heard.note(quiet.id, false, later);
+
+        let mut followers = [&unknown, &earlier, &quiet, &relayed, &direct].map(|a| a.clone());
+        heard.rank(&mut followers, later + Duration::from_secs(1), HEARD_LATELY);
+        let ids = followers.map(|a| a.id);
+        // In the order they came within each.
+        assert_eq!(
+            ids,
+            [direct.id, quiet.id, relayed.id, unknown.id, earlier.id]
+        );
+    }
+
+    #[test]
+    fn a_full_record_forgets_followers_not_heard_from_lately() {
+        let heard = Heard::default();
+        let start = Instant::now();
+        let old = some_addr();
+        heard.note(old.id, true, start);
+        for _ in 1..MAX_FOLLOWERS {
+            heard.note(some_addr().id, true, start + HEARD_LATELY);
+        }
+        assert_eq!(heard.lock().len(), MAX_FOLLOWERS);
+        // Full: one more makes room by forgetting the old one.
+        let new = some_addr();
+        heard.note(new.id, true, start + HEARD_LATELY);
+        assert!(heard.lock().contains_key(&new.id));
+        assert!(!heard.lock().contains_key(&old.id));
+        // Full of followers heard from lately: no room, so a new one isn't
+        // noted, but one already noted still is.
+        let noted = *heard.lock().keys().next().unwrap();
+        let soon = start + HEARD_LATELY + Duration::from_secs(1);
+        heard.note(some_addr().id, false, soon);
+        heard.note(noted, false, soon);
+        assert_eq!(heard.lock().len(), MAX_FOLLOWERS);
+        assert_eq!(heard.lock()[&noted], (soon, false));
+    }
 }
