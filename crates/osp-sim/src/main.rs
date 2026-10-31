@@ -103,6 +103,10 @@ struct Cli {
     /// download from the swarm is.
     #[arg(long, default_value_t = 0)]
     latecomers: usize,
+    /// The first latecomer follows no sooner than this many seconds after
+    /// posting, so followers that stopped have been gone a while.
+    #[arg(long, default_value_t = 0, requires = "latecomers")]
+    latecomers_after_secs: u64,
     /// End this many minutes after posting, if not every follower and
     /// stranger holds the video by then.
     #[arg(long, default_value_t = 60)]
@@ -164,6 +168,7 @@ async fn main() -> Result<()> {
         drop_out_after: Duration::from_secs(cli.drop_out_secs),
         strangers: cli.strangers,
         latecomers: cli.latecomers,
+        latecomers_after: Duration::from_secs(cli.latecomers_after_secs),
         time_limit: Duration::from_secs(cli.minutes * 60),
         sample: Duration::from_secs(60),
         label: cli.label,
