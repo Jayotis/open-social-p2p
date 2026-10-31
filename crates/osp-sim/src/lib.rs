@@ -21,7 +21,7 @@ use n0_future::{BufferedStreamExt, StreamExt, join_all, stream};
 use osp_node::{
     Config, Node, SimSettings,
     config::SyncConfig,
-    simnet::{Link, NetStats, SimLink, SimNet},
+    simnet::{Link, NetStats, SimLink, SimNet, TorDelay},
 };
 use osp_proto::{
     BlobHash, EndpointId, ObjectId,
@@ -113,6 +113,9 @@ pub struct Scenario {
     /// The creator trusts the followers with these upload speeds, in
     /// megabits per second (ADR 0013): each asks, and it allows each.
     pub trust_mbps: Vec<u64>,
+    /// Social requests between nodes are delayed as if they went over Tor
+    /// (`osp_node::simnet::TorDelay`'s defaults); media isn't.
+    pub tor_delay: bool,
     /// Free text kept with the report, such as the commit tested.
     pub label: String,
 }
@@ -175,6 +178,7 @@ pub struct Report {
     /// it trusted (ADR 0013).
     pub trust_mbps: Vec<u64>,
     pub trusted: usize,
+    pub tor_delay: bool,
     pub time_limit_secs: u64,
     /// The video, and its media altogether (the video and its thumbnail).
     pub video_bytes: u64,
@@ -367,6 +371,7 @@ pub async fn run(s: &Scenario) -> Result<Report> {
             .followers
             .max(SimSettings::default().trust_requests_per_hour),
         network: s.creator_link(net.as_ref()),
+        tor_delay: s.tor_delay(),
         ..SimSettings::default()
     };
     let creator = start(
@@ -384,6 +389,7 @@ pub async fn run(s: &Scenario) -> Result<Report> {
         new_followers_per_hour: s
             .strangers
             .max(SimSettings::default().new_followers_per_hour),
+        tor_delay: s.tor_delay(),
         ..SimSettings::default()
     };
     let followers = start_all(s, net.as_ref(), "f", "F", s.followers, &spread).await?;
@@ -391,6 +397,7 @@ pub async fn run(s: &Scenario) -> Result<Report> {
     let at_once = SimSettings {
         prefetch_spread: Duration::ZERO,
         download_sources: s.download_sources,
+        tor_delay: s.tor_delay(),
         ..SimSettings::default()
     };
     let latecomers = start_all(s, net.as_ref(), "l", "L", s.latecomers, &at_once).await?;
@@ -663,6 +670,7 @@ pub async fn run(s: &Scenario) -> Result<Report> {
         download_sources: s.download_sources,
         trust_mbps: s.trust_mbps.clone(),
         trusted,
+        tor_delay: s.tor_delay,
         time_limit_secs: s.time_limit.as_secs(),
         video_bytes,
         media_bytes,
@@ -705,6 +713,10 @@ pub async fn run(s: &Scenario) -> Result<Report> {
 }
 
 impl Scenario {
+    fn tor_delay(&self) -> Option<TorDelay> {
+        self.tor_delay.then(TorDelay::default)
+    }
+
     /// The creator's place on the simulated network, if the run has one.
     fn creator_link(&self, net: Option<&SimNet>) -> Option<SimLink> {
         let n = self.network.as_ref()?;
@@ -859,6 +871,18 @@ impl Report {
                 "trusted: {} followers, those uploading at {} Mbit/s",
                 self.trusted,
                 slashed(&self.trust_mbps),
+            );
+        }
+        if self.tor_delay {
+            let tor = TorDelay::default();
+            let _ = writeln!(
+                out,
+                "Tor-like delay on social requests: first connection {}-{} s, round trips {:.1}-{:.1} s per pair (1 in 10 2-4 times that, 1 in 50 4-8 times), replies {} kB/s; media not delayed",
+                tor.first_connect.0.as_secs(),
+                tor.first_connect.1.as_secs(),
+                tor.round_trip.0.as_secs_f64(),
+                tor.round_trip.1.as_secs_f64(),
+                tor.bytes_per_sec / 1000,
             );
         }
         if let Some(net) = &self.network {
@@ -1870,6 +1894,7 @@ mod tests {
             time_limit: Duration::ZERO,
             sample: Duration::ZERO,
             trust_mbps: Vec::new(),
+            tor_delay: false,
             label: String::new(),
         };
         let net = SimNet::new(1);

@@ -108,6 +108,11 @@ impl fmt::Debug for SocialProtocol {
 impl ProtocolHandler for SocialProtocol {
     async fn accept(&self, conn: Connection) -> Result<(), AcceptError> {
         let remote = conn.remote_id();
+        // Over Tor, replying sets up our circuits to the remote first.
+        #[cfg(feature = "sim")]
+        if self.core.sim.tor_delay.is_some() {
+            self.core.lock_tor_ready().insert(remote, Instant::now());
+        }
         let on_this_conn = Arc::new(Semaphore::new(MAX_REQUESTS_PER_CONN));
         // Each request arrives on its own stream; serve them concurrently,
         // within the limits.
@@ -488,6 +493,8 @@ impl Core {
         };
         let started = Instant::now();
         if let Ok(resp) = request_on(&conn, req).await {
+            #[cfg(feature = "sim")]
+            self.tor_request_delay(&addr.id, &resp).await;
             return (true, Ok((resp, started.elapsed())));
         }
         // The cached connection may have died quietly; try once on a fresh one.
@@ -498,6 +505,10 @@ impl Core {
         };
         let started = Instant::now();
         let result = request_on(&conn, req).await;
+        #[cfg(feature = "sim")]
+        if let Ok(resp) = &result {
+            self.tor_request_delay(&addr.id, resp).await;
+        }
         (true, result.map(|resp| (resp, started.elapsed())))
     }
 
@@ -508,13 +519,15 @@ impl Core {
         let refused = self.relays.refused_relays(addr);
         let addr = &self.relays.filter(addr);
         remember(&self.lookup, addr);
-        let conn = tokio::time::timeout(
-            CONNECT_TIMEOUT,
-            self.endpoint.connect(addr.clone(), SOCIAL_ALPN),
-        )
-        .await
-        .with_context(|| format!("connecting to {} timed out", addr.id.fmt_short()))
-        .and_then(|r| r.with_context(|| format!("connecting to {}", addr.id.fmt_short())));
+        let connect = async {
+            #[cfg(feature = "sim")]
+            self.tor_connect_delay(&addr.id).await;
+            self.endpoint.connect(addr.clone(), SOCIAL_ALPN).await
+        };
+        let conn = tokio::time::timeout(CONNECT_TIMEOUT, connect)
+            .await
+            .with_context(|| format!("connecting to {} timed out", addr.id.fmt_short()))
+            .and_then(|r| r.with_context(|| format!("connecting to {}", addr.id.fmt_short())));
         let conn = match conn {
             Ok(conn) => conn,
             Err(e) if !refused.is_empty() => {
@@ -554,6 +567,39 @@ impl Core {
         &self,
     ) -> std::sync::MutexGuard<'_, std::collections::HashMap<EndpointId, Connection>> {
         self.conns.lock().unwrap_or_else(|e| e.into_inner())
+    }
+}
+
+/// The harness's Tor-like delays (`SimSettings::tor_delay`).
+#[cfg(feature = "sim")]
+impl Core {
+    /// Waits as connecting to `node` over Tor would: for the circuits to it
+    /// if they aren't ready, then one round trip. Circuits are set up in
+    /// the background, so a connection given up on still readies them.
+    async fn tor_connect_delay(&self, node: &EndpointId) {
+        let Some(tor) = &self.sim.tor_delay else {
+            return;
+        };
+        let now = Instant::now();
+        let ready = *self
+            .lock_tor_ready()
+            .entry(*node)
+            .or_insert_with(|| now + tor.first_connect());
+        tokio::time::sleep(ready.saturating_duration_since(now)).await;
+        tokio::time::sleep(tor.round_trip(&self.endpoint.id(), node)).await;
+    }
+
+    /// Waits as a request to `node` with reply `resp` would take over Tor,
+    /// beyond what it took.
+    async fn tor_request_delay(&self, node: &EndpointId, resp: &SocialResponse) {
+        if let Some(tor) = &self.sim.tor_delay {
+            let bytes = serde_json::to_vec(resp).map_or(0, |v| v.len());
+            tokio::time::sleep(tor.request(&self.endpoint.id(), node, bytes)).await;
+        }
+    }
+
+    pub(crate) fn lock_tor_ready(&self) -> std::sync::MutexGuard<'_, HashMap<EndpointId, Instant>> {
+        self.tor_ready.lock().unwrap_or_else(|e| e.into_inner())
     }
 }
 

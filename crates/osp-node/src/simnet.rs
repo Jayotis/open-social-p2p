@@ -283,6 +283,74 @@ impl SimLink {
     }
 }
 
+/// Delays like those of Tor's onion services, added to social requests
+/// only (M4): to see how messages between nodes cope once they go over
+/// Tor. Media isn't delayed, as it won't go over Tor. Works with or
+/// without the simulated network. The defaults come from a test between
+/// two home machines over Tor, on 2026-10-31.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TorDelay {
+    /// A first connection to a node waits a while drawn evenly between
+    /// these: both onion services' circuits being set up, one each way.
+    /// Later connections reuse those circuits and wait one round trip.
+    pub first_connect: (Duration, Duration),
+    /// Each pair of nodes has a usual round trip, drawn evenly between
+    /// these: some circuits are slower than others.
+    pub round_trip: (Duration, Duration),
+    /// How fast a reply's bytes arrive, after the round trip.
+    pub bytes_per_sec: u64,
+}
+
+impl Default for TorDelay {
+    fn default() -> Self {
+        Self {
+            first_connect: (Duration::from_secs(10), Duration::from_secs(25)),
+            round_trip: (Duration::from_millis(700), Duration::from_millis(2500)),
+            bytes_per_sec: 80_000,
+        }
+    }
+}
+
+impl TorDelay {
+    /// How long a first connection takes.
+    pub(crate) fn first_connect(&self) -> Duration {
+        between(self.first_connect, crate::sync::random_fraction())
+    }
+
+    /// How long one request between nodes `a` and `b` takes, with a reply
+    /// of `bytes`. Most round trips are near the pair's usual one; one in
+    /// ten takes 2 to 4 times as long, and one in fifty 4 to 8 times, as
+    /// the test saw.
+    pub(crate) fn request(&self, a: &EndpointId, b: &EndpointId, bytes: usize) -> Duration {
+        let r = crate::sync::random_fraction();
+        let times = match r {
+            ..0.02 => 4.0 + 4.0 * crate::sync::random_fraction(),
+            ..0.12 => 2.0 + 2.0 * crate::sync::random_fraction(),
+            _ => 0.8 + 0.4 * crate::sync::random_fraction(),
+        };
+        self.round_trip(a, b).mul_f64(times)
+            + Duration::from_secs_f64(bytes as f64 / self.bytes_per_sec as f64)
+    }
+
+    /// The usual round trip between `a` and `b`, the same both ways.
+    pub(crate) fn round_trip(&self, a: &EndpointId, b: &EndpointId) -> Duration {
+        let (lo, hi) = if a < b { (a, b) } else { (b, a) };
+        let mut pair = blake3::Hasher::new();
+        pair.update(lo.as_bytes());
+        pair.update(hi.as_bytes());
+        let bytes: [u8; 8] = pair.finalize().as_bytes()[..8].try_into().expect("8 bytes");
+        between(
+            self.round_trip,
+            u64::from_le_bytes(bytes) as f64 / u64::MAX as f64,
+        )
+    }
+}
+
+/// The point `fraction` of the way from `range.0` to `range.1`.
+fn between(range: (Duration, Duration), fraction: f64) -> Duration {
+    range.0 + (range.1.saturating_sub(range.0)).mul_f64(fraction)
+}
+
 #[derive(Debug)]
 struct Lookup {
     net: Arc<Net>,
@@ -667,6 +735,25 @@ mod tests {
         assert_eq!(&a.rx.recv().await.unwrap().data[..], b"back");
         let stats = net.stats();
         assert_eq!((stats.packets, stats.delivered), (4, 2));
+    }
+
+    #[test]
+    fn tor_delays_stay_in_their_ranges() {
+        let tor = TorDelay::default();
+        let a = iroh::SecretKey::generate().public();
+        let b = iroh::SecretKey::generate().public();
+        let usual = tor.round_trip(&a, &b);
+        assert_eq!(usual, tor.round_trip(&b, &a), "the same both ways");
+        assert!((tor.round_trip.0..=tor.round_trip.1).contains(&usual));
+        for _ in 0..1_000 {
+            let first = tor.first_connect();
+            assert!((tor.first_connect.0..=tor.first_connect.1).contains(&first));
+            let took = tor.request(&a, &b, 0);
+            assert!(took >= usual.mul_f64(0.8) && took <= usual * 8, "{took:?}");
+        }
+        // A reply's bytes add their time.
+        let bytes = tor.bytes_per_sec as usize;
+        assert!(tor.request(&a, &b, bytes) >= usual.mul_f64(0.8) + Duration::from_secs(1));
     }
 
     #[test]
