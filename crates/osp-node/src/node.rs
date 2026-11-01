@@ -27,7 +27,7 @@ use tracing::{info, warn};
 
 /// Most streams a peer may have open on one connection at a time. A phone
 /// loading a feed full of images uses the most; extra streams wait their turn.
-const MAX_STREAMS_PER_CONN: u32 = 32;
+pub(crate) const MAX_STREAMS_PER_CONN: u32 = 32;
 
 /// Most relays and IP addresses accepted in one node address (see `check_addr`).
 const MAX_ADDRS: usize = 16;
@@ -45,7 +45,9 @@ use crate::{
     relays::{self, Checked, RelayPolicy},
     social::{self, Heard, PerHour, SocialProtocol},
     store::{self, ContentStore, Sources},
-    sync, trust,
+    sync,
+    tor::TorSide,
+    trust,
     uploads::{LiveUpload, UploadKey},
 };
 
@@ -111,6 +113,8 @@ impl Default for SimSettings {
 pub struct Node {
     core: Arc<Core>,
     router: Router,
+    /// Other nodes' requests over Tor, when it's on.
+    tor_router: Option<Router>,
     tasks: Vec<JoinHandle<()>>,
     serving_socket: bool,
     /// Locked for as long as the node runs; the lock goes when the file closes.
@@ -174,6 +178,8 @@ pub(crate) struct Core {
     /// Only one transcode runs at a time, so many posts at once can't start
     /// many ffmpegs. Posts waiting for it take their turn in order.
     pub transcode_lock: tokio::sync::Mutex<()>,
+    /// The node's Tor and its endpoint there, when it's on (ADR 0014).
+    pub tor: Option<TorSide>,
     pub sim: SimSettings,
     /// With `SimSettings::tor_delay`: when the Tor-like circuits to each
     /// node are, or will be, ready.
@@ -331,6 +337,10 @@ impl Node {
         let lookup = MemoryLookup::new();
         let relays = RelayPolicy::from_config(&config.network)?;
         let tracker = ConnTracker::new(relays.clone());
+        let tor = match config.tor.enabled {
+            true => Some(TorSide::start(&home, &config.tor, node_key.clone()).await?),
+            false => None,
+        };
         let endpoint =
             bind_endpoint(&config, node_key, &lookup, &relays, tracker.clone(), &sim).await?;
         for follow in db.follows()? {
@@ -394,6 +404,7 @@ impl Node {
             heic_tool,
             media_posts: Semaphore::new(control::MAX_MEDIA_POSTS),
             transcode_lock: tokio::sync::Mutex::new(()),
+            tor,
             sim,
             #[cfg(feature = "sim")]
             tor_ready: Mutex::new(HashMap::new()),
@@ -403,11 +414,19 @@ impl Node {
         let (blobs, serving_rules) = core
             .store
             .protocol(&core.config.serving, &core.config.swarm);
+        let social = SocialProtocol::new(core.clone());
+        let social_over_tor = social.over_tor();
         let router = Router::builder(endpoint)
             .accept(iroh_blobs::ALPN, blobs)
-            .accept(osp_proto::SOCIAL_ALPN, SocialProtocol::new(core.clone()))
+            .accept(osp_proto::SOCIAL_ALPN, social)
             .accept(osp_proto::CLIENT_ALPN, ClientProtocol::new(core.clone()))
             .spawn();
+        // Only other nodes come over Tor: phones can't run it.
+        let tor_router = core.tor.as_ref().map(|tor| {
+            Router::builder(tor.endpoint.clone())
+                .accept(osp_proto::SOCIAL_ALPN, social_over_tor)
+                .spawn()
+        });
         let sync_loop = tokio::spawn(sync::run_loop(core.clone()));
         let later = tokio::spawn(sync::later_loop(core.clone(), later));
         let tell_moved = tokio::spawn(control::tell_moved_loop(core.clone()));
@@ -433,6 +452,7 @@ impl Node {
         Ok(Self {
             core,
             router,
+            tor_router,
             tasks,
             serving_socket: false,
             _lock: lock,
@@ -509,6 +529,12 @@ impl Node {
             .shutdown()
             .await
             .context("shutting down protocols")?;
+        if let Some(router) = self.tor_router {
+            router
+                .shutdown()
+                .await
+                .context("shutting down protocols over Tor")?;
+        }
         if self.serving_socket {
             let _ = std::fs::remove_file(self.core.home.socket());
         }

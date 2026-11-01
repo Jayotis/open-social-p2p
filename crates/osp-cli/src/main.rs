@@ -154,6 +154,16 @@ enum Command {
     /// Trusted followers: answer requests, trust people you follow, or ask
     #[command(subcommand)]
     Trust(TrustCommand),
+    /// Check messages between nodes over Tor, being built (ADR 0014)
+    #[command(subcommand)]
+    Tor(TorCommand),
+}
+
+#[derive(Subcommand)]
+enum TorCommand {
+    /// Reach a node over Tor by its node ID, and ask for its profile. Needs
+    /// `enabled = true` under [tor] in config.toml, on both nodes.
+    Ping { node: EndpointId },
 }
 
 /// People are given by their name (ignoring case), or by the start of their
@@ -337,6 +347,7 @@ async fn main() -> Result<()> {
         Command::Service(ServiceCommand::Install) => return service::install(&home).await,
         Command::Service(ServiceCommand::Uninstall) => return service::uninstall(),
         Command::Status => ClientRequest::Status,
+        Command::Tor(TorCommand::Ping { node }) => ClientRequest::TorPing { node },
         Command::Follow { ticket } => ClientRequest::Follow { ticket },
         Command::Unfollow { actor } => ClientRequest::Unfollow { actor },
         Command::Following => ClientRequest::Following,
@@ -636,7 +647,8 @@ async fn daemon(home: &Path) -> Result<()> {
                 // iroh warns on every network check (about every 25 s) while
                 // the NAT maps addresses per destination; the node logs it once.
                 .unwrap_or_else(|_| {
-                    "osp_node=info,iroh=warn,iroh::net_report::report=error,iroh_blobs=warn".into()
+                    "osp_node=info,osp_tor=info,iroh=warn,iroh::net_report::report=error,iroh_blobs=warn"
+                        .into()
                 }),
         )
         // No colour codes in the journal when running as a service.
@@ -815,6 +827,20 @@ fn print(resp: ClientResponse, json: bool) -> Result<()> {
         ClientResponse::Error { message } => bail!(message),
         ClientResponse::Ok => println!("Done."),
         ClientResponse::Status(status) => print_status(&status),
+        ClientResponse::TorPinged {
+            connect_ms,
+            round_trip_ms,
+        } => match connect_ms {
+            Some(ms) => println!(
+                "Reached over Tor: connected in {}, asked in {}",
+                secs(ms),
+                secs(round_trip_ms)
+            ),
+            None => println!(
+                "Reached over Tor, on the connection already open: asked in {}",
+                secs(round_trip_ms)
+            ),
+        },
         ClientResponse::Ticket { ticket } => println!("{ticket}"),
         ClientResponse::Posted { id } => println!("Published {id}"),
         ClientResponse::Following { follows } => {
@@ -893,6 +919,11 @@ fn print(resp: ClientResponse, json: bool) -> Result<()> {
     Ok(())
 }
 
+/// Milliseconds as seconds, to a tenth.
+fn secs(ms: u64) -> String {
+    format!("{:.1} s", ms as f64 / 1000.0)
+}
+
 fn print_status(s: &StatusInfo) {
     println!("Name:      {}", s.name);
     println!("Identity:  {}", s.identity);
@@ -942,6 +973,22 @@ fn print_status(s: &StatusInfo) {
             p.node.fmt_short(),
             p.path,
             rtt
+        );
+    }
+    if let Some(tor) = &s.tor {
+        let published = match (tor.ready, tor.published) {
+            (true, true) => ", onion service published",
+            (true, false) => ", onion service not published yet",
+            _ => "",
+        };
+        let restarts = match tor.restarts {
+            0 => String::new(),
+            1 => ", restarted once".to_string(),
+            n => format!(", restarted {n} times"),
+        };
+        println!(
+            "Tor:       {}{published}, {} streams{restarts}",
+            tor.state, tor.streams
         );
     }
     match s.trust_requests {

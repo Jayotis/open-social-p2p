@@ -16,6 +16,7 @@ pub struct Config {
     pub storage: StorageConfig,
     pub serving: ServingConfig,
     pub swarm: SwarmConfig,
+    pub tor: TorConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -104,6 +105,27 @@ pub struct SwarmConfig {
     pub share_prefetched: bool,
 }
 
+/// Messages between nodes over Tor (ADR 0014), being built. For now, with
+/// it on, the node starts its own Tor and answers other nodes' requests
+/// through it as well, and `osp tor ping` reaches nodes through it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TorConfig {
+    pub enabled: bool,
+    /// The Tor program, from the tor package. The node runs its own, with
+    /// its settings and data in the `tor` folder of its home.
+    pub binary: String,
+}
+
+impl Default for TorConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            binary: "tor".to_string(),
+        }
+    }
+}
+
 /// Sending media to other nodes.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
@@ -124,6 +146,7 @@ impl Default for Config {
             storage: StorageConfig::default(),
             serving: ServingConfig::default(),
             swarm: SwarmConfig::default(),
+            tor: TorConfig::default(),
         }
     }
 }
@@ -194,6 +217,7 @@ impl Config {
             storage: StorageConfig::default(),
             serving: ServingConfig::default(),
             swarm: SwarmConfig::default(),
+            tor: TorConfig::default(),
         }
     }
 

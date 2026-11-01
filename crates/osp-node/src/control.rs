@@ -162,6 +162,17 @@ impl Core {
                 peers: self.peer_records()?,
             },
             ClientRequest::TrustRequests => self.trust_list()?,
+            ClientRequest::TorPing { node } => {
+                ensure!(local, "Tor pings are only made from the node itself");
+                let tor = self.tor.as_ref().context(
+                    "Tor is off: set enabled = true under [tor] in config.toml, and start the node again",
+                )?;
+                let (connected, round_trip) = tor.ping(node).await?;
+                ClientResponse::TorPinged {
+                    connect_ms: connected.map(|d| d.as_millis() as u64),
+                    round_trip_ms: round_trip.as_millis() as u64,
+                }
+            }
             ClientRequest::AnswerTrust { node, allow } => {
                 self.answer_trust(&node, allow)?;
                 ClientResponse::Ok
@@ -269,6 +280,7 @@ impl Core {
             transfer_places,
             upload_measured_mbps,
             trust_requests: self.db.trust_request_count(now_ms())?,
+            tor: self.tor.as_ref().map(|tor| tor.status()),
         })
     }
 

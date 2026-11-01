@@ -88,6 +88,8 @@ pub(crate) struct SocialProtocol {
     core: Arc<Core>,
     /// Shared by every connection, for `MAX_REQUESTS`.
     requests: Arc<Semaphore>,
+    /// On the endpoint over Tor, whose connections are never direct.
+    over_tor: bool,
 }
 
 impl SocialProtocol {
@@ -95,6 +97,17 @@ impl SocialProtocol {
         Self {
             core,
             requests: Arc::new(Semaphore::new(MAX_REQUESTS)),
+            over_tor: false,
+        }
+    }
+
+    /// The same, for the endpoint over Tor (ADR 0014), within the same
+    /// limits.
+    pub fn over_tor(&self) -> Self {
+        Self {
+            core: self.core.clone(),
+            requests: self.requests.clone(),
+            over_tor: true,
         }
     }
 }
@@ -126,7 +139,11 @@ impl ProtocolHandler for SocialProtocol {
                 tell_busy(send).await;
                 continue;
             };
-            let direct = network::is_direct(&conn);
+            // Over Tor, a path that isn't a relay's still isn't direct.
+            let direct = match self.over_tor {
+                true => Some(false),
+                false => network::is_direct(&conn),
+            };
             let core = self.core.clone();
             tokio::spawn(async move {
                 let served =
@@ -795,7 +812,7 @@ fn dated(published: &str, what: &str) -> Result<i64> {
     Ok(published)
 }
 
-async fn request_on(conn: &Connection, req: &SocialRequest) -> Result<SocialResponse> {
+pub(crate) async fn request_on(conn: &Connection, req: &SocialRequest) -> Result<SocialResponse> {
     let (mut send, mut recv) = conn.open_bi().await?;
     write_frame(&mut send, req).await?;
     send.finish()?;
