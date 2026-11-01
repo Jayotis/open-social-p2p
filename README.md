@@ -75,6 +75,7 @@ See [docs/testing/stage1-manual.md](docs/testing/stage1-manual.md) for running s
 | [`osp-node`](crates/osp-node/) | The home node: storage, media pipeline, sync, serving phones |
 | [`osp-cli`](crates/osp-cli/) | The `osp` command: daemon, service, pairing and everything else |
 | [`osp-client`](crates/osp-client/) | What a paired phone runs; used by the Android app |
+| [`osp-tor`](crates/osp-tor/) | Messages between nodes over Tor, and the node's own Tor (MIT or Apache-2.0, as the code it started from) |
 
 ## Key design questions
 
@@ -88,4 +89,4 @@ A personal search engine with a home-hosted crawler is a **separate idea and not
 
 ## License
 
-See [LICENSE](LICENSE) for the repository's current AGPL-3.0 license. Documentation licensing and third-party compatibility will be reviewed as the project develops.
+See [LICENSE](LICENSE) for the repository's current AGPL-3.0 license. [`crates/osp-tor`](crates/osp-tor/) is under MIT or Apache-2.0 instead, as the code it started from. Documentation licensing and third-party compatibility will be reviewed as the project develops.
