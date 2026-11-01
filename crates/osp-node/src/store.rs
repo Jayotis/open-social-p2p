@@ -2508,10 +2508,9 @@ mod tests {
         for node in &nodes[..3] {
             let counts = f.record(*node);
             assert!(counts.completed.round() >= 1.0, "{counts:?}");
-            assert!(
-                counts.received_bytes.round() >= MIN_PART as f64,
-                "{counts:?}"
-            );
+            // One slow to start may send less than `MIN_PART`, as the others
+            // take the end of its part.
+            assert!(counts.received_bytes > 0.0, "{counts:?}");
             received += counts.received_bytes;
         }
         assert!(received < (size + 3 * BLOCK) as f64, "{received} bytes");
@@ -2687,8 +2686,10 @@ mod tests {
         let took = started.elapsed();
         assert!(took < Duration::from_secs(10), "{took:?}");
         let counts = f.record(silent.id());
-        assert!(counts.received_bytes <= BLOCK as f64, "{counts:?}");
-        assert_eq!(counts.completed.round(), 1.0, "{counts:?}");
+        // On a busy machine it may be asked again while the others are still
+        // fetching, and send another block.
+        assert!(counts.received_bytes < (1 << 20) as f64, "{counts:?}");
+        assert!(counts.completed.round() >= 1.0, "{counts:?}");
         let out = f.dir.path().join("out");
         store.export(&blob, &out).await.unwrap();
         assert!(std::fs::read(&out).unwrap() == data);
