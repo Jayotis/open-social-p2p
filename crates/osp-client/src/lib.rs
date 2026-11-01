@@ -23,7 +23,7 @@ use anyhow::{Context, Result, bail, ensure};
 use iroh::{
     Endpoint, EndpointAddr, PublicKey, RelayMode,
     address_lookup::{DnsAddressLookup, MemoryLookup, PkarrResolver},
-    endpoint::{Connection, RecvStream, SendStream, presets},
+    endpoint::{ConnectOptions, Connection, RecvStream, SendStream, presets},
 };
 use osp_proto::{
     BlobHash, CLIENT_ALPN, ObjectId, PairingTicket,
@@ -344,7 +344,7 @@ impl Client {
         let ticket: PairingTicket = ticket.parse()?;
         self.disconnect().await;
         self.lookup.add_endpoint_info(ticket.node.clone());
-        let conn = self.dial(&ticket.node).await?;
+        let conn = self.dial(&ticket.node, Some(ticket.pass())).await?;
         let req = ClientRequest::Pair {
             secret: data_encoding::HEXLOWER.encode(&ticket.secret),
             name: device_name.to_string(),
@@ -714,24 +714,31 @@ impl Client {
             return Ok(conn.clone());
         }
         let node = self.pairing().context("not paired with a home node")?.node;
-        let conn = self.dial(&node).await?;
+        let conn = self.dial(&node, None).await?;
         *guard = Some(conn.clone());
         Ok(conn)
     }
 
-    async fn dial(&self, node: &EndpointAddr) -> Result<Connection> {
-        tokio::time::timeout(
-            CONNECT_TIMEOUT,
-            self.endpoint.connect(node.clone(), CLIENT_ALPN),
-        )
-        .await
-        .map_err(|_| {
-            anyhow::anyhow!(
-                "the home node didn't answer within {} seconds",
-                CONNECT_TIMEOUT.as_secs()
-            )
-        })?
-        .context("can't reach the home node")
+    /// Connects to the home node. `pass` is a pairing ticket's, offered with
+    /// the protocol: a node doesn't otherwise know a phone that is pairing.
+    async fn dial(&self, node: &EndpointAddr, pass: Option<Vec<u8>>) -> Result<Connection> {
+        let options = ConnectOptions::new().with_additional_alpns(pass.into_iter().collect());
+        let connect = async {
+            let connecting = self
+                .endpoint
+                .connect_with_opts(node.clone(), CLIENT_ALPN, options)
+                .await?;
+            anyhow::Ok(connecting.await?)
+        };
+        tokio::time::timeout(CONNECT_TIMEOUT, connect)
+            .await
+            .map_err(|_| {
+                anyhow::anyhow!(
+                    "the home node didn't answer within {} seconds",
+                    CONNECT_TIMEOUT.as_secs()
+                )
+            })?
+            .context("can't reach the home node")
     }
 
     fn lock_pairing(&self) -> std::sync::MutexGuard<'_, Option<Pairing>> {
