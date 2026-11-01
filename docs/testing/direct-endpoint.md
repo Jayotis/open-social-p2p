@@ -5,7 +5,7 @@ A node gets two endpoints beside its main one ([ADR 0014](../decisions/0014-find
 - **Media:** relays only, no IP sockets. It serves media to anyone, and giving out its ID reveals only which relay it uses.
 - **Direct:** IP and relays. It serves media and the phones' protocol, to the node's own phones and to peers its rule allows, and refuses everyone else before they can learn an address.
 
-Neither carries messages between nodes. This step only starts them and hands them out: what the node sends still goes as before, and **its address isn't hidden yet**, since its main endpoint still connects directly. That changes in step 3. The tests are in [`endpoints.rs`](../../crates/osp-node/tests/endpoints.rs).
+Neither carries messages between nodes. With them on, media and phones go only through them, and the node's main endpoint carries only messages. **Its address is hidden only with [Tor](tor.md) on too:** without it, that main endpoint still connects directly. The tests are in [`endpoints.rs`](../../crates/osp-node/tests/endpoints.rs) and [`on_endpoints.rs`](../../crates/osp-node/tests/on_endpoints.rs).
 
 ## Turn them on
 
@@ -21,7 +21,9 @@ Restart the node (`systemctl --user restart osp`). `osp status` then shows a lin
 
 - A connection is direct only when both sides' rules allow it. Your own phones always may.
 - Under `approved`, `osp direct allow <node id>` adds a node by its full public node ID, `osp direct list` shows them, and `osp direct remove <node id>` takes one off and closes any connection with it. What it learned of your address can't be taken back.
-- New phones pair with the direct endpoint, which through a relay takes an app with this change, as it offers the pass described below. Phones paired before keep using the main endpoint until step 3.
+- Phones pair with the direct endpoint, which through a relay takes an app that offers the pass described below. **Phones paired before must pair again.**
+- A node fetches media from another's direct endpoint, from its own, only if its own rule allows that node and that node gave it the endpoint. Otherwise it fetches from its media endpoint, so a node that allows nobody shows its address to nobody, even a node that allows anyone.
+- A follower is named to other nodes as a host by its media endpoint, or by its direct endpoint if its rule is `anyone`. A direct endpoint given to one node because the rule allows that node is never passed on.
 
 ## Why the refusal happens on the first packet
 

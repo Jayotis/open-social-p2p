@@ -465,3 +465,18 @@ Not simulated: Tor restarting (it ends a node's onion service until the node set
 - The request timeout (30 s) and the follow sync's limit (120 s) were never reached. The followers' "couldn't connect" counts in the summary (133 against 4) are the same failed connections, since peer records count social requests too.
 
 **What it shows.** Over Tor, the follower swarm works as before. What needs changing is how a node waits for a first connection: it should let the circuits finish in the background rather than give up at 20 s, and show progress where someone is waiting, as when following. The 3 s wait when the phone opens media, which B8 doesn't reach, needs the same thought.
+
+### Messages and media on their own endpoints
+
+Added on 2026-11-01, before these runs, as the gate of [ADR 0014](../decisions/0014-finding-people-and-private-messages.md)'s build step 3: messages, `WhoHosts`, `Hosting`, the swarm, trusted followers and peer records on the new endpoints, with the changed waits.
+
+**What changes in the run.** `--endpoints nobody` gives every node media and direct endpoints with a rule that allows nobody. Media then goes between media endpoints, followers are named by bindings, and what's measured is counted against each node's public ID. Messages stay on each node's main endpoint with `--tor-delay`'s delays, as `osp-sim` has no Tor. The simulated network stands in for relays, at the speeds of each node's connection: **this says nothing about what relays would cost**, which is ADR 0014's separate measurement of media's default and needs a simulated relay first.
+
+**The runs.** The home run with `--tor-delay` on the same code, back to back, one run each: without endpoints, and with `--endpoints nobody`.
+
+```sh
+osp-sim --dir /path/on/disk/run --swarm --net --latecomers 10 --tor-delay --endpoints nobody \
+  --label "$(git rev-parse --short HEAD)" --out run.json
+```
+
+**Pass marks.** For the run with endpoints, the home run's three [marks](#pass-marks). Recorded too, against the run without: syncs that failed, followers not told of the post, and the latecomers' times, which the changed waits should improve on the 44 and 62 s above.
