@@ -79,6 +79,11 @@ impl Home {
     }
 
     /// Held locked by the running node, so a second one can't start on the same home.
+    /// The node's own Tor's folder: its settings, data and cookie (ADR 0014).
+    pub fn tor(&self) -> PathBuf {
+        self.root.join("tor")
+    }
+
     pub fn lock(&self) -> PathBuf {
         self.root.join("lock")
     }

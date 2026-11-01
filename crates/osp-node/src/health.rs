@@ -71,6 +71,9 @@ impl Core {
                 quota >> 20
             ));
         }
+        if let Some(tor) = &self.tor {
+            problems.extend(tor.problems());
+        }
         Ok(problems)
     }
 }

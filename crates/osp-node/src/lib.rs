@@ -23,6 +23,7 @@ pub mod simnet;
 mod social;
 mod store;
 mod sync;
+mod tor;
 mod trust;
 mod uploads;
 

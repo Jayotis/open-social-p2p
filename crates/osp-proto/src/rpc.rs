@@ -156,6 +156,11 @@ pub enum ClientRequest {
         actor: PublicKey,
         note: String,
     },
+    /// Reaches a node over Tor and asks for its profile, timing both (local
+    /// socket only, ADR 0014). Reuses the connection the last one opened.
+    TorPing {
+        node: EndpointId,
+    },
 }
 
 fn default_feed_limit() -> u32 {
@@ -236,6 +241,11 @@ pub enum ClientResponse {
         requests: Vec<TrustInfo>,
         trusted: Vec<TrustInfo>,
     },
+    /// How long connecting took, if this ping connected, and the request.
+    TorPinged {
+        connect_ms: Option<u64>,
+        round_trip_ms: u64,
+    },
     Error {
         message: String,
     },
@@ -292,6 +302,28 @@ pub struct StatusInfo {
     /// Requests to be a trusted follower waiting for an answer (ADR 0013).
     #[serde(default)]
     pub trust_requests: usize,
+    /// The node's Tor, when it's on (ADR 0014).
+    #[serde(default)]
+    pub tor: Option<TorStatus>,
+}
+
+/// How the node's Tor is doing.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TorStatus {
+    /// In plain words: "ready", "connecting to the Tor network (45%)", or
+    /// "down: " and why.
+    pub state: String,
+    pub ready: bool,
+    /// How many times Tor has stopped since the node started.
+    pub restarts: u32,
+    /// Whether Tor has published the node's onion service since it last
+    /// started. Until then, other nodes can't reach this one through it.
+    pub published: bool,
+    /// Why Tor refused the onion service, if it did.
+    pub onion_error: Option<String>,
+    /// Streams open to other nodes, and being dialled.
+    pub streams: usize,
+    pub dialling: usize,
 }
 
 /// How this node's network maps its outgoing UDP, which decides whether

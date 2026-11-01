@@ -2983,6 +2983,7 @@ dependencies = [
  "noq-udp",
  "osp-node",
  "osp-proto",
+ "osp-tor",
  "ring",
  "rusqlite",
  "rustix 1.1.6",
