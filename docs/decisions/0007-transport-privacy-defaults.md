@@ -1,6 +1,6 @@
 # ADR 0007: Transport privacy defaults, private messages and direct media
 
-**Status:** Accepted (2026-10-21). Implementation is phased. Phase 1, an opt-in relay-only mode, was implemented and checked with a packet capture on 2026-10-22 (see below).
+**Status:** Accepted (2026-10-21). Implementation is phased. Phase 1, an opt-in relay-only mode, was implemented and checked with a packet capture on 2026-10-22 (see below). Phases 2 and 3 are decided by [ADR 0014](0014-finding-people-and-private-messages.md): messages between nodes go over Tor from an endpoint of their own, and media from two others, one relay-only and one direct, the direct one only when both sides allow it.
 
 ## Context
 

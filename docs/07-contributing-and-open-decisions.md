@@ -22,7 +22,7 @@ Decisions should be recorded openly, with alternatives and reasons, before signi
 2. What exactly is a portable identity across social services and media nodes?
 3. How are creator-authenticated post/media manifests represented and updated?
 4. ~~What is the best P2P transport approach for native desktop, Flutter mobile and browser clients?~~ Decided for desktop and mobile: iroh and iroh-blobs ([ADR 0002](decisions/0002-rust-and-iroh.md)). Browser clients are open.
-5. Who provides peer discovery, and what information is revealed? Relay-only privacy is decided in [ADR 0007](decisions/0007-transport-privacy-defaults.md). To be decided first in milestone M4, finding people and content ([roadmap](06-roadmap.md)).
+5. ~~Who provides peer discovery, and what information is revealed?~~ Decided for M4: the node's own index, directories anyone can run, and exact lookups by domain or key, with messages between nodes over Tor ([ADR 0014](decisions/0014-finding-people-and-private-messages.md)). Media's default, who may connect directly, is set by measuring before M4's invited alpha.
 6. How will peer scoring balance throughput, responsiveness, reliability and upload fairness?
 7. Which replication and eviction defaults are safe, understandable and useful?
 8. What media is publicly cacheable, and what are the enforcement boundaries for private groups?
