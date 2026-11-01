@@ -3,6 +3,7 @@
 
 use std::{path::Path, time::Duration};
 
+use osp_node::DirectRule;
 use osp_node::{Config, Node, SimSettings};
 use osp_proto::rpc::{ClientRequest, ClientResponse};
 use osp_sim::{Network, Scenario};
@@ -29,6 +30,7 @@ async fn a_small_run_measures_the_creators_upload() {
         sample: Duration::from_secs(1),
         trust_mbps: Vec::new(),
         tor_delay: false,
+        endpoints: None,
         label: "test".into(),
     };
     let report = osp_sim::run(&scenario).await.unwrap();
@@ -115,6 +117,7 @@ fn with_the_swarm(dir: &Path) -> Scenario {
         sample: Duration::from_secs(1),
         trust_mbps: Vec::new(),
         tor_delay: false,
+        endpoints: None,
         label: "test".into(),
     }
 }
@@ -125,6 +128,7 @@ async fn a_small_run_with_the_swarm_on() {
     let scenario = Scenario {
         trust_mbps: vec![5],
         tor_delay: false,
+        endpoints: None,
         ..with_the_swarm(dir.path())
     };
     let report = osp_sim::run(&scenario).await.unwrap();
@@ -265,6 +269,52 @@ async fn strangers_get_a_reshared_video_from_each_other() {
         (report.creator_copies() - received).abs() < 0.1,
         "{summary}"
     );
+}
+
+/// B8's swarm in small, as nodes will run it (ADR 0014): messages taking as
+/// long as they do over Tor, media through each node's media endpoint, and
+/// what's measured counted against each node's public ID.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_small_run_with_tor_like_messages_and_media_on_its_own_endpoints() {
+    let dir = tempfile::tempdir().unwrap();
+    let scenario = Scenario {
+        video_bytes: 3_000_000,
+        network: Some(Network {
+            creator_down_mbps: 100,
+            creator_delay_ms: 20,
+            creator_loss_percent: 0.0,
+            down_mbps: vec![50, 100, 300],
+            delay_ms: vec![10, 20, 40],
+            loss_percent: vec![0.0],
+            caps: false,
+            // Cut off from 4 s and 8 s, for 3 s in every 12.
+            flaky: 2,
+            outage_secs: 3,
+            outage_every_secs: 12,
+            seed: 1,
+        }),
+        latecomers: 1,
+        tor_delay: true,
+        endpoints: Some(DirectRule::Nobody),
+        prefetch_spread: Duration::from_secs(30),
+        time_limit: Duration::from_secs(420),
+        ..with_the_swarm(dir.path())
+    };
+    let report = osp_sim::run(&scenario).await.unwrap();
+    let summary = report.summary();
+    println!("{summary}");
+    assert!(summary.contains("media and direct endpoints"), "{summary}");
+    assert_eq!(report.holding(), 12, "{summary}");
+    // By public ID: what followers received from the creator's media endpoint
+    // is what it sent to them, as measured at each end.
+    let copies = |bytes: f64| bytes / report.media_bytes as f64;
+    assert!(
+        (report.creator_copies() - copies(report.received_from_creator)).abs() < 0.1,
+        "{summary}"
+    );
+    assert!(report.creator_copies() < 12.5, "{summary}");
+    assert!(report.latecomer_time(100).is_some(), "{summary}");
+    assert!(report.network.as_ref().unwrap().outages >= 2, "{summary}");
 }
 
 #[tokio::test(flavor = "multi_thread")]

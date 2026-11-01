@@ -536,6 +536,7 @@ pub struct TrustInfo {
 pub enum Reached {
     Direct,
     Relay,
+    Tor,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

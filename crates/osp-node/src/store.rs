@@ -181,8 +181,11 @@ const EVENT_MASK: EventMask = EventMask {
 
 pub(crate) struct ContentStore {
     store: FsStore,
-    /// Connections to nodes we download from, reused while they're in use.
+    /// Connections to nodes we download from, reused while they're in use:
+    /// from the media endpoint on a node that has one (ADR 0014).
     pool: ConnectionPool,
+    /// Those from the direct endpoint, to nodes our rule allows.
+    direct_pool: Option<ConnectionPool>,
     db: Arc<Db>,
     /// Where the blobs live, for checking free disk space.
     dir: PathBuf,
@@ -218,12 +221,10 @@ impl ContentStore {
         let store = FsStore::load_with_opts(dir.join("blobs.db"), options)
             .await
             .with_context(|| format!("opening blob store in {}", dir.display()))?;
-        let mut pool_options = connection_pool::Options::default();
-        pool_options.connect_timeout = CONNECT_TIMEOUT;
-        let pool = ConnectionPool::new(endpoint.clone(), iroh_blobs::ALPN, pool_options);
         let this = Self {
             store,
-            pool,
+            pool: new_pool(endpoint),
+            direct_pool: None,
             db,
             dir: dir.to_path_buf(),
             cache_quota: quotas.cache_quota_mb << 20,
@@ -241,6 +242,21 @@ impl ContentStore {
         }
         ready.store(true, Ordering::Release);
         Ok(this)
+    }
+
+    /// Fetches from sources that say so through `endpoint`, the node's direct
+    /// one (ADR 0014).
+    pub fn with_direct_endpoint(mut self, endpoint: &Endpoint) -> Self {
+        self.direct_pool = Some(new_pool(endpoint));
+        self
+    }
+
+    /// The connections to fetch from `source` on.
+    fn pool_for(&self, source: &Source) -> &ConnectionPool {
+        match (&self.direct_pool, source.from_direct) {
+            (Some(pool), true) => pool,
+            _ => &self.pool,
+        }
     }
 
     /// A protocol handler that serves blobs by the rules in ADR 0003, plus the
@@ -357,11 +373,11 @@ impl ContentStore {
         Ok(size)
     }
 
-    /// Checks that `node` serves a blob we hold, as it says it does (doc
+    /// Checks that `source` serves a blob we hold, as it says it does (doc
     /// 13): asks it for one 1 KiB chunk picked at random, which is checked
     /// against the hash as it arrives. A node without the blob can't send
     /// it, unless it fetches that chunk from a node with it.
-    pub async fn check_hosting(&self, hash: &BlobHash, node: EndpointId) -> Result<()> {
+    pub async fn check_hosting(&self, hash: &BlobHash, source: Source) -> Result<()> {
         let hash = to_hash(hash);
         let size = self
             .size(hash)
@@ -371,7 +387,10 @@ impl ContentStore {
         let chunk = ((crate::sync::random_fraction() * chunks as f64) as u64).min(chunks - 1);
         let request = GetRequest::blob_ranges(hash, ChunkRanges::chunk(chunk));
         let check = async {
-            let conn = self.pool.get_or_connect(node).await?;
+            let conn = self
+                .pool_for(&source)
+                .get_or_connect(source.endpoint)
+                .await?;
             let connected = fsm::start((*conn).clone(), request, Default::default())
                 .next()
                 .await?;
@@ -512,7 +531,13 @@ impl ContentStore {
             .iter()
             .chain(&sources.in_turn)
             .filter(|node| !failed.iter().any(|(f, _)| f == *node));
+        // A node may be here by two endpoints, for when it can't be reached at
+        // the first. One that answered there has said what it would say.
+        let mut answered: Vec<EndpointId> = Vec::new();
         for &node in rest {
+            if answered.contains(&node.node) {
+                continue;
+            }
             let local = remote.local_for_request(request.clone()).await?;
             if local.is_complete() {
                 return Ok(());
@@ -530,6 +555,9 @@ impl ContentStore {
                 }
                 Outcome::Busy => busy = true,
                 _ => {}
+            }
+            if attempt.outcome != Outcome::Unreachable {
+                answered.push(node.node);
             }
             if Instant::now() >= deadline {
                 return Err(Unsent("it timed out").into());
@@ -561,17 +589,17 @@ impl ContentStore {
     async fn fetch_in_parts(
         &self,
         hash: Hash,
-        nodes: &[EndpointId],
+        nodes: &[Source],
         declared: u64,
         deadline: Instant,
-    ) -> Result<Vec<(EndpointId, Outcome)>> {
+    ) -> Result<Vec<(Source, Outcome)>> {
         let have = self.store.observe(hash).await?;
         let sources = nodes.len().min(self.max_sources);
         let mut todo = plan_parts(&missing(&have, declared), sources);
         // Nodes that sent their part, with the rate they sent it at, and
         // nodes not asked yet.
-        let mut done: Vec<(EndpointId, Option<f64>)> = Vec::new();
-        let mut unasked: VecDeque<EndpointId> = nodes.iter().copied().collect();
+        let mut done: Vec<(Source, Option<f64>)> = Vec::new();
+        let mut unasked: VecDeque<Source> = nodes.iter().copied().collect();
         let mut running: Vec<Arc<Part>> = Vec::new();
         let mut attempts = FuturesUnordered::new();
         let mut failed = Vec::new();
@@ -616,9 +644,9 @@ impl ContentStore {
             running.retain(|p| !Arc::ptr_eq(p, &part));
             self.record(hash, &attempt);
             if attempt.outcome == Outcome::Completed {
-                done.push((attempt.node, attempt.rate()));
+                done.push((attempt.source, attempt.rate()));
             } else {
-                failed.push((attempt.node, attempt.outcome));
+                failed.push((attempt.source, attempt.outcome));
                 let rest = part.reached()..part.end();
                 if !rest.is_empty() {
                     todo.push_front(rest);
@@ -632,7 +660,7 @@ impl ContentStore {
     async fn fetch_part(
         &self,
         hash: Hash,
-        node: EndpointId,
+        node: Source,
         part: Arc<Part>,
         deadline: Instant,
     ) -> (Arc<Part>, Attempt) {
@@ -649,7 +677,7 @@ impl ContentStore {
         attempt.log(hash);
         peers::record(
             &self.db,
-            &attempt.node,
+            &attempt.source.node,
             Event::Download {
                 outcome: attempt.outcome,
                 bytes: attempt.bytes,
@@ -665,21 +693,23 @@ impl ContentStore {
     /// `STALL_TIMEOUT`.
     async fn attempt(
         &self,
-        node: EndpointId,
+        source: Source,
         request: GetRequest,
         stop: Stop<'_>,
         deadline: Instant,
     ) -> Attempt {
         let started = Instant::now();
+        let node = source.node;
         let mut attempt = Attempt {
-            node,
+            source,
             outcome: Outcome::Failed,
             bytes: 0,
             took: Duration::ZERO,
             first_byte: None,
         };
         let left = || deadline.saturating_duration_since(Instant::now());
-        attempt.outcome = match tokio::time::timeout(left(), self.pool.get_or_connect(node)).await {
+        let connecting = self.pool_for(&source).get_or_connect(source.endpoint);
+        attempt.outcome = match tokio::time::timeout(left(), connecting).await {
             Err(_) => Outcome::Failed,
             Ok(Err(e)) => {
                 debug!(node = %node.fmt_short(), "couldn't connect: {e}");
@@ -878,21 +908,44 @@ impl ContentStore {
     }
 }
 
+/// A node to fetch from: whose it is, which of its endpoints to connect to,
+/// and which of ours to connect from (ADR 0014).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Source {
+    /// Its public ID, the name for what's measured of it (ADR 0011).
+    pub node: EndpointId,
+    pub endpoint: EndpointId,
+    /// From our direct endpoint, which shows it our address; otherwise from
+    /// the media endpoint, or the only one a node without others has.
+    pub from_direct: bool,
+}
+
+impl From<EndpointId> for Source {
+    /// A node without other endpoints.
+    fn from(node: EndpointId) -> Self {
+        Self {
+            node,
+            endpoint: node,
+            from_direct: false,
+        }
+    }
+}
+
 /// The nodes a download may come from (`ContentStore::download`).
 #[derive(Debug, Clone, Default)]
 pub(crate) struct Sources {
     /// Nodes that may each send part of a large blob at the same time, up
     /// to `MAX_SOURCES` at once, in this order: followers' copies, named
     /// for this download (doc 13).
-    pub at_once: Vec<EndpointId>,
+    pub at_once: Vec<Source>,
     /// Then, one at a time, for whatever is still missing: the nodes that
     /// everyone asks, such as the author's.
-    pub in_turn: Vec<EndpointId>,
+    pub in_turn: Vec<Source>,
 }
 
 impl Sources {
     /// Nodes asked one at a time, in this order.
-    pub fn one_at_a_time(nodes: Vec<EndpointId>) -> Self {
+    pub fn one_at_a_time(nodes: Vec<Source>) -> Self {
         Self {
             at_once: Vec::new(),
             in_turn: nodes,
@@ -903,17 +956,20 @@ impl Sources {
     /// after the others there: they're the ones to spare, such as the
     /// author's, which everyone asks.
     pub fn spare(&mut self, nodes: &[EndpointId]) {
-        let (spared, at_once) = self.at_once.drain(..).partition(|id| nodes.contains(id));
+        let (spared, at_once) = self
+            .at_once
+            .drain(..)
+            .partition(|source| nodes.contains(&source.node));
         self.at_once = at_once;
-        for id in spared {
-            if !self.in_turn.contains(&id) {
-                self.in_turn.push(id);
+        for source in spared {
+            if !self.contains(&source.node) {
+                self.in_turn.push(source);
             }
         }
     }
 
     pub fn contains(&self, node: &EndpointId) -> bool {
-        self.at_once.contains(node) || self.in_turn.contains(node)
+        self.at_once.iter().any(|s| s.node == *node) || self.in_turn.iter().any(|s| s.node == *node)
     }
 
     pub fn is_empty(&self) -> bool {
@@ -1180,7 +1236,7 @@ enum Stop<'a> {
 /// One node's attempt at sending us (part of) a blob.
 #[derive(Debug)]
 struct Attempt {
-    node: EndpointId,
+    source: Source,
     outcome: Outcome,
     /// Verified payload bytes it sent.
     bytes: u64,
@@ -1224,7 +1280,7 @@ impl Attempt {
     }
 
     fn log(&self, hash: Hash) {
-        let node = self.node.fmt_short();
+        let node = self.source.node.fmt_short();
         let blob = to_blob_hash(hash).fmt_short();
         if self.outcome == Outcome::BadData {
             warn!(%node, %blob, "a node sent data that doesn't match the hash; trying the next");
@@ -1321,6 +1377,12 @@ fn wait_until(ready: Arc<AtomicBool>) -> ProtectCb {
         };
         Box::pin(async move { outcome })
     })
+}
+
+fn new_pool(endpoint: &Endpoint) -> ConnectionPool {
+    let mut options = connection_pool::Options::default();
+    options.connect_timeout = CONNECT_TIMEOUT;
+    ConnectionPool::new(endpoint.clone(), iroh_blobs::ALPN, options)
 }
 
 fn tag_name(hash: Hash) -> String {
@@ -1461,7 +1523,7 @@ async fn enforce_serving_rules(
                 debug!(?peer, "busy: refused a blob request");
                 answer.send(Err(AbortReason::RateLimited)).await.ok();
                 if let Some(peer) = peer {
-                    peers::record(&db, &peer, Event::RefusedBusy);
+                    peers::record(&db, &public_of(&db, peer), Event::RefusedBusy);
                 }
                 return;
             };
@@ -1493,7 +1555,7 @@ async fn enforce_serving_rules(
                     }
                 }
                 if let (Some(peer), Some(bytes)) = (peer, sent) {
-                    peers::record(&db, &peer, Event::Served { bytes });
+                    peers::record(&db, &public_of(&db, peer), Event::Served { bytes });
                 }
                 // The node may ask for another part of the blob now.
                 if part && let Some(key) = key {
@@ -1761,7 +1823,18 @@ async fn take_places(needed: Vec<Arc<Semaphore>>) -> Option<Vec<OwnedSemaphorePe
 }
 
 fn is_follower_or_device(db: &Db, peer: Option<EndpointId>) -> bool {
-    peer.is_some_and(|p| db.is_follower(&p).unwrap_or(false) || db.is_device(&p).unwrap_or(false))
+    peer.is_some_and(|p| {
+        db.is_follower(&public_of(db, p)).unwrap_or(false) || db.is_device(&p).unwrap_or(false)
+    })
+}
+
+/// The public ID of the node a connecting endpoint serves for, if it told us
+/// (ADR 0014). A node that didn't is a stranger, known by the endpoint.
+fn public_of(db: &Db, endpoint: EndpointId) -> EndpointId {
+    db.endpoint_owner(&endpoint)
+        .ok()
+        .flatten()
+        .unwrap_or(endpoint)
 }
 
 /// Spaces out what the node sends so it stays under `max_upload_mbps`.
@@ -1837,6 +1910,14 @@ mod tests {
     const KB: u64 = 1 << 10;
     /// Short, so a test sees the collector run.
     const GC_SOON: Duration = Duration::from_millis(100);
+
+    /// Nodes without other endpoints to fetch from.
+    fn plain_sources(at_once: Vec<EndpointId>, in_turn: Vec<EndpointId>) -> Sources {
+        Sources {
+            at_once: at_once.into_iter().map(Source::from).collect(),
+            in_turn: in_turn.into_iter().map(Source::from).collect(),
+        }
+    }
 
     /// Free places for all large transfers, and for strangers'.
     fn free(large: &LargePlaces) -> (usize, usize) {
@@ -2192,7 +2273,7 @@ mod tests {
         let attempt = async |node: EndpointId, declared: u64| {
             let stop = Stop::PastDeclared { local: 0, declared };
             store
-                .attempt(node, GetRequest::blob(hash), stop, soon)
+                .attempt(node.into(), GetRequest::blob(hash), stop, soon)
                 .await
         };
         assert_eq!(attempt(busy.id(), KB).await.outcome, Outcome::Busy);
@@ -2228,7 +2309,10 @@ mod tests {
         let (honest, _) = f.provider(&data, None).await;
         // A piece picked at random each time.
         for _ in 0..5 {
-            store.check_hosting(&ours, honest.id()).await.unwrap();
+            store
+                .check_hosting(&ours, honest.id().into())
+                .await
+                .unwrap();
         }
 
         let (busy, _) = f.provider(&data, Some(AbortReason::RateLimited)).await;
@@ -2251,25 +2335,27 @@ mod tests {
             just_a_size.id(),
             one_byte.id(),
         ] {
-            let checked = store.check_hosting(&ours, node).await;
+            let checked = store.check_hosting(&ours, node.into()).await;
             assert!(checked.is_err(), "{}", node.fmt_short());
         }
         // The liar sends 1 KB that doesn't match the hash, and the right
         // size for a 1 KB blob.
         let small = f.add(&store, 8, KB, BlobClass::Own).await;
         let liar = f.serve(Fake::liar()).await;
-        let checked = store.check_hosting(&small, liar.id()).await;
+        let checked = store.check_hosting(&small, liar.id().into()).await;
         let error = format!("{:#}", checked.unwrap_err());
         assert!(error.contains("hash mismatch"), "{error}");
         // A blob we don't hold can't be checked.
         let (other, hash) = f.provider(b"not ours", None).await;
-        let checked = store.check_hosting(&to_blob_hash(hash), other.id()).await;
+        let checked = store
+            .check_hosting(&to_blob_hash(hash), other.id().into())
+            .await;
         assert!(checked.is_err());
 
         // One that takes too long fails too.
         let (slow, _) = f.waiting_provider(&data, Duration::from_secs(20)).await;
         let started = Instant::now();
-        assert!(store.check_hosting(&ours, slow.id()).await.is_err());
+        assert!(store.check_hosting(&ours, slow.id().into()).await.is_err());
         assert!(started.elapsed() < Duration::from_secs(19));
     }
 
@@ -2284,7 +2370,7 @@ mod tests {
         let nowhere = SecretKey::generate().public();
 
         let blob = to_blob_hash(hash);
-        let in_turn = |nodes| Sources::one_at_a_time(nodes);
+        let in_turn = |nodes| plain_sources(Vec::new(), nodes);
         let providers = vec![busy.id(), liar.id(), nowhere, honest.id()];
         let size = store
             .download(&blob, in_turn(providers), BlobClass::Cache, KB)
@@ -2487,10 +2573,7 @@ mod tests {
             providers.push((provider, hash));
         }
         let blob = to_blob_hash(providers[0].1);
-        let sources = Sources {
-            at_once: nodes.clone(),
-            in_turn: Vec::new(),
-        };
+        let sources = plain_sources(nodes.clone(), Vec::new());
         assert_eq!(
             store
                 .download(&blob, sources, BlobClass::Replica, size)
@@ -2519,10 +2602,7 @@ mod tests {
         let small = noise(1);
         let (first, hash) = f.provider(&small, None).await;
         let (second, _) = f.provider(&small, None).await;
-        let sources = Sources {
-            at_once: vec![first.id(), second.id()],
-            in_turn: Vec::new(),
-        };
+        let sources = plain_sources(vec![first.id(), second.id()], Vec::new());
         store
             .download(
                 &to_blob_hash(hash),
@@ -2548,10 +2628,10 @@ mod tests {
         let (spare, _) = f.provider(&data, None).await;
         let blob = to_blob_hash(hash);
         let nowhere = SecretKey::generate().public();
-        let sources = Sources {
-            at_once: vec![busy.id(), nowhere, refusing.id(), honest.id()],
-            in_turn: vec![spare.id()],
-        };
+        let sources = plain_sources(
+            vec![busy.id(), nowhere, refusing.id(), honest.id()],
+            vec![spare.id()],
+        );
         store
             .download(&blob, sources, BlobClass::Cache, size)
             .await
@@ -2574,10 +2654,7 @@ mod tests {
         let (spare, hash) = f.provider(&other, None).await;
         let (busy, _) = f.provider(&other, Some(AbortReason::RateLimited)).await;
         let liar = f.serve(Fake::liar()).await;
-        let sources = Sources {
-            at_once: vec![busy.id(), liar.id()],
-            in_turn: vec![spare.id()],
-        };
+        let sources = plain_sources(vec![busy.id(), liar.id()], vec![spare.id()]);
         let blob = to_blob_hash(hash);
         store
             .download(&blob, sources, BlobClass::Cache, other.len() as u64)
@@ -2600,10 +2677,10 @@ mod tests {
         let (first, _) = f.slow_provider(&data, Duration::from_millis(2)).await;
         let (second, _) = f.slow_provider(&data, Duration::from_millis(2)).await;
         let (unasked, _) = f.provider(&data, None).await;
-        let sources = Sources {
-            at_once: vec![busy.id(), first.id(), second.id(), unasked.id()],
-            in_turn: Vec::new(),
-        };
+        let sources = plain_sources(
+            vec![busy.id(), first.id(), second.id(), unasked.id()],
+            Vec::new(),
+        );
         store
             .download(&to_blob_hash(hash), sources, BlobClass::Cache, size)
             .await
@@ -2629,10 +2706,10 @@ mod tests {
         let (also_fast, _) = f.provider(&data, None).await;
         let (unasked, _) = f.provider(&data, None).await;
         let blob = to_blob_hash(hash);
-        let sources = Sources {
-            at_once: vec![slow.id(), fast.id(), also_fast.id(), unasked.id()],
-            in_turn: Vec::new(),
-        };
+        let sources = plain_sources(
+            vec![slow.id(), fast.id(), also_fast.id(), unasked.id()],
+            Vec::new(),
+        );
         let started = Instant::now();
         store
             .download(&blob, sources, BlobClass::Cache, size)
@@ -2667,10 +2744,7 @@ mod tests {
         let (fast, _) = f.provider(&data, None).await;
         let (also_fast, _) = f.provider(&data, None).await;
         let blob = to_blob_hash(hash);
-        let sources = Sources {
-            at_once: vec![silent.id(), fast.id(), also_fast.id()],
-            in_turn: Vec::new(),
-        };
+        let sources = plain_sources(vec![silent.id(), fast.id(), also_fast.id()], Vec::new());
         let started = Instant::now();
         store
             .download(&blob, sources, BlobClass::Cache, size)
@@ -2700,10 +2774,7 @@ mod tests {
         let (fast, _) = f.provider(&data, None).await;
         let (also_fast, _) = f.provider(&data, None).await;
         let blob = to_blob_hash(hash);
-        let sources = Sources {
-            at_once: vec![waiting.id(), fast.id(), also_fast.id()],
-            in_turn: Vec::new(),
-        };
+        let sources = plain_sources(vec![waiting.id(), fast.id(), also_fast.id()], Vec::new());
         let started = Instant::now();
         store
             .download(&blob, sources, BlobClass::Cache, size)
@@ -2734,10 +2805,7 @@ mod tests {
         let (a, hash) = f.provider(&data, None).await;
         let (b, _) = f.provider(&data, None).await;
         let blob = to_blob_hash(hash);
-        let both = || Sources {
-            at_once: vec![a.id(), b.id()],
-            in_turn: Vec::new(),
-        };
+        let both = || plain_sources(vec![a.id(), b.id()], Vec::new());
         // Bigger than its post says: nothing past the declared size comes.
         let err = store
             .download(&blob, both(), BlobClass::Cache, size - 600 * KB)
@@ -2753,10 +2821,7 @@ mod tests {
         // Smaller than it says: what there is comes, and that's all of it.
         let (c, other) = f.provider(&data[..2 << 20], None).await;
         let (d, _) = f.provider(&data[..2 << 20], None).await;
-        let sources = Sources {
-            at_once: vec![c.id(), d.id()],
-            in_turn: Vec::new(),
-        };
+        let sources = plain_sources(vec![c.id(), d.id()], Vec::new());
         let got = store
             .download(&to_blob_hash(other), sources, BlobClass::Cache, size)
             .await

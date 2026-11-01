@@ -19,7 +19,7 @@ use std::{
 use anyhow::{Context, Result, bail, ensure};
 use n0_future::{BufferedStreamExt, StreamExt, join_all, stream};
 use osp_node::{
-    Config, Node, SimSettings,
+    Config, DirectRule, Node, SimSettings,
     config::SyncConfig,
     simnet::{Link, NetStats, SimLink, SimNet, TorDelay},
 };
@@ -116,6 +116,11 @@ pub struct Scenario {
     /// Social requests between nodes are delayed as if they went over Tor
     /// (`osp_node::simnet::TorDelay`'s defaults); media isn't.
     pub tor_delay: bool,
+    /// Nodes have media and direct endpoints with this rule for who may
+    /// connect directly (ADR 0014): media goes through them, and messages stay
+    /// on each node's main endpoint. It takes `network`, which stands in for
+    /// the relays a media endpoint needs.
+    pub endpoints: Option<DirectRule>,
     /// Free text kept with the report, such as the commit tested.
     pub label: String,
 }
@@ -179,6 +184,8 @@ pub struct Report {
     pub trust_mbps: Vec<u64>,
     pub trusted: usize,
     pub tor_delay: bool,
+    /// Who may connect directly, if nodes have media and direct endpoints.
+    pub endpoints: Option<String>,
     pub time_limit_secs: u64,
     /// The video, and its media altogether (the video and its thumbnail).
     pub video_bytes: u64,
@@ -359,6 +366,10 @@ pub async fn run(s: &Scenario) -> Result<Report> {
             "an outage has to be shorter than the time from one to the next"
         );
     }
+    ensure!(
+        s.endpoints.is_none() || s.network.is_some(),
+        "media endpoints need the simulated network, which stands in for relays"
+    );
     std::fs::create_dir_all(&s.dir)?;
     let started = osp_proto::now_rfc3339();
     let source = make_video(&s.dir, s.video_bytes).await?;
@@ -379,6 +390,7 @@ pub async fn run(s: &Scenario) -> Result<Report> {
         "Creator",
         s.upload_cap(s.creator_mbps),
         false,
+        s.endpoints,
         lifted,
     )
     .await?;
@@ -501,7 +513,7 @@ pub async fn run(s: &Scenario) -> Result<Report> {
                 };
                 let off = cut_off_at(now, k, flaky.len(), n);
                 if off != cut.contains(&i) {
-                    let on_the_network = net.set_online(node.node_id(), !off);
+                    let on_the_network = set_online(net, node, !off);
                     if off {
                         cut.insert(i);
                         outages += usize::from(on_the_network);
@@ -579,7 +591,7 @@ pub async fn run(s: &Scenario) -> Result<Report> {
     if let Some(net) = &net {
         for i in cut.drain() {
             if let Some(node) = &followers[i] {
-                net.set_online(node.node_id(), true);
+                set_online(net, node, true);
             }
         }
     }
@@ -671,6 +683,7 @@ pub async fn run(s: &Scenario) -> Result<Report> {
         trust_mbps: s.trust_mbps.clone(),
         trusted,
         tor_delay: s.tor_delay,
+        endpoints: s.endpoints.map(|rule| rule.to_string()),
         time_limit_secs: s.time_limit.as_secs(),
         video_bytes,
         media_bytes,
@@ -871,6 +884,12 @@ impl Report {
                 "trusted: {} followers, those uploading at {} Mbit/s",
                 self.trusted,
                 slashed(&self.trust_mbps),
+            );
+        }
+        if let Some(rule) = &self.endpoints {
+            let _ = writeln!(
+                out,
+                "media and direct endpoints: direct connections with {rule}; the simulated network stands in for relays"
             );
         }
         if self.tor_delay {
@@ -1140,14 +1159,29 @@ async fn make_video(dir: &Path, bytes: u64) -> Result<PathBuf> {
 }
 
 /// Starts a node that caps its upload at `upload_cap` Mbit/s (0: no cap).
+/// Cuts off or connects again every endpoint of a node. Returns whether it's
+/// on this network.
+fn set_online(net: &SimNet, node: &Node, online: bool) -> bool {
+    let mut on_the_network = false;
+    for id in node.endpoint_ids() {
+        on_the_network |= net.set_online(id, online);
+    }
+    on_the_network
+}
+
 async fn start(
     home: &Path,
     name: &str,
     upload_cap: u64,
     swarm: bool,
+    endpoints: Option<DirectRule>,
     sim: SimSettings,
 ) -> Result<Node> {
     let mut config = Config::local_test(name);
+    if let Some(rule) = endpoints {
+        config.endpoints.enabled = true;
+        config.endpoints.direct = rule;
+    }
     // Poll like a real node; test nodes poll only hourly.
     config.sync.interval_secs = SyncConfig::default().interval_secs;
     config.serving.max_upload_mbps = upload_cap;
@@ -1333,7 +1367,8 @@ async fn start_all(
                 network: s.follower_link(net, i),
                 ..sim.clone()
             };
-            async move { start(&home, &format!("{name}{i}"), cap, s.swarm, sim).await }
+            let name = format!("{name}{i}");
+            async move { start(&home, &name, cap, s.swarm, s.endpoints, sim).await }
         })
         .buffered_ordered(STARTING_AT_ONCE)
         .collect::<Vec<_>>()
@@ -1895,6 +1930,7 @@ mod tests {
             sample: Duration::ZERO,
             trust_mbps: Vec::new(),
             tor_delay: false,
+            endpoints: None,
             label: String::new(),
         };
         let net = SimNet::new(1);

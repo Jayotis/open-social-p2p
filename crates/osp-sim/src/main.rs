@@ -5,7 +5,7 @@ use std::{path::PathBuf, time::Duration};
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use osp_node::SimSettings;
+use osp_node::{DirectRule, SimSettings};
 use osp_sim::{Network, Scenario};
 
 /// Runs one creator and many followers as real nodes in this process. The
@@ -119,6 +119,11 @@ struct Cli {
     /// isn't delayed.
     #[arg(long)]
     tor_delay: bool,
+    /// With --net: nodes have media and direct endpoints (ADR 0014), and media
+    /// goes through them. The value is who may connect directly: anyone,
+    /// follows, approved or nobody.
+    #[arg(long, requires = "net", value_parser = direct_rule)]
+    endpoints: Option<DirectRule>,
     /// Write the full report here, as JSON.
     #[arg(long)]
     out: Option<PathBuf>,
@@ -181,6 +186,7 @@ async fn main() -> Result<()> {
         sample: Duration::from_secs(60),
         trust_mbps: cli.trust_mbps,
         tor_delay: cli.tor_delay,
+        endpoints: cli.endpoints,
         label: cli.label,
     };
     let result = osp_sim::run(&scenario).await;
@@ -195,4 +201,16 @@ async fn main() -> Result<()> {
     }
     print!("{}", report.summary());
     Ok(())
+}
+
+fn direct_rule(rule: &str) -> Result<DirectRule, String> {
+    match rule {
+        "anyone" => Ok(DirectRule::Anyone),
+        "follows" => Ok(DirectRule::Follows),
+        "approved" => Ok(DirectRule::Approved),
+        "nobody" => Ok(DirectRule::Nobody),
+        other => Err(format!(
+            "{other}: expected anyone, follows, approved or nobody"
+        )),
+    }
 }

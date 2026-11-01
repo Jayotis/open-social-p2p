@@ -128,7 +128,9 @@ fn selected_path(conn: &Connection) -> (String, Option<u64>) {
     let kind = match &selected {
         Some(p) if p.is_relay() => "relay",
         Some(p) if p.is_ip() => "direct",
-        _ => "none",
+        // The node's only other transport, off the simulated network.
+        Some(_) => "tor",
+        None => "none",
     };
     (
         kind.to_string(),

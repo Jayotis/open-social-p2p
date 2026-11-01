@@ -177,6 +177,8 @@ impl Peer {
         let req = SocialRequest::Subscribe {
             addr: peer.endpoint.addr(),
             shares_prefetched,
+            media: None,
+            direct: None,
         };
         assert!(matches!(peer.ask(&req).await, SocialResponse::Ok));
         peer

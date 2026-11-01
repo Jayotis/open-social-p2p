@@ -485,6 +485,8 @@ impl Unheard {
         let subscribe = SocialRequest::Subscribe {
             addr: follower.addr(),
             shares_prefetched: false,
+            media: None,
+            direct: None,
         };
         assert!(matches!(ask(&conn, &subscribe).await, SocialResponse::Ok));
 

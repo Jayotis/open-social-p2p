@@ -290,6 +290,7 @@ String followerLine(TrustEntry t) {
     switch (t.reached) {
       'direct' => 'reached your node directly lately',
       'relay' => 'reached your node through a relay lately',
+      'tor' => 'reached your node over Tor lately',
       _ => 'not heard from lately',
     },
     'holds ${t.copies} of your files',

@@ -38,10 +38,17 @@ pub enum SocialRequest {
     /// subscriber; it must belong to the connecting node. `shares_prefetched`
     /// says whether it serves what it fetches ahead of time to anyone, so
     /// may be named as a host of your media (the follower swarm, doc 13).
+    /// `media` is its media endpoint (ADR 0014). `direct` is its direct
+    /// endpoint, only if its rule allows anyone: unlike one offered with
+    /// `Endpoints`, it may be named to other nodes.
     Subscribe {
         addr: EndpointAddr,
         #[serde(default)]
         shares_prefetched: bool,
+        #[serde(default)]
+        media: Option<Box<BoundEndpoint>>,
+        #[serde(default)]
+        direct: Option<Box<BoundEndpoint>>,
     },
     /// Push hint from a followed node: `actor` has published up to `seq`.
     Notify { actor: PublicKey, seq: u64 },
@@ -100,6 +107,12 @@ pub enum SocialResponse {
     Ok,
     Hosts {
         nodes: Vec<EndpointAddr>,
+    },
+    /// The answer to `WhoHosts` from a node with other endpoints (ADR 0014):
+    /// each host by the endpoint that serves its media, tied to its public ID
+    /// by its binding.
+    BoundHosts {
+        hosts: Vec<BoundEndpoint>,
     },
     Objects {
         objects: Vec<SignedObject>,

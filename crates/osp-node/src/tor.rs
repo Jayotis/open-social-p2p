@@ -1,8 +1,7 @@
 //! The node's side of Tor (ADR 0014): its own Tor, and an endpoint on it
 //! with the node's key, which other nodes reach at the onion address the
-//! node's ID gives. For now it only answers other nodes' social requests,
-//! and `osp tor ping` reaches nodes through it; messages move onto it in
-//! ADR 0014's build step 3.
+//! node's ID gives. It's the node's public endpoint: all messages between
+//! nodes go through it, and go nowhere else.
 
 use std::{
     collections::HashMap,
@@ -10,7 +9,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use anyhow::{Context, Result, ensure};
+use anyhow::{Context, Result, bail, ensure};
 use iroh::{Endpoint, EndpointId, SecretKey, endpoint::Connection};
 use osp_proto::{
     SOCIAL_ALPN,
@@ -20,7 +19,9 @@ use osp_proto::{
 use osp_tor::{Phase, Source, Tor, TorTransport};
 use tracing::info;
 
-use crate::{config::TorConfig, home::Home, node::MAX_STREAMS_PER_CONN, social};
+use crate::{
+    config::TorConfig, home::Home, network::ConnTracker, node::MAX_STREAMS_PER_CONN, social,
+};
 
 /// Longest `osp tor ping` waits to connect: a first connection over Tor
 /// takes up to a minute.
@@ -38,7 +39,12 @@ impl TorSide {
     /// Starts the node's Tor, from `config.binary` in the home's `tor`
     /// folder, and an endpoint on it with `key`. Tor itself may take a while
     /// to connect, or not start at all: `status` says.
-    pub async fn start(home: &Home, config: &TorConfig, key: SecretKey) -> Result<Self> {
+    pub async fn start(
+        home: &Home,
+        config: &TorConfig,
+        key: SecretKey,
+        tracker: &ConnTracker,
+    ) -> Result<Self> {
         let tor = Tor::start(Source::Launch {
             binary: config.binary.clone().into(),
             dir: home.tor(),
@@ -52,6 +58,7 @@ impl TorSide {
             .build();
         let endpoint = Endpoint::builder(transport.preset())
             .transport_config(quic)
+            .hooks(tracker.clone())
             .secret_key(key)
             .bind()
             .await
@@ -66,6 +73,27 @@ impl TorSide {
             endpoint,
             pings: Mutex::default(),
         })
+    }
+
+    /// Fails, and says why, unless Tor is ready to carry messages.
+    pub fn check_ready(&self) -> Result<()> {
+        let phase = self.tor.state().borrow().phase.clone();
+        if phase != Phase::Ready {
+            bail!("Tor isn't ready: {phase}");
+        }
+        Ok(())
+    }
+
+    /// Waits until Tor is ready to carry messages.
+    pub async fn ready(&self) {
+        let mut state = self.tor.state();
+        let _ = state.wait_for(|s| s.phase == Phase::Ready).await;
+    }
+
+    /// Whether a stream to `node` is open, whichever of us dialled it, so a
+    /// new connection is a round trip away.
+    pub fn has_stream(&self, node: &EndpointId) -> bool {
+        self.transport.has_stream(node)
     }
 
     pub fn status(&self) -> TorStatus {
@@ -101,8 +129,7 @@ impl TorSide {
     /// Reaches `node` over Tor and asks for its profile. Returns how long
     /// connecting took, if this connected, and how long the request took.
     pub async fn ping(&self, node: EndpointId) -> Result<(Option<Duration>, Duration)> {
-        let phase = self.tor.state().borrow().phase.clone();
-        ensure!(phase == Phase::Ready, "Tor isn't ready: {phase}");
+        self.check_ready()?;
         let open = self
             .lock_pings()
             .get(&node)

@@ -266,6 +266,12 @@ impl TorTransport {
         Lookup
     }
 
+    /// Whether a stream with `node` is open and proved, whichever of them
+    /// dialled it.
+    pub fn has_stream(&self, node: &EndpointId) -> bool {
+        self.shared.has_open(node)
+    }
+
     pub fn streams(&self) -> Streams {
         let s = &self.shared;
         let dialling = s.dialling.load(Relaxed);

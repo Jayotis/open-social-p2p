@@ -1,7 +1,8 @@
-//! Wiring: one iroh endpoint, the protocols on it, and the background tasks.
+//! Wiring: the node's iroh endpoints, the protocols on them, and the
+//! background tasks.
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
@@ -114,8 +115,6 @@ impl Default for SimSettings {
 pub struct Node {
     core: Arc<Core>,
     router: Router,
-    /// Other nodes' requests over Tor, when it's on.
-    tor_router: Option<Router>,
     /// The media and direct endpoints', when they're on.
     endpoint_routers: Vec<Router>,
     tasks: Vec<JoinHandle<()>>,
@@ -130,6 +129,8 @@ pub(crate) struct Core {
     pub config: Config,
     /// What our objects are signed with (ADR 0010).
     pub signer: Signer,
+    /// The node's public endpoint, whose ID the profile lists: on Tor when
+    /// that's on. With other endpoints it carries only messages between nodes.
     pub endpoint: Endpoint,
     /// Addresses we learned out of band (tickets, subscriptions, WhoHosts),
     /// so peers can be dialled by ID without a lookup service.
@@ -141,7 +142,9 @@ pub(crate) struct Core {
     /// Our signed profile, served to anyone who asks.
     pub profile: SignedObject,
     /// Open `osp/social/1` connections, reused across requests.
-    pub conns: Mutex<HashMap<EndpointId, Connection>>,
+    pub conns: Arc<Mutex<HashMap<EndpointId, Connection>>>,
+    /// Those being set up in the background.
+    pub readying: social::Readying,
     /// Every live connection in either direction, for `status`.
     pub tracker: ConnTracker,
     /// Only one sync runs at a time.
@@ -163,6 +166,9 @@ pub(crate) struct Core {
     pub opening: Mutex<HashMap<BlobHash, watch::Receiver<store::Download>>>,
     /// When we last asked each followed identity's node to notify us.
     pub subscribed: Mutex<HashMap<PublicKey, Instant>>,
+    /// Over Tor, followed identities' nodes that couldn't be reached: how many
+    /// times in a row, and when to try again.
+    pub sync_retries: Mutex<HashMap<PublicKey, (u32, Instant)>>,
     /// Followers given samples of the swarm (`WhoHosts`) this hour.
     pub swarm_samples: PerHour,
     /// Followers whose copies were checked (`Hosting`) this hour.
@@ -343,7 +349,7 @@ impl Node {
         let relays = RelayPolicy::from_config(&config.network)?;
         let tracker = ConnTracker::new(relays.clone());
         let tor = match config.tor.enabled {
-            true => Some(TorSide::start(&home, &config.tor, node_key.clone()).await?),
+            true => Some(TorSide::start(&home, &config.tor, node_key.clone(), &tracker).await?),
             false => None,
         };
         let pairings = Pairings::default();
@@ -351,31 +357,50 @@ impl Node {
             true => {
                 let gate = DirectGate::new(db.clone(), config.endpoints.direct, pairings.clone());
                 let own = OwnEndpoints::start(
-                    &home, &config, &node_key, &lookup, &relays, &tracker, gate,
+                    &home, &config, &node_key, &lookup, &relays, &tracker, gate, &sim,
                 )
                 .await?;
                 Some(own)
             }
             false => None,
         };
-        let endpoint =
-            bind_endpoint(&config, node_key, &lookup, &relays, tracker.clone(), &sim).await?;
+        // With Tor on, the node's ID is on Tor only: it connects nowhere else.
+        let endpoint = match &tor {
+            Some(tor) => tor.endpoint.clone(),
+            None => {
+                bind_endpoint(&config, node_key, &lookup, &relays, tracker.clone(), &sim).await?
+            }
+        };
         for follow in db.follows()? {
             remember(&lookup, &follow.addr);
         }
         for addr in db.followers()? {
             remember(&lookup, &addr);
         }
+        for bound in db.endpoints()? {
+            remember(&lookup, &bound.addr);
+        }
 
+        // Media is fetched from the media endpoint, which has no address to
+        // show. Without relays there's none, and the node's address isn't
+        // hidden anyway: its tickets name it.
+        let fetch_from = match &endpoints {
+            Some(own) => own.media.as_ref().unwrap_or(&own.direct).endpoint.clone(),
+            None => endpoint.clone(),
+        };
         let store = ContentStore::open(
             &home.blobs(),
-            &endpoint,
+            &fetch_from,
             db.clone(),
             &config.storage,
             store::GC_INTERVAL,
             sim.download_sources,
         )
         .await?;
+        let store = match &endpoints {
+            Some(own) => store.with_direct_endpoint(&own.direct.endpoint),
+            None => store,
+        };
         import_restored_media(&home, &store).await?;
         resign_own_objects(&signer, &db)?;
         let profile = own_profile(&signer, &config.name, endpoint.id(), &db)?;
@@ -401,7 +426,8 @@ impl Node {
             db,
             store,
             profile,
-            conns: Mutex::new(HashMap::new()),
+            conns: Arc::default(),
+            readying: Arc::new(Mutex::new(HashSet::new())),
             tracker,
             sync_lock: tokio::sync::Mutex::new(()),
             sync_now: Notify::new(),
@@ -412,6 +438,7 @@ impl Node {
             uploads: Mutex::new(HashMap::new()),
             opening: Mutex::new(HashMap::new()),
             subscribed: Mutex::new(HashMap::new()),
+            sync_retries: Mutex::new(HashMap::new()),
             swarm_samples: PerHour::default(),
             hosting_checks: PerHour::default(),
             heard: Heard::default(),
@@ -433,7 +460,6 @@ impl Node {
             .store
             .protocol(&core.config.serving, &core.config.swarm);
         let social = SocialProtocol::new(core.clone());
-        let social_over_tor = social.over_tor();
         let client = ClientProtocol::new(core.clone());
         // Messages between nodes go on neither of these, so if Tor is down
         // they wait; they never go direct (ADR 0014).
@@ -455,17 +481,15 @@ impl Node {
                     .spawn(),
             );
         }
-        let router = Router::builder(endpoint)
-            .accept(iroh_blobs::ALPN, blobs)
-            .accept(osp_proto::SOCIAL_ALPN, social)
-            .accept(osp_proto::CLIENT_ALPN, client)
-            .spawn();
-        // Only other nodes come over Tor: phones can't run it.
-        let tor_router = core.tor.as_ref().map(|tor| {
-            Router::builder(tor.endpoint.clone())
-                .accept(osp_proto::SOCIAL_ALPN, social_over_tor)
-                .spawn()
-        });
+        let router = Router::builder(endpoint).accept(osp_proto::SOCIAL_ALPN, social);
+        // With other endpoints, media and phones go through them.
+        let router = match core.endpoints {
+            Some(_) => router,
+            None => router
+                .accept(iroh_blobs::ALPN, blobs)
+                .accept(osp_proto::CLIENT_ALPN, client),
+        }
+        .spawn();
         let sync_loop = tokio::spawn(sync::run_loop(core.clone()));
         let later = tokio::spawn(sync::later_loop(core.clone(), later));
         let tell_moved = tokio::spawn(control::tell_moved_loop(core.clone()));
@@ -484,14 +508,13 @@ impl Node {
         ];
         if core.config.network.relay != RelayChoice::Disabled {
             tasks.push(tokio::spawn(network::log_nat_changes(
-                core.endpoint.clone(),
+                core.endpoint_on_the_network().clone(),
             )));
         }
 
         Ok(Self {
             core,
             router,
-            tor_router,
             endpoint_routers,
             tasks,
             serving_socket: false,
@@ -537,9 +560,20 @@ impl Node {
         Some(self.core.shareable_addr_of(&own.direct.endpoint).await)
     }
 
+    /// Every endpoint's ID, the public one first. A node on the simulated
+    /// network is on it by each of them.
+    pub fn endpoint_ids(&self) -> Vec<EndpointId> {
+        let mut ids = vec![self.core.endpoint.id()];
+        if let Some(own) = &self.core.endpoints {
+            ids.extend(own.media.as_ref().map(|media| media.endpoint.id()));
+            ids.push(own.direct.endpoint.id());
+        }
+        ids
+    }
+
     /// Asks another node for its media and direct endpoints, offering this
-    /// node's direct one if its rule allows that node. Nothing uses them until
-    /// ADR 0014's build step 3. For tests and diagnostics.
+    /// node's direct one if its rule allows that node. The node does this
+    /// itself as it syncs. For tests and diagnostics.
     pub async fn ask_endpoints(&self, node: &EndpointAddr) -> Result<PeerEndpoints> {
         self.core.ask_endpoints(node).await
     }
@@ -569,10 +603,15 @@ impl Node {
         for addr in providers {
             remember(&self.core.lookup, addr);
         }
-        let ids = providers.iter().map(|a| a.id).collect();
+        let sources = providers.iter().map(|a| a.id.into()).collect();
         self.core
             .store
-            .download(hash, Sources::one_at_a_time(ids), BlobClass::Cache, size)
+            .download(
+                hash,
+                Sources::one_at_a_time(sources),
+                BlobClass::Cache,
+                size,
+            )
             .await
     }
 
@@ -598,12 +637,6 @@ impl Node {
             .shutdown()
             .await
             .context("shutting down protocols")?;
-        if let Some(router) = self.tor_router {
-            router
-                .shutdown()
-                .await
-                .context("shutting down protocols over Tor")?;
-        }
         for router in self.endpoint_routers {
             router
                 .shutdown()
@@ -620,9 +653,22 @@ impl Node {
 impl Core {
     /// Our address as we hand it out. With relays we share only the node ID
     /// and relay URL, so tickets don't reveal home IP addresses; without
-    /// relays, direct addresses are all there is.
+    /// relays, direct addresses are all there is. Over Tor the ID is enough,
+    /// and there is nothing else.
     pub async fn shareable_addr(&self) -> EndpointAddr {
+        if self.tor.is_some() {
+            return EndpointAddr::new(self.endpoint.id());
+        }
         self.shareable_addr_of(&self.endpoint).await
+    }
+
+    /// The endpoint with the node's relay and IP sockets, for what `status`
+    /// says of them: the direct one, if the node has one.
+    pub fn endpoint_on_the_network(&self) -> &Endpoint {
+        match &self.endpoints {
+            Some(own) => &own.direct.endpoint,
+            None => &self.endpoint,
+        }
     }
 
     /// The same, for any of our endpoints.
@@ -775,6 +821,10 @@ pub(crate) fn check_addr(addr: &EndpointAddr) -> Result<()> {
 /// Refuses settings that can't work together.
 fn check_network_config(config: &Config) -> Result<()> {
     let net = &config.network;
+    ensure!(
+        !config.tor.enabled || config.endpoints.enabled,
+        "tor needs endpoints: media and phones can't go over Tor, so set enabled = true under [endpoints] too"
+    );
     if net.relay_only {
         ensure!(
             net.relay != RelayChoice::Disabled,
@@ -786,6 +836,14 @@ fn check_network_config(config: &Config) -> Result<()> {
         );
     }
     Ok(())
+}
+
+/// Whether the node is on the simulated network (`osp-sim`).
+pub(crate) fn on_simulated_network(#[allow(unused_variables)] sim: &SimSettings) -> bool {
+    #[cfg(feature = "sim")]
+    return sim.network.is_some();
+    #[cfg(not(feature = "sim"))]
+    false
 }
 
 /// What every endpoint of the node shares: its limits on streams, and how it
