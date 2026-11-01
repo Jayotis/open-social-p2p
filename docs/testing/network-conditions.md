@@ -29,7 +29,7 @@ cargo run --release -p osp-sim -- --dir /path/on/disk/run --swarm --net \
   --latecomers 10 --label "$(git rev-parse --short HEAD)" --out run.json
 ```
 
-With `--swarm --net --latecomers 10` and no other options, that's the [scenario](#the-scenario) below. Upload speeds are `--creator-mbps` and `--follower-mbps`, as on loopback. With `--net`:
+With `--swarm --net --latecomers 10` and no other options, that's the [scenario](#the-scenario) below. Every node's store goes under `--dir`, so all the nodes share that disk, which real nodes don't: use a fast one with nothing else on it, as a SATA SSD [made one judged run miss a mark](#messages-and-media-on-their-own-endpoints). Compare times only between runs on the same disk. Upload speeds are `--creator-mbps` and `--follower-mbps`, as on loopback. With `--net`:
 
 - `--creator-down-mbps`, `--creator-delay-ms`, `--creator-loss`: the creator's download speed in Mbit/s, delay in milliseconds each way, and the percentage of packets lost each way.
 - `--down-mbps`, `--delay-ms`, `--loss`: the same for followers, given in turn, as their upload speeds are; strangers and latecomers get them too. Lists of different lengths mix: with three upload speeds and four delays, every upload speed comes with every delay.
@@ -480,3 +480,28 @@ osp-sim --dir /path/on/disk/run --swarm --net --latecomers 10 --tor-delay --endp
 ```
 
 **Pass marks.** For the run with endpoints, the home run's three [marks](#pass-marks). Recorded too, against the run without: syncs that failed, followers not told of the post, and the latecomers' times, which the changed waits should improve on the 44 and 62 s above.
+
+**Results**, 2026-11-01, one run each with `cdc1670`, back to back, with the runs' files on an empty NVMe partition; other programs took at most 6% of the machine's CPUs.
+
+| Run | Followers: 50% / 95% / all | Creator's copies | Followers' requests refused as busy | Syncs failed connecting | Followers not told of the post | Latecomers: half / all | Pass marks |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Tor-like delay | 474 / 638 / 793 s | 23.1 | 1,004 | 0 | 0 | 42.3 / 49.1 s | met |
+| Tor-like delay, endpoints | 474 / 640 / 705 s | 21.5 | 919 | 0 | 0 | 47.7 / 58.1 s | **met** |
+
+- **The judged run meets every mark,** and the endpoints made no difference to speak of: 2 s at 95%, in one run each.
+- **The changed waits did what they were for,** and no more: no sync failed and every follower was told of the post, against 139 and 4. Latecomers took about as long as before, not less.
+
+**It first missed a mark, on a slower disk.** These are the same scenario on the SATA SSD used for this document's runs since at least 10-29, where the judged run missed 95% of followers within 15 minutes. The plan to repeat the gate's two runs on a faster disk, as the last round whatever it showed, was written down before they ran.
+
+| Code | Run | Date | Followers: 50% / 95% / all | 95% within 15 minutes |
+| --- | --- | --- | --- | --- |
+| `be38037` | Tor-like delay | 10-31 | 587 / 730 / 764 s | met |
+| `cdc1670` | Tor-like delay | 11-01 | 757 / 925 / 998 s | **missed** |
+| `cdc1670` | Tor-like delay, endpoints | 11-01 | 836 / 1,004 / 1,374 s | **missed** |
+| `7607c52` | Tor-like delay | 11-01 | 787 / 949 / 1,069 s | **missed** |
+| `be38037` | Tor-like delay | 11-01 | 730 / 895 / 1,286 s | met |
+
+- **The code wasn't the cause.** The same `be38037` program reached 95% of followers 165 s later than it had the evening before, and the runs of 11-01 don't line up in code order: `be38037` comes before the dependency update, `7607c52` after it, and `cdc1670` has step 3.
+- **The shared disk was.** Every node's store is on one disk in these runs, which real nodes don't share. With the same `cdc1670` program, moving to the NVMe partition brought 95% of followers from 925 to 638 s without endpoints, and from 1,004 to 640 s with them. The machine's time stalled on disk fell from 359 and 416 s a run to about 5 s, packets dropped by full queues from about 4% to 0.9%, and requests refused as busy from 1,803 and 2,641 to 1,004 and 919. The slowest measured upload among nodes at 5 Mbit/s rose from 2.9 and 1.4 Mbit/s to 4.8.
+- **Left open:** whether the SSD was slow by nature or from its state. A build had filled it earlier that day and it hadn't been trimmed for six days. On it, sustained writes averaged 88 MB/s with stalls of up to 3.65 s, against 432 MB/s and 160 ms on the NVMe partition. Nor does this show why the same program was slower on 11-01 than on 10-31.
+- **For the earlier results here:** those since at least 10-29 were on that SSD, so their times may say as much about the disk as about the design. Comparisons within a round still hold, as both sides had the same disk, but the disk may have narrowed the differences. They haven't been run again.
