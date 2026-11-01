@@ -67,6 +67,9 @@ pub struct NodeStatus {
     pub rtt_ms: Option<u32>,
     /// Requests to be a trusted follower waiting for an answer.
     pub trust_requests: u32,
+    /// Messages between nodes go through Tor, so they take seconds, and a
+    /// first contact up to a few minutes.
+    pub over_tor: bool,
 }
 
 /// A request to be a trusted follower, or someone trusted (ADR 0013).
@@ -106,6 +109,8 @@ pub struct TrustList {
 pub struct Followed {
     pub identity: String,
     pub name: String,
+    /// The node hasn't reached theirs yet.
+    pub connecting: bool,
 }
 
 pub struct Post {
@@ -239,6 +244,7 @@ impl OspApp {
                 .unwrap_or_else(|| "none".to_string()),
             rtt_ms: conn.and_then(|c| c.rtt_ms).map(|r| r as u32),
             trust_requests: s.trust_requests as u32,
+            over_tor: s.tor.is_some(),
         })
     }
 
@@ -346,6 +352,15 @@ impl OspApp {
         Ok(())
     }
 
+    /// Stops following someone, whether or not the node has reached theirs.
+    pub async fn unfollow(&self, identity: String) -> Result<()> {
+        let actor = identity.parse()?;
+        self.client
+            .request(&ClientRequest::Unfollow { actor })
+            .await?;
+        Ok(())
+    }
+
     /// Who the node follows, by name.
     pub async fn following(&self) -> Result<Vec<Followed>> {
         let ClientResponse::Following { follows } =
@@ -358,6 +373,7 @@ impl OspApp {
             .map(|f| Followed {
                 identity: f.actor.to_string(),
                 name: f.name.unwrap_or_else(|| f.actor.fmt_short().to_string()),
+                connecting: f.last_sync.is_none(),
             })
             .collect();
         followed.sort_by_key(|f| f.name.to_lowercase());

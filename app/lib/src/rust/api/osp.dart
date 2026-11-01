@@ -118,6 +118,9 @@ abstract class OspApp implements RustOpaqueInterface {
   /// trusted.
   Future<TrustList> trustList();
 
+  /// Stops following someone, whether or not the node has reached theirs.
+  Future<void> unfollow({required String identity});
+
   /// Stops trusting someone, on every node they were trusted on.
   Future<void> untrust({required String identity});
 
@@ -132,10 +135,17 @@ class Followed {
   final String identity;
   final String name;
 
-  const Followed({required this.identity, required this.name});
+  /// The node hasn't reached theirs yet.
+  final bool connecting;
+
+  const Followed({
+    required this.identity,
+    required this.name,
+    required this.connecting,
+  });
 
   @override
-  int get hashCode => identity.hashCode ^ name.hashCode;
+  int get hashCode => identity.hashCode ^ name.hashCode ^ connecting.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -143,7 +153,8 @@ class Followed {
       other is Followed &&
           runtimeType == other.runtimeType &&
           identity == other.identity &&
-          name == other.name;
+          name == other.name &&
+          connecting == other.connecting;
 }
 
 class Media {
@@ -248,6 +259,10 @@ class NodeStatus {
   /// Requests to be a trusted follower waiting for an answer.
   final int trustRequests;
 
+  /// Messages between nodes go through Tor, so they take seconds, and a
+  /// first contact up to a few minutes.
+  final bool overTor;
+
   const NodeStatus({
     required this.name,
     required this.version,
@@ -261,6 +276,7 @@ class NodeStatus {
     required this.path,
     this.rttMs,
     required this.trustRequests,
+    required this.overTor,
   });
 
   @override
@@ -276,7 +292,8 @@ class NodeStatus {
       problems.hashCode ^
       path.hashCode ^
       rttMs.hashCode ^
-      trustRequests.hashCode;
+      trustRequests.hashCode ^
+      overTor.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -294,7 +311,8 @@ class NodeStatus {
           problems == other.problems &&
           path == other.path &&
           rttMs == other.rttMs &&
-          trustRequests == other.trustRequests;
+          trustRequests == other.trustRequests &&
+          overTor == other.overTor;
 }
 
 class Post {

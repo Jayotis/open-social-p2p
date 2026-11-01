@@ -66,7 +66,7 @@ class RustLib extends BaseEntrypoint<RustLibApi, RustLibApiImpl, RustLibWire> {
   String get codegenVersion => '2.13.0';
 
   @override
-  int get rustContentHash => -855550407;
+  int get rustContentHash => -2117602614;
 
   static const kDefaultExternalLibraryLoaderConfig =
       ExternalLibraryLoaderConfig(
@@ -167,6 +167,11 @@ abstract class RustLibApi extends BaseApi {
   });
 
   Future<TrustList> crateApiOspOspAppTrustList({required OspApp that});
+
+  Future<void> crateApiOspOspAppUnfollow({
+    required OspApp that,
+    required String identity,
+  });
 
   Future<void> crateApiOspOspAppUntrust({
     required OspApp that,
@@ -1102,7 +1107,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       const TaskConstMeta(debugName: "OspApp_trust_list", argNames: ["that"]);
 
   @override
-  Future<void> crateApiOspOspAppUntrust({
+  Future<void> crateApiOspOspAppUnfollow({
     required OspApp that,
     required String identity,
   }) {
@@ -1119,6 +1124,43 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             generalizedFrbRustBinding,
             serializer,
             funcId: 28,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_unit,
+          decodeErrorData: sse_decode_AnyhowException,
+        ),
+        constMeta: kCrateApiOspOspAppUnfollowConstMeta,
+        argValues: [that, identity],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiOspOspAppUnfollowConstMeta => const TaskConstMeta(
+    debugName: "OspApp_unfollow",
+    argNames: ["that", "identity"],
+  );
+
+  @override
+  Future<void> crateApiOspOspAppUntrust({
+    required OspApp that,
+    required String identity,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerOspApp(
+            that,
+            serializer,
+          );
+          sse_encode_String(identity, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 29,
             port: port_,
           );
         },
@@ -1155,7 +1197,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 29,
+            funcId: 30,
             port: port_,
           );
         },
@@ -1185,7 +1227,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 30,
+            funcId: 31,
             port: port_,
           );
         },
@@ -1210,7 +1252,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         callFfi: () {
           final serializer = SseSerializer(generalizedFrbRustBinding);
           sse_encode_String(text, serializer);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 31)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 32)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_bool,
@@ -1233,7 +1275,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         callFfi: () {
           final serializer = SseSerializer(generalizedFrbRustBinding);
           sse_encode_String(text, serializer);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 32)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 33)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_bool,
@@ -1255,7 +1297,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       SyncTask(
         callFfi: () {
           final serializer = SseSerializer(generalizedFrbRustBinding);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 33)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 34)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_String,
@@ -1366,11 +1408,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   Followed dco_decode_followed(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 2)
-      throw Exception('unexpected arr length: expect 2 but see ${arr.length}');
+    if (arr.length != 3)
+      throw Exception('unexpected arr length: expect 3 but see ${arr.length}');
     return Followed(
       identity: dco_decode_String(arr[0]),
       name: dco_decode_String(arr[1]),
+      connecting: dco_decode_bool(arr[2]),
     );
   }
 
@@ -1464,8 +1507,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   NodeStatus dco_decode_node_status(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 12)
-      throw Exception('unexpected arr length: expect 12 but see ${arr.length}');
+    if (arr.length != 13)
+      throw Exception('unexpected arr length: expect 13 but see ${arr.length}');
     return NodeStatus(
       name: dco_decode_String(arr[0]),
       version: dco_decode_String(arr[1]),
@@ -1479,6 +1522,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       path: dco_decode_String(arr[9]),
       rttMs: dco_decode_opt_box_autoadd_u_32(arr[10]),
       trustRequests: dco_decode_u_32(arr[11]),
+      overTor: dco_decode_bool(arr[12]),
     );
   }
 
@@ -1749,7 +1793,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var var_identity = sse_decode_String(deserializer);
     var var_name = sse_decode_String(deserializer);
-    return Followed(identity: var_identity, name: var_name);
+    var var_connecting = sse_decode_bool(deserializer);
+    return Followed(
+      identity: var_identity,
+      name: var_name,
+      connecting: var_connecting,
+    );
   }
 
   @protected
@@ -1892,6 +1941,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_path = sse_decode_String(deserializer);
     var var_rttMs = sse_decode_opt_box_autoadd_u_32(deserializer);
     var var_trustRequests = sse_decode_u_32(deserializer);
+    var var_overTor = sse_decode_bool(deserializer);
     return NodeStatus(
       name: var_name,
       version: var_version,
@@ -1905,6 +1955,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       path: var_path,
       rttMs: var_rttMs,
       trustRequests: var_trustRequests,
+      overTor: var_overTor,
     );
   }
 
@@ -2232,6 +2283,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_String(self.identity, serializer);
     sse_encode_String(self.name, serializer);
+    sse_encode_bool(self.connecting, serializer);
   }
 
   @protected
@@ -2353,6 +2405,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_String(self.path, serializer);
     sse_encode_opt_box_autoadd_u_32(self.rttMs, serializer);
     sse_encode_u_32(self.trustRequests, serializer);
+    sse_encode_bool(self.overTor, serializer);
   }
 
   @protected
@@ -2672,6 +2725,10 @@ class OspAppImpl extends RustOpaque implements OspApp {
   /// trusted.
   Future<TrustList> trustList() =>
       RustLib.instance.api.crateApiOspOspAppTrustList(that: this);
+
+  /// Stops following someone, whether or not the node has reached theirs.
+  Future<void> unfollow({required String identity}) => RustLib.instance.api
+      .crateApiOspOspAppUnfollow(that: this, identity: identity);
 
   /// Stops trusting someone, on every node they were trusted on.
   Future<void> untrust({required String identity}) => RustLib.instance.api
