@@ -218,14 +218,9 @@ impl ContentStore {
         let store = FsStore::load_with_opts(dir.join("blobs.db"), options)
             .await
             .with_context(|| format!("opening blob store in {}", dir.display()))?;
-        let pool = ConnectionPool::new(
-            endpoint.clone(),
-            iroh_blobs::ALPN,
-            connection_pool::Options {
-                connect_timeout: CONNECT_TIMEOUT,
-                ..Default::default()
-            },
-        );
+        let mut pool_options = connection_pool::Options::default();
+        pool_options.connect_timeout = CONNECT_TIMEOUT;
+        let pool = ConnectionPool::new(endpoint.clone(), iroh_blobs::ALPN, pool_options);
         let this = Self {
             store,
             pool,
