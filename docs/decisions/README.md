@@ -10,13 +10,14 @@ Each record captures one significant decision: the problem, the options consider
 | [0004](0004-signed-objects-and-ids.md) | Signed objects and content identifiers | Accepted; who signs objects changed by 0010 |
 | [0005](0005-media-profile-v1.md) | Media profile v1: 720p, low bitrate, metadata stripped | Accepted |
 | [0006](0006-desktop-first-always-on-node.md) | Desktop-first, always-on personal node | Accepted |
-| [0007](0007-transport-privacy-defaults.md) | Transport privacy defaults: private messages, direct media | Accepted |
+| [0007](0007-transport-privacy-defaults.md) | Transport privacy defaults: private messages, direct media | Accepted; phases 2 and 3 decided by 0014 |
 | [0008](0008-device-pairing-and-client-protocol.md) | Device pairing and the client protocol | Accepted |
 | [0009](0009-identity-backup-and-recovery.md) | Identity backup and recovery | Accepted |
 | [0010](0010-signing-keys-and-revocation.md) | Signing keys, and taking a stolen one back | Accepted |
 | [0011](0011-measuring-peers.md) | Measuring peers | Accepted |
 | [0012](0012-sharing-prefetched-copies.md) | Sharing prefetched copies is asked at setup | Accepted |
 | [0013](0013-trusted-followers.md) | Trusted followers, asked for and allowed on the phone | Accepted |
+| [0014](0014-finding-people-and-private-messages.md) | Finding people and content, with messages between nodes over Tor | Accepted |
 
 Proposals under review that may become ADRs: [peer reciprocity and recognition](../12-peer-reciprocity-and-recognition.md) (its first phase, measuring, is ADR 0011) and [hosting roles and the follower swarm](../13-hosting-roles-and-follower-swarm.md) (its first phase is accepted, and whether to share copies is asked at setup, ADR 0012). See the [critical review](../reviews/2026-10-21-review-of-docs-12-and-13.md) for what blocks them.
 
