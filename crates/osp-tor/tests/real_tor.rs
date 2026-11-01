@@ -150,8 +150,9 @@ async fn nodes_talk_through_tor_and_survive_its_restarts() -> Result<()> {
         })
     };
     let (tor_a, tor_b) = (launch(&dir_a), launch(&dir_b));
-    // A fixed key, so Tor's name for its onion service checks ours.
-    let key_b = SecretKey::from_bytes(&[7; 32]);
+    // A new key each run: one used in the last few hours has a descriptor out
+    // there already, and runs side by side would share an onion address.
+    let key_b = SecretKey::generate();
     println!("b's onion service: {}", onion::service_id(&key_b.public()));
     let (a, _) = node(&tor_a, SecretKey::generate()).await?;
     let (b, b_transport) = node(&tor_b, key_b).await?;

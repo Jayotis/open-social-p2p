@@ -182,6 +182,9 @@ const MIGRATIONS: &[&str] = &[
         node     TEXT PRIMARY KEY,
         added_ms INTEGER NOT NULL
     );",
+    // 13: the endpoint a follower said it may be named by to other nodes, as
+    // a host of our media, and how to reach it (ADR 0014).
+    "ALTER TABLE followers ADD COLUMN host TEXT",
 ];
 
 /// Hosts remembered per blob. More than enough to find a copy; a peer
@@ -336,6 +339,16 @@ impl UploadState {
     pub fn is_finished(&self) -> bool {
         matches!(self, UploadState::Posted(_) | UploadState::Failed(_))
     }
+}
+
+/// A follower holding a copy of a blob (`Db::swarm_members`).
+#[derive(Debug, Clone)]
+pub struct SwarmMember {
+    pub addr: EndpointAddr,
+    /// Trusted by the owner (ADR 0013).
+    pub trusted: bool,
+    /// The endpoint it may be named by to other nodes, if it has one.
+    pub host: Option<BoundEndpoint>,
 }
 
 /// SQLite connection shared by the node's tasks.
@@ -770,11 +783,46 @@ impl Db {
 
     /// Forgets followers not heard from since `before_ms`. Returns how many.
     pub fn drop_silent_followers(&self, before_ms: i64) -> Result<usize> {
-        let n = self.conn().execute(
+        let mut conn = self.conn();
+        let tx = conn.transaction()?;
+        // A node we follow as well asks for them again at its next sync.
+        tx.execute(
+            "DELETE FROM endpoints WHERE public IN
+             (SELECT node FROM followers WHERE COALESCE(seen_ms, since) < ?1)",
+            params![before_ms],
+        )?;
+        let n = tx.execute(
             "DELETE FROM followers WHERE COALESCE(seen_ms, since) < ?1",
             params![before_ms],
         )?;
+        tx.commit()?;
         Ok(n)
+    }
+
+    /// Records the endpoint a follower may be named by to other nodes.
+    pub fn set_follower_host(&self, node: &EndpointId, host: Option<&BoundEndpoint>) -> Result<()> {
+        let host = host.map(serde_json::to_string).transpose()?;
+        self.conn().execute(
+            "UPDATE followers SET host = ?2 WHERE node = ?1",
+            params![node.to_string(), host],
+        )?;
+        Ok(())
+    }
+
+    /// The endpoint a follower may be named by to other nodes.
+    pub fn follower_host(&self, node: &EndpointId) -> Result<Option<BoundEndpoint>> {
+        let host: Option<Option<String>> = self
+            .conn()
+            .query_row(
+                "SELECT host FROM followers WHERE node = ?1",
+                params![node.to_string()],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(host
+            .flatten()
+            .map(|host| serde_json::from_str(&host))
+            .transpose()?)
     }
 
     pub fn followers(&self) -> Result<Vec<EndpointAddr>> {
@@ -1235,27 +1283,30 @@ impl Db {
     }
 
     /// The followers, other than `except`, that hold a copy of `blob` and
-    /// still say they share, in random order, each with whether it's
-    /// trusted (ADR 0013).
-    pub fn swarm_members(
-        &self,
-        blob: &BlobHash,
-        except: &EndpointId,
-    ) -> Result<Vec<(EndpointAddr, bool)>> {
+    /// still say they share, in random order.
+    pub fn swarm_members(&self, blob: &BlobHash, except: &EndpointId) -> Result<Vec<SwarmMember>> {
         let conn = self.conn();
         let mut stmt = conn.prepare(
-            "SELECT f.node_addr, t.node IS NOT NULL
+            "SELECT f.node_addr, t.node IS NOT NULL, f.host
              FROM swarm s JOIN followers f ON f.node = s.node
                  LEFT JOIN trust t ON t.node = s.node AND t.state = 'allowed'
              WHERE s.blob = ?1 AND f.shares = 1 AND s.node != ?2
              ORDER BY RANDOM()",
         )?;
         let rows = stmt.query_map(params![blob.to_string(), except.to_string()], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, bool>(1)?))
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, bool>(1)?,
+                row.get::<_, Option<String>>(2)?,
+            ))
         })?;
         rows.map(|r| {
-            let (addr, trusted) = r?;
-            Ok((serde_json::from_str(&addr)?, trusted))
+            let (addr, trusted, host) = r?;
+            Ok(SwarmMember {
+                addr: serde_json::from_str(&addr)?,
+                trusted,
+                host: host.map(|h| serde_json::from_str(&h)).transpose()?,
+            })
         })
         .collect()
     }
@@ -1461,6 +1512,55 @@ impl Db {
             )
             .optional()?;
         Ok(public.map(|p| p.parse()).transpose()?)
+    }
+
+    /// The node any endpoint we know of serves for: what's measured of the
+    /// endpoint, and what it may do, is that node's.
+    pub fn endpoint_owner(&self, endpoint: &EndpointId) -> Result<Option<EndpointId>> {
+        let public: Option<String> = self
+            .conn()
+            .query_row(
+                "SELECT public FROM endpoints WHERE endpoint = ?1",
+                params![endpoint.to_string()],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(public.map(|p| p.parse()).transpose()?)
+    }
+
+    /// A node's endpoint of `kind`, and how to reach it, as it told us.
+    pub fn endpoint_of(
+        &self,
+        public: &EndpointId,
+        kind: EndpointKind,
+    ) -> Result<Option<BoundEndpoint>> {
+        let bound: Option<String> = self
+            .conn()
+            .query_row(
+                "SELECT bound FROM endpoints WHERE public = ?1 AND kind = ?2",
+                params![public.to_string(), kind_name(kind)],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(bound.map(|b| serde_json::from_str(&b)).transpose()?)
+    }
+
+    /// Forgets a node's endpoint of `kind`, once the node stops offering it.
+    pub fn forget_endpoint(&self, public: &EndpointId, kind: EndpointKind) -> Result<()> {
+        self.conn().execute(
+            "DELETE FROM endpoints WHERE public = ?1 AND kind = ?2",
+            params![public.to_string(), kind_name(kind)],
+        )?;
+        Ok(())
+    }
+
+    /// Every endpoint we know of, to find them again after a restart.
+    pub fn endpoints(&self) -> Result<Vec<BoundEndpoint>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare("SELECT bound FROM endpoints")?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+        rows.map(|bound| Ok(serde_json::from_str(&bound?)?))
+            .collect()
     }
 
     // ---- nodes allowed a direct connection by the rule `approved` ----
@@ -1968,7 +2068,7 @@ mod tests {
 
         let members = |except: &EndpointId| -> Vec<EndpointId> {
             let members = db.swarm_members(&blob, except).unwrap();
-            members.into_iter().map(|(a, _)| a.id).collect()
+            members.into_iter().map(|m| m.addr.id).collect()
         };
         let listed = members(&sharing[0].id);
         assert_eq!(listed.len(), 2, "{listed:?}");
@@ -2135,7 +2235,7 @@ mod tests {
             MAX_SWARM_PER_BLOB as usize - quarter - longest
         );
         let in_swarm = db.swarm_members(&blob, &crowd[0].id).unwrap();
-        assert_eq!(in_swarm.iter().filter(|(_, t)| *t).count(), quarter);
+        assert_eq!(in_swarm.iter().filter(|m| m.trusted).count(), quarter);
     }
 
     #[test]

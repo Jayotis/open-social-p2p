@@ -136,6 +136,8 @@ async fn subscribe(peer: &Stranger) -> SocialResponse {
     let req = SocialRequest::Subscribe {
         addr: peer.addr(),
         shares_prefetched: false,
+        media: None,
+        direct: None,
     };
     ask(peer, &req).await
 }
@@ -313,6 +315,8 @@ async fn subscribers_need_a_short_address_and_arrive_at_a_limited_rate() {
     let req = SocialRequest::Subscribe {
         addr: padded,
         shares_prefetched: false,
+        media: None,
+        direct: None,
     };
     let resp = ask(&padder, &req).await;
     assert!(

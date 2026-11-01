@@ -42,8 +42,9 @@ use crate::{
     home::Home,
     keys,
     network::ConnTracker,
-    node::{Core, check_addr, endpoint_builder, remember},
+    node::{Core, SimSettings, check_addr, endpoint_builder, on_simulated_network, remember},
     relays::{self, RelayPolicy},
+    store::Source,
 };
 
 /// How far ahead of our clock a binding may be dated. The later one holds, so
@@ -63,13 +64,15 @@ pub(crate) struct OwnEndpoint {
 }
 
 pub(crate) struct OwnEndpoints {
-    /// None without relays, which are all it could use.
+    /// None without relays, which are all it could use, except on the
+    /// simulated network, which stands in for them.
     pub media: Option<OwnEndpoint>,
     pub direct: OwnEndpoint,
     pub gate: DirectGate,
 }
 
 impl OwnEndpoints {
+    #[allow(clippy::too_many_arguments)]
     pub async fn start(
         home: &Home,
         config: &Config,
@@ -78,24 +81,25 @@ impl OwnEndpoints {
         relays: &RelayPolicy,
         tracker: &ConnTracker,
         gate: DirectGate,
+        sim: &SimSettings,
     ) -> Result<Self> {
         let net = &config.network;
-        let media = match net.relay {
-            RelayChoice::Disabled => None,
-            _ => {
-                let (key, binding) = own_key(public, &home.media_key(), EndpointKind::Media)?;
-                // Its address gives away only which relay it uses, so looking
-                // it up by ID is fine, and it can't go anywhere else.
-                let relays = RelayPolicy::new(relays::own_relays(&net.relay)?, true);
-                let endpoint = endpoint_builder(net, lookup, &relays)?
-                    .hooks(tracker.with_relays(relays))
-                    .clear_ip_transports()
-                    .secret_key(key)
-                    .bind()
-                    .await
-                    .context("starting the media endpoint")?;
-                Some(OwnEndpoint { endpoint, binding })
-            }
+        let media = if net.relay == RelayChoice::Disabled && !on_simulated_network(sim) {
+            None
+        } else {
+            let (key, binding) = own_key(public, &home.media_key(), EndpointKind::Media)?;
+            // Its address gives away only which relay it uses, so looking
+            // it up by ID is fine, and it can't go anywhere else.
+            let relays = RelayPolicy::new(relays::own_relays(&net.relay)?, true);
+            let builder = endpoint_builder(net, lookup, &relays)?
+                .hooks(tracker.with_relays(relays))
+                .clear_ip_transports();
+            let endpoint = sim_network(builder, sim, &key)
+                .secret_key(key)
+                .bind()
+                .await
+                .context("starting the media endpoint")?;
+            Some(OwnEndpoint { endpoint, binding })
         };
         let (key, binding) = own_key(public, &home.direct_key(), EndpointKind::Direct)?;
         // The relay is published under its ID, as phones find the node again
@@ -107,13 +111,14 @@ impl OwnEndpoints {
         if net.relay_only {
             builder = builder.clear_ip_transports();
         } else if let Some(addr) = net.bind {
-            // The node's main endpoint has any port the config names, until
-            // ADR 0014's step 3 takes it off IP.
-            builder = builder
-                .clear_ip_transports()
-                .bind_addr(SocketAddr::new(addr.ip(), 0))?;
+            // Off Tor, the node's main endpoint has any port the config names.
+            let addr = match config.tor.enabled {
+                true => addr,
+                false => SocketAddr::new(addr.ip(), 0),
+            };
+            builder = builder.clear_ip_transports().bind_addr(addr)?;
         }
-        let endpoint = builder
+        let endpoint = sim_network(builder, sim, &key)
             .secret_key(key)
             .bind()
             .await
@@ -137,6 +142,31 @@ impl OwnEndpoints {
             rule: self.gate.rule.to_string(),
         }
     }
+}
+
+/// On the simulated network, an endpoint's packets go through it.
+#[cfg(feature = "sim")]
+fn sim_network(
+    builder: iroh::endpoint::Builder,
+    sim: &SimSettings,
+    key: &SecretKey,
+) -> iroh::endpoint::Builder {
+    match &sim.network {
+        Some(network) => builder
+            .clear_ip_transports()
+            .add_custom_transport(network.transport(key.public()))
+            .address_lookup(network.lookup()),
+        None => builder,
+    }
+}
+
+#[cfg(not(feature = "sim"))]
+fn sim_network(
+    builder: iroh::endpoint::Builder,
+    _sim: &SimSettings,
+    _key: &SecretKey,
+) -> iroh::endpoint::Builder {
+    builder
 }
 
 /// The endpoint's key, made if it's new, and its binding, dated when the key
@@ -332,8 +362,10 @@ impl Core {
             self.keep_endpoint(&node.id, EndpointKind::Media, bound)?;
         }
         let direct = direct.filter(|_| allowed);
-        if let Some(bound) = &direct {
-            self.keep_endpoint(&node.id, EndpointKind::Direct, bound)?;
+        match &direct {
+            Some(bound) => self.keep_endpoint(&node.id, EndpointKind::Direct, bound)?,
+            // Either rule may have changed: asking it goes through the relay.
+            None => self.db.forget_endpoint(&node.id, EndpointKind::Direct)?,
         }
         Ok(PeerEndpoints {
             media: media.map(|b| b.addr),
@@ -341,8 +373,105 @@ impl Core {
         })
     }
 
-    /// Checks another node's endpoint and keeps it, and how to reach it.
-    fn keep_endpoint(
+    /// How to fetch from the node `public`, best first, by what it told us:
+    /// its direct endpoint from ours, if our rule allows it and it gave us
+    /// one; then its media endpoint, as it may have changed its rule since.
+    /// None if it told us of neither. A node without other endpoints fetches
+    /// from everyone's public ID.
+    pub(crate) fn sources_of(&self, public: &EndpointId) -> Result<Vec<Source>> {
+        let Some(own) = &self.endpoints else {
+            return Ok(vec![(*public).into()]);
+        };
+        let mut sources = Vec::new();
+        if own.gate.allows_public(public)?
+            && let Some(direct) = self.db.endpoint_of(public, EndpointKind::Direct)?
+        {
+            sources.push(Source {
+                node: *public,
+                endpoint: direct.binding.endpoint,
+                from_direct: true,
+            });
+        }
+        if let Some(media) = self.db.endpoint_of(public, EndpointKind::Media)? {
+            sources.push(Source {
+                node: *public,
+                endpoint: media.binding.endpoint,
+                from_direct: false,
+            });
+        }
+        Ok(sources)
+    }
+
+    /// How to fetch from a host another node named, if its binding checks
+    /// out. Its address is used for this download only: what's named to us
+    /// isn't ours to pass on. Our own rule decides which endpoint of ours
+    /// connects, so a node that allows nobody shows its address to nobody,
+    /// even a host that allows anyone.
+    pub(crate) fn source_named(&self, bound: &BoundEndpoint) -> Option<Source> {
+        let binding = &bound.binding;
+        if let Err(e) = bound
+            .check(&binding.public, binding.kind)
+            .and_then(|()| check_addr(&bound.addr))
+        {
+            debug!(node = %binding.public.fmt_short(), "a host's endpoint was refused: {e:#}");
+            return None;
+        }
+        remember(&self.lookup, &bound.addr);
+        let from_direct = binding.kind == EndpointKind::Direct
+            && self
+                .endpoints
+                .as_ref()
+                .is_some_and(|own| own.gate.allows_public(&binding.public).unwrap_or(false));
+        Some(Source {
+            node: binding.public,
+            endpoint: binding.endpoint,
+            from_direct,
+        })
+    }
+
+    /// The endpoint of ours that `remote`, asking who hosts a blob, should
+    /// fetch from: the media one, or without relays the direct one, if our
+    /// rule allows it.
+    pub(crate) async fn own_host_for(&self, remote: &EndpointId) -> Result<Option<BoundEndpoint>> {
+        let Some(own) = &self.endpoints else {
+            return Ok(None);
+        };
+        if let Some(media) = &own.media {
+            return Ok(Some(self.bound_endpoint(media).await));
+        }
+        Ok(match own.gate.allows_public(remote)? {
+            true => Some(self.bound_endpoint(&own.direct).await),
+            false => None,
+        })
+    }
+
+    /// Our endpoints as we subscribe with them: the media one, and the direct
+    /// one only if anyone may be told of it, as it may be named to others.
+    pub(crate) async fn endpoints_to_subscribe_with(
+        &self,
+    ) -> (Option<BoundEndpoint>, Option<BoundEndpoint>) {
+        let Some(own) = &self.endpoints else {
+            return (None, None);
+        };
+        let media = match &own.media {
+            Some(media) => Some(self.bound_endpoint(media).await),
+            None => None,
+        };
+        let direct = match own.gate.needs_endpoints() {
+            true => None,
+            false => Some(self.bound_endpoint(&own.direct).await),
+        };
+        (media, direct)
+    }
+
+    /// Whether we know of any endpoint of the node `public`.
+    pub(crate) fn knows_endpoints_of(&self, public: &EndpointId) -> Result<bool> {
+        Ok(self.db.endpoint_of(public, EndpointKind::Media)?.is_some()
+            || self.db.endpoint_of(public, EndpointKind::Direct)?.is_some())
+    }
+
+    /// Checks another node's endpoint: that it's the node's, and sound.
+    pub(crate) fn check_endpoint(
         &self,
         public: &EndpointId,
         kind: EndpointKind,
@@ -355,6 +484,17 @@ impl Core {
             i64::try_from(bound.binding.since_ms).is_ok_and(|since| since <= latest),
             "this endpoint's binding is dated in the future"
         );
+        Ok(())
+    }
+
+    /// Checks another node's endpoint and keeps it, and how to reach it.
+    pub(crate) fn keep_endpoint(
+        &self,
+        public: &EndpointId,
+        kind: EndpointKind,
+        bound: &BoundEndpoint,
+    ) -> Result<()> {
+        self.check_endpoint(public, kind, bound)?;
         if self.db.keep_endpoint(bound)? {
             remember(&self.lookup, &bound.addr);
         }

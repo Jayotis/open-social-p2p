@@ -534,6 +534,7 @@ fn trust_entry(t: TrustInfo) -> TrustEntry {
         reached: match t.reached {
             Some(Reached::Direct) => "direct",
             Some(Reached::Relay) => "relay",
+            Some(Reached::Tor) => "tor",
             None => "none",
         }
         .to_string(),

@@ -2,7 +2,7 @@
 //! and outbox, and asking other nodes for theirs.
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fmt,
     sync::{Arc, Mutex},
     time::{Duration, Instant},
@@ -15,7 +15,7 @@ use iroh::{
     protocol::{AcceptError, ProtocolHandler},
 };
 use osp_proto::{
-    Payload, Person, SOCIAL_ALPN, SignedObject,
+    BoundEndpoint, EndpointKind, Payload, Person, SOCIAL_ALPN, SignedObject,
     framing::{read_frame, read_frame_max, write_frame},
     social::{
         MAX_GET_OBJECTS, MAX_OUTBOX_PAGE, MAX_REQUEST_LEN, OutboxEntry, SocialRequest,
@@ -26,13 +26,18 @@ use tokio::sync::Semaphore;
 use tracing::{debug, info};
 
 use crate::{
-    db::now_ms,
+    db::{SwarmMember, now_ms},
     network,
     node::{Core, check_addr, remember},
     peers::{self, Event},
+    store::Source,
 };
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
+/// The same for a node reaching others over Tor, where a first connection
+/// took up to 24 s (ADR 0014). One given up on still readies the circuit for
+/// the next try.
+const CONNECT_TIMEOUT_OVER_TOR: Duration = Duration::from_secs(60);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 /// Most requests served at once, from all peers together. Anyone who knows
 /// the node's ID can connect, so this keeps a flood from using up the
@@ -88,8 +93,6 @@ pub(crate) struct SocialProtocol {
     core: Arc<Core>,
     /// Shared by every connection, for `MAX_REQUESTS`.
     requests: Arc<Semaphore>,
-    /// On the endpoint over Tor, whose connections are never direct.
-    over_tor: bool,
 }
 
 impl SocialProtocol {
@@ -97,17 +100,6 @@ impl SocialProtocol {
         Self {
             core,
             requests: Arc::new(Semaphore::new(MAX_REQUESTS)),
-            over_tor: false,
-        }
-    }
-
-    /// The same, for the endpoint over Tor (ADR 0014), within the same
-    /// limits.
-    pub fn over_tor(&self) -> Self {
-        Self {
-            core: self.core.clone(),
-            requests: self.requests.clone(),
-            over_tor: true,
         }
     }
 }
@@ -139,10 +131,11 @@ impl ProtocolHandler for SocialProtocol {
                 tell_busy(send).await;
                 continue;
             };
-            // Over Tor, a path that isn't a relay's still isn't direct.
-            let direct = match self.over_tor {
-                true => Some(false),
-                false => network::is_direct(&conn),
+            // With other endpoints, how a request came says nothing of how
+            // a node's media would: that goes by the endpoint it's named by.
+            let direct = match self.core.endpoints {
+                Some(_) => Some(false),
+                None => network::is_direct(&conn),
             };
             let core = self.core.clone();
             tokio::spawn(async move {
@@ -242,10 +235,17 @@ impl Core {
             SocialRequest::Subscribe {
                 addr,
                 shares_prefetched,
+                media,
+                direct,
             } => {
                 ensure!(addr.id == remote, "can only subscribe on your own behalf");
                 check_addr(&addr)?;
-                self.accept_follower(&addr, shares_prefetched)?;
+                self.accept_follower(
+                    &addr,
+                    shares_prefetched,
+                    media.as_deref(),
+                    direct.as_deref(),
+                )?;
                 remember(&self.lookup, &addr);
                 SocialResponse::Ok
             }
@@ -259,15 +259,22 @@ impl Core {
                 // listening, so it stops counting us as a live follower.
                 ensure!(from_followed, "not following {}", actor.fmt_short());
                 debug!(%seq, actor = %actor.fmt_short(), "notified of new posts");
-                self.sync_now.notify_one();
+                self.sync_soon(&actor);
                 SocialResponse::Ok
             }
             SocialRequest::WhoHosts { blob } => {
+                // A node with other endpoints names every host by the endpoint
+                // that serves its media; it has no other address to give.
+                let bound = self.endpoints.is_some();
                 let mut nodes = Vec::new();
+                let mut hosts = Vec::new();
                 let class = self.db.blob_class(&blob)?;
                 let share = self.config.swarm.share_prefetched;
                 if class.is_some_and(|c| c.served_to_anyone(share)) {
-                    nodes.push(self.shareable_addr().await);
+                    match bound {
+                        true => hosts.extend(self.own_host_for(&remote).await?),
+                        false => nodes.push(self.shareable_addr().await),
+                    }
                 }
                 // Followers with a copy of media we host by choice, our own
                 // or reshared, only to followers.
@@ -275,7 +282,8 @@ impl Core {
                     && self.db.is_follower(&remote)?
                     && self.swarm_samples.allow(remote, MAX_SWARM_SAMPLES_PER_HOUR)
                 {
-                    let members = self.db.swarm_members(&blob, &remote)?;
+                    let mut members = self.db.swarm_members(&blob, &remote)?;
+                    members.retain(|m| !bound || m.host.is_some());
                     let picked =
                         self.heard
                             .pick_hosts(members, Instant::now(), self.sim.heard_lately);
@@ -283,22 +291,38 @@ impl Core {
                     let named: Vec<String> = picked
                         .named
                         .iter()
-                        .map(|a| a.id.fmt_short().to_string())
+                        .map(|m| m.addr.id.fmt_short().to_string())
                         .collect();
                     debug!(
                         remote = %remote.fmt_short(),
                         direct, relayed, not_lately, trusted = picked.trusted, ?named,
                         "named followers as hosts"
                     );
-                    nodes.extend(picked.named);
-                }
-                for addr in self.db.hosts(&blob)? {
-                    let known = nodes.iter().any(|a| a.id == addr.id);
-                    if !known && addr.id != remote && addr.id != self.endpoint.id() {
-                        nodes.push(addr);
+                    for member in picked.named {
+                        match member.host.filter(|_| bound) {
+                            Some(host) => hosts.push(host),
+                            None => nodes.push(member.addr),
+                        }
                     }
                 }
-                SocialResponse::Hosts { nodes }
+                for addr in self.db.hosts(&blob)? {
+                    if addr.id == remote || addr.id == self.endpoint.id() {
+                        continue;
+                    }
+                    if !bound {
+                        if !nodes.iter().any(|a| a.id == addr.id) {
+                            nodes.push(addr);
+                        }
+                    } else if !hosts.iter().any(|h| h.binding.public == addr.id)
+                        && let Some(media) = self.db.endpoint_of(&addr.id, EndpointKind::Media)?
+                    {
+                        hosts.push(media);
+                    }
+                }
+                match bound {
+                    true => SocialResponse::BoundHosts { hosts },
+                    false => SocialResponse::Hosts { nodes },
+                }
             }
             SocialRequest::Hosting { blob } => {
                 ensure!(
@@ -317,7 +341,8 @@ impl Core {
                             .allow(remote, MAX_HOSTING_CHECKS_PER_HOUR),
                         "this node has checked enough of your copies this hour; try again later"
                     );
-                    if let Err(e) = self.store.check_hosting(&blob, remote).await {
+                    let source = self.hosting_source(&remote)?;
+                    if let Err(e) = self.store.check_hosting(&blob, source).await {
                         debug!(
                             node = %remote.fmt_short(),
                             blob = %blob.fmt_short(),
@@ -405,7 +430,7 @@ impl Core {
         // and the sync this wakes subscribes to it.
         self.db.upsert_follow(&actor, addr)?;
         self.lock_subscribed().remove(&actor);
-        self.sync_now.notify_one();
+        self.sync_soon(&actor);
         info!(
             actor = %actor.fmt_short(),
             node = %addr.id.fmt_short(),
@@ -459,10 +484,37 @@ impl Core {
         Ok(())
     }
 
-    /// Records a subscriber, and whether it shares what it prefetches. A
-    /// node we already have just gets these refreshed; a new one must fit
-    /// within the limits on followers.
-    fn accept_follower(&self, addr: &EndpointAddr, shares: bool) -> Result<()> {
+    /// Where to get a piece of a blob from a follower that says it holds a
+    /// copy: the endpoint it subscribed with, if it has other endpoints.
+    fn hosting_source(&self, follower: &EndpointId) -> Result<Source> {
+        let Some(host) = self.db.follower_host(follower)? else {
+            ensure!(
+                self.endpoints.is_none(),
+                "this node doesn't know an endpoint of yours to check it through"
+            );
+            return Ok((*follower).into());
+        };
+        self.source_named(&host)
+            .context("the endpoint you subscribed with doesn't check out")
+    }
+
+    /// Records a subscriber, whether it shares what it prefetches, and its
+    /// endpoints. A node we already have just gets these refreshed; a new one
+    /// must fit within the limits on followers. It's named to other nodes by
+    /// `direct`, which it means them to know, or else `media`.
+    fn accept_follower(
+        &self,
+        addr: &EndpointAddr,
+        shares: bool,
+        media: Option<&BoundEndpoint>,
+        direct: Option<&BoundEndpoint>,
+    ) -> Result<()> {
+        if let Some(bound) = media {
+            self.check_endpoint(&addr.id, EndpointKind::Media, bound)?;
+        }
+        if let Some(bound) = direct {
+            self.check_endpoint(&addr.id, EndpointKind::Direct, bound)?;
+        }
         if !self.db.is_follower(&addr.id)? {
             let now = now_ms();
             self.db
@@ -477,17 +529,28 @@ impl Core {
                 "this node is busy with new followers; try again later"
             );
         }
-        self.db.add_follower(addr, shares)
+        self.db.add_follower(addr, shares)?;
+        if let Some(bound) = media {
+            self.keep_endpoint(&addr.id, EndpointKind::Media, bound)?;
+        }
+        if let Some(bound) = direct {
+            self.keep_endpoint(&addr.id, EndpointKind::Direct, bound)?;
+        }
+        self.db.set_follower_host(&addr.id, direct.or(media))
     }
 
     /// Sends one request to another node, reusing an open connection when
     /// we have one, and records how the node did (ADR 0011). An error reply
-    /// still counts as an answer: the node is up and responding.
+    /// still counts as an answer: the node is up and responding. While our
+    /// own Tor isn't ready, messages wait; that says nothing of the node.
     pub(crate) async fn social_request(
         &self,
         addr: &EndpointAddr,
         req: &SocialRequest,
     ) -> Result<SocialResponse> {
+        if let Some(tor) = &self.tor {
+            tor.check_ready()?;
+        }
         let (reached, result) = self.ask_node(addr, req).await;
         let took = result.as_ref().ok().map(|(_, took)| *took);
         peers::record(&self.db, &addr.id, Event::Request { reached, took });
@@ -534,6 +597,12 @@ impl Core {
         if let Some(conn) = self.cached_conn(&addr.id) {
             return Ok(conn);
         }
+        // Over Tor a node's ID is all it takes, and nothing else in an address
+        // from someone else is used.
+        let addr = &match self.tor {
+            Some(_) => EndpointAddr::new(addr.id),
+            None => addr.clone(),
+        };
         let refused = self.relays.refused_relays(addr);
         let addr = &self.relays.filter(addr);
         remember(&self.lookup, addr);
@@ -542,7 +611,11 @@ impl Core {
             self.tor_connect_delay(&addr.id).await;
             self.endpoint.connect(addr.clone(), SOCIAL_ALPN).await
         };
-        let conn = tokio::time::timeout(CONNECT_TIMEOUT, connect)
+        let timeout = match self.messages_over_tor() {
+            true => CONNECT_TIMEOUT_OVER_TOR,
+            false => CONNECT_TIMEOUT,
+        };
+        let conn = tokio::time::timeout(timeout, connect)
             .await
             .with_context(|| format!("connecting to {} timed out", addr.id.fmt_short()))
             .and_then(|r| r.with_context(|| format!("connecting to {}", addr.id.fmt_short())));
@@ -565,6 +638,56 @@ impl Core {
         Ok(conn)
     }
 
+    /// Whether messages to other nodes take seconds, and a first connection
+    /// may take up to a minute (ADR 0014).
+    pub(crate) fn messages_over_tor(&self) -> bool {
+        #[cfg(feature = "sim")]
+        if self.sim.tor_delay.is_some() {
+            return true;
+        }
+        self.tor.is_some()
+    }
+
+    /// Whether a request to `node` is a round trip or two away, not a first
+    /// connection over Tor: someone waiting waits only for those.
+    pub(crate) fn answers_quickly(&self, node: &EndpointId) -> bool {
+        if !self.messages_over_tor() || self.cached_conn(node).is_some() {
+            return true;
+        }
+        #[cfg(feature = "sim")]
+        if self.sim.tor_delay.is_some() {
+            return self
+                .lock_tor_ready()
+                .get(node)
+                .is_some_and(|ready| *ready <= Instant::now());
+        }
+        self.tor.as_ref().is_some_and(|tor| tor.has_stream(node))
+    }
+
+    /// Sets up a connection to `node` in the background, so someone waiting
+    /// next time doesn't wait for it.
+    pub(crate) fn ready_conn(&self, node: EndpointId) {
+        #[cfg(feature = "sim")]
+        if let Some(tor) = &self.sim.tor_delay {
+            let ready = Instant::now() + tor.first_connect();
+            self.lock_tor_ready().entry(node).or_insert(ready);
+            return;
+        }
+        if !lock(&self.readying).insert(node) {
+            return;
+        }
+        let endpoint = self.endpoint.clone();
+        let (conns, readying) = (self.conns.clone(), self.readying.clone());
+        tokio::spawn(async move {
+            let connect = endpoint.connect(EndpointAddr::new(node), SOCIAL_ALPN);
+            let connected = tokio::time::timeout(CONNECT_TIMEOUT_OVER_TOR, connect).await;
+            if let Ok(Ok(conn)) = connected {
+                lock(&conns).insert(node, conn);
+            }
+            lock(&readying).remove(&node);
+        });
+    }
+
     fn cached_conn(&self, id: &EndpointId) -> Option<Connection> {
         let mut conns = self.lock_conns();
         match conns.get(id) {
@@ -581,12 +704,17 @@ impl Core {
         self.lock_conns().remove(id);
     }
 
-    fn lock_conns(
-        &self,
-    ) -> std::sync::MutexGuard<'_, std::collections::HashMap<EndpointId, Connection>> {
-        self.conns.lock().unwrap_or_else(|e| e.into_inner())
+    fn lock_conns(&self) -> std::sync::MutexGuard<'_, HashMap<EndpointId, Connection>> {
+        lock(&self.conns)
     }
 }
+
+fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Connections being set up in the background (`Core::ready_conn`).
+pub(crate) type Readying = Arc<Mutex<HashSet<EndpointId>>>;
 
 /// The harness's Tor-like delays (`SimSettings::tor_delay`).
 #[cfg(feature = "sim")]
@@ -666,7 +794,7 @@ pub(crate) enum Contact {
 
 /// The followers with a copy that one `WhoHosts` reply names.
 pub(crate) struct Picked {
-    pub named: Vec<EndpointAddr>,
+    pub named: Vec<SwarmMember>,
     /// How many of the followers they were picked from fell in each
     /// `Contact`, best first.
     pub pool: [usize; 3],
@@ -698,18 +826,20 @@ impl Heard {
     }
 
     /// Picks the followers with a copy that one `WhoHosts` reply names, at
-    /// most `SWARM_SAMPLE`, from `members` in random order, each with
-    /// whether it's trusted (ADR 0013). First up to `MAX_TRUSTED_NAMED`
+    /// most `SWARM_SAMPLE`, from `members` in random order (trusted ones:
+    /// ADR 0013). First up to `MAX_TRUSTED_NAMED`
     /// trusted followers heard from within `lately` of `now`, at random;
     /// then the others as for anyone, those heard from lately first, but
     /// no more trusted ones than that unless nobody else is left to fill
     /// the places. Those picked are then put in
     /// order of how they were heard from, directly before through a relay,
     /// keeping the order they came in within each, so trusted followers
-    /// aren't always among the first a downloader asks.
+    /// aren't always among the first a downloader asks. A follower named by
+    /// an endpoint is ranked by that endpoint, not by how its last message
+    /// came: over Tor, that says nothing of how its media would.
     pub(crate) fn pick_hosts(
         &self,
-        members: Vec<(EndpointAddr, bool)>,
+        members: Vec<SwarmMember>,
         now: Instant,
         lately: Duration,
     ) -> Picked {
@@ -717,13 +847,21 @@ impl Heard {
             let heard = self.lock();
             members
                 .iter()
-                .map(|(addr, _)| contact(&heard, &addr.id, now, lately))
+                .map(|member| {
+                    let contact = contact(&heard, &member.addr.id, now, lately);
+                    match &member.host {
+                        _ if contact == Contact::NotLately => contact,
+                        Some(host) if host.binding.kind == EndpointKind::Direct => Contact::Direct,
+                        Some(_) => Contact::Relayed,
+                        None => contact,
+                    }
+                })
                 .collect()
         };
         let mut picked = vec![false; members.len()];
         let mut trusted = 0;
-        for (i, (_, is_trusted)) in members.iter().enumerate() {
-            if trusted < MAX_TRUSTED_NAMED && *is_trusted && contacts[i] != Contact::NotLately {
+        for (i, member) in members.iter().enumerate() {
+            if trusted < MAX_TRUSTED_NAMED && member.trusted && contacts[i] != Contact::NotLately {
                 picked[i] = true;
                 trusted += 1;
             }
@@ -736,7 +874,7 @@ impl Heard {
             if count == SWARM_SAMPLE {
                 break;
             }
-            if members[i].1 {
+            if members[i].trusted {
                 if trusted == MAX_TRUSTED_NAMED {
                     held_back.push(i);
                     continue;
@@ -755,15 +893,15 @@ impl Heard {
         for c in &contacts {
             pool[*c as usize] += 1;
         }
-        let mut named: Vec<(Contact, EndpointAddr)> = members
+        let mut named: Vec<(Contact, SwarmMember)> = members
             .into_iter()
             .zip(contacts)
             .zip(picked)
-            .filter_map(|(((addr, _), contact), picked)| picked.then_some((contact, addr)))
+            .filter_map(|((member, contact), picked)| picked.then_some((contact, member)))
             .collect();
         named.sort_by_key(|(contact, _)| *contact);
         Picked {
-            named: named.into_iter().map(|(_, addr)| addr).collect(),
+            named: named.into_iter().map(|(_, member)| member).collect(),
             pool,
             trusted,
         }
@@ -832,36 +970,39 @@ mod tests {
         EndpointAddr::new(iroh::SecretKey::generate().public())
     }
 
-    fn untrusted<const N: usize>(followers: [&EndpointAddr; N]) -> Vec<(EndpointAddr, bool)> {
-        followers.iter().map(|a| ((*a).clone(), false)).collect()
+    fn member(addr: &EndpointAddr, trusted: bool) -> SwarmMember {
+        SwarmMember {
+            addr: addr.clone(),
+            trusted,
+            host: None,
+        }
+    }
+
+    fn untrusted<const N: usize>(followers: [&EndpointAddr; N]) -> Vec<SwarmMember> {
+        followers.iter().map(|a| member(a, false)).collect()
     }
 
     fn ids(picked: &Picked) -> Vec<EndpointId> {
-        picked.named.iter().map(|a| a.id).collect()
+        picked.named.iter().map(|m| m.addr.id).collect()
     }
 
     /// `n` followers, trusted or not, noted as heard from at `at`, directly.
-    fn heard_from(
-        heard: &Heard,
-        n: usize,
-        trusted: bool,
-        at: Instant,
-    ) -> Vec<(EndpointAddr, bool)> {
+    fn heard_from(heard: &Heard, n: usize, trusted: bool, at: Instant) -> Vec<SwarmMember> {
         (0..n)
             .map(|_| {
                 let addr = some_addr();
                 heard.note(addr.id, Some(true), at);
-                (addr, trusted)
+                member(&addr, trusted)
             })
             .collect()
     }
 
     /// The followers in `members` that are trusted.
-    fn trusted_in(members: &[(EndpointAddr, bool)]) -> HashSet<EndpointId> {
+    fn trusted_in(members: &[SwarmMember]) -> HashSet<EndpointId> {
         members
             .iter()
-            .filter(|(_, trusted)| *trusted)
-            .map(|(addr, _)| addr.id)
+            .filter(|m| m.trusted)
+            .map(|m| m.addr.id)
             .collect()
     }
 
@@ -900,7 +1041,7 @@ mod tests {
         let members = [(&a, false), (&x, true), (&relayed, false)]
             .into_iter()
             .chain([(&y, true), (&b, false), (&z, true)])
-            .map(|(addr, trusted)| (addr.clone(), trusted))
+            .map(|(addr, trusted)| member(addr, trusted))
             .collect();
         // In the order they came, as random from the database, within each.
         let picked = heard.pick_hosts(members, now, HEARD_LATELY);
@@ -952,6 +1093,40 @@ mod tests {
             ids(&picked),
             [direct.id, quiet.id, relayed.id, unknown.id, earlier.id]
         );
+    }
+
+    /// Over Tor every request comes the same way. What tells followers apart
+    /// is the endpoint each is named by: its direct one is worth trying first.
+    #[test]
+    fn followers_named_by_an_endpoint_are_ranked_by_it() {
+        let public = iroh::SecretKey::generate();
+        let bound = |kind| BoundEndpoint {
+            binding: osp_proto::EndpointBinding::new(
+                &public,
+                &iroh::SecretKey::generate(),
+                kind,
+                1,
+            ),
+            addr: some_addr(),
+        };
+        let heard = Heard::default();
+        let now = Instant::now();
+        let [relayed, direct, quiet] = [(); 3].map(|_| some_addr());
+        for addr in [&relayed, &direct] {
+            heard.note(addr.id, Some(false), now);
+        }
+        let with_host = |addr, kind| SwarmMember {
+            host: Some(bound(kind)),
+            ..member(addr, false)
+        };
+        let members = vec![
+            with_host(&quiet, EndpointKind::Direct),
+            with_host(&relayed, EndpointKind::Media),
+            with_host(&direct, EndpointKind::Direct),
+        ];
+        let picked = heard.pick_hosts(members, now, HEARD_LATELY);
+        assert_eq!(picked.pool, [1, 1, 1]);
+        assert_eq!(ids(&picked), [direct.id, relayed.id, quiet.id]);
     }
 
     #[test]

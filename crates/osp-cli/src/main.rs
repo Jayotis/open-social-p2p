@@ -1206,6 +1206,7 @@ fn follower_line(t: &TrustInfo) -> String {
     let reached = match t.reached {
         Some(Reached::Direct) => "reached you directly lately",
         Some(Reached::Relay) => "reached you through a relay lately",
+        Some(Reached::Tor) => "reached you over Tor lately",
         None => "not heard from lately",
     };
     format!(

@@ -21,6 +21,7 @@ tracing.workspace = true
 
 [dev-dependencies]
 clap.workspace = true
-osp-node.workspace = true
+# The tests use `Node::spawn_sim` for messages as slow as Tor's.
+osp-node = { workspace = true, features = ["sim"] }
 tempfile.workspace = true
 tracing-subscriber.workspace = true

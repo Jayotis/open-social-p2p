@@ -15,7 +15,7 @@ use std::{
 };
 
 use osp_client::{Client, ClientOptions, Pairing};
-use osp_node::{BlobClass, Config, Node};
+use osp_node::{BlobClass, Config, Node, SimSettings, simnet::TorDelay};
 use osp_proto::{
     Attachment, BlobHash,
     rpc::{ClientRequest, ClientResponse, StatusInfo},
@@ -170,6 +170,46 @@ async fn a_phone_pairs_with_the_direct_endpoint() {
     assert_eq!(status(&phone).await.identity, node.identity());
     phone.shutdown().await;
     node.shutdown().await.unwrap();
+}
+
+/// Over Tor a sync takes up to minutes, so a phone asking for one isn't kept
+/// waiting for it (ADR 0014); what arrives is in the feed when it looks again.
+#[tokio::test(flavor = "multi_thread")]
+async fn over_tor_a_phone_isnt_kept_waiting_for_a_sync() {
+    let dir = tempfile::tempdir().unwrap();
+    let author = start_node(dir.path(), "Author").await;
+    let home = dir.path().join("alice");
+    Node::init(&home, &Config::local_test("Alice")).unwrap();
+    let sim = SimSettings {
+        tor_delay: Some(TorDelay {
+            first_connect: (Duration::from_secs(300), Duration::from_secs(300)),
+            ..TorDelay::default()
+        }),
+        ..SimSettings::default()
+    };
+    let node = Node::spawn_sim(&home, sim).await.unwrap();
+    let ClientResponse::Ticket { ticket } = author.handle(ClientRequest::Invite).await else {
+        panic!("no ticket");
+    };
+    let followed = node.handle(ClientRequest::Follow { ticket }).await;
+    assert!(matches!(followed, ClientResponse::Ok), "{followed:?}");
+
+    let phone = Client::open(&dir.path().join("phone"), ClientOptions::local_test())
+        .await
+        .unwrap();
+    phone
+        .pair(&new_pairing(&node).await, "Test phone")
+        .await
+        .unwrap();
+    let asked = phone.request(&ClientRequest::Sync);
+    let replied = tokio::time::timeout(Duration::from_secs(20), asked)
+        .await
+        .expect("the phone was kept waiting")
+        .unwrap();
+    assert!(matches!(replied, ClientResponse::Synced { new_objects: 0 }));
+    phone.shutdown().await;
+    node.shutdown().await.unwrap();
+    author.shutdown().await.unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread")]

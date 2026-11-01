@@ -40,6 +40,9 @@ use crate::{
 const NOTIFY_AT_ONCE: usize = 16;
 /// Give up on notifying one follower after this long.
 const NOTIFY_TIMEOUT: Duration = Duration::from_secs(15);
+/// The same over Tor, where a first connection takes up to a minute (ADR
+/// 0014). One missed still gets the post at its next sync.
+const NOTIFY_TIMEOUT_OVER_TOR: Duration = Duration::from_secs(60);
 /// How often followers who haven't heard that we moved are told again.
 const TELL_MOVED_EVERY: Duration = Duration::from_secs(60 * 60);
 /// Most posts with media in progress at once: arriving from a phone,
@@ -131,6 +134,12 @@ impl Core {
                 ClientResponse::Fetched {
                     files: self.fetch(&id, out_dir.as_deref()).await?,
                 }
+            }
+            // Over Tor, syncing takes up to minutes, and a phone doesn't wait
+            // for it (ADR 0014): what arrives is in the feed when it looks again.
+            ClientRequest::Sync if !local && self.messages_over_tor() => {
+                self.sync_now.notify_one();
+                ClientResponse::Synced { new_objects: 0 }
             }
             // A phone doesn't wait for prefetching: it can read media as soon as it's needed.
             ClientRequest::Sync => ClientResponse::Synced {
@@ -262,16 +271,21 @@ impl Core {
     }
 
     async fn status(&self) -> Result<StatusInfo> {
-        let addr = self.endpoint.addr();
+        let endpoint = self.endpoint_on_the_network();
+        let addr = endpoint.addr();
         let nat = match self.config.network.relay {
             RelayChoice::Disabled => None,
-            _ => network::nat_kind(&self.endpoint),
+            _ => network::nat_kind(endpoint),
         };
         let relay = addr.relay_urls().next().map(|u| u.to_string());
         let disk_free_bytes = health::disk_free(self.home.root());
         let mut peers = self.tracker.peers();
         for peer in &mut peers {
             peer.device = self.db.is_device(&peer.node)?;
+            // An endpoint we know of is that node's, by its public ID.
+            if let Some(public) = self.db.endpoint_owner(&peer.node)? {
+                peer.node = public;
+            }
         }
         let (transfer_places, upload_measured_mbps) = self.store.serving();
         Ok(StatusInfo {
@@ -280,8 +294,7 @@ impl Core {
             node: self.endpoint.id(),
             problems: self.problems(relay.as_deref(), disk_free_bytes)?,
             relay,
-            local_addrs: self
-                .endpoint
+            local_addrs: endpoint
                 .bound_sockets()
                 .iter()
                 .map(|a| a.to_string())
@@ -313,7 +326,7 @@ impl Core {
         self.db.upsert_follow(&ticket.actor, &ticket.node)?;
         // The sync this wakes also subscribes, so we're told about new posts.
         self.lock_subscribed().remove(&ticket.actor);
-        self.sync_now.notify_one();
+        self.sync_soon(&ticket.actor);
         Ok(())
     }
 
@@ -458,7 +471,8 @@ impl Core {
         let told: Vec<bool> = stream::iter(to_tell)
             .map(|addr| async move {
                 let sent =
-                    tokio::time::timeout(NOTIFY_TIMEOUT, self.social_request(&addr, req)).await;
+                    tokio::time::timeout(self.notify_timeout(), self.social_request(&addr, req))
+                        .await;
                 match sent {
                     Ok(Ok(_)) => self.db.told_moved(&addr.id).is_ok(),
                     Ok(Err(e)) => {
@@ -479,6 +493,13 @@ impl Core {
         left
     }
 
+    fn notify_timeout(&self) -> Duration {
+        match self.messages_over_tor() {
+            true => NOTIFY_TIMEOUT_OVER_TOR,
+            false => NOTIFY_TIMEOUT,
+        }
+    }
+
     async fn notify_followers(&self, seq: u64) {
         // Followers who don't know we moved would refuse the notice.
         self.tell_moved().await;
@@ -490,7 +511,8 @@ impl Core {
         stream::iter(self.db.followers().unwrap_or_default())
             .map(|addr| async move {
                 let sent =
-                    tokio::time::timeout(NOTIFY_TIMEOUT, self.social_request(&addr, req)).await;
+                    tokio::time::timeout(self.notify_timeout(), self.social_request(&addr, req))
+                        .await;
                 if matches!(sent, Ok(Ok(_))) {
                     self.db.follower_seen(&addr.id).ok();
                 } else {
@@ -638,6 +660,10 @@ fn extension(media_type: &str) -> &str {
 /// and then every hour until each has heard, or been forgotten as silent.
 /// New posts tell them too (`notify_followers`).
 pub(crate) async fn tell_moved_loop(core: Arc<Core>) {
+    // Messages wait for Tor. Trying sooner would fail, and wait out the hour.
+    if let Some(tor) = &core.tor {
+        tor.ready().await;
+    }
     while core.tell_moved().await > 0 {
         tokio::time::sleep(TELL_MOVED_EVERY).await;
     }

@@ -28,17 +28,20 @@ use crate::{
     db::{BlobClass, Follow, now_ms},
     node::{Core, check_addr, remember},
     social::profile_date,
-    store::{self, Sources},
+    store::{self, Source, Sources},
 };
 
 /// How often we ask each followed node to keep notifying us.
 const RESUBSCRIBE_EVERY: Duration = Duration::from_secs(24 * 60 * 60);
 /// Hosts taken from one "who hosts" reply. Enough to find a copy.
 const MAX_HOSTS_PER_REPLY: usize = 20;
-/// How long media someone opened waits for a followed node to name other
-/// hosts, before the download starts and again if it fails; then it goes on
-/// without that node's answer. Nodes that are up answer in milliseconds.
-const ASK_FIRST_WAIT: Duration = Duration::from_secs(3);
+/// How long media someone opened waits for the followed nodes it asked to
+/// name other hosts, before the download starts and again if it fails; then
+/// it goes on without their answers. A round trip or two, over Tor, for those
+/// it already has a connection to (ADR 0014).
+const ASK_FIRST_WAIT: Duration = Duration::from_secs(5);
+/// Nodes asked at once who hosts a blob.
+const ASK_AT_ONCE: usize = 16;
 /// However often followed nodes notify us, we sync at most this often.
 const MIN_SYNC_GAP: Duration = Duration::from_secs(5);
 /// Followed nodes synced at once.
@@ -90,6 +93,10 @@ pub(crate) const MAX_HOLD: Duration = Duration::from_secs(20 * 60);
 pub(crate) async fn run_loop(core: Arc<Core>) {
     let interval = Duration::from_secs(core.config.sync.interval_secs.max(5));
     loop {
+        // Messages wait for Tor, and go nowhere else (ADR 0014).
+        if let Some(tor) = &core.tor {
+            tor.ready().await;
+        }
         let started = Instant::now();
         if let Err(e) = core.sync_all(false).await {
             warn!("sync failed: {e:#}");
@@ -111,7 +118,10 @@ impl Core {
             let _guard = self.sync_lock.lock().await;
             // A few at once, each within a time limit, so one slow or
             // hostile node can't hold up the others.
-            let results: Vec<_> = stream::iter(self.db.follows()?)
+            let follows = self.db.follows()?.into_iter();
+            // Someone waiting for the sync doesn't wait for the next try.
+            let due = follows.filter(|f| wait_for_prefetch || self.sync_due(&f.actor));
+            let results: Vec<_> = stream::iter(due)
                 .map(|follow| async move {
                     let result =
                         tokio::time::timeout(FOLLOW_SYNC_TIMEOUT, self.sync_follow(&follow))
@@ -130,10 +140,12 @@ impl Core {
                     Ok((n, blobs)) => {
                         new_objects += n;
                         candidates.extend(blobs);
+                        self.lock_sync_retries().remove(&follow.actor);
                     }
                     Err(e) => {
                         warn!(actor = %follow.actor.fmt_short(), "sync failed: {e:#}");
                         self.db.set_follow_error(&follow.actor, &format!("{e:#}"))?;
+                        self.sync_failed(&follow.actor);
                     }
                 }
             }
@@ -158,6 +170,32 @@ impl Core {
             let _ = self.prefetch_jobs.subscribe().wait_for(|n| *n == 0).await;
         }
         Ok(new_objects)
+    }
+
+    /// Whether it's time to sync with a followed node. Over Tor, one that
+    /// couldn't be reached is tried again after a while, each wait longer
+    /// than the last, not at every sync: each try may take a minute, and costs
+    /// circuits (ADR 0014).
+    fn sync_due(&self, actor: &PublicKey) -> bool {
+        self.lock_sync_retries()
+            .get(actor)
+            .is_none_or(|(_, next)| *next <= Instant::now())
+    }
+
+    fn sync_failed(&self, actor: &PublicKey) {
+        if self.messages_over_tor() {
+            try_later(&mut self.lock_sync_retries(), *actor, Instant::now());
+        }
+    }
+
+    /// Wakes the sync loop for a followed node, as it's up or has moved.
+    pub(crate) fn sync_soon(&self, actor: &PublicKey) {
+        self.lock_sync_retries().remove(actor);
+        self.sync_now.notify_one();
+    }
+
+    fn lock_sync_retries(&self) -> MutexGuard<'_, HashMap<PublicKey, (u32, Instant)>> {
+        self.sync_retries.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     /// Fetches new outbox entries from one followed node. Returns the number
@@ -413,26 +451,40 @@ impl Core {
     /// Asks a followed node to notify us of new posts: after following,
     /// after a restart, and then once a day. Repeating it keeps us from
     /// being forgotten as a silent follower, and updates our address there.
-    /// Best effort: polling finds new posts anyway.
+    /// Best effort: polling finds new posts anyway. A node with other endpoints
+    /// also asks for the followed node's then, or at any sync while it knows
+    /// of none: they're how its media is fetched (ADR 0014).
     async fn subscribe_if_due(&self, follow: &Follow) {
-        {
+        let due = {
             let mut subscribed = self.lock_subscribed();
-            if subscribed
+            let due = subscribed
                 .get(&follow.actor)
-                .is_some_and(|last| last.elapsed() < RESUBSCRIBE_EVERY)
-            {
-                return;
+                .is_none_or(|last| last.elapsed() >= RESUBSCRIBE_EVERY);
+            if due {
+                // Counted as done even if it fails, so a busy node isn't asked every sync.
+                subscribed.insert(follow.actor, Instant::now());
             }
-            // Counted as done even if it fails, so a busy node isn't asked every sync.
-            subscribed.insert(follow.actor, Instant::now());
+            due
+        };
+        if self.endpoints.is_some()
+            && (due || !self.knows_endpoints_of(&follow.addr.id).unwrap_or(false))
+            && let Err(e) = self.ask_endpoints(&follow.addr).await
+        {
+            warn!(actor = %follow.actor.fmt_short(), "asking for a node's endpoints failed: {e:#}");
+        }
+        if !due {
+            return;
         }
         let me = self.shareable_addr().await;
+        let (media, direct) = self.endpoints_to_subscribe_with().await;
         if let Err(e) = self
             .social_request(
                 &follow.addr,
                 &SocialRequest::Subscribe {
                     addr: me,
                     shares_prefetched: self.config.swarm.share_prefetched,
+                    media: media.map(Box::new),
+                    direct: direct.map(Box::new),
                 },
             )
             .await
@@ -614,29 +666,33 @@ impl Core {
         let blob = &wanted.blob;
         let mut sources = Sources::default();
         if self.store.stored_size(blob).await?.is_none() {
-            let mut named = Vec::new();
+            let mut named: Vec<Source> = Vec::new();
             for tracker in &wanted.trackers {
-                for id in self.named_hosts(tracker, blob).await {
-                    if !named.contains(&id) {
-                        named.push(id);
+                for source in self.named_hosts(tracker, blob).await {
+                    if !named.iter().any(|s| s.node == source.node) {
+                        named.push(source);
                     }
                 }
             }
             // A crowd asks these first, so they're asked one at a time,
             // after the followers named.
-            let trackers = wanted.trackers.iter().map(|t| t.id);
-            for id in self.known_providers(blob)?.into_iter().chain(trackers) {
-                if !sources.contains(&id) {
-                    sources.in_turn.push(id);
+            let mut known = self.known_providers(blob)?;
+            for tracker in &wanted.trackers {
+                known.extend(self.sources_of(&tracker.id)?);
+            }
+            // One node may be here twice: by its direct endpoint and its media one.
+            for source in known {
+                if !sources.in_turn.contains(&source) {
+                    sources.in_turn.push(source);
                 }
             }
-            named.retain(|id| !sources.contains(id));
+            named.retain(|source| !sources.contains(&source.node));
             sources.at_once = named;
             // The author's own nodes, which a resharer names too, after
             // everyone else: they're the ones to spare.
             let authors = self.nodes_of(&wanted.author);
             sources.spare(&authors);
-            sources.in_turn.sort_by_key(|id| authors.contains(id));
+            sources.in_turn.sort_by_key(|s| authors.contains(&s.node));
         }
         self.store
             .download(blob, sources, BlobClass::Prefetch, wanted.size)
@@ -668,23 +724,81 @@ impl Core {
     /// this node. An author's node names followers holding a copy to its
     /// followers (doc 13); they're used for this download only (see
     /// `ask_who_hosts`).
-    async fn named_hosts(&self, node: &EndpointAddr, blob: &BlobHash) -> Vec<EndpointId> {
-        let mut named = Vec::new();
+    async fn named_hosts(&self, node: &EndpointAddr, blob: &BlobHash) -> Vec<Source> {
         let req = SocialRequest::WhoHosts { blob: *blob };
-        if let Ok(SocialResponse::Hosts { nodes }) = self.social_request(node, &req).await {
-            let me = self.endpoint.id();
-            let others = nodes
+        let mut named = match self.social_request(node, &req).await {
+            Ok(reply) => self.sources_in(reply),
+            Err(_) => Vec::new(),
+        };
+        named.retain(|source| source.node != node.id);
+        named
+    }
+
+    /// The hosts a `WhoHosts` reply names, other than this node, each once,
+    /// within `MAX_HOSTS_PER_REPLY`. They can be found by ID for now.
+    fn sources_in(&self, reply: SocialResponse) -> Vec<Source> {
+        let named: Vec<Source> = match reply {
+            SocialResponse::Hosts { nodes } => nodes
                 .iter()
-                .filter(|a| a.id != me && a.id != node.id && check_addr(a).is_ok())
-                .take(MAX_HOSTS_PER_REPLY);
-            for addr in others {
-                remember(&self.lookup, addr);
-                if !named.contains(&addr.id) {
-                    named.push(addr.id);
-                }
+                .filter(|addr| check_addr(addr).is_ok())
+                .take(MAX_HOSTS_PER_REPLY)
+                .map(|addr| {
+                    remember(&self.lookup, addr);
+                    Source::from(addr.id)
+                })
+                .collect(),
+            SocialResponse::BoundHosts { hosts } => hosts
+                .iter()
+                .take(MAX_HOSTS_PER_REPLY)
+                .filter_map(|host| self.source_named(host))
+                .collect(),
+            _ => Vec::new(),
+        };
+        let me = self.endpoint.id();
+        let mut sources: Vec<Source> = Vec::new();
+        for source in named {
+            if source.node != me && !sources.iter().any(|s| s.node == source.node) {
+                sources.push(source);
             }
         }
-        named
+        sources
+    }
+
+    /// Asks `nodes` at once who hosts `blob`, and returns what each said, in
+    /// their order. With someone `waiting`, gives up on them all after
+    /// `ASK_FIRST_WAIT`, and asks only those a round trip or two away: a first
+    /// connection over Tor isn't waited for, but readied for next time.
+    async fn ask_who_hosts_at_once(
+        &self,
+        nodes: Vec<EndpointAddr>,
+        blob: &BlobHash,
+        waiting: bool,
+    ) -> Vec<(EndpointId, Vec<Source>)> {
+        let give_up = waiting.then(|| tokio::time::Instant::now() + ASK_FIRST_WAIT);
+        let to_ask = nodes.into_iter().filter(|node| {
+            let ask = !waiting || self.answers_quickly(&node.id);
+            if !ask {
+                self.ready_conn(node.id);
+            }
+            ask
+        });
+        stream::iter(to_ask)
+            .map(|node| async move {
+                let req = SocialRequest::WhoHosts { blob: *blob };
+                let ask = self.social_request(&node, &req);
+                let reply = match give_up {
+                    Some(at) => tokio::time::timeout_at(at, ask).await.ok(),
+                    None => Some(ask.await),
+                };
+                let sources = match reply {
+                    Some(Ok(reply)) => self.sources_in(reply),
+                    _ => Vec::new(),
+                };
+                (node.id, sources)
+            })
+            .buffered_ordered(ASK_AT_ONCE)
+            .collect()
+            .await
     }
 
     /// Makes sure a blob is stored locally, downloading at most `declared`
@@ -719,7 +833,7 @@ impl Core {
                 // nodes just tried.
                 let mut found = self.ask_who_hosts(blob, waiting).await;
                 if waiting {
-                    found.retain(|id| !sources.contains(id));
+                    found.retain(|source| !sources.contains(&source.node));
                 }
                 if found.is_empty() {
                     return Err(first_error);
@@ -734,6 +848,10 @@ impl Core {
     /// don't have: after a restore, which leaves replicas out (ADR 0009).
     /// Within the replica quota, like any replica. Runs once at startup.
     pub(crate) async fn refetch_replicas(&self) {
+        // Asking who hosts them needs messages, and those wait for Tor.
+        if let Some(tor) = &self.tor {
+            tor.ready().await;
+        }
         let Ok(outbox) = self.db.outbox_since(0, u32::MAX) else {
             return;
         };
@@ -769,20 +887,19 @@ impl Core {
     /// post doesn't go to its author.
     async fn sources_asking_first(&self, blob: &BlobHash) -> Result<Sources> {
         let known = self.known_providers(blob)?;
-        let mut named = Vec::new();
-        for follow in self.db.follows()? {
-            if !known.contains(&follow.addr.id) {
-                continue;
-            }
-            // Someone is waiting: a node that doesn't answer at once is
-            // only tried for the download, with the rest.
-            let ask = self.named_hosts(&follow.addr, blob);
-            let hosts = tokio::time::timeout(ASK_FIRST_WAIT, ask)
-                .await
-                .unwrap_or_default();
-            for id in hosts {
-                if !known.contains(&id) && !named.contains(&id) {
-                    named.push(id);
+        let is_known = |id: &EndpointId| known.iter().any(|source| source.node == *id);
+        let to_ask = self.db.follows()?.into_iter().map(|f| f.addr);
+        let to_ask = to_ask.filter(|addr| is_known(&addr.id)).collect();
+        // Someone is waiting: a node that doesn't answer at once is only tried
+        // for the download, with the rest.
+        let mut named: Vec<Source> = Vec::new();
+        for (asked, hosts) in self.ask_who_hosts_at_once(to_ask, blob, true).await {
+            for host in hosts {
+                let again = host.node == asked
+                    || is_known(&host.node)
+                    || named.iter().any(|s| s.node == host.node);
+                if !again {
+                    named.push(host);
                 }
             }
         }
@@ -796,18 +913,19 @@ impl Core {
         Ok(sources)
     }
 
-    /// Nodes believed to serve `blob`, most recently seen first.
-    fn known_providers(&self, blob: &BlobHash) -> Result<Vec<EndpointId>> {
+    /// Nodes believed to serve `blob`, most recently seen first, those we
+    /// know how to fetch from. A node may be here by two of its endpoints.
+    fn known_providers(&self, blob: &BlobHash) -> Result<Vec<Source>> {
         let me = self.endpoint.id();
-        let mut ids = Vec::new();
+        let mut sources: Vec<Source> = Vec::new();
         for addr in self.db.hosts(blob)? {
-            if addr.id == me || ids.contains(&addr.id) {
+            if addr.id == me || sources.iter().any(|s| s.node == addr.id) {
                 continue;
             }
             remember(&self.lookup, &addr);
-            ids.push(addr.id);
+            sources.extend(self.sources_of(&addr.id)?);
         }
-        Ok(ids)
+        Ok(sources)
     }
 
     /// Asks the nodes we follow who else hosts `blob`. Returns the nodes they
@@ -816,40 +934,26 @@ impl Core {
     /// not remembered: an author's node names followers holding a copy only
     /// to its followers (doc 13), and we mustn't pass them on. With someone
     /// `waiting`, a node that doesn't answer at once is passed over.
-    async fn ask_who_hosts(&self, blob: &BlobHash, waiting: bool) -> Vec<EndpointId> {
-        let me = self.endpoint.id();
-        let mut found = Vec::new();
-        let mut answered = Vec::new();
-        for follow in self.db.follows().unwrap_or_default() {
-            let req = SocialRequest::WhoHosts { blob: *blob };
-            let ask = self.social_request(&follow.addr, &req);
-            let reply = if waiting {
-                tokio::time::timeout(ASK_FIRST_WAIT, ask).await.ok()
-            } else {
-                Some(ask.await)
-            };
-            if let Some(Ok(SocialResponse::Hosts { nodes })) = reply {
-                let usable = nodes
-                    .iter()
-                    .filter(|a| a.id != me && check_addr(a).is_ok())
-                    .take(MAX_HOSTS_PER_REPLY);
-                for addr in usable {
-                    remember(&self.lookup, addr);
-                    let list = if addr.id == follow.addr.id {
-                        &mut answered
-                    } else {
-                        &mut found
-                    };
-                    if !list.contains(&addr.id) {
-                        list.push(addr.id);
-                    }
+    async fn ask_who_hosts(&self, blob: &BlobHash, waiting: bool) -> Vec<Source> {
+        let follows = self.db.follows().unwrap_or_default();
+        let to_ask = follows.into_iter().map(|f| f.addr).collect();
+        let mut found: Vec<Source> = Vec::new();
+        let mut answered: Vec<Source> = Vec::new();
+        for (asked, hosts) in self.ask_who_hosts_at_once(to_ask, blob, waiting).await {
+            for host in hosts {
+                let list = match host.node == asked {
+                    true => &mut answered,
+                    false => &mut found,
+                };
+                if !list.iter().any(|s| s.node == host.node) {
+                    list.push(host);
                 }
             }
         }
         let known = self.known_providers(blob).unwrap_or_default();
-        for id in answered.into_iter().chain(known) {
-            if !found.contains(&id) {
-                found.push(id);
+        for source in answered.into_iter().chain(known) {
+            if !found.iter().any(|s| s.node == source.node) {
+                found.push(source);
             }
         }
         found
@@ -997,6 +1101,13 @@ fn wait_for(waiting: &mut HashMap<BlobHash, Later>, l: Later) -> Option<BlobHash
         return Some(blob);
     }
     None
+}
+
+/// Notes that a sync with `actor`'s node failed at `now`, and when to try again.
+fn try_later(retries: &mut HashMap<PublicKey, (u32, Instant)>, actor: PublicKey, now: Instant) {
+    let failures = retries.get(&actor).map_or(0, |(failures, _)| *failures);
+    let wait = jitter(retry_wait(FIRST_RETRY_WAIT, failures));
+    retries.insert(actor, (failures + 1, now + wait));
 }
 
 /// How long to wait before trying again a prefetch that failed or was
@@ -1281,6 +1392,22 @@ mod tests {
                 "{varied:?}"
             );
         }
+    }
+
+    #[test]
+    fn syncs_that_fail_are_tried_again_after_longer_and_longer() {
+        let actor = iroh::SecretKey::generate().public();
+        let now = Instant::now();
+        let mut retries = HashMap::new();
+        for failures in 0..8 {
+            try_later(&mut retries, actor, now);
+            let (counted, next) = retries[&actor];
+            assert_eq!(counted, failures + 1);
+            let usual = retry_wait(FIRST_RETRY_WAIT, failures);
+            let wait = next - now;
+            assert!(wait >= usual / 2 && wait <= usual * 3 / 2, "{wait:?}");
+        }
+        assert_eq!(retry_wait(FIRST_RETRY_WAIT, 7), MAX_RETRY_WAIT);
     }
 
     #[test]

@@ -106,9 +106,10 @@ pub struct SwarmConfig {
     pub share_prefetched: bool,
 }
 
-/// Messages between nodes over Tor (ADR 0014), being built. For now, with
-/// it on, the node starts its own Tor and answers other nodes' requests
-/// through it as well, and `osp tor ping` reaches nodes through it.
+/// Messages between nodes over Tor (ADR 0014), being built. With it on, the
+/// node starts its own Tor, and messages to and from other nodes go through
+/// it and nowhere else, so only nodes with it on can reach each other. It
+/// takes `[endpoints]` as well, as media and phones can't go over Tor.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct TorConfig {
@@ -127,10 +128,11 @@ impl Default for TorConfig {
     }
 }
 
-/// The node's media and direct endpoints (ADR 0014), being built. For now,
-/// with it on, they run beside the node's main endpoint, which still does what
-/// it did; new phones pair with the direct one. Nothing else moves onto them
-/// until ADR 0014's build step 3, so the node's address isn't hidden yet.
+/// The node's media and direct endpoints (ADR 0014), being built. With it on,
+/// media and phones move onto them, and the node's main endpoint carries only
+/// messages between nodes. Phones paired before must pair again. Its address
+/// is hidden only with `[tor]` on too: until then, that endpoint connects
+/// directly.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct EndpointsConfig {

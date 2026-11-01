@@ -107,9 +107,10 @@ impl Core {
                 .heard
                 .contact(&row.node, instant, self.sim.heard_lately)
             {
+                Contact::NotLately => None,
+                _ if self.tor.is_some() => Some(Reached::Tor),
                 Contact::Direct => Some(Reached::Direct),
                 Contact::Relayed => Some(Reached::Relay),
-                Contact::NotLately => None,
             };
             Ok(TrustInfo {
                 node: row.node,
