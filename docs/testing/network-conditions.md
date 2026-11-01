@@ -450,3 +450,18 @@ Not simulated: Tor restarting (it ends a node's onion service until the node set
 **Pass marks.** For the run with the delay, the home run's three [marks](#pass-marks). Recorded too, against the run without: followers the creator couldn't tell of the post, syncs that failed, and the busy and failed counts.
 
 **Timers B8 doesn't reach,** found by reading the code: when the phone opens media that wasn't fetched ahead of time, the node asks the nodes it follows who hosts it, waiting at most 3 s for each (`ASK_FIRST_WAIT`), then fetches. Over Tor, that's shorter than a first connection and close to a slow round trip, so the node would often skip the nodes it follows and fetch from the author, the case the swarm exists to avoid.
+
+**Results**, 2026-11-01, one run each with `be38037`, back to back; other programs took at most 3% of the machine's CPUs.
+
+| Run | Followers: 50% / 95% / all | Creator's copies | Followers' requests refused as busy | Syncs failed connecting | Followers not told of the post | Latecomers: half / all | Pass marks |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| As it is | 612 / 779 / 1,390 s | 24.9 | 1,939 | 0 | 0 | 16.1 / 25.5 s | **all met** |
+| Tor-like delay | 587 / 730 / 764 s | 23.2 | 1,396 | 139 | 4 | 43.8 / 61.7 s | **all met** |
+
+- **The swarm doesn't notice the delay.** Every mark held, and the creator sent no more copies. Media isn't delayed, and the messages the swarm needs mostly go over connections already open. One follower in the run without the delay took 1,390 s, an outlier of the kind seen before; the rest held the video by 847 s.
+- **The social connection timeout breaks.** 139 syncs failed with "connecting timed out": a first connection may take up to 25 s, and the node gives up at 20 s (`CONNECT_TIMEOUT`). Each failed node was synced later, once its circuits were ready.
+- **Telling followers of a post just fits.** 4 of 300 weren't told within 15 s (`NOTIFY_TIMEOUT`); they got the post at their next sync.
+- **A first contact costs about 30 s.** Latecomers, which follow and fetch at once, took 44 to 62 s instead of 16 to 26: the first connection to the creator, then `WhoHosts` over it. The download itself took no longer.
+- The request timeout (30 s) and the follow sync's limit (120 s) were never reached. The followers' "couldn't connect" counts in the summary (133 against 4) are the same failed connections, since peer records count social requests too.
+
+**What it shows.** Over Tor, the follower swarm works as before. What needs changing is how a node waits for a first connection: it should let the circuits finish in the background rather than give up at 20 s, and show progress where someone is waiting, as when following. The 3 s wait when the phone opens media, which B8 doesn't reach, needs the same thought.
