@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/osp-proto", "crates/osp-node", "crates/osp-cli", "crates/osp-client", "crates/osp-sim", "app/rust"]
+members = ["crates/osp-proto", "crates/osp-node", "crates/osp-cli", "crates/osp-client", "crates/osp-sim", "crates/osp-tor", "app/rust"]
 
 [workspace.package]
 version = "0.1.0"
@@ -13,6 +13,7 @@ repository = "https://github.com/Jayotis/open-social-p2p"
 osp-proto = { path = "crates/osp-proto" }
 osp-node = { path = "crates/osp-node" }
 osp-client = { path = "crates/osp-client" }
+osp-tor = { path = "crates/osp-tor" }
 
 anyhow = "1"
 bip39 = { version = "3", default-features = false, features = ["zeroize"] } # English words only
@@ -27,7 +28,7 @@ iroh-base = { version = "1.4", features = ["key"] }
 iroh-blobs = "0.103.1" # minimum: earlier versions ignored EventMask modes (ADR 0002)
 iroh-relay = "1.4" # tests only: a relay server on loopback
 n0-future = "0.3"
-n0-watcher = "1" # the simulated network only (osp-node's `sim`), as iroh's custom transports need
+n0-watcher = "1" # iroh's custom transports need it: osp-tor, and osp-node's simulated network (`sim`)
 noq-udp = { version = "1.4", default-features = false } # the same
 postcard = { version = "1", default-features = false, features = ["use-std"] }
 qr2term = "0.3"
@@ -36,6 +37,7 @@ rusqlite = { version = "0.41", features = ["bundled"] }
 rustix = { version = "1", features = ["fs"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sha3 = { version = "0.11", default-features = false } # onion addresses' checksum (osp-tor)
 tempfile = "3"
 tokio = { version = "1", features = ["full"] }
 toml = "1"

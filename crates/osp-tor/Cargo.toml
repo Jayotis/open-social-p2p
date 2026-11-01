@@ -1,0 +1,30 @@
+[package]
+name = "osp-tor"
+description = "Open Social P2P's messages between nodes over Tor: an iroh transport through onion services, and the node's own Tor"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+# Started from n0's `iroh-tor-transport` 0.1.0 (MIT or Apache-2.0), and kept
+# under its licences so the changes can go back to it (ADR 0014).
+license = "MIT OR Apache-2.0"
+repository.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+data-encoding.workspace = true
+getrandom.workspace = true
+# Custom transports are outside iroh's semver guarantees, so an iroh update
+# may need changes here, as with `osp-node`'s simulated network.
+iroh = { workspace = true, features = ["unstable-custom-transports"] }
+iroh-base.workspace = true
+n0-future.workspace = true
+n0-watcher.workspace = true
+noq-udp.workspace = true
+ring.workspace = true
+sha3.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+tracing-subscriber.workspace = true
