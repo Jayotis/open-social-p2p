@@ -1,6 +1,6 @@
 //! Node configuration, stored as `config.toml` in the home directory.
 
-use std::{net::SocketAddr, path::Path};
+use std::{fmt, net::SocketAddr, path::Path};
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -17,6 +17,7 @@ pub struct Config {
     pub serving: ServingConfig,
     pub swarm: SwarmConfig,
     pub tor: TorConfig,
+    pub endpoints: EndpointsConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -126,6 +127,43 @@ impl Default for TorConfig {
     }
 }
 
+/// The node's media and direct endpoints (ADR 0014), being built. For now,
+/// with it on, they run beside the node's main endpoint, which still does what
+/// it did; new phones pair with the direct one. Nothing else moves onto them
+/// until ADR 0014's build step 3, so the node's address isn't hidden yet.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct EndpointsConfig {
+    pub enabled: bool,
+    /// Who may connect directly, and so learn this node's IP address: anyone,
+    /// follows (people you follow), approved (`osp direct allow`), or nobody.
+    /// A connection is direct only when both sides' rules allow it; your own
+    /// phones always may.
+    pub direct: DirectRule,
+}
+
+/// Who may connect to a node directly (ADR 0014).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DirectRule {
+    Anyone,
+    Follows,
+    Approved,
+    #[default]
+    Nobody,
+}
+
+impl fmt::Display for DirectRule {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Anyone => "anyone",
+            Self::Follows => "people you follow",
+            Self::Approved => "contacts you approved",
+            Self::Nobody => "nobody",
+        })
+    }
+}
+
 /// Sending media to other nodes.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
@@ -147,6 +185,7 @@ impl Default for Config {
             serving: ServingConfig::default(),
             swarm: SwarmConfig::default(),
             tor: TorConfig::default(),
+            endpoints: EndpointsConfig::default(),
         }
     }
 }
@@ -218,6 +257,7 @@ impl Config {
             serving: ServingConfig::default(),
             swarm: SwarmConfig::default(),
             tor: TorConfig::default(),
+            endpoints: EndpointsConfig::default(),
         }
     }
 

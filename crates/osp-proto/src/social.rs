@@ -7,6 +7,7 @@ use iroh_base::{EndpointAddr, PublicKey};
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    binding::BoundEndpoint,
     object::{ObjectId, SignedObject},
     types::BlobHash,
 };
@@ -73,6 +74,13 @@ pub enum SocialRequest {
     /// [`MAX_TRUST_NOTE_CHARS`] characters. A valid request gets `Ok`
     /// whatever becomes of it, so the asking node never learns the answer.
     AskTrust { profile: SignedObject, note: String },
+    /// "How can I reach your other endpoints?" (ADR 0014). `direct` is the
+    /// sender's direct endpoint, if its rule allows a direct connection with
+    /// this node; without it, this node's endpoint refuses the sender's.
+    Endpoints {
+        #[serde(default)]
+        direct: Option<BoundEndpoint>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -95,6 +103,11 @@ pub enum SocialResponse {
     },
     Objects {
         objects: Vec<SignedObject>,
+    },
+    /// This node's media endpoint, and its direct one if its rule allows.
+    Endpoints {
+        media: Option<Box<BoundEndpoint>>,
+        direct: Option<Box<BoundEndpoint>>,
     },
     Error {
         message: String,

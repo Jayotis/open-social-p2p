@@ -161,6 +161,18 @@ pub enum ClientRequest {
     TorPing {
         node: EndpointId,
     },
+    /// The nodes allowed a direct connection by the rule `approved` (ADR 0014).
+    DirectContacts,
+    /// Allows `node`, by its public ID, a direct connection under the rule
+    /// `approved`. Its side's rule has to allow it too.
+    AllowDirect {
+        node: EndpointId,
+    },
+    /// Takes that back, and closes any connection with its direct endpoint.
+    /// What it learned of this node's address can't be taken back.
+    RemoveDirect {
+        node: EndpointId,
+    },
 }
 
 fn default_feed_limit() -> u32 {
@@ -246,6 +258,10 @@ pub enum ClientResponse {
         connect_ms: Option<u64>,
         round_trip_ms: u64,
     },
+    /// Oldest first.
+    DirectContacts {
+        nodes: Vec<EndpointId>,
+    },
     Error {
         message: String,
     },
@@ -305,6 +321,19 @@ pub struct StatusInfo {
     /// The node's Tor, when it's on (ADR 0014).
     #[serde(default)]
     pub tor: Option<TorStatus>,
+    /// The node's media and direct endpoints, when they're on (ADR 0014).
+    #[serde(default)]
+    pub endpoints: Option<Box<EndpointsStatus>>,
+}
+
+/// The node's media and direct endpoints.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EndpointsStatus {
+    /// None without relays, which are all it could use.
+    pub media: Option<EndpointId>,
+    pub direct: EndpointId,
+    /// Who the rule allows a direct connection, in words.
+    pub rule: String,
 }
 
 /// How the node's Tor is doing.

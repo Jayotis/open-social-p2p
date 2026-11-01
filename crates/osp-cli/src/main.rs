@@ -157,6 +157,22 @@ enum Command {
     /// Check messages between nodes over Tor, being built (ADR 0014)
     #[command(subcommand)]
     Tor(TorCommand),
+    /// Who may connect to this node directly, under the rule `approved` under
+    /// [endpoints] in config.toml, being built (ADR 0014)
+    #[command(subcommand)]
+    Direct(DirectCommand),
+}
+
+/// Nodes are given by their full public node ID.
+#[derive(Subcommand)]
+enum DirectCommand {
+    /// List the nodes you allowed a direct connection
+    List,
+    /// Allow a node a direct connection, if its own rule allows it too. Once
+    /// connected, it knows your IP address, and that can't be taken back.
+    Allow { node: EndpointId },
+    /// Stop allowing a node a direct connection, and close any it has
+    Remove { node: EndpointId },
 }
 
 #[derive(Subcommand)]
@@ -348,6 +364,9 @@ async fn main() -> Result<()> {
         Command::Service(ServiceCommand::Uninstall) => return service::uninstall(),
         Command::Status => ClientRequest::Status,
         Command::Tor(TorCommand::Ping { node }) => ClientRequest::TorPing { node },
+        Command::Direct(DirectCommand::List) => ClientRequest::DirectContacts,
+        Command::Direct(DirectCommand::Allow { node }) => ClientRequest::AllowDirect { node },
+        Command::Direct(DirectCommand::Remove { node }) => ClientRequest::RemoveDirect { node },
         Command::Follow { ticket } => ClientRequest::Follow { ticket },
         Command::Unfollow { actor } => ClientRequest::Unfollow { actor },
         Command::Following => ClientRequest::Following,
@@ -827,6 +846,14 @@ fn print(resp: ClientResponse, json: bool) -> Result<()> {
         ClientResponse::Error { message } => bail!(message),
         ClientResponse::Ok => println!("Done."),
         ClientResponse::Status(status) => print_status(&status),
+        ClientResponse::DirectContacts { nodes } => {
+            if nodes.is_empty() {
+                println!("No nodes allowed a direct connection.");
+            }
+            for node in nodes {
+                println!("{node}");
+            }
+        }
         ClientResponse::TorPinged {
             connect_ms,
             round_trip_ms,
@@ -991,6 +1018,17 @@ fn print_status(s: &StatusInfo) {
             n => format!("{n} streams"),
         };
         println!("Tor:       {}{published}, {streams}{restarts}", tor.state);
+    }
+    if let Some(own) = &s.endpoints {
+        let media = match own.media {
+            Some(media) => media.fmt_short().to_string(),
+            None => "none, as relays are off".to_string(),
+        };
+        println!(
+            "Endpoints: direct {} (allows {}), media {media}",
+            own.direct.fmt_short(),
+            own.rule
+        );
     }
     match s.trust_requests {
         0 => {}
