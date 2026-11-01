@@ -54,6 +54,14 @@ impl ConnTracker {
         }
     }
 
+    /// The same record of connections, for an endpoint with its own relays.
+    pub fn with_relays(&self, relays: RelayPolicy) -> Self {
+        Self {
+            conns: self.conns.clone(),
+            relays,
+        }
+    }
+
     /// One entry per remote node with a live connection.
     pub fn peers(&self) -> Vec<PeerInfo> {
         let live: Vec<Connection> = self

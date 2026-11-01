@@ -12,7 +12,7 @@ use std::{
 use anyhow::{Context, Result, ensure};
 use iroh::{EndpointAddr, EndpointId, PublicKey};
 use osp_proto::{
-    BlobHash, EarlierKeys, Key, Note, ObjectId, Payload, SignedObject,
+    BlobHash, BoundEndpoint, EarlierKeys, EndpointKind, Key, Note, ObjectId, Payload, SignedObject,
     rpc::{FollowInfo, PeerCounts, StorageInfo, Upload, UploadId},
 };
 use rusqlite::{Connection, OptionalExtension, params};
@@ -167,6 +167,21 @@ const MIGRATIONS: &[&str] = &[
         answered_ms INTEGER
     );
     CREATE INDEX trust_by_actor ON trust(actor);",
+    // Other nodes' media and direct endpoints: which node each serves for,
+    // from when, and the binding and address as they came (ADR 0014). And the
+    // nodes allowed a direct connection by the rule `approved`.
+    "CREATE TABLE endpoints (
+        endpoint TEXT PRIMARY KEY,
+        public   TEXT NOT NULL,
+        kind     TEXT NOT NULL,
+        since_ms INTEGER NOT NULL,
+        bound    TEXT NOT NULL
+    );
+    CREATE INDEX endpoints_by_public ON endpoints(public, kind);
+    CREATE TABLE direct_contacts (
+        node     TEXT PRIMARY KEY,
+        added_ms INTEGER NOT NULL
+    );",
 ];
 
 /// Hosts remembered per blob. More than enough to find a copy; a peer
@@ -1397,6 +1412,108 @@ impl Db {
             .optional()?)
     }
 
+    // ---- other nodes' endpoints (ADR 0014) ----
+
+    /// Keeps a checked endpoint of another node, in place of what it had of
+    /// that kind, unless what it had is dated later. Says whether it did.
+    pub fn keep_endpoint(&self, bound: &BoundEndpoint) -> Result<bool> {
+        let binding = &bound.binding;
+        let (public, kind) = (binding.public.to_string(), kind_name(binding.kind));
+        let mut conn = self.conn();
+        let tx = conn.transaction()?;
+        let later: Option<i64> = tx
+            .query_row(
+                "SELECT 1 FROM endpoints WHERE public = ?1 AND kind = ?2 AND since_ms > ?3",
+                params![public, kind, binding.since_ms as i64],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if later.is_some() {
+            return Ok(false);
+        }
+        tx.execute(
+            "DELETE FROM endpoints WHERE public = ?1 AND kind = ?2",
+            params![public, kind],
+        )?;
+        tx.execute(
+            "INSERT OR REPLACE INTO endpoints (endpoint, public, kind, since_ms, bound)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                binding.endpoint.to_string(),
+                public,
+                kind,
+                binding.since_ms as i64,
+                serde_json::to_string(bound)?
+            ],
+        )?;
+        tx.commit()?;
+        Ok(true)
+    }
+
+    /// The node a direct endpoint serves for, if one of them told us.
+    pub fn direct_endpoint_owner(&self, endpoint: &EndpointId) -> Result<Option<EndpointId>> {
+        let public: Option<String> = self
+            .conn()
+            .query_row(
+                "SELECT public FROM endpoints WHERE endpoint = ?1 AND kind = ?2",
+                params![endpoint.to_string(), kind_name(EndpointKind::Direct)],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(public.map(|p| p.parse()).transpose()?)
+    }
+
+    // ---- nodes allowed a direct connection by the rule `approved` ----
+
+    pub fn add_direct_contact(&self, node: &EndpointId) -> Result<()> {
+        self.conn().execute(
+            "INSERT OR IGNORE INTO direct_contacts (node, added_ms) VALUES (?1, ?2)",
+            params![node.to_string(), now_ms()],
+        )?;
+        Ok(())
+    }
+
+    pub fn remove_direct_contact(&self, node: &EndpointId) -> Result<bool> {
+        let n = self.conn().execute(
+            "DELETE FROM direct_contacts WHERE node = ?1",
+            params![node.to_string()],
+        )?;
+        Ok(n > 0)
+    }
+
+    pub fn is_direct_contact(&self, node: &EndpointId) -> Result<bool> {
+        let found: Option<i64> = self
+            .conn()
+            .query_row(
+                "SELECT 1 FROM direct_contacts WHERE node = ?1",
+                params![node.to_string()],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(found.is_some())
+    }
+
+    /// Oldest first.
+    pub fn direct_contacts(&self) -> Result<Vec<EndpointId>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare("SELECT node FROM direct_contacts ORDER BY added_ms")?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+        rows.map(|node| Ok(node?.parse()?)).collect()
+    }
+
+    /// The direct endpoint a node told us of, to close connections with it.
+    pub fn direct_endpoint_of(&self, public: &EndpointId) -> Result<Option<EndpointId>> {
+        let endpoint: Option<String> = self
+            .conn()
+            .query_row(
+                "SELECT endpoint FROM endpoints WHERE public = ?1 AND kind = ?2",
+                params![public.to_string(), kind_name(EndpointKind::Direct)],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(endpoint.map(|e| e.parse()).transpose()?)
+    }
+
     // ---- devices ----
 
     /// Records a paired device, or renames one paired before.
@@ -1732,6 +1849,14 @@ fn trust_rows(conn: &Connection, sql: &str) -> Result<Vec<TrustRow>> {
 }
 
 /// Runs the migrations this database hasn't had yet, each in one transaction.
+/// How the `endpoints` table names a kind of endpoint.
+fn kind_name(kind: EndpointKind) -> &'static str {
+    match kind {
+        EndpointKind::Media => "media",
+        EndpointKind::Direct => "direct",
+    }
+}
+
 fn migrate(conn: &Connection) -> Result<()> {
     let done: i64 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
     for (i, sql) in MIGRATIONS.iter().enumerate().skip(done as usize) {
@@ -1798,6 +1923,9 @@ fn format_ms(ms: i64) -> String {
 
 #[cfg(test)]
 mod tests {
+    use iroh::SecretKey;
+    use osp_proto::EndpointBinding;
+
     use super::*;
 
     #[test]
@@ -2167,6 +2295,74 @@ mod tests {
         db.update_peer(&some_addr().id, false, now, count).unwrap();
         assert!(peer(&db, &theirs[0], now).is_none());
         assert!(peer(&db, &ours[2], now).is_some());
+    }
+
+    #[test]
+    fn a_nodes_later_endpoint_replaces_the_earlier_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(&dir.path().join("t.db")).unwrap();
+        let public = SecretKey::generate();
+        let bound = |endpoint: &SecretKey, kind, since_ms| BoundEndpoint {
+            binding: EndpointBinding::new(&public, endpoint, kind, since_ms),
+            addr: EndpointAddr::new(endpoint.public()),
+        };
+        let (first, second) = (SecretKey::generate(), SecretKey::generate());
+
+        assert!(
+            db.keep_endpoint(&bound(&first, EndpointKind::Direct, 100))
+                .unwrap()
+        );
+        let owner = db.direct_endpoint_owner(&first.public()).unwrap();
+        assert_eq!(owner, Some(public.public()));
+        assert_eq!(
+            db.direct_endpoint_of(&public.public()).unwrap(),
+            Some(first.public())
+        );
+
+        // An older one, resent, changes nothing.
+        assert!(
+            !db.keep_endpoint(&bound(&second, EndpointKind::Direct, 99))
+                .unwrap()
+        );
+        assert_eq!(db.direct_endpoint_owner(&second.public()).unwrap(), None);
+
+        // A later one takes its place, so the old one is let in no more.
+        assert!(
+            db.keep_endpoint(&bound(&second, EndpointKind::Direct, 101))
+                .unwrap()
+        );
+        assert_eq!(db.direct_endpoint_owner(&first.public()).unwrap(), None);
+        assert_eq!(
+            db.direct_endpoint_of(&public.public()).unwrap(),
+            Some(second.public())
+        );
+
+        // A media endpoint is never taken for a direct one, nor replaces it.
+        let media = SecretKey::generate();
+        assert!(
+            db.keep_endpoint(&bound(&media, EndpointKind::Media, 200))
+                .unwrap()
+        );
+        assert_eq!(db.direct_endpoint_owner(&media.public()).unwrap(), None);
+        assert_eq!(
+            db.direct_endpoint_of(&public.public()).unwrap(),
+            Some(second.public())
+        );
+    }
+
+    #[test]
+    fn direct_contacts_are_kept_oldest_first() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(&dir.path().join("t.db")).unwrap();
+        let node = SecretKey::generate().public();
+        assert!(!db.is_direct_contact(&node).unwrap());
+        assert!(!db.remove_direct_contact(&node).unwrap());
+        db.add_direct_contact(&node).unwrap();
+        db.add_direct_contact(&node).unwrap();
+        assert!(db.is_direct_contact(&node).unwrap());
+        assert_eq!(db.direct_contacts().unwrap(), [node]);
+        assert!(db.remove_direct_contact(&node).unwrap());
+        assert!(!db.is_direct_contact(&node).unwrap());
     }
 
     #[test]

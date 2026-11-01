@@ -198,6 +198,7 @@ impl Core {
         req: SocialRequest,
     ) -> Result<SocialResponse> {
         Ok(match req {
+            SocialRequest::Endpoints { direct } => self.answer_endpoints(remote, direct).await?,
             SocialRequest::GetProfile => SocialResponse::Profile {
                 profile: self.profile.clone(),
             },

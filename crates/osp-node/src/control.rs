@@ -173,6 +173,24 @@ impl Core {
                     round_trip_ms: round_trip.as_millis() as u64,
                 }
             }
+            ClientRequest::DirectContacts => ClientResponse::DirectContacts {
+                nodes: self.db.direct_contacts()?,
+            },
+            ClientRequest::AllowDirect { node } => {
+                self.db.add_direct_contact(&node)?;
+                ClientResponse::Ok
+            }
+            ClientRequest::RemoveDirect { node } => {
+                ensure!(
+                    self.db.remove_direct_contact(&node)?,
+                    "{} isn't one of your contacts for direct connections",
+                    node.fmt_short()
+                );
+                if let Some(endpoint) = self.db.direct_endpoint_of(&node)? {
+                    self.tracker.close_all(endpoint, b"no longer allowed");
+                }
+                ClientResponse::Ok
+            }
             ClientRequest::AnswerTrust { node, allow } => {
                 self.answer_trust(&node, allow)?;
                 ClientResponse::Ok
@@ -281,6 +299,7 @@ impl Core {
             upload_measured_mbps,
             trust_requests: self.db.trust_request_count(now_ms())?,
             tor: self.tor.as_ref().map(|tor| tor.status()),
+            endpoints: self.endpoints.as_ref().map(|own| Box::new(own.status())),
         })
     }
 

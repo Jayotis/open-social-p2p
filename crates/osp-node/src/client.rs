@@ -47,6 +47,19 @@ pub(crate) struct PendingPairing {
     expires: Instant,
 }
 
+impl PendingPairing {
+    /// Whether it can still be used.
+    pub fn is_live(&self, now: Instant) -> bool {
+        self.expires > now
+    }
+
+    /// Whether this is the pairing with that secret's hash, still usable.
+    /// blake3::Hash compares in constant time.
+    pub fn matches(&self, hash: &blake3::Hash, now: Instant) -> bool {
+        self.is_live(now) && self.secret_hash == *hash
+    }
+}
+
 /// Accepts incoming `osp/client/0` connections.
 #[derive(Clone)]
 pub(crate) struct ClientProtocol {
@@ -208,8 +221,13 @@ impl Core {
             });
         }
         let relays = self.config.network.relay != RelayChoice::Disabled;
+        // A phone pairs with the direct endpoint, if the node has one.
+        let endpoint = match &self.endpoints {
+            Some(own) => &own.direct.endpoint,
+            None => &self.endpoint,
+        };
         let ticket = PairingTicket {
-            node: pairing_addr(self.full_addr().await, relays),
+            node: pairing_addr(self.full_addr_of(endpoint).await, relays),
             secret,
         };
         Ok(ClientResponse::Pairing {

@@ -10,6 +10,7 @@ mod client;
 pub mod config;
 mod control;
 mod db;
+mod endpoints;
 mod health;
 mod home;
 mod keys;
@@ -27,8 +28,9 @@ mod tor;
 mod trust;
 mod uploads;
 
-pub use config::{Config, RelayChoice};
+pub use config::{Config, DirectRule, RelayChoice};
 pub use db::BlobClass;
+pub use endpoints::PeerEndpoints;
 pub use home::Home;
 #[cfg(feature = "sim")]
 pub use node::SimSettings;

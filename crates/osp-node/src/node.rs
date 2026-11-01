@@ -12,7 +12,7 @@ use anyhow::{Context, Result, bail, ensure};
 use iroh::{
     Endpoint, EndpointAddr, EndpointId, PublicKey, RelayMode, SecretKey,
     address_lookup::{DnsAddressLookup, MemoryLookup, PkarrPublisher, PkarrResolver},
-    endpoint::{Connection, QuicTransportConfig, presets},
+    endpoint::{Builder, Connection, QuicTransportConfig, presets},
     protocol::Router,
 };
 use osp_proto::{
@@ -34,10 +34,11 @@ const MAX_ADDRS: usize = 16;
 
 use crate::{
     backup,
-    client::{ClientProtocol, PendingPairing},
-    config::{Config, RelayChoice},
+    client::ClientProtocol,
+    config::{Config, NetworkConfig, RelayChoice},
     control::{self, Origin},
     db::{BlobClass, Db},
+    endpoints::{DirectGate, OwnEndpoints, Pairings, PeerEndpoints},
     home::Home,
     keys::{self, NewKey, Signer},
     media,
@@ -115,6 +116,8 @@ pub struct Node {
     router: Router,
     /// Other nodes' requests over Tor, when it's on.
     tor_router: Option<Router>,
+    /// The media and direct endpoints', when they're on.
+    endpoint_routers: Vec<Router>,
     tasks: Vec<JoinHandle<()>>,
     serving_socket: bool,
     /// Locked for as long as the node runs; the lock goes when the file closes.
@@ -152,7 +155,7 @@ pub(crate) struct Core {
     /// Posts held back from the feed while their media is on its way.
     pub holds: Mutex<HashMap<ObjectId, sync::Hold>>,
     /// Pairing secrets handed out and not used yet. Kept in memory only.
-    pub pairings: Mutex<Vec<PendingPairing>>,
+    pub pairings: Pairings,
     /// Uploads from devices that streams are using now (`uploads.rs`).
     pub uploads: Mutex<HashMap<UploadKey, Arc<LiveUpload>>>,
     /// Media a device opened that is still on its way here, so devices
@@ -180,6 +183,8 @@ pub(crate) struct Core {
     pub transcode_lock: tokio::sync::Mutex<()>,
     /// The node's Tor and its endpoint there, when it's on (ADR 0014).
     pub tor: Option<TorSide>,
+    /// The node's media and direct endpoints, when they're on (ADR 0014).
+    pub endpoints: Option<OwnEndpoints>,
     pub sim: SimSettings,
     /// With `SimSettings::tor_delay`: when the Tor-like circuits to each
     /// node are, or will be, ready.
@@ -341,6 +346,18 @@ impl Node {
             true => Some(TorSide::start(&home, &config.tor, node_key.clone()).await?),
             false => None,
         };
+        let pairings = Pairings::default();
+        let endpoints = match config.endpoints.enabled {
+            true => {
+                let gate = DirectGate::new(db.clone(), config.endpoints.direct, pairings.clone());
+                let own = OwnEndpoints::start(
+                    &home, &config, &node_key, &lookup, &relays, &tracker, gate,
+                )
+                .await?;
+                Some(own)
+            }
+            false => None,
+        };
         let endpoint =
             bind_endpoint(&config, node_key, &lookup, &relays, tracker.clone(), &sim).await?;
         for follow in db.follows()? {
@@ -391,7 +408,7 @@ impl Node {
             prefetch_jobs: watch::Sender::new(0),
             prefetch_later,
             holds: Mutex::new(HashMap::new()),
-            pairings: Mutex::new(Vec::new()),
+            pairings,
             uploads: Mutex::new(HashMap::new()),
             opening: Mutex::new(HashMap::new()),
             subscribed: Mutex::new(HashMap::new()),
@@ -405,6 +422,7 @@ impl Node {
             media_posts: Semaphore::new(control::MAX_MEDIA_POSTS),
             transcode_lock: tokio::sync::Mutex::new(()),
             tor,
+            endpoints,
             sim,
             #[cfg(feature = "sim")]
             tor_ready: Mutex::new(HashMap::new()),
@@ -416,10 +434,31 @@ impl Node {
             .protocol(&core.config.serving, &core.config.swarm);
         let social = SocialProtocol::new(core.clone());
         let social_over_tor = social.over_tor();
+        let client = ClientProtocol::new(core.clone());
+        // Messages between nodes go on neither of these, so if Tor is down
+        // they wait; they never go direct (ADR 0014).
+        let mut endpoint_routers = Vec::new();
+        if let Some(own) = &core.endpoints {
+            if let Some(media) = &own.media {
+                endpoint_routers.push(
+                    Router::builder(media.endpoint.clone())
+                        .accept(iroh_blobs::ALPN, blobs.clone())
+                        .spawn(),
+                );
+            }
+            let gate = own.gate.clone();
+            endpoint_routers.push(
+                Router::builder(own.direct.endpoint.clone())
+                    .incoming_filter(Arc::new(move |incoming| gate.check_first_packet(incoming)))
+                    .accept(iroh_blobs::ALPN, blobs.clone())
+                    .accept(osp_proto::CLIENT_ALPN, client.clone())
+                    .spawn(),
+            );
+        }
         let router = Router::builder(endpoint)
             .accept(iroh_blobs::ALPN, blobs)
             .accept(osp_proto::SOCIAL_ALPN, social)
-            .accept(osp_proto::CLIENT_ALPN, ClientProtocol::new(core.clone()))
+            .accept(osp_proto::CLIENT_ALPN, client)
             .spawn();
         // Only other nodes come over Tor: phones can't run it.
         let tor_router = core.tor.as_ref().map(|tor| {
@@ -453,6 +492,7 @@ impl Node {
             core,
             router,
             tor_router,
+            endpoint_routers,
             tasks,
             serving_socket: false,
             _lock: lock,
@@ -483,6 +523,35 @@ impl Node {
     /// The address other nodes should use to reach this one.
     pub async fn addr(&self) -> EndpointAddr {
         self.core.shareable_addr().await
+    }
+
+    /// How to reach the media endpoint, when it's on.
+    pub async fn media_addr(&self) -> Option<EndpointAddr> {
+        let media = self.core.endpoints.as_ref()?.media.as_ref()?;
+        Some(self.core.shareable_addr_of(&media.endpoint).await)
+    }
+
+    /// How to reach the direct endpoint, when it's on.
+    pub async fn direct_addr(&self) -> Option<EndpointAddr> {
+        let own = self.core.endpoints.as_ref()?;
+        Some(self.core.shareable_addr_of(&own.direct.endpoint).await)
+    }
+
+    /// Asks another node for its media and direct endpoints, offering this
+    /// node's direct one if its rule allows that node. Nothing uses them until
+    /// ADR 0014's build step 3. For tests and diagnostics.
+    pub async fn ask_endpoints(&self, node: &EndpointAddr) -> Result<PeerEndpoints> {
+        self.core.ask_endpoints(node).await
+    }
+
+    /// Connects from the direct endpoint. For tests and diagnostics.
+    pub async fn connect_from_direct(&self, node: EndpointAddr, alpn: &[u8]) -> Result<Connection> {
+        let own = self
+            .core
+            .endpoints
+            .as_ref()
+            .context("the direct endpoint is off")?;
+        Ok(own.direct.endpoint.connect(node, alpn).await?)
     }
 
     pub fn blob_class(&self, hash: &BlobHash) -> Result<Option<BlobClass>> {
@@ -535,6 +604,12 @@ impl Node {
                 .await
                 .context("shutting down protocols over Tor")?;
         }
+        for router in self.endpoint_routers {
+            router
+                .shutdown()
+                .await
+                .context("shutting down the other endpoints' protocols")?;
+        }
         if self.serving_socket {
             let _ = std::fs::remove_file(self.core.home.socket());
         }
@@ -547,20 +622,25 @@ impl Core {
     /// and relay URL, so tickets don't reveal home IP addresses; without
     /// relays, direct addresses are all there is.
     pub async fn shareable_addr(&self) -> EndpointAddr {
-        let addr = self.full_addr().await;
+        self.shareable_addr_of(&self.endpoint).await
+    }
+
+    /// The same, for any of our endpoints.
+    pub async fn shareable_addr_of(&self, endpoint: &Endpoint) -> EndpointAddr {
+        let addr = self.full_addr_of(endpoint).await;
         if self.config.network.relay == RelayChoice::Disabled {
             return addr;
         }
         EndpointAddr::from_parts(addr.id, addr.addrs.into_iter().filter(|a| a.is_relay()))
     }
 
-    /// Every address we have, relay and direct. Only for our own devices.
-    pub async fn full_addr(&self) -> EndpointAddr {
+    /// Every address an endpoint has, relay and direct. Only for our own devices.
+    pub async fn full_addr_of(&self, endpoint: &Endpoint) -> EndpointAddr {
         if self.config.network.relay != RelayChoice::Disabled {
             // Wait briefly for a home relay; without a network we hand out what we have.
-            let _ = tokio::time::timeout(Duration::from_secs(10), self.endpoint.online()).await;
+            let _ = tokio::time::timeout(Duration::from_secs(10), endpoint.online()).await;
         }
-        self.endpoint.addr()
+        endpoint.addr()
     }
 }
 
@@ -708,15 +788,13 @@ fn check_network_config(config: &Config) -> Result<()> {
     Ok(())
 }
 
-async fn bind_endpoint(
-    config: &Config,
-    key: SecretKey,
+/// What every endpoint of the node shares: its limits on streams, and how it
+/// finds other nodes and which relays it uses.
+pub(crate) fn endpoint_builder(
+    net: &NetworkConfig,
     lookup: &MemoryLookup,
     relays: &RelayPolicy,
-    tracker: ConnTracker,
-    #[cfg_attr(not(feature = "sim"), allow(unused_variables))] sim: &SimSettings,
-) -> Result<Endpoint> {
-    let net = &config.network;
+) -> Result<Builder> {
     let transport = QuicTransportConfig::builder()
         .max_concurrent_bidi_streams(MAX_STREAMS_PER_CONN.into())
         // None of our protocols use one-way streams. Nobody would read them,
@@ -726,7 +804,6 @@ async fn bind_endpoint(
     // The lookups are set up again here, as in the N0 preset, so that what
     // they find passes the relay policy first.
     let mut builder = Endpoint::builder(presets::N0)
-        .hooks(tracker)
         .transport_config(transport)
         .clear_address_lookup()
         .address_lookup(Checked::new(lookup.clone(), relays.clone()));
@@ -743,6 +820,19 @@ async fn bind_endpoint(
             builder.relay_mode(RelayMode::custom(relays::own_relays(&net.relay)?))
         }
     };
+    Ok(builder)
+}
+
+async fn bind_endpoint(
+    config: &Config,
+    key: SecretKey,
+    lookup: &MemoryLookup,
+    relays: &RelayPolicy,
+    tracker: ConnTracker,
+    #[cfg_attr(not(feature = "sim"), allow(unused_variables))] sim: &SimSettings,
+) -> Result<Endpoint> {
+    let net = &config.network;
+    let mut builder = endpoint_builder(net, lookup, relays)?.hooks(tracker);
     if net.relay_only {
         // No IP sockets at all, so there is nothing to connect directly
         // with, and no address to give away. Without a relay, nothing

@@ -49,6 +49,17 @@ impl Home {
         self.root.join("node.key")
     }
 
+    /// The key of the endpoint that serves media through relays only (ADR 0014).
+    pub fn media_key(&self) -> PathBuf {
+        self.root.join("media.key")
+    }
+
+    /// The key of the endpoint phones and allowed peers connect to directly
+    /// (ADR 0014).
+    pub fn direct_key(&self) -> PathBuf {
+        self.root.join("direct.key")
+    }
+
     pub fn db(&self) -> PathBuf {
         self.root.join("osp.db")
     }
