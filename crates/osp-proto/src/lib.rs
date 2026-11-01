@@ -5,6 +5,7 @@
 //! `osp/social/1` and `osp/client/0` protocols, the frame format they travel in,
 //! and follow tickets. This crate does no networking of its own.
 
+pub mod binding;
 pub mod framing;
 pub mod object;
 pub mod rpc;
@@ -14,9 +15,10 @@ pub mod types;
 
 use std::time::SystemTime;
 
+pub use binding::{BoundEndpoint, EndpointBinding, EndpointKind};
 pub use iroh_base::{EndpointAddr, EndpointId, PublicKey, SecretKey};
 pub use object::{CertifiedKey, ObjectId, SignedObject};
-pub use ticket::{FollowTicket, PairingTicket};
+pub use ticket::{FollowTicket, PairingTicket, pairing_pass_hash};
 pub use types::{
     Announce, Attachment, BlobHash, BlobRef, EarlierKeys, Key, MediaKind, Note, Payload, Person,
 };

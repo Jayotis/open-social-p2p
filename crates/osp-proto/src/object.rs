@@ -264,7 +264,7 @@ fn signing_input(payload: &[u8]) -> Vec<u8> {
 }
 
 /// Serde helper: bytes as unpadded base64url strings.
-mod base64url {
+pub(crate) mod base64url {
     use data_encoding::BASE64URL_NOPAD;
     use serde::{Deserialize, Deserializer, Serializer};
 

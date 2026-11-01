@@ -11,6 +11,8 @@ use serde::{Deserialize, Serialize};
 /// Uppercase base32 keeps QR codes in their compact alphanumeric mode.
 const FOLLOW_PREFIX: &str = "OSP1";
 const PAIRING_PREFIX: &str = "OSPPAIR1";
+/// Starts the pairing pass (`PairingTicket::pass`).
+const PAIRING_PASS_PREFIX: &[u8] = b"osp-pair/";
 
 /// An identity plus an address for one of its home nodes.
 ///
@@ -35,6 +37,26 @@ pub struct FollowTicket {
 pub struct PairingTicket {
     pub node: EndpointAddr,
     pub secret: [u8; 16],
+}
+
+impl PairingTicket {
+    /// What a phone that is pairing offers among its ALPNs. A node's direct
+    /// endpoint refuses nodes it doesn't know before the handshake (ADR 0014),
+    /// when the first packet is all it has seen. This shows it the phone holds
+    /// the ticket: the hash of the secret, as the node keeps it. A relay can
+    /// read it, but a relay sees the node's address anyway. A node that doesn't
+    /// expect it ignores an ALPN it doesn't know.
+    pub fn pass(&self) -> Vec<u8> {
+        let hash = blake3::hash(&self.secret);
+        [PAIRING_PASS_PREFIX, hash.as_bytes()].concat()
+    }
+}
+
+/// The hash of a pairing secret in a pass (`PairingTicket::pass`), if `alpn`
+/// is one.
+pub fn pairing_pass_hash(alpn: &[u8]) -> Option<blake3::Hash> {
+    let hash: [u8; 32] = alpn.strip_prefix(PAIRING_PASS_PREFIX)?.try_into().ok()?;
+    Some(blake3::Hash::from_bytes(hash))
 }
 
 impl fmt::Display for FollowTicket {
