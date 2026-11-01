@@ -1,6 +1,6 @@
 # ADR 0014: Finding people and content, with messages between nodes over Tor
 
-**Status:** Accepted (2026-11-01). Decides [ADR 0007](0007-transport-privacy-defaults.md)'s phases 2 and 3.
+**Status:** Accepted (2026-11-01). Decides [ADR 0007](0007-transport-privacy-defaults.md)'s phases 2 and 3. Changed before building (2026-11-01): one stream between a pair of nodes, used both ways once the node that dialled proves its key, instead of one dialled by each ("Tor", below).
 
 ## Context
 
@@ -97,7 +97,8 @@ Each node sets a rule for direct connections: anyone, people I follow, contacts 
 ### Tor
 
 - **The node starts and watches its own Tor** from the distribution's `tor` package: its own data folder in the node's home, local ports, and a password cookie on the control port. If Tor stops, the node starts it again and sets up its onion service again, and says so in `osp status`. Linux first.
-- **We carry our own copy of `iroh-tor-transport`** in the workspace, with these fixes, and offer them to its makers: packets to each peer sent in order; the onion service set up again after Tor restarts, with reconnects spaced out and the state shown; a small control-port client of our own instead of `torut`, so the advisories don't come with it; and a **budget for new outgoing circuits**, since a frame names its sender without proof and a peer could otherwise make the node dial anywhere. Its MIT/Apache-2.0 licence notice stays with it.
+- **We carry our own copy of `iroh-tor-transport`** in the workspace ([`osp-tor`](../../crates/osp-tor/)), with these changes, and offer them to its makers: **one stream per pair of nodes, used both ways**, on which the node that dialled first proves its key by signing a challenge from the other; packets to each peer sent in order; the onion service set up again after Tor restarts, with reconnects spaced out and the state shown; a small control-port client of our own instead of `torut`, so the advisories don't come with it; and limits on streams and dials. It keeps upstream's licences, MIT or Apache-2.0, so the changes can go back to it.
+- **Why one stream, proved:** upstream's frames name their sender without proof, and each node sends on a stream it dialled itself, to the other's onion service. So a pair holds two circuits, a first contact waits for both onion services, and a peer can make a node dial any onion address by naming it. The node that dialled already knows whom it reached, as Tor checks the onion address; once it has proved its key, the other node answers on the same stream. A pair then holds one circuit, a first contact needs only the other node's onion service, a node never dials anyone because a packet named them, and a node whose own Tor restarted is answered again as soon as it dials out, without waiting a minute or so for its onion service to be found again. It's a wire format of our own, named by the stream's first bytes.
 - **Recovering from a Tor restart is a requirement,** not polish: a home node runs unattended, and one that stops talking until someone restarts it isn't ready for the alpha.
 - iroh's custom transports are outside its semver guarantees, so an iroh update may need changes here, as with `osp-sim`'s network.
 - Arti stays the likely way to package Tor later, once its onion-service hosting is checked.
@@ -125,7 +126,7 @@ M3's timers were set for direct connections. Raising them isn't the whole answer
 - **Being listed is opt-in.** A node asks a directory to list it. The directory then follows it as a follower does, through the outbox it already serves, and indexes its profile and public posts in its own FTS5 tables. Revocations reach it the same way. A node that asks to be dropped is dropped, with what was indexed of it. Directories cap new listings per hour and new posts per listed node per day, as nodes already cap followers and posts.
 - **A search** is one request with the words, answered with at most 20 matching posts and profiles **and at most 64 kB**, since bulk speed over Tor varies so much. Each result is the author's signed object as stored, so nothing a directory writes needs trusting; a reply that would pass the size limit stops early and says so. The asking node checks every signature, so a directory can leave things out but can't fake them. It asks two or three directories, merges the answers, drops duplicates, orders them itself, and shows which directories each came from.
 - **Results can be stale.** Each says when the directory last synced its author. A signature proves who wrote something, not that it's still current: before following, the node fetches the profile from the author's own node, and a post the author has since dropped isn't shown from a directory's copy once the node knows.
-- **Searches go over Tor and aren't made with the node's public identity:** they come from a key of their own, with its own onion service, replaced now and then. A directory still sees the words, their timing, and the same key for as long as it lasts, so it may link searches made with one key; replacing keys limits that, it doesn't prevent it.
+- **Searches go over Tor and aren't made with the node's public identity:** they come from a key of their own, replaced now and then. It needs no onion service, as a directory answers on the stream the search came on. A directory still sees the words, their timing, and the same key for as long as it lasts, so it may link searches made with one key; replacing keys limits that, it doesn't prevent it.
 - **Finding directories:** a list of directory IDs comes with the node; later, directories can name others.
 
 ### Exact lookups and verified domains
@@ -148,12 +149,12 @@ M3's timers were set for direct connections. Raising them isn't the whole answer
 **Operational.**
 
 - Every node depends on Tor for messages. Tor restarting takes messages away for a minute or two.
-- Each pair of nodes talking uses two circuits, one each way. How many stay open at once, and what they cost a node with hundreds of followers, isn't known: to measure before a larger alpha.
+- Each pair of nodes talking uses one circuit, from whichever dialled. How many stay open at once, and what they cost a node with hundreds of followers, isn't known: to measure before a larger alpha.
 - Messages take seconds instead of milliseconds. Background sync hides most of it; a first contact takes up to half a minute.
 - The maintainer runs the first directory, a stand-in until others do.
 - **Media from nodes that hide their address still costs someone bandwidth.** Tor solves private first contact, not the cost of sending video privately. n0's public relays carry it for now; relays and forwarding run by the community are an objective of their own after M4, and the media path stays replaceable meanwhile.
 
-**Security.** A peer can make a node open a Tor circuit to an onion address of its choosing (the transport's frames name their sender without proof; QUIC still checks who it is). A domain's server sees that someone fetched its file over Tor, not who.
+**Security.** A node dials only nodes it means to reach, and nodes that proved their key on a stream that has since closed: a packet naming someone can't make it dial them. A domain's server sees that someone fetched its file over Tor, not who.
 
 **Licensing.** Tor (BSD) runs as a separate program. The copied transport is MIT/Apache-2.0, compatible with the project's AGPL-3.0.
 
