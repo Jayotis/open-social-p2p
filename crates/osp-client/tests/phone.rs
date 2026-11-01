@@ -137,6 +137,41 @@ async fn http_get(url: &str, range: Option<&str>) -> (String, String, Vec<u8>) {
     )
 }
 
+/// With the node's other endpoints on (ADR 0014), a phone pairs with the
+/// direct one, and goes on using it after the app restarts.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_phone_pairs_with_the_direct_endpoint() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut config = Config::local_test("Alice");
+    config.endpoints.enabled = true;
+    let home = dir.path().join("alice");
+    Node::init(&home, &config).unwrap();
+    let node = Node::spawn(&home).await.unwrap();
+
+    let phone_dir = dir.path().join("phone");
+    let phone = Client::open(&phone_dir, ClientOptions::local_test())
+        .await
+        .unwrap();
+    let pairing = phone
+        .pair(&new_pairing(&node).await, "Test phone")
+        .await
+        .unwrap();
+    assert_eq!(pairing.node.id, node.direct_addr().await.unwrap().id);
+    assert_ne!(pairing.node.id, node.node_id());
+    let seen = status(&phone).await;
+    assert_eq!(seen.devices, 1);
+    assert_eq!(seen.identity, node.identity());
+    phone.shutdown().await;
+    drop(phone);
+
+    let phone = Client::open(&phone_dir, ClientOptions::local_test())
+        .await
+        .unwrap();
+    assert_eq!(status(&phone).await.identity, node.identity());
+    phone.shutdown().await;
+    node.shutdown().await.unwrap();
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn phone_pairs_posts_plays_and_is_revoked() {
     let _ = tracing_subscriber::fmt()
