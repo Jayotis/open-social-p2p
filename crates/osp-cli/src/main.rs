@@ -986,10 +986,11 @@ fn print_status(s: &StatusInfo) {
             1 => ", restarted once".to_string(),
             n => format!(", restarted {n} times"),
         };
-        println!(
-            "Tor:       {}{published}, {} streams{restarts}",
-            tor.state, tor.streams
-        );
+        let streams = match tor.streams {
+            1 => "1 stream".to_string(),
+            n => format!("{n} streams"),
+        };
+        println!("Tor:       {}{published}, {streams}{restarts}", tor.state);
     }
     match s.trust_requests {
         0 => {}
