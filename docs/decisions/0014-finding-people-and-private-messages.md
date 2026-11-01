@@ -1,6 +1,6 @@
 # ADR 0014: Finding people and content, with messages between nodes over Tor
 
-**Status:** Accepted (2026-11-01). Decides [ADR 0007](0007-transport-privacy-defaults.md)'s phases 2 and 3. Changed before building (2026-11-01): one stream between a pair of nodes, used both ways once the node that dialled proves its key, instead of one dialled by each ("Tor", below).
+**Status:** Accepted (2026-11-01). Decides [ADR 0007](0007-transport-privacy-defaults.md)'s phases 2 and 3. Changed before building (2026-11-01): one stream between a pair of nodes, used both ways once the node that dialled proves its key, instead of one dialled by each ("Tor", below). Step 1 built (2026-11-01): [`osp-tor`](../../crates/osp-tor/) and the node's own Tor, off unless `[tor] enabled` is set ([how to check it](../testing/tor.md)). Over 35 minutes between two home nodes, each node's Tor was killed once; the node started it again, and no request between them failed. The slowest took 15 s.
 
 ## Context
 
