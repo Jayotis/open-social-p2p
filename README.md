@@ -67,7 +67,7 @@ cargo test            # three-node publish / reshare / origin-offline, and phone
 cargo run --bin osp -- --help
 ```
 
-See [docs/testing/stage1-manual.md](docs/testing/stage1-manual.md) for running several nodes and testing across machines, [docs/testing/m2-phone.md](docs/testing/m2-phone.md) for running a node as a service and pairing a phone, [docs/testing/relay-only.md](docs/testing/relay-only.md) for relay-only mode, and [docs/testing/tor.md](docs/testing/tor.md) for messages over Tor, being built.
+See [docs/testing/stage1-manual.md](docs/testing/stage1-manual.md) for running several nodes and testing across machines, [docs/testing/m2-phone.md](docs/testing/m2-phone.md) for running a node as a service and pairing a phone, [docs/testing/relay-only.md](docs/testing/relay-only.md) for relay-only mode, [docs/testing/tor.md](docs/testing/tor.md) for messages over Tor, being built, and [docs/testing/direct-endpoint.md](docs/testing/direct-endpoint.md) for the media and direct endpoints, being built.
 
 | Crate | What it is |
 | --- | --- |
