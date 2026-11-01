@@ -47,6 +47,14 @@ class _PeopleScreenState extends State<PeopleScreen> {
     );
   }
 
+  Future<void> _unfollow(Followed person) async {
+    await _do(
+      () => widget.node.app.unfollow(identity: person.identity),
+      'You no longer follow ${person.name}.',
+    );
+    if (mounted) setState(() => _following = widget.node.app.following());
+  }
+
   Future<void> _askTrust(Followed person) async {
     final note = await showDialog<String>(
       context: context,
@@ -73,9 +81,16 @@ class _PeopleScreenState extends State<PeopleScreen> {
     setState(() => _busy = true);
     try {
       await widget.node.app.follow(ticket: ticket.trim());
+      final overTor = widget.node.status?.overTor ?? false;
       messenger.showSnackBar(
-        const SnackBar(
-          content: Text('Following. Their posts appear in your feed shortly.'),
+        SnackBar(
+          content: Text(
+            overTor
+                ? 'Following. Your node is reaching theirs through Tor, which '
+                      'can take a few minutes. Their posts appear in your feed '
+                      'after that.'
+                : 'Following. Their posts appear in your feed shortly.',
+          ),
         ),
       );
       await widget.node.refresh(sync: true);
@@ -193,16 +208,29 @@ class _PeopleScreenState extends State<PeopleScreen> {
                     ListTile(
                       contentPadding: EdgeInsets.zero,
                       title: Text(person.name),
+                      subtitle: person.connecting
+                          ? Text(
+                              widget.node.status?.overTor ?? false
+                                  ? 'Connecting through Tor…'
+                                  : 'Connecting…',
+                            )
+                          : null,
                       trailing: PopupMenuButton<String>(
                         enabled: !_busy,
-                        onSelected: (choice) => choice == 'trust'
-                            ? _trust(person)
-                            : _askTrust(person),
+                        onSelected: (choice) => switch (choice) {
+                          'trust' => _trust(person),
+                          'ask' => _askTrust(person),
+                          _ => _unfollow(person),
+                        },
                         itemBuilder: (_) => const [
                           PopupMenuItem(value: 'trust', child: Text('Trust')),
                           PopupMenuItem(
                             value: 'ask',
                             child: Text('Ask to be a trusted follower'),
+                          ),
+                          PopupMenuItem(
+                            value: 'unfollow',
+                            child: Text('Stop following'),
                           ),
                         ],
                       ),

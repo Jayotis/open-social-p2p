@@ -140,11 +140,17 @@ class HomeNode extends ChangeNotifier with WidgetsBindingObserver {
     lastError = describeError(e);
   }
 
-  /// Asks the node for its health. Cheap; runs every 20 seconds.
+  /// Asks the node for its health. Cheap; runs every 20 seconds. Over Tor the
+  /// node syncs in the background without keeping the phone waiting, so what
+  /// arrived is picked up here too.
   Future<void> checkStatus() async {
     if (paired == null) return;
     try {
       status = await app.status();
+      if (status?.overTor ?? false) {
+        posts = await app.feed(limit: 100);
+        savedAt = null;
+      }
       _reached();
     } catch (e) {
       _failed(e);
@@ -152,7 +158,8 @@ class HomeNode extends ChangeNotifier with WidgetsBindingObserver {
     notifyListeners();
   }
 
-  /// Reloads the feed. With [sync], the node first checks everyone it follows.
+  /// Reloads the feed. With [sync], the node first checks everyone it follows,
+  /// or over Tor starts to.
   Future<void> refresh({bool sync = false}) async {
     if (paired == null) return;
     if (reachability != Reachability.online) {

@@ -40,7 +40,7 @@ flutter_rust_bridge::frb_generated_boilerplate!(
     default_rust_auto_opaque = RustAutoOpaqueMoi,
 );
 pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_VERSION: &str = "2.13.0";
-pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = -855550407;
+pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = -2117602614;
 
 // Section: executor
 
@@ -1536,6 +1536,64 @@ fn wire__crate__api__osp__OspApp_trust_list_impl(
         },
     )
 }
+fn wire__crate__api__osp__OspApp_unfollow_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_async::<flutter_rust_bridge::for_generated::SseCodec, _, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "OspApp_unfollow",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_that = <RustOpaqueMoi<
+                flutter_rust_bridge::for_generated::RustAutoOpaqueInner<OspApp>,
+            >>::sse_decode(&mut deserializer);
+            let api_identity = <String>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| async move {
+                transform_result_sse::<_, flutter_rust_bridge::for_generated::anyhow::Error>(
+                    (move || async move {
+                        let mut api_that_guard = None;
+                        let decode_indices_ =
+                            flutter_rust_bridge::for_generated::lockable_compute_decode_order(
+                                vec![flutter_rust_bridge::for_generated::LockableOrderInfo::new(
+                                    &api_that, 0, false,
+                                )],
+                            );
+                        for i in decode_indices_ {
+                            match i {
+                                0 => {
+                                    api_that_guard =
+                                        Some(api_that.lockable_decode_async_ref().await)
+                                }
+                                _ => unreachable!(),
+                            }
+                        }
+                        let api_that_guard = api_that_guard.unwrap();
+                        let output_ok =
+                            crate::api::osp::OspApp::unfollow(&*api_that_guard, api_identity)
+                                .await?;
+                        std::result::Result::Ok(output_ok)
+                    })()
+                    .await,
+                )
+            }
+        },
+    )
+}
 fn wire__crate__api__osp__OspApp_untrust_impl(
     port_: flutter_rust_bridge::for_generated::MessagePort,
     ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
@@ -1840,9 +1898,11 @@ impl SseDecode for crate::api::osp::Followed {
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
         let mut var_identity = <String>::sse_decode(deserializer);
         let mut var_name = <String>::sse_decode(deserializer);
+        let mut var_connecting = <bool>::sse_decode(deserializer);
         return crate::api::osp::Followed {
             identity: var_identity,
             name: var_name,
+            connecting: var_connecting,
         };
     }
 }
@@ -2000,6 +2060,7 @@ impl SseDecode for crate::api::osp::NodeStatus {
         let mut var_path = <String>::sse_decode(deserializer);
         let mut var_rttMs = <Option<u32>>::sse_decode(deserializer);
         let mut var_trustRequests = <u32>::sse_decode(deserializer);
+        let mut var_overTor = <bool>::sse_decode(deserializer);
         return crate::api::osp::NodeStatus {
             name: var_name,
             version: var_version,
@@ -2013,6 +2074,7 @@ impl SseDecode for crate::api::osp::NodeStatus {
             path: var_path,
             rtt_ms: var_rttMs,
             trust_requests: var_trustRequests,
+            over_tor: var_overTor,
         };
     }
 }
@@ -2274,9 +2336,10 @@ fn pde_ffi_dispatcher_primary_impl(
         25 => wire__crate__api__osp__OspApp_sync_impl(port, ptr, rust_vec_len, data_len),
         26 => wire__crate__api__osp__OspApp_trust_impl(port, ptr, rust_vec_len, data_len),
         27 => wire__crate__api__osp__OspApp_trust_list_impl(port, ptr, rust_vec_len, data_len),
-        28 => wire__crate__api__osp__OspApp_untrust_impl(port, ptr, rust_vec_len, data_len),
-        29 => wire__crate__api__osp__OspApp_wait_for_media_impl(port, ptr, rust_vec_len, data_len),
-        30 => wire__crate__api__osp__init_app_impl(port, ptr, rust_vec_len, data_len),
+        28 => wire__crate__api__osp__OspApp_unfollow_impl(port, ptr, rust_vec_len, data_len),
+        29 => wire__crate__api__osp__OspApp_untrust_impl(port, ptr, rust_vec_len, data_len),
+        30 => wire__crate__api__osp__OspApp_wait_for_media_impl(port, ptr, rust_vec_len, data_len),
+        31 => wire__crate__api__osp__init_app_impl(port, ptr, rust_vec_len, data_len),
         _ => unreachable!(),
     }
 }
@@ -2295,9 +2358,9 @@ fn pde_ffi_dispatcher_sync_impl(
         18 => wire__crate__api__osp__OspApp_pending_post_impl(ptr, rust_vec_len, data_len),
         20 => wire__crate__api__osp__OspApp_recent_log_impl(ptr, rust_vec_len, data_len),
         23 => wire__crate__api__osp__OspApp_saved_feed_impl(ptr, rust_vec_len, data_len),
-        31 => wire__crate__api__osp__is_follow_ticket_impl(ptr, rust_vec_len, data_len),
-        32 => wire__crate__api__osp__is_pairing_ticket_impl(ptr, rust_vec_len, data_len),
-        33 => wire__crate__api__osp__new_device_key_impl(ptr, rust_vec_len, data_len),
+        32 => wire__crate__api__osp__is_follow_ticket_impl(ptr, rust_vec_len, data_len),
+        33 => wire__crate__api__osp__is_pairing_ticket_impl(ptr, rust_vec_len, data_len),
+        34 => wire__crate__api__osp__new_device_key_impl(ptr, rust_vec_len, data_len),
         _ => unreachable!(),
     }
 }
@@ -2325,6 +2388,7 @@ impl flutter_rust_bridge::IntoDart for crate::api::osp::Followed {
         [
             self.identity.into_into_dart().into_dart(),
             self.name.into_into_dart().into_dart(),
+            self.connecting.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
@@ -2391,6 +2455,7 @@ impl flutter_rust_bridge::IntoDart for crate::api::osp::NodeStatus {
             self.path.into_into_dart().into_dart(),
             self.rtt_ms.into_into_dart().into_dart(),
             self.trust_requests.into_into_dart().into_dart(),
+            self.over_tor.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
@@ -2612,6 +2677,7 @@ impl SseEncode for crate::api::osp::Followed {
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
         <String>::sse_encode(self.identity, serializer);
         <String>::sse_encode(self.name, serializer);
+        <bool>::sse_encode(self.connecting, serializer);
     }
 }
 
@@ -2738,6 +2804,7 @@ impl SseEncode for crate::api::osp::NodeStatus {
         <String>::sse_encode(self.path, serializer);
         <Option<u32>>::sse_encode(self.rtt_ms, serializer);
         <u32>::sse_encode(self.trust_requests, serializer);
+        <bool>::sse_encode(self.over_tor, serializer);
     }
 }
 
