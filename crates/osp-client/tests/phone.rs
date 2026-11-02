@@ -472,6 +472,71 @@ async fn a_video_nobody_can_send_fails_soon_with_the_reason() {
     bob.shutdown().await.unwrap();
 }
 
+/// A phone paired with a node that has since stopped, not connected to it, so
+/// its next request dials and hears nothing.
+async fn phone_of_a_stopped_node(dir: &Path) -> Arc<Client> {
+    let node = start_node(dir, "Alice").await;
+    let phone = Client::open(&dir.join("phone"), ClientOptions::local_test())
+        .await
+        .unwrap();
+    phone
+        .pair(&new_pairing(&node).await, "Test phone")
+        .await
+        .unwrap();
+    node.shutdown().await.unwrap();
+    phone.disconnect().await;
+    phone
+}
+
+#[tokio::test]
+async fn forgetting_a_node_that_doesnt_answer_doesnt_wait_for_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let phone = phone_of_a_stopped_node(dir.path()).await;
+    let waiting: Vec<_> = (0..3)
+        .map(|_| {
+            let phone = phone.clone();
+            tokio::spawn(async move { phone.request(&ClientRequest::Status).await })
+        })
+        .collect();
+    // They're dialling, and each would wait 20 s.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let started = Instant::now();
+    phone.forget().await.unwrap();
+    assert!(phone.pairing().is_none());
+    for request in waiting {
+        assert!(request.await.unwrap().is_err());
+    }
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "{:?}",
+        started.elapsed()
+    );
+    phone.shutdown().await;
+}
+
+#[tokio::test]
+async fn requests_waiting_for_a_dial_share_its_failure_and_later_ones_dial_again() {
+    let dir = tempfile::tempdir().unwrap();
+    let phone = phone_of_a_stopped_node(dir.path()).await;
+    let started = Instant::now();
+    let ask = || phone.request(&ClientRequest::Status);
+    let (first, second, third) = tokio::join!(ask(), ask(), ask());
+    // One dial's 20 s, not one after another.
+    assert!(
+        started.elapsed() < Duration::from_secs(30),
+        "{:?}",
+        started.elapsed()
+    );
+    for answer in [first, second, third] {
+        let err = format!("{:#}", answer.unwrap_err());
+        assert!(err.contains("didn't answer"), "{err}");
+    }
+    // The failure isn't kept for whoever asks next.
+    let next = tokio::time::timeout(Duration::from_secs(1), ask()).await;
+    assert!(next.is_err(), "{next:?}");
+    phone.shutdown().await;
+}
+
 /// Alice posts a video, and her node sends slowly, so it takes seconds to
 /// reach Bob's. Bob's node follows hers but doesn't fetch ahead of time.
 /// Returns Alice's node, the video, Bob's node and his paired phone.
