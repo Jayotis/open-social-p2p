@@ -1,6 +1,6 @@
 # ADR 0015: Nodes meet first: machine names, and what they may say
 
-**Status:** Accepted (2026-11-01). Changes how [ADR 0014](0014-finding-people-and-private-messages.md)'s directories are used, and comes before its invited alpha. [ADR 0011](0011-measuring-peers.md)'s rule that a node's record of its peers stays private doesn't change. Step 1 built (2026-11-01): a node with Tor on has a machine name that can greet another when asked, and does nothing in the background yet ([how to check it](../testing/tor.md#the-machine-name)). Its gate was met: over real Tor, two machines greeted each other, and again after one's Tor was killed, within 20 s to about 4 minutes, as [a node that has just published can take that long](../testing/tor.md#a-first-contact-can-take-minutes); the machine endpoint answers nothing else, and nothing the node says or logs names it.
+**Status:** Accepted (2026-11-01). Changes how [ADR 0014](0014-finding-people-and-private-messages.md)'s directories are used, and comes before its invited alpha. [ADR 0011](0011-measuring-peers.md)'s rule that a node's record of its peers stays private doesn't change. Step 1 built (2026-11-01): a node with Tor on has a machine name that can greet another when asked, and does nothing in the background yet ([how to check it](../testing/tor.md#the-machine-name)). Its gate was met: over real Tor, two machines greeted each other, and again after one's Tor was killed, within 20 s to about 4 minutes, as [a node that has just published can take that long](../testing/tor.md#a-first-contact-can-take-minutes); the machine endpoint answers nothing else, and nothing the node says or logs names it. Step 2 built (2026-11-01): a directory's two lists, off unless `[directory] serve` is set; a node reading the directories it's told of and searching at home; a summary and consent in the profile; following someone found ([how to check it](../testing/tor.md#directories)). Its gate was met: over real Tor, a node with no follows found a stranger through a directory about 3 minutes after all three had started, as a first contact can take that long, and followed them 10 s later, on nothing but their IDs. A test shows that a reader says only that it's there and how far it has read, whatever is searched for. A built-in list of directories comes with the first one that's meant to stay; until then they're set in `config.toml`.
 
 ## Context
 
@@ -81,6 +81,15 @@ This changes how ADR 0014's directories are used. Being listed, its limits, and 
 - **Consent travels with the record.** The signed profile says whether it may be listed and passed on. A later profile can take that back. So a directory can check it, and later any machine can.
 - **Following is still a person's act,** and as in ADR 0014 the node first fetches the profile from the author's own node.
 - **Machines that have met keep meeting when the directory is off.**
+
+Building step 2 settled these (2026-11-01):
+
+- **A listing is one entry per person or machine,** which takes a new number whenever it changes, so a reader asks only for what changed. Someone dropped leaves a small entry saying so. It isn't signed, as it can only take away what came from that directory, which a directory can always leave out.
+- **Consent is the one source of truth.** The field is `discoverable`, as Mastodon names it. There's no request to be dropped: the request to be listed, with a profile saying no, drops them, and so does the directory reading that profile from their node. A forged one is refused, as any profile is.
+- **A directory reads each listed node once an hour,** and a listing holds the latest 5 posts. That limits how often one person's listing can change, and does the work of ADR 0014's cap on new posts per listed node per day.
+- **What comes from a directory goes where a stranger's reshared post goes,** and is marked as only found, so a search, a post's card and a reshare work on it. A mark goes when the owner follows them or reshares the post, or when a followed node's reshare brings it too.
+- **A reader takes machine records from the map and does nothing with them yet;** that's step 3.
+- **Not settled by step 2.** A found post's media opens only once its author is followed, as opening it first means asking their node, and what that reveals needs deciding. And a reader forgets a withdrawal along with the rest of them, so with more than one directory, one that's behind could list them again: that's for ADR 0014's step 6, where a directory returning stale results is tested.
 
 ### The local record: where reputation begins
 
