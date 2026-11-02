@@ -48,6 +48,10 @@ abstract class OspApp implements RustOpaqueInterface {
   /// Follows someone by their follow ticket (`OSP1...`).
   Future<void> follow({required String ticket});
 
+  /// Follows someone a search found, by their identity. The node asks their
+  /// own node before anything of theirs reaches the feed.
+  Future<void> followPerson({required String identity});
+
   /// Who the node follows, by name.
   Future<List<Followed>> following();
 
@@ -188,16 +192,25 @@ class FoundPerson {
   /// Whether the node follows them.
   final bool followed;
 
+  /// The directory they came from, in words, if they're on the node only
+  /// because of one.
+  final String? foundThrough;
+
   const FoundPerson({
     required this.identity,
     required this.name,
     this.summary,
     required this.followed,
+    this.foundThrough,
   });
 
   @override
   int get hashCode =>
-      identity.hashCode ^ name.hashCode ^ summary.hashCode ^ followed.hashCode;
+      identity.hashCode ^
+      name.hashCode ^
+      summary.hashCode ^
+      followed.hashCode ^
+      foundThrough.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -207,7 +220,8 @@ class FoundPerson {
           identity == other.identity &&
           name == other.name &&
           summary == other.summary &&
-          followed == other.followed;
+          followed == other.followed &&
+          foundThrough == other.foundThrough;
 }
 
 class Media {
@@ -383,6 +397,10 @@ class Post {
   /// Whether the resharer keeps and serves a copy of its media.
   final bool resharerHosts;
 
+  /// The directory it came from, in words, if it's on the node only because
+  /// of one.
+  final String? foundThrough;
+
   const Post({
     required this.id,
     required this.author,
@@ -391,6 +409,7 @@ class Post {
     required this.media,
     this.resharedBy,
     required this.resharerHosts,
+    this.foundThrough,
   });
 
   @override
@@ -401,7 +420,8 @@ class Post {
       text.hashCode ^
       media.hashCode ^
       resharedBy.hashCode ^
-      resharerHosts.hashCode;
+      resharerHosts.hashCode ^
+      foundThrough.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -414,7 +434,8 @@ class Post {
           text == other.text &&
           media == other.media &&
           resharedBy == other.resharedBy &&
-          resharerHosts == other.resharerHosts;
+          resharerHosts == other.resharerHosts &&
+          foundThrough == other.foundThrough;
 }
 
 class PostProgress {

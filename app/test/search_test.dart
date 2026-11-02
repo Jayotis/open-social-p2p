@@ -13,6 +13,10 @@ import 'package:osp_app/uploads.dart';
 /// The Rust side, as far as searching goes.
 class FakeApp implements OspApp {
   final asked = <String>[];
+  final followed = <String>[];
+
+  /// What following someone does, as the node answers it.
+  Future<void> Function(String identity) onFollow = (_) async {};
 
   /// Answers each search, by what was asked for.
   Future<Found> Function(String words) answer = (_) async =>
@@ -25,26 +29,38 @@ class FakeApp implements OspApp {
   }
 
   @override
+  Future<void> followPerson({required String identity}) {
+    followed.add(identity);
+    return onFollow(identity);
+  }
+
+  @override
   dynamic noSuchMethod(Invocation invocation) =>
       throw UnimplementedError('${invocation.memberName}');
 }
 
-Post post(String text) => Post(
+Post post(String text, {String? foundThrough}) => Post(
   id: 'id-$text',
   author: 'Bob',
   published: '2026-01-01T00:00:00Z',
   text: text,
   media: const [],
   resharerHosts: false,
+  foundThrough: foundThrough,
 );
 
-FoundPerson person(String name, {String? summary, bool followed = false}) =>
-    FoundPerson(
-      identity: 'id-$name',
-      name: name,
-      summary: summary,
-      followed: followed,
-    );
+FoundPerson person(
+  String name, {
+  String? summary,
+  bool followed = false,
+  String? foundThrough,
+}) => FoundPerson(
+  identity: 'id-$name',
+  name: name,
+  summary: summary,
+  followed: followed,
+  foundThrough: foundThrough,
+);
 
 void main() {
   late Directory root;
@@ -125,6 +141,80 @@ void main() {
     await searchFor(tester, 'me');
     await tester.pumpAndSettle();
     expect(find.text('You'), findsOneWidget);
+  });
+
+  group('someone a directory brought', () {
+    Future<void> show(WidgetTester tester, Found found) async {
+      app.answer = (_) async => found;
+      await open(tester);
+      await searchFor(tester, 'oak');
+      await tester.pumpAndSettle();
+    }
+
+    final alice = Found(people: [person('Alice')], posts: const []);
+
+    testWidgets('says where they and their posts came from', (tester) async {
+      await show(
+        tester,
+        Found(
+          people: [person('Alice', foundThrough: 'oak-ash-elm')],
+          posts: [post('A table', foundThrough: 'oak-ash-elm')],
+        ),
+      );
+      expect(find.text('From directory oak-ash-elm'), findsNWidgets(2));
+    });
+
+    testWidgets('can be followed, and shows it once they are', (tester) async {
+      await show(tester, alice);
+      await tester.tap(find.text('Follow'));
+      await tester.pump();
+      expect(app.followed, ['id-Alice']);
+      await tester.pumpAndSettle();
+      expect(find.text('Follow'), findsNothing);
+      expect(find.text('Following'), findsOneWidget);
+      expect(find.textContaining('once their node answers'), findsOneWidget);
+    });
+
+    testWidgets('says why, when they cannot be followed', (tester) async {
+      app.onFollow = (_) async => throw Exception('no such luck');
+      await show(tester, alice);
+      await tester.tap(find.text('Follow'));
+      await tester.pumpAndSettle();
+      expect(find.textContaining("Couldn't follow"), findsOneWidget);
+      expect(find.text('Follow'), findsOneWidget);
+      expect(find.text('Following'), findsNothing);
+    });
+
+    testWidgets('asks only once while it waits', (tester) async {
+      final answer = Completer<void>();
+      app.onFollow = (_) => answer.future;
+      await show(tester, alice);
+      await tester.tap(find.text('Follow'));
+      await tester.pump();
+      await tester.tap(find.text('Follow'), warnIfMissed: false);
+      await tester.pump();
+      expect(app.followed, ['id-Alice']);
+      answer.complete();
+      await tester.pumpAndSettle();
+    });
+
+    testWidgets('your own profile and those you follow have no button', (
+      tester,
+    ) async {
+      node.paired = const NodeInfo(
+        identity: 'id-Me',
+        name: 'Me',
+        paired: '2026-01-01T00:00:00Z',
+      );
+      await show(
+        tester,
+        Found(
+          people: [person('Me'), person('Bob', followed: true)],
+          posts: const [],
+        ),
+      );
+      expect(find.text('Follow'), findsNothing);
+    });
   });
 
   testWidgets('says when nothing matches', (tester) async {
