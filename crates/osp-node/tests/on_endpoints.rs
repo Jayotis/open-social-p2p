@@ -11,7 +11,10 @@ use std::{
     io::Write,
     net::Ipv4Addr,
     path::Path,
-    sync::{Mutex, OnceLock},
+    sync::{
+        Mutex, OnceLock,
+        atomic::{AtomicUsize, Ordering},
+    },
     time::{Duration, Instant},
 };
 
@@ -39,6 +42,8 @@ const PROMPTLY: Duration = Duration::from_secs(30);
 
 /// Lines of iroh's log saying a node was told of an address.
 static TOLD: Mutex<Vec<String>> = Mutex::new(Vec::new());
+/// Times a store was shut down when it already had been.
+static SHUT_DOWN_AGAIN: AtomicUsize = AtomicUsize::new(0);
 
 #[derive(Clone)]
 struct Capture;
@@ -48,6 +53,8 @@ impl Write for Capture {
         let line = String::from_utf8_lossy(buf);
         if line.contains("AddressAdded") {
             TOLD.lock().unwrap().push(line.into_owned());
+        } else if line.contains("error shutting down store") {
+            SHUT_DOWN_AGAIN.fetch_add(1, Ordering::Relaxed);
         }
         Ok(buf.len())
     }
@@ -60,7 +67,7 @@ fn capture_logs() {
     static ONCE: OnceLock<()> = OnceLock::new();
     ONCE.get_or_init(|| {
         tracing_subscriber::fmt()
-            .with_env_filter("iroh::socket::remote_map=trace")
+            .with_env_filter("iroh::socket::remote_map=trace,iroh_blobs::net_protocol=error")
             .with_ansi(false)
             .with_writer(|| Capture)
             .init();
@@ -389,6 +396,29 @@ async fn followers_are_named_by_their_media_endpoint_and_fetched_from_there() {
         hosts.iter().any(|h| h.binding.endpoint == cid_media),
         "{hosts:?}"
     );
+}
+
+/// Two endpoints serve from one store, which is shut down once, when the last
+/// of them stops, and what's in it is there after a restart.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_node_shuts_its_store_down_once_and_keeps_its_media() {
+    capture_logs();
+    let (_relay, url) = local_relay().await;
+    let dir = tempfile::tempdir().unwrap();
+    let ada = start(dir.path(), config("Ada", &url, DirectRule::Nobody, false)).await;
+    let bea = start(dir.path(), config("Bea", &url, DirectRule::Nobody, false)).await;
+    let photo = post_photo(&ada, dir.path(), true).await;
+    ada.shutdown().await.unwrap();
+    assert_eq!(SHUT_DOWN_AGAIN.load(Ordering::Relaxed), 0);
+
+    let ada = Node::spawn_sim(&dir.path().join("ada"), SimSettings::default())
+        .await
+        .unwrap();
+    let size = bea
+        .download_blob_from(&photo.blob, photo.size, &[ada.media_addr().await.unwrap()])
+        .await
+        .unwrap();
+    assert_eq!(size, photo.size);
 }
 
 /// A direct endpoint given to one node, because its rule allows that node,

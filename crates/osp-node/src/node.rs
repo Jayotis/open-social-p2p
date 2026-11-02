@@ -14,8 +14,9 @@ use iroh::{
     Endpoint, EndpointAddr, EndpointId, PublicKey, RelayMode, SecretKey,
     address_lookup::{DnsAddressLookup, MemoryLookup, PkarrPublisher, PkarrResolver},
     endpoint::{Builder, Connection, QuicTransportConfig, presets},
-    protocol::Router,
+    protocol::{AcceptError, ProtocolHandler, Router},
 };
+use iroh_blobs::BlobsProtocol;
 use osp_proto::{
     BlobHash, EarlierKeys, ObjectId, Payload, Person, SignedObject,
     rpc::{BackupInfo, ClientRequest, ClientResponse},
@@ -108,6 +109,17 @@ impl Default for SimSettings {
             #[cfg(feature = "sim")]
             tor_delay: None,
         }
+    }
+}
+
+/// Serves blobs on an endpoint that isn't the last to stop. `BlobsProtocol`
+/// shuts its store down when its router stops, and a store shuts down once.
+#[derive(Debug, Clone)]
+struct SharedBlobs(BlobsProtocol);
+
+impl ProtocolHandler for SharedBlobs {
+    async fn accept(&self, conn: Connection) -> Result<(), AcceptError> {
+        self.0.accept(conn).await
     }
 }
 
@@ -468,7 +480,7 @@ impl Node {
             if let Some(media) = &own.media {
                 endpoint_routers.push(
                     Router::builder(media.endpoint.clone())
-                        .accept(iroh_blobs::ALPN, blobs.clone())
+                        .accept(iroh_blobs::ALPN, SharedBlobs(blobs.clone()))
                         .spawn(),
                 );
             }
