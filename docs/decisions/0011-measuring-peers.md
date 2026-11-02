@@ -59,7 +59,7 @@ These are the measures of doc 12 part 1: availability is reachability, reliabili
 **Showing it.** `osp peers` lists the peers, most recent contact first. For example:
 
 ```
-B (all-in-one)  ec66132b14  you follow them
+Bob  a1b2c3d4e5  you follow them
   last contact 2 min ago, first 3 days ago
   reached 100% of 12 tries; answered 100% of 31 requests, in 45 ms on average
   downloads from it: 4 completed, 0 busy, 0 bad data, 0 failed; 52.3 MB at 9.8 MB/s, first byte after 120 ms
