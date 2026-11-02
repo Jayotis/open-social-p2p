@@ -88,6 +88,11 @@ pub enum SocialRequest {
         #[serde(default)]
         direct: Option<BoundEndpoint>,
     },
+    /// "List me", to a directory's public endpoint and never from a machine name
+    /// (ADR 0015). `profile` is the sender's owner's signed profile, which must
+    /// list the sending node. If it says they may not be listed, this asks to
+    /// be dropped.
+    AskListing { profile: SignedObject },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

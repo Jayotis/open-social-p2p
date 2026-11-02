@@ -6,10 +6,10 @@
 //! [`MachineResponse`].
 
 use anyhow::{Context, Result, ensure};
-use iroh_base::{EndpointId, SecretKey, Signature};
+use iroh_base::{EndpointId, PublicKey, SecretKey, Signature};
 use serde::{Deserialize, Serialize};
 
-use crate::object::base64url;
+use crate::object::{SignedObject, base64url};
 
 const RECORD_DOMAIN: &[u8] = b"osp-machine-record-v0:";
 
@@ -19,8 +19,19 @@ pub const MAX_RECORD_BYTES: usize = 1024;
 pub const MAX_OFFERS: usize = 8;
 /// Largest request frame a machine reads. A request carries one record at most.
 pub const MAX_REQUEST_LEN: u32 = 4 * 1024;
-/// Largest reply frame a machine reads.
-pub const MAX_REPLY_LEN: u32 = 16 * 1024;
+/// Largest reply frame a machine reads: a page of a listing, at most.
+pub const MAX_REPLY_LEN: u32 = 128 * 1024;
+/// What a machine's record says it offers when it's a directory.
+pub const OFFERS_DIRECTORY: &str = "directory";
+/// Most entries in one page of a listing.
+pub const MAX_LISTING_PAGE: u32 = 100;
+/// A page of a listing stops before passing this many bytes of entries, as bulk
+/// speed over Tor varies so much (ADR 0014). It always has at least one.
+pub const MAX_LISTING_PAGE_BYTES: usize = 64 * 1024;
+/// Most posts a directory lists of one person.
+pub const MAX_LISTED_POSTS: usize = 5;
+/// Largest listing of one person, in bytes.
+pub const MAX_LISTED_PERSON_BYTES: usize = 32 * 1024;
 
 /// What a machine says of itself.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -107,6 +118,10 @@ pub enum MachineRequest {
     /// Here's my record; what's yours? It must be the record of the machine
     /// asking.
     Hello { record: MachineRecord },
+    /// A directory's lists, in pages, as an outbox is read: the entries with a
+    /// sequence number greater than `since`. Asking for none still says where
+    /// the end is. Other machines say they aren't directories.
+    Listing { since: u64, limit: u32 },
     /// A request from a later version. It gets an error rather than a closed
     /// connection, so requests can be added.
     #[serde(other)]
@@ -116,8 +131,45 @@ pub enum MachineRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "result", rename_all = "snake_case")]
 pub enum MachineResponse {
-    Hello { record: MachineRecord },
-    Error { message: String },
+    Hello {
+        record: MachineRecord,
+    },
+    Listing {
+        entries: Vec<ListingEntry>,
+        /// The newest sequence number in the lists.
+        latest: u64,
+    },
+    Error {
+        message: String,
+    },
+}
+
+/// One entry in a directory's lists, standing for one machine or one person. It
+/// gets a new sequence number when what it says changes, so a reader asks only
+/// for what changed since it last read.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ListingEntry {
+    pub seq: u64,
+    pub item: ListingItem,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ListingItem {
+    /// A machine that greeted the directory, and answered when greeted back.
+    Machine { record: MachineRecord },
+    /// Someone who asked to be listed: their signed profile, and their latest
+    /// posts, newest first, each as they signed it.
+    Person {
+        profile: SignedObject,
+        posts: Vec<SignedObject>,
+    },
+    /// Someone no longer listed. It isn't signed, as it can only take away what
+    /// came from this directory, and a directory can always leave things out.
+    Gone { actor: PublicKey },
+    /// An entry from a later version, which a reader passes over.
+    #[serde(other)]
+    Unknown,
 }
 
 #[cfg(test)]
@@ -236,6 +288,48 @@ mod tests {
         let reply = MachineResponse::Hello { record: largest };
         let len = serde_json::to_vec(&reply).unwrap().len();
         assert!(len <= MAX_REPLY_LEN as usize, "{len} bytes");
+    }
+
+    #[test]
+    fn the_largest_listing_of_a_person_and_a_full_page_fit_a_reply() {
+        let key = key(1);
+        // Control characters take six bytes each in JSON.
+        let person = crate::types::Person {
+            actor: key.public(),
+            name: "\u{1}".repeat(crate::types::MAX_NAME_BYTES),
+            summary: Some("\u{1}".repeat(crate::types::MAX_SUMMARY_BYTES)),
+            discoverable: true,
+            nodes: vec![key.public(); crate::types::MAX_PROFILE_NODES],
+            published: DATE.into(),
+        };
+        let profile = SignedObject::sign(&key, &crate::Payload::Person(person)).unwrap();
+        let len = serde_json::to_vec(&profile).unwrap().len();
+        assert!(len <= MAX_LISTED_PERSON_BYTES, "{len} bytes");
+
+        // A page stops short of its limit, and at worst holds that much more.
+        let item = ListingItem::Person {
+            profile,
+            posts: vec![],
+        };
+        let filler = ListingEntry {
+            seq: u64::MAX,
+            item: item.clone(),
+        };
+        let per_entry = serde_json::to_vec(&filler).unwrap().len();
+        let count = MAX_LISTING_PAGE_BYTES / per_entry + 1;
+        let reply = MachineResponse::Listing {
+            entries: vec![filler; count],
+            latest: u64::MAX,
+        };
+        let len = serde_json::to_vec(&reply).unwrap().len();
+        assert!(len <= MAX_REPLY_LEN as usize, "{len} bytes");
+    }
+
+    #[test]
+    fn an_entry_from_a_later_version_is_read_as_unknown() {
+        let later = r#"{"seq":3,"item":{"kind":"something_later","with":1}}"#;
+        let entry: ListingEntry = serde_json::from_str(later).unwrap();
+        assert_eq!(entry.item, ListingItem::Unknown);
     }
 
     #[test]

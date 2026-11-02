@@ -386,6 +386,10 @@ impl Core {
                 self.asked_trust(remote, &profile, &note)?;
                 SocialResponse::Ok
             }
+            SocialRequest::AskListing { profile } => {
+                self.asked_listing(remote, &profile)?;
+                SocialResponse::Ok
+            }
         })
     }
 
@@ -700,7 +704,7 @@ impl Core {
         }
     }
 
-    fn forget_conn(&self, id: &EndpointId) {
+    pub(crate) fn forget_conn(&self, id: &EndpointId) {
         self.lock_conns().remove(id);
     }
 
@@ -757,7 +761,7 @@ pub(crate) struct PerHour(Mutex<HashMap<EndpointId, (Instant, u32)>>);
 impl PerHour {
     /// Counts one more for `node`, and says whether that is within `max`
     /// this hour.
-    fn allow(&self, node: EndpointId, max: u32) -> bool {
+    pub(crate) fn allow(&self, node: EndpointId, max: u32) -> bool {
         let mut counts = self.0.lock().unwrap_or_else(|e| e.into_inner());
         let now = Instant::now();
         if counts.len() >= MAX_FOLLOWERS {

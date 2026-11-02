@@ -10,6 +10,7 @@ mod client;
 pub mod config;
 mod control;
 mod db;
+mod directory;
 mod endpoints;
 mod health;
 mod home;
@@ -29,7 +30,7 @@ mod tor;
 mod trust;
 mod uploads;
 
-pub use config::{Config, DirectRule, RelayChoice};
+pub use config::{Config, DirectRule, KnownDirectory, RelayChoice};
 pub use db::BlobClass;
 pub use endpoints::PeerEndpoints;
 pub use home::Home;

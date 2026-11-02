@@ -1145,7 +1145,7 @@ async fn sleep_until(at: Option<Instant>) {
 }
 
 /// `d` varied at random by up to half either way.
-fn jitter(d: Duration) -> Duration {
+pub(crate) fn jitter(d: Duration) -> Duration {
     d.mul_f64(0.5 + random_fraction())
 }
 

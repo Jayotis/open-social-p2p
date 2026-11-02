@@ -15,8 +15,8 @@ use osp_proto::{
     Announce, Attachment, BlobRef, FollowTicket, Note, ObjectId, Payload, SignedObject,
     framing::{read_frame, write_frame},
     rpc::{
-        AttachmentInfo, ClientRequest, ClientResponse, FeedItem, FetchedFile, PeerRecord,
-        PersonInfo, ResharedBy, StatusInfo,
+        AttachmentInfo, ClientRequest, ClientResponse, DirectoryStatus, FeedItem, FetchedFile,
+        PeerRecord, PersonInfo, ResharedBy, StatusInfo,
     },
     social::SocialRequest,
     types::{MAX_ATTACHMENTS, MAX_CONTENT_BYTES},
@@ -323,6 +323,13 @@ impl Core {
             tor: self.tor.as_ref().map(|tor| tor.status()),
             endpoints: self.endpoints.as_ref().map(|own| Box::new(own.status())),
             machine: self.machine.is_some(),
+            directory: match self.config.directory.serve {
+                true => {
+                    let (people, machines) = self.db.directory_counts()?;
+                    Some(DirectoryStatus { people, machines })
+                }
+                false => None,
+            },
         })
     }
 
