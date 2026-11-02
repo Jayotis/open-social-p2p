@@ -73,6 +73,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   Followed dco_decode_followed(dynamic raw);
 
   @protected
+  Found dco_decode_found(dynamic raw);
+
+  @protected
+  FoundPerson dco_decode_found_person(dynamic raw);
+
+  @protected
   int dco_decode_i_32(dynamic raw);
 
   @protected
@@ -83,6 +89,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   List<Followed> dco_decode_list_followed(dynamic raw);
+
+  @protected
+  List<FoundPerson> dco_decode_list_found_person(dynamic raw);
 
   @protected
   List<Media> dco_decode_list_media(dynamic raw);
@@ -213,6 +222,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   Followed sse_decode_followed(SseDeserializer deserializer);
 
   @protected
+  Found sse_decode_found(SseDeserializer deserializer);
+
+  @protected
+  FoundPerson sse_decode_found_person(SseDeserializer deserializer);
+
+  @protected
   int sse_decode_i_32(SseDeserializer deserializer);
 
   @protected
@@ -223,6 +238,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   List<Followed> sse_decode_list_followed(SseDeserializer deserializer);
+
+  @protected
+  List<FoundPerson> sse_decode_list_found_person(SseDeserializer deserializer);
 
   @protected
   List<Media> sse_decode_list_media(SseDeserializer deserializer);
@@ -376,6 +394,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_encode_followed(Followed self, SseSerializer serializer);
 
   @protected
+  void sse_encode_found(Found self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_found_person(FoundPerson self, SseSerializer serializer);
+
+  @protected
   void sse_encode_i_32(int self, SseSerializer serializer);
 
   @protected
@@ -386,6 +410,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_list_followed(List<Followed> self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_list_found_person(
+    List<FoundPerson> self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_list_media(List<Media> self, SseSerializer serializer);

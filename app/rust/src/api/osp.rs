@@ -113,6 +113,20 @@ pub struct Followed {
     pub connecting: bool,
 }
 
+/// What a search found on the node, the best match first in each list.
+pub struct Found {
+    pub people: Vec<FoundPerson>,
+    pub posts: Vec<Post>,
+}
+
+pub struct FoundPerson {
+    pub identity: String,
+    pub name: String,
+    pub summary: Option<String>,
+    /// Whether the node follows them.
+    pub followed: bool,
+}
+
 pub struct Post {
     pub id: String,
     pub author: String,
@@ -256,6 +270,24 @@ impl OspApp {
             .into_iter()
             .map(post)
             .collect())
+    }
+
+    /// Looks through the posts and profiles the node has received. Nothing
+    /// leaves the node.
+    pub async fn search(&self, words: String, limit: u32) -> Result<Found> {
+        let (people, posts) = self.client.search(&words, limit).await?;
+        Ok(Found {
+            people: people
+                .into_iter()
+                .map(|p| FoundPerson {
+                    identity: p.actor.to_string(),
+                    name: p.name,
+                    summary: p.summary,
+                    followed: p.followed,
+                })
+                .collect(),
+            posts: posts.into_iter().map(post).collect(),
+        })
     }
 
     #[frb(sync)]
