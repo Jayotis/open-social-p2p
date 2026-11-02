@@ -28,7 +28,7 @@ use iroh::{
 use osp_proto::{
     BlobHash, CLIENT_ALPN, ObjectId, PairingTicket,
     framing::{read_frame, write_frame},
-    rpc::{ClientRequest, ClientResponse, FeedItem, Upload, UploadId},
+    rpc::{ClientRequest, ClientResponse, FeedItem, PersonInfo, Upload, UploadId},
 };
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
@@ -420,6 +420,22 @@ impl Client {
     /// The feed as last fetched, if any.
     pub fn cached_feed(&self) -> Option<CachedFeed> {
         read_json(&self.dir.join("feed.json")).ok().flatten()
+    }
+
+    /// Looks through the posts and profiles the node has received.
+    pub async fn search(
+        &self,
+        words: &str,
+        limit: u32,
+    ) -> Result<(Vec<PersonInfo>, Vec<FeedItem>)> {
+        let req = ClientRequest::Search {
+            words: words.to_string(),
+            limit,
+        };
+        let ClientResponse::Found { people, posts } = self.request(&req).await? else {
+            bail!("unexpected reply to Search");
+        };
+        Ok((people, posts))
     }
 
     /// Publishes a post with files from this device. The node transcodes

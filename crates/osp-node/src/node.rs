@@ -980,15 +980,15 @@ fn own_profile(signer: &Signer, name: &str, node: EndpointId, db: &Db) -> Result
     {
         at = at.max(UNIX_EPOCH + Duration::from_millis(ms as u64 + 1));
     }
-    let person = Payload::Person(Person {
+    let person = Person {
         actor: me,
         name: name.to_string(),
         summary: None,
         nodes: vec![node],
         published: humantime::format_rfc3339_millis(at).to_string(),
-    });
-    let obj = signer.sign(&person)?;
-    db.upsert_profile(&me, name, &obj)?;
+    };
+    let obj = signer.sign(&Payload::Person(person.clone()))?;
+    db.upsert_profile(&person, &obj)?;
     if let Some((p, existing)) = &previous {
         let moved = !p.nodes.contains(&node);
         let new_key = existing.certificate() != signer.certificate();

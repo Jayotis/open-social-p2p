@@ -65,6 +65,13 @@ pub enum ClientRequest {
     Show {
         id: ObjectId,
     },
+    /// Looks through the posts and profiles this node has received, on the
+    /// node alone (ADR 0014). `limit` is for each of the two.
+    Search {
+        words: String,
+        #[serde(default = "default_feed_limit")]
+        limit: u32,
+    },
     /// Reshare a post; with `host`, keep a copy of its media and serve it.
     Reshare {
         id: ObjectId,
@@ -211,6 +218,11 @@ pub enum ClientResponse {
     },
     Item {
         item: FeedItem,
+    },
+    /// What a search found, the best match first in each list.
+    Found {
+        people: Vec<PersonInfo>,
+        posts: Vec<FeedItem>,
     },
     Fetched {
         files: Vec<FetchedFile>,
@@ -556,6 +568,16 @@ pub struct FollowInfo {
     pub cursor: u64,
     pub last_sync: Option<String>,
     pub last_error: Option<String>,
+}
+
+/// A profile a search found.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PersonInfo {
+    pub actor: PublicKey,
+    pub name: String,
+    pub summary: Option<String>,
+    /// Whether this node follows them.
+    pub followed: bool,
 }
 
 /// A post as shown in a feed, with reshare context.

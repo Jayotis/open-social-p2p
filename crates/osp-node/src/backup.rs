@@ -575,7 +575,7 @@ impl BackupFile {
                 person.actor == me,
                 "the backed-up profile is someone else's"
             );
-            db.upsert_profile(&me, &person.name, profile)?;
+            db.upsert_profile(&person, profile)?;
         }
         for obj in &m.outbox {
             let payload = obj.verify().context("a backed-up post is invalid")?;
@@ -589,7 +589,7 @@ impl BackupFile {
                 continue;
             };
             match &payload {
-                Payload::Person(person) => db.upsert_profile(&person.actor, &person.name, obj)?,
+                Payload::Person(person) => db.upsert_profile(person, obj)?,
                 _ => {
                     db.insert_object(obj, &payload)?;
                 }

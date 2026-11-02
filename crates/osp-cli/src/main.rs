@@ -115,6 +115,15 @@ enum Command {
     },
     /// Show one post or reshare
     Show { id: ObjectId },
+    /// Look through the posts and profiles your node has received. Nothing leaves your node
+    Search {
+        /// Every word has to start a word in the post or profile
+        #[arg(required = true)]
+        words: Vec<String>,
+        /// How many posts, and how many people, at most
+        #[arg(long, default_value_t = 20)]
+        limit: u32,
+    },
     /// Reshare a post
     Reshare {
         id: ObjectId,
@@ -384,6 +393,10 @@ async fn main() -> Result<()> {
         },
         Command::Feed { limit } => ClientRequest::Feed { limit },
         Command::Show { id } => ClientRequest::Show { id },
+        Command::Search { words, limit } => ClientRequest::Search {
+            words: words.join(" "),
+            limit,
+        },
         Command::Reshare { id, host } => ClientRequest::Reshare { id, host },
         Command::Fetch { id, out } => ClientRequest::Fetch {
             id,
@@ -897,6 +910,24 @@ fn print(resp: ClientResponse, json: bool) -> Result<()> {
             }
         }
         ClientResponse::Item { item } => print_item(&item),
+        ClientResponse::Found { people, posts } => {
+            if people.is_empty() && posts.is_empty() {
+                println!("Nothing on this node matches.");
+            }
+            for person in people {
+                let followed = if person.followed { " (following)" } else { "" };
+                println!("{}{followed}", person.name);
+                if let Some(summary) = person.summary {
+                    println!("  {summary}");
+                }
+                println!("  identity: {}", person.actor);
+                println!();
+            }
+            for item in posts {
+                print_item(&item);
+                println!();
+            }
+        }
         ClientResponse::Fetched { files } => {
             for f in files {
                 match f.path {
