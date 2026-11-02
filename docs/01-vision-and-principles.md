@@ -34,4 +34,4 @@ A separate *personal search engine with a crawler hosted in each user's home* ha
 
 ## Status
 
-This repository currently documents the concept, questions and milestones. Proposed components and standards are subject to technical validation and community review.
+A Stage 1 prototype runs on test devices ([roadmap](06-roadmap.md)), and nothing is production-ready. This document gives the intent behind it. Proposed components and standards are still subject to technical validation and community review.
