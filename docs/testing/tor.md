@@ -64,6 +64,50 @@ journalctl --user -u osp | grep "$(osp machine show | tail -1 | cut -c1-10)"   #
 
 It isn't anonymous. Both IDs share one Tor and come and go together, so someone reaching both can match them over time.
 
+## Directories
+
+A directory lists people who asked to be listed, so that a node with no follows has someone to find ([ADR 0015](../decisions/0015-nodes-meet-first.md)). It holds each one's signed profile and latest 5 posts, and the records of machines that greeted it. A node reads a directory in the background under its machine name and keeps who it finds, so a search looks through them at home. No word anyone types leaves the node, and they stay out of the feed.
+
+**To run one,** on a node with Tor on:
+
+```toml
+[directory]
+serve = true
+```
+
+`osp status` then shows a line like `Directory: 3 people, 12 machines`. Its two names are what others need: its machine ID, from `osp machine show`, and its node ID, from `osp status`. Giving them out together is safe for a directory, whose role is public, and for nobody else.
+
+**To read one, and to be listed by it:**
+
+```toml
+summary = "Builds oak tables"   # at the top of the file, by your name
+
+[directory]
+list_me = true                  # only if you want to be listed
+
+[[directory.known]]
+machine = "..."
+node = "..."
+```
+
+Restart the node. `list_me` says in your signed profile that a directory may list it and your latest posts, and that others may pass them on. Your node then asks each directory, from your public ID and never your machine name, at a time of its own within the hour, and again each day. To be dropped, turn it off and restart: the profile saying no takes it back, by the time the directory next reads your node, within the hour.
+
+```sh
+osp directory read       # read them now, rather than waiting
+osp search oak           # says "found through directory" and which, by its machine name's words
+osp follow IDENTITY      # the identity the search showed
+```
+
+Following asks their own node first, and goes no further unless it speaks for them: a directory's copy can be out of date. Like any first contact, it [can take minutes](#a-first-contact-can-take-minutes). `osp following` shows if it failed.
+
+**How fresh it is.** A node reads its directories within 10 minutes of starting and then about every 6 hours, taking what changed since. A directory reads each listed node once an hour. So a new post can take hours to be found, which is fine for finding people: once followed, posts come directly.
+
+**What a directory sees:** which machine name read its lists, and when, and which public ID asked to be listed. It sees no search words, and nothing ties the two names together except what any machine and public ID on one Tor can show ([ADR 0015](../decisions/0015-nodes-meet-first.md#consequences)).
+
+**Not yet:** the media of a post found through a directory opens only once you follow its author, and machines on a directory's map aren't dialled yet, as meeting comes in step 3.
+
+The whole of it over real Tor, which takes minutes: `OSP_TOR=/usr/bin/tor cargo test -p osp-node --test directory -- --ignored --nocapture`.
+
 ## Check it recovers
 
 With a ping every few seconds from one node to the other, stop either node's Tor, as a crash would. Find it by its settings file, so the system's Tor, if it runs, is left alone:
