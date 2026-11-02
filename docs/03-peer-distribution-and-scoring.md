@@ -1,6 +1,6 @@
 # Peer Distribution and Adaptive Source Scoring
 
-**Status:** Proposed protocol behavior; no implementation exists in this repository.
+**Status:** Proposal, partly built. A reshare that keeps and serves a verified copy works ([roadmap](06-roadmap.md)), and [doc 13](13-hosting-roles-and-follower-swarm.md)'s swarm shares media among followers. Grading peers isn't built: a node measures them ([ADR 0011](decisions/0011-measuring-peers.md)) and doesn't act on it yet.
 
 ## Core concept
 
