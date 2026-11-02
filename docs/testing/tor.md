@@ -1,6 +1,6 @@
 # Tor: turning it on and checking it
 
-Messages between nodes are moving onto Tor's onion services, so that nodes that find each other never learn each other's address ([ADR 0014](../decisions/0014-finding-people-and-private-messages.md)). This is its first step: with Tor on, the node starts and watches its own Tor, and answers other nodes' requests through it as well as directly. What it sends still goes as before, except `osp tor ping`. The transport is in [`osp-tor`](../../crates/osp-tor/); the node's tests are in [`tor.rs`](../../crates/osp-node/tests/tor.rs).
+Messages between nodes are moving onto Tor's onion services, so that nodes that find each other never learn each other's address ([ADR 0014](../decisions/0014-finding-people-and-private-messages.md)). With Tor on, the node starts and watches its own Tor, and messages between nodes go only through it, while media and phones use the node's other endpoints. The transport is in [`osp-tor`](../../crates/osp-tor/); the node's tests are in [`tor.rs`](../../crates/osp-node/tests/tor.rs).
 
 Tor hides addresses; it doesn't make anyone anonymous.
 
@@ -19,7 +19,7 @@ Tor hides addresses; it doesn't make anyone anonymous.
    direct = "nobody"
    ```
 
-   **This changes what the node can reach.** Messages then go only through Tor, so it can reach only nodes with Tor on, and they can reach it only that way. Its follow code gives its ID and nothing else. **Phones paired before must pair again**, as they now connect to the direct endpoint.
+   **This changes what the node can reach.** Messages then go only through Tor, so it can reach only nodes with Tor on, and they can reach it only that way. Its follow code gives its ID and nothing else. **Phones paired before must pair again**, as they now connect to the direct endpoint: in the app, Home node status, then Forget this home node, then `osp pair`.
 
 3. Restart the node (`systemctl --user restart osp`). Then `osp status` shows a line like `Tor: ready, onion service published, 0 streams`. Connecting to the Tor network takes about 10 seconds the first time, and publishing the node's onion service a few more.
 
@@ -52,6 +52,25 @@ No root needed:
 - `ss -tnp | grep '"tor"'` on either node: the node's Tor connects only to Tor relays (usually port 443 or 9001), never to the other node's address.
 - `ss -tunap | grep '"osp"'`: connections over Tor are only to `127.0.0.1`, the node's own Tor. The node's other connections are its media and direct endpoints': to relays, to its own phones, and to peers both rules allow.
 
+For more, a packet capture needs `tcpdump` and root. Start it before the node switches, so its startup is included, and leave out SSH if you're using it, and loopback, which is only the node talking to its own Tor. `-s 128` keeps only the headers:
+
+```sh
+sudo tcpdump -i any -n -s 128 -Z "$USER" -w tor.pcap 'not port 22 and not net 127.0.0.0/8 and not host ::1'
+```
+
+Use the nodes for a while, posting from one and fetching on another, then stop it with Ctrl-C. Replace `PEER` with another node's address:
+
+```sh
+# Anything between this machine and the other node: expect nothing once both have switched.
+tcpdump -r tor.pcap -n -tttt 'host PEER and not arp'
+# Everything on the node's own UDP ports, which `osp status` lists as Bound: expect relays' port 7842 and your phones.
+tcpdump -r tor.pcap -n -tttt 'udp port PORT'
+```
+
+The capture has everything else the machine did too, so delete it afterwards.
+
+We did this once, on 2026-11-01, on one of three test nodes on the same home network, for 11 minutes, while a post with a photo and a video reached the other two and two phones paired and played the video. The machine exchanged direct packets with both nodes before the switch. After it, there were only two from a node that hadn't switched yet, which were refused. The node's UDP went to relays and its phones, and from the moment each phone connected, a few packets went to other addresses, which by their timing are ones the phone offered. Only that one node was captured: the other two were checked with `ss`, which can miss short connections.
+
 ## Follow and fetch, all of it
 
 An ignored test runs two nodes as they're meant to run, with messages over the Tor network and media through n0's public relays:
@@ -61,6 +80,8 @@ OSP_TOR=/usr/bin/tor cargo test -p osp-node --test tor following_and_fetching --
 ```
 
 In its one run so far, on 2026-11-01, it took 17 s from following to holding a photo, with both nodes on the same machine: connections were over Tor for messages and through a relay for media, and none direct.
+
+**Public relays may throttle media.** On the test nodes that day, sending a 3.7 MB video through n0's public relay made both ends log `The relay is rate-limiting this endpoint`, though it arrived. `osp-sim` has no relays, so its results don't show this: it's what ADR 0014's measurement of media's default is for.
 
 ## A first contact can take minutes
 
