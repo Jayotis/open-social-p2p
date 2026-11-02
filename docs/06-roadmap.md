@@ -1,25 +1,27 @@
 # Development Roadmap
 
-**Status:** Stage 1 in progress. Milestones M0, M1 and M2 are done, and M3 is under way; see below.
+**Status:** Stage 1 in progress. Milestones M0 to M3 are done, and M4 is under way; see below.
 
-## Stage 0 — Requirements and research (current)
+## Stage 0 — Requirements and research (enough done to start Stage 1)
 
-- [ ] Agree on the project's scope, contributors' expectations and non-goals.
+What Stage 1 needed was decided. The rest doesn't hold it up, and each item says where it stands.
+
+- [ ] Agree on the project's scope, contributors' expectations and non-goals. Drafted for discussion in [doc 01](01-vision-and-principles.md) and [doc 07](07-contributing-and-open-decisions.md).
 - [x] Decide whether to build on an ActivityPub backend such as Mastodon or Friendica. Decided: a native protocol for Stage 1, with an ActivityPub bridge in Stage 2 ([ADR 0003](decisions/0003-native-social-protocol-v0.md)).
 - [x] Review libp2p, IPFS, WebRTC and relay models. Decided: iroh and iroh-blobs ([ADR 0002](decisions/0002-rust-and-iroh.md)). PeerTube is still to evaluate for longer video.
-- [ ] Produce threat model and privacy requirements.
-- [ ] Choose identity, data ownership, audience and media-manifest models.
-- [ ] Specify adaptive peer grading and bandwidth-fairness goals.
-- [ ] Define open, independently implementable feed ranking, chronological mode and "Why am I seeing this?" explanations.
-- [ ] Research distributed public trend signals, aggregation privacy, federation coverage and Sybil/spam resistance.
-- [ ] Evaluate manipulation scenarios before using P2P demand as any recommendation input.
-- [ ] Specify optional exploration modes for overlooked work and topic-based differing perspectives.
-- [ ] Research verifiable discovery trails and anti-gaming measures for early curators ('scouts').
-- [ ] Define voluntary offline referral links and private-by-default local discovery history.
-- [ ] Assess bounded, short-lived P2P discovery snapshot proposals before any private-data aggregation.
-- [ ] Describe licensing, documentation and governance policies.
+- [ ] Produce threat model and privacy requirements. A starting point is in [doc 05](05-security-privacy-and-governance.md), and the decision records settle privacy case by case. An independent review is in Stage 5.
+- [x] Choose identity, data ownership, audience and media-manifest models. Decided for Stage 1: data stays on the home node ([ADR 0001](decisions/0001-home-node-architecture.md)), public content only ([ADR 0003](decisions/0003-native-social-protocol-v0.md)), signed objects whose attachments carry their hashes ([ADR 0004](decisions/0004-signed-objects-and-ids.md)), and identity keys ([ADR 0009](decisions/0009-identity-backup-and-recovery.md), [ADR 0010](decisions/0010-signing-keys-and-revocation.md)).
+- [ ] Specify adaptive peer grading and bandwidth-fairness goals. Proposals: [doc 03](03-peer-distribution-and-scoring.md) and [doc 12](12-peer-reciprocity-and-recognition.md). Only measuring is built ([ADR 0011](decisions/0011-measuring-peers.md)).
+- [ ] Define open, independently implementable feed ranking, chronological mode and "Why am I seeing this?" explanations. Proposal: [doc 08](08-open-feed-algorithm.md).
+- [ ] Research distributed public trend signals, aggregation privacy, federation coverage and Sybil/spam resistance. Research design: [doc 09](09-distributed-trending-signals.md).
+- [ ] Evaluate manipulation scenarios before using P2P demand as any recommendation input. [Doc 09](09-distributed-trending-signals.md#anti-manipulation-research-requirements) says what to test; not evaluated yet.
+- [ ] Specify optional exploration modes for overlooked work and topic-based differing perspectives. Proposal: [doc 10](10-exploration-divergence-and-scouts.md).
+- [ ] Research verifiable discovery trails and anti-gaming measures for early curators ('scouts'). Proposal: [doc 10](10-exploration-divergence-and-scouts.md).
+- [ ] Define voluntary offline referral links and private-by-default local discovery history. Proposal: [doc 11](11-collective-discovery-history-and-referrals.md).
+- [ ] Assess bounded, short-lived P2P discovery snapshot proposals before any private-data aggregation. Proposal: [doc 11](11-collective-discovery-history-and-referrals.md).
+- [ ] Describe licensing, documentation and governance policies. The code is under [AGPL-3.0](../LICENSE), and [doc 05](05-security-privacy-and-governance.md#open-governance-questions) lists what's still open.
 
-**Gate:** Architecture decision records reviewed; basic publish/reshare/retrieve flows specified.
+**Gate:** Architecture decision records reviewed; basic publish/reshare/retrieve flows specified. The flows are specified in ADRs [0003](decisions/0003-native-social-protocol-v0.md) to [0005](decisions/0005-media-profile-v1.md) and were built in M1.
 
 ## Stage 1 — Isolated desktop/P2P proof of concept (in progress)
 
@@ -32,7 +34,7 @@ Stage 1 is split into milestones:
   - Built: the Flutter Android app ([`app/`](../app/)) on top of `osp-client`: pairing, feed, playback, posting, reshare, follow codes and node health.
   - Tested on two phones against a node running as a service: pairing by QR code and by pasting, feed, playback with seeking, posting a photo, the offline banner, unpairing a phone while it plays, a relayed path standing in for a phone away from home, and the node starting at boot so both phones reached it before anyone logged in ([results](testing/m2-phone.md#results-to-record)).
   - Not tested on mobile data itself: the test phones have no SIM, so the relayed path on home Wi-Fi stood in for it. (The iPhone app was later tested on mobile data in M3.)
-- **M3 — limits, resilience and the follower swarm (in progress):** upload limits with "busy, try another host", local peer assessment (measured first; [doc 12](12-peer-reciprocity-and-recognition.md)), follower swarm basics and staggered prefetch ([doc 13](13-hosting-roles-and-follower-swarm.md)), quotas and eviction, resumed transfers, a simulated slow/flaky network harness, and the relay-only privacy mode ([ADR 0007](decisions/0007-transport-privacy-defaults.md)).
+- **M3 — limits, resilience and the follower swarm (done):** upload limits with "busy, try another host", local peer assessment (measured first; [doc 12](12-peer-reciprocity-and-recognition.md)), follower swarm basics and staggered prefetch ([doc 13](13-hosting-roles-and-follower-swarm.md)), quotas and eviction, resumed transfers, a simulated slow/flaky network harness, and the relay-only privacy mode ([ADR 0007](decisions/0007-transport-privacy-defaults.md)).
   - Done: limits on what other nodes and devices can make a node do: requests, followers, the addresses it keeps, object sizes, sync, and the disk space their media takes, with quotas and eviction ([ADR 0003](decisions/0003-native-social-protocol-v0.md), [ADR 0004](decisions/0004-signed-objects-and-ids.md), [ADR 0008](decisions/0008-device-pairing-and-client-protocol.md)).
   - Done: relay-only mode, opt-in, which hides the node's address from other nodes and phones, and only safe relays taken from other people's addresses ([ADR 0007](decisions/0007-transport-privacy-defaults.md) phase 1, [testing](testing/relay-only.md)).
   - Done: limits on posting media: one transcode at a time with time limits, a cap on posts in progress, and disk space set aside for an upload before it is sent ([ADR 0005](decisions/0005-media-profile-v1.md), [ADR 0008](decisions/0008-device-pairing-and-client-protocol.md)).
@@ -49,9 +51,9 @@ Stage 1 is split into milestones:
   - Done: local peer measurement, the first phase of [doc 12](12-peer-reciprocity-and-recognition.md): each node keeps a private, fading record of how the nodes it deals with behave (reachable, answering, downloads by outcome, bytes each way) and shows it with `osp peers`, without changing behaviour yet ([ADR 0011](decisions/0011-measuring-peers.md)).
   - Done: a simulated network harness, `osp-sim`, running a creator and hundreds of followers as real nodes in one process, and B8 measured with it ([plan and results](testing/b8-creator-upload.md)): in the baseline, before the swarm, a creator with 300 followers sent 8 copies of a new video, and the other 292 followers didn't get it ahead of time. The harness can also stop some followers partway through, and add strangers who see the post through a reshare. It can also run the nodes over a simulated network of home connections, with upload and download speeds, delays, packet loss and connections dropping out, with real QUIC over it ([plan and results](testing/network-conditions.md)). Before, a follower whose download was slow or stalled gave up instead of trying again, and in 3 of 5 home runs some followers never got the video. With that fixed, every follower got the video in each of the 21 runs, and on home connections the swarm met B8's marks in all six. With connections dropping out, followers met their marks in every run, but in one of six the creator sent 30.6 copies, just over its 30. With packet loss up to 2%, every follower got the video within 24 minutes and the creator's upload stayed low, but 95% of followers took 13 to 20 minutes, within the 15-minute mark in one run of six. With nine hosts in ten uploading at 1 Mbit/s, every follower got it within 38 minutes.
   - Done: release builds of the app signed with a key kept off GitHub ([app README](../app/README.md#release-signing)), and a CI check that no secret or key file is ever committed.
-- **M4 — finding people and content (planned, after M3):** today people find each other only through follow codes, and a post reaches someone only through whom they follow and what those people reshare. M4 lets people find others and their public posts with no single search service holding the index, seeing every search and deciding the ranking, and without showing strangers their home internet address. A decision record answers [doc 07](07-contributing-and-open-decisions.md)'s open decision 5: how people and content are found, who provides that, and what it reveals. Privacy shapes the design, so the decision comes before any product code. It draws on the proposals in docs [08](08-open-feed-algorithm.md)–[11](11-collective-discovery-history-and-referrals.md) (open feed, trending signals, exploration and scouts, discovery history and referrals) and on Stage 0's discovery research items, and brings forward the directories and lookup that [ADR 0003](decisions/0003-native-social-protocol-v0.md) left for Stage 2. Its first goal is a few invited people finding and following each other without swapping follow codes.
+- **M4 — finding people and content (in progress):** today people find each other only through follow codes, and a post reaches someone only through whom they follow and what those people reshare. M4 lets people find others and their public posts with no single search service holding the index, seeing every search and deciding the ranking, and without showing strangers their home internet address. A decision record answers [doc 07](07-contributing-and-open-decisions.md)'s open decision 5: how people and content are found, who provides that, and what it reveals. Privacy shapes the design, so the decision comes before any product code. It draws on the proposals in docs [08](08-open-feed-algorithm.md)–[11](11-collective-discovery-history-and-referrals.md) (open feed, trending signals, exploration and scouts, discovery history and referrals) and on Stage 0's discovery research items, and brings forward the directories and lookup that [ADR 0003](decisions/0003-native-social-protocol-v0.md) left for Stage 2. Its first goal is a few invited people finding and following each other without swapping follow codes.
   - **Use what works now, replace it later.** Tor's onion services carry messages between nodes from the start, instead of a forwarding network of our own built before there are people to run it. Only the home node runs Tor, since phones talk only to their own node, and video never goes over Tor. Media from nodes that hide their address goes through n0's public relays for now. Identities, posts and directories don't depend on either, so both can be replaced once the network has users.
-  - Planned, in order:
+  - In order:
   - **Tests first, side by side (done 2026-10-31):** two nodes on different networks talking through iroh's experimental Tor transport (`iroh-tor-transport`), measuring how long a connection takes, round trips and recovery after Tor restarts, with a packet capture showing nothing goes direct; full-text search with SQLite's FTS5 (already in our build) on real posts; and the B8 run in `osp-sim` with Tor-like delays on messages, to find which of M3's timers need changing. A throwaway test isn't product code, and its answers shape the decision record. Tor was quick enough for messages; the swarm met its marks with Tor-like delays, but the 20 s connection timeout didn't ([results](testing/network-conditions.md#messages-over-tor)).
   - **The decision record (done: [ADR 0014](decisions/0014-finding-people-and-private-messages.md), accepted 2026-11-01).** It covers three ways of finding, from nearest to furthest: the node's own index of what it has already received, searched at home so nothing leaves the house; directories; and exact lookups by key or domain. It also sets what is indexed and who may connect to a node directly.
   - **The private control plane** ([ADR 0007](decisions/0007-transport-privacy-defaults.md) phases 2 and 3 together). Today a node connects directly unless its owner turns on relay-only mode, which only matters while just the people holding a follow code can reach it. Once strangers can find a node, any of them could connect and learn its address. The Tor transport derives a node's onion address from its ID, so a node gets three endpoints, each with a key of its own: a public one reachable only through Tor, whose ID goes in its profile, follow codes and directory listings and reveals no address; a relay-only one for media, which has no address to give away; and a direct one, whose IP addresses are never published, for media and the node's own phones. A signed binding ties each of the other two to the public one, so a peer can check whose they are. Media follows a rule each side sets for itself: a direct connection only when both nodes allow it (for anyone, people they follow, contacts they approved, or nobody), and a relay otherwise. A node gives its direct endpoint only to the peers it allows, and the endpoint itself refuses any other. Following someone, or knowing them a long time, never grants it on its own. A private connection that can't be made fails; it never falls back to a direct one.
@@ -70,18 +72,18 @@ Original Stage 1 checklist:
 - [x] Share and verify a piece of public test media using content hashes.
 - [x] Let a resharer optionally retain and serve the media.
 - [x] Turn off the origin and retrieve from an authorized replica.
-- [ ] Measure transfer performance across fast, slow and unstable peers.
-- [ ] Enforce storage and bandwidth limits.
-- [ ] Test peer discovery and relay/NAT scenarios.
+- [x] Measure transfer performance across fast, slow and unstable peers. ([Network conditions](testing/network-conditions.md), [B8](testing/b8-creator-upload.md).)
+- [x] Enforce storage and bandwidth limits. (M3.)
+- [x] Test peer discovery and relay/NAT scenarios. ([Manual tests](testing/stage1-manual.md), [relay-only](testing/relay-only.md), [Tor](testing/tor.md). Finding people is M4.)
 
-**Gate:** Reproducible test results, including failure cases and privacy observations.
+**Gate:** Reproducible test results, including failure cases and privacy observations. Results so far are in [testing](testing/), and M4 adds to them.
 
 ## Stage 2 — Federation through an ActivityPub bridge (future)
 
 Stage 1 uses a native protocol ([ADR 0003](decisions/0003-native-social-protocol-v0.md)) because ActivityPub delivers to each account's public HTTPS inbox, which a home node doesn't have. Stage 2 adds a bridge: a gateway with a public HTTPS address that translates between the fediverse and home nodes.
 
 - [ ] Decision record for the bridge: who runs gateways and who pays, how a home identity maps to a fediverse account and its keys, and what a gateway can see. Or adopt an emerging standard if one suits home nodes better.
-- [ ] Identity backup and recovery first ([ADR 0006](decisions/0006-desktop-first-always-on-node.md), [ADR 0009](decisions/0009-identity-backup-and-recovery.md)): a fediverse account needs a stable identity.
+- [x] Identity backup and recovery first ([ADR 0006](decisions/0006-desktop-first-always-on-node.md), [ADR 0009](decisions/0009-identity-backup-and-recovery.md)): a fediverse account needs a stable identity.
 - [ ] Replies, likes and boosts in the native protocol, so interactions cross the bridge both ways.
 - [ ] Media for fediverse servers, which fetch over HTTPS: the gateway fetches from home nodes and replicas, with caching and cost limits.
 - [ ] Moderation, blocking and reporting for content arriving from other servers.
@@ -90,6 +92,8 @@ Stage 1 uses a native protocol ([ADR 0003](decisions/0003-native-social-protocol
 **Gate:** A Mastodon account can follow a home node, see its posts and media, and reply, without its user installing anything.
 
 ## Stage 3 — Flutter and desktop early alpha (future)
+
+The app from M2 and M3 already pairs by QR code, shows the feed, plays video, posts and reshares, on Android and iPhone. This stage is about someone nontechnical getting through it all.
 
 - [ ] Implement onboarding, posts, timeline, profiles and reshares.
 - [ ] Build guided companion setup and pairing.
