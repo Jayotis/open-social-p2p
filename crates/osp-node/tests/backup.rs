@@ -182,6 +182,7 @@ fn profile(key: &SecretKey, nodes: Vec<iroh::EndpointId>, published: &str) -> Si
         actor: key.public(),
         name: "Alice".into(),
         summary: None,
+        discoverable: false,
         nodes,
         published: published.into(),
     });
@@ -457,6 +458,7 @@ async fn a_thief_cant_date_a_profile_so_late_that_the_owner_cant_answer() {
         actor: key.public(),
         name: "Not Alice".into(),
         summary: None,
+        discoverable: false,
         nodes: vec![endpoint.id()],
         published: "9999-01-01T00:00:00Z".into(),
     });

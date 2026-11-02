@@ -33,7 +33,7 @@ use std::{
 use anyhow::{Context, Result, anyhow, bail, ensure};
 use bip39::{Language, Mnemonic};
 use iroh::{EndpointAddr, PublicKey, SecretKey};
-use osp_proto::{BlobHash, Payload, SignedObject, rpc::BackupInfo};
+use osp_proto::{BlobHash, Payload, Person, SignedObject, rpc::BackupInfo};
 use ring::aead::{Aad, CHACHA20_POLY1305, LessSafeKey, Nonce, UnboundKey};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncWrite, AsyncWriteExt, BufWriter};
@@ -552,10 +552,10 @@ impl BackupFile {
             .max()
     }
 
-    /// The name in the backed-up profile, if it has one.
-    pub(crate) fn name(&self) -> Option<String> {
+    /// The backed-up profile, if it has one.
+    pub(crate) fn person(&self) -> Option<Person> {
         match self.manifest.profile.as_ref()?.verify() {
-            Ok(Payload::Person(person)) => Some(person.name),
+            Ok(Payload::Person(person)) => Some(person),
             _ => None,
         }
     }

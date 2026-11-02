@@ -394,6 +394,7 @@ mod tests {
                 actor: key.public(),
                 name: "n".repeat(MAX_NAME_BYTES + 1),
                 summary: None,
+                discoverable: false,
                 nodes: vec![],
                 published: "2026-10-22T12:00:00.000Z".to_string(),
             }),

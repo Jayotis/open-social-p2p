@@ -466,6 +466,7 @@ impl HostileAuthor {
                         actor: self.key.public(),
                         name: "Mallory".into(),
                         summary: None,
+                        discoverable: false,
                         nodes: vec![],
                         published: osp_proto::now_rfc3339(),
                     }),

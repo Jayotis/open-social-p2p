@@ -271,11 +271,16 @@ impl Node {
             .map(|path| backup::BackupFile::open(path, &identity))
             .transpose()?;
         let mut config = config.clone();
+        let backed_up = file.as_ref().and_then(|f| f.person());
         if config.name.is_empty() {
-            config.name = file
+            config.name = backed_up
                 .as_ref()
-                .and_then(|f| f.name())
-                .unwrap_or_else(|| Config::default().name);
+                .map_or_else(|| Config::default().name, |person| person.name.clone());
+        }
+        // What the profile said it goes on saying, as nobody took it back.
+        if let Some(person) = backed_up {
+            config.summary = config.summary.or(person.summary);
+            config.directory.list_me |= person.discoverable;
         }
         let key = NewKey {
             published: keys::certificate_date(
@@ -442,7 +447,7 @@ impl Node {
         };
         import_restored_media(&home, &store).await?;
         resign_own_objects(&signer, &db)?;
-        let profile = own_profile(&signer, &config.name, endpoint.id(), &db)?;
+        let profile = own_profile(&signer, &config, endpoint.id(), &db)?;
         let media_tools = media::tools_available(&config.media).await;
         let heic_tool = media::heic_tool_available(&config.media).await;
         if matches!(signer, Signer::Identity(_)) {
@@ -1000,14 +1005,24 @@ fn resign_own_objects(signer: &Signer, db: &Db) -> Result<()> {
 /// over (ADR 0009), and every follower is marked to be told. One signed
 /// with an earlier key is signed again, so it carries the current key's
 /// certificate, and followers are told of that too (ADR 0010).
-fn own_profile(signer: &Signer, name: &str, node: EndpointId, db: &Db) -> Result<SignedObject> {
+fn own_profile(
+    signer: &Signer,
+    config: &Config,
+    node: EndpointId,
+    db: &Db,
+) -> Result<SignedObject> {
     let me = signer.identity();
+    let summary = config.summary.as_deref().map(str::trim);
+    let summary = summary.filter(|s| !s.is_empty()).map(String::from);
+    let discoverable = config.directory.list_me;
     let previous = match db.profile(&me)?.map(|obj| (obj.verify(), obj)) {
         Some((Ok(Payload::Person(p)), obj)) => Some((p, obj)),
         _ => None,
     };
     if let Some((p, existing)) = &previous
-        && p.name == name
+        && p.name == config.name
+        && p.summary == summary
+        && p.discoverable == discoverable
         && p.nodes == [node]
         && existing.certificate() == signer.certificate()
     {
@@ -1024,8 +1039,9 @@ fn own_profile(signer: &Signer, name: &str, node: EndpointId, db: &Db) -> Result
     }
     let person = Person {
         actor: me,
-        name: name.to_string(),
-        summary: None,
+        name: config.name.clone(),
+        summary,
+        discoverable,
         nodes: vec![node],
         published: humantime::format_rfc3339_millis(at).to_string(),
     };

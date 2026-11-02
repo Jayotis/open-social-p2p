@@ -106,6 +106,7 @@ fn profile(identity: &SecretKey, nodes: Vec<iroh::EndpointId>, secs: i64) -> Pay
         actor: identity.public(),
         name: "Alice".into(),
         summary: None,
+        discoverable: false,
         nodes,
         published: at(secs),
     })
@@ -460,6 +461,7 @@ async fn news_of_a_revocation_travels_with_a_reshare() {
         actor: carol.public(),
         name: "Carol".into(),
         summary: None,
+        discoverable: false,
         nodes: vec![carol_node.endpoint().id()],
         published: at(-3600),
     });
@@ -982,6 +984,7 @@ async fn move_as(key: &CertifiedKey, to: &Node) -> SocialResponse {
         actor: key.identity(),
         name: "Alice".into(),
         summary: None,
+        discoverable: false,
         nodes: vec![node.endpoint().id()],
         published: at(60),
     });
