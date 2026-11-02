@@ -17,8 +17,8 @@ Each record captures one significant decision: the problem, the options consider
 | [0011](0011-measuring-peers.md) | Measuring peers | Accepted |
 | [0012](0012-sharing-prefetched-copies.md) | Sharing prefetched copies is asked at setup | Accepted |
 | [0013](0013-trusted-followers.md) | Trusted followers, asked for and allowed on the phone | Accepted |
-| [0014](0014-finding-people-and-private-messages.md) | Finding people and content, with messages between nodes over Tor | Accepted |
-| [0015](0015-nodes-meet-first.md) | Nodes meet first: machine names, and what they may say | Proposed |
+| [0014](0014-finding-people-and-private-messages.md) | Finding people and content, with messages between nodes over Tor | Accepted; how directories are used and step 4 changed by 0015 |
+| [0015](0015-nodes-meet-first.md) | Nodes meet first: machine names, and what they may say | Accepted |
 
 Proposals under review that may become ADRs: [peer reciprocity and recognition](../12-peer-reciprocity-and-recognition.md) (its first phase, measuring, is ADR 0011) and [hosting roles and the follower swarm](../13-hosting-roles-and-follower-swarm.md) (its first phase is accepted, and whether to share copies is asked at setup, ADR 0012). See the [critical review](../reviews/2026-10-21-review-of-docs-12-and-13.md) for what blocks them.
 
