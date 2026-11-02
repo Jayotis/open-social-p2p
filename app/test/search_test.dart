@@ -169,6 +169,72 @@ void main() {
     await tester.tap(find.byTooltip('Search'));
     await tester.pumpAndSettle();
     expect(app.asked, ['bread']);
+    // The keyboard goes, so it doesn't cover what was found.
+    final box = tester.widget<TextField>(find.byType(TextField));
+    expect(box.focusNode!.hasFocus, isFalse);
+  });
+
+  group('once a search is on the screen, the search button', () {
+    TextField box(WidgetTester tester) =>
+        tester.widget<TextField>(find.byType(TextField));
+
+    testWidgets('gets the box ready for another word', (tester) async {
+      await open(tester);
+      await searchFor(tester, 'bread');
+      await tester.pumpAndSettle();
+      expect(box(tester).focusNode!.hasFocus, isFalse);
+
+      await tester.tap(find.byTooltip('Search'));
+      await tester.pump();
+      // Not asked again: that would only show the same list.
+      expect(app.asked, ['bread']);
+      expect(box(tester).focusNode!.hasFocus, isTrue);
+      expect(box(tester).controller!.selection.textInside('bread'), 'bread');
+
+      await tester.enterText(find.byType(TextField), 'butter');
+      await tester.tap(find.byTooltip('Search'));
+      await tester.pumpAndSettle();
+      expect(app.asked, ['bread', 'butter']);
+    });
+
+    testWidgets('does the same with nothing typed', (tester) async {
+      await open(tester);
+      box(tester).focusNode!.unfocus();
+      await tester.pump();
+      await tester.tap(find.byTooltip('Search'));
+      await tester.pump();
+      expect(app.asked, isEmpty);
+      expect(box(tester).focusNode!.hasFocus, isTrue);
+    });
+
+    testWidgets('tries again after a search that failed', (tester) async {
+      app.answer = (_) async =>
+          throw AnyhowException("Couldn't reach your home node");
+      await open(tester);
+      await searchFor(tester, 'bread');
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byTooltip('Search'));
+      await tester.pumpAndSettle();
+      expect(app.asked, ['bread', 'bread']);
+    });
+
+    testWidgets('ignores an earlier search failing late', (tester) async {
+      final slow = Completer<Found>();
+      app.answer = (words) async => words == 'first'
+          ? await slow.future
+          : const Found(people: [], posts: []);
+      await open(tester);
+      await searchFor(tester, 'first');
+      await searchFor(tester, 'second');
+      await tester.pumpAndSettle();
+      slow.completeError(AnyhowException('too late'));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byTooltip('Search'));
+      await tester.pumpAndSettle();
+      expect(app.asked, ['first', 'second']);
+    });
   });
 
   testWidgets('opens from the feed', (tester) async {

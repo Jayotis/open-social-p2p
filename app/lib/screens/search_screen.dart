@@ -18,25 +18,53 @@ class SearchScreen extends StatefulWidget {
 
 class _SearchScreenState extends State<SearchScreen> {
   final _words = TextEditingController();
+  final _box = FocusNode();
 
   /// The latest search. FutureBuilder drops the answer to an earlier one.
   Future<Found>? _found;
 
+  /// What the latest search was for, unless it failed.
+  String? _searched;
+
   @override
   void dispose() {
     _words.dispose();
+    _box.dispose();
     super.dispose();
   }
 
   void _search() {
     final words = _words.text.trim();
     if (words.isEmpty) return;
+    final found = widget.node.app.search(words: words, limit: 50);
     // FutureBuilder listens from the next frame, and shows an error that came
     // before it, so that isn't an unhandled one.
-    final found = widget.node.app.search(words: words, limit: 50)..ignore();
+    found.then<void>(
+      (_) {},
+      onError: (Object _) {
+        if (identical(found, _found)) _searched = null;
+      },
+    );
     setState(() {
       _found = found;
+      _searched = words;
     });
+  }
+
+  /// Searches if there's something new to look for. Otherwise asking again
+  /// would only show the same list, so it gets the box ready for another word.
+  void _pressed() {
+    final words = _words.text.trim();
+    if (words.isNotEmpty && words != _searched) {
+      _box.unfocus();
+      _search();
+      return;
+    }
+    _words.selection = TextSelection(
+      baseOffset: 0,
+      extentOffset: _words.text.length,
+    );
+    _box.requestFocus();
   }
 
   @override
@@ -45,6 +73,7 @@ class _SearchScreenState extends State<SearchScreen> {
       appBar: AppBar(
         title: TextField(
           controller: _words,
+          focusNode: _box,
           autofocus: true,
           textInputAction: TextInputAction.search,
           decoration: const InputDecoration(
@@ -56,7 +85,7 @@ class _SearchScreenState extends State<SearchScreen> {
         actions: [
           IconButton(
             tooltip: 'Search',
-            onPressed: _search,
+            onPressed: _pressed,
             icon: const Icon(Icons.search),
           ),
         ],
