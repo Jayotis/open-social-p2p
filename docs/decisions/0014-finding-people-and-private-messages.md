@@ -168,7 +168,7 @@ M3's timers were set for direct connections. Raising them isn't the whole answer
 
 ## Building it
 
-In order, each step passing its gate before the next starts. Local search doesn't depend on the others and can be built alongside.
+In order, each step passing its gate before the next starts. Local search doesn't depend on the others and can be built alongside. Changed while building (2026-11-01): the invited alpha comes before more directories and lookups, as a few invited people need neither, and what they do with one directory should shape the rest.
 
 | Step | Work | Gate |
 | --- | --- | --- |
@@ -177,8 +177,8 @@ In order, each step passing its gate before the next starts. Local search doesn'
 | 3 | Messages, `WhoHosts`, `Hosting`, the swarm, trusted followers and peer records on the new endpoints; the waiting above | All their tests pass; B8 in `osp-sim` with the Tor-like delays meets its marks |
 | 3b | The node's own index and a search screen | Finds posts and profiles offline; revoked posts drop out; rebuilt after a restore |
 | 4 | One directory, the maintainer's | A node with no follows finds a stranger and follows them |
-| 5 | More directories, lookup by key and by domain | One directory off, one tampering, one returning stale results, a domain naming a new key: each handled |
-| 6 | The invited alpha | Below |
+| 5 | The invited alpha | Below |
+| 6 | More directories, lookup by key and by domain | One directory off, one tampering, one returning stale results, a domain naming a new key: each handled |
 
 ## Validation
 
