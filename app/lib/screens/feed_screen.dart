@@ -7,6 +7,7 @@ import '../widgets/node_banner.dart';
 import '../widgets/post_card.dart';
 import 'compose_screen.dart';
 import 'people_screen.dart';
+import 'search_screen.dart';
 import 'status_screen.dart';
 import 'trust_screen.dart';
 
@@ -31,6 +32,11 @@ class FeedScreen extends StatelessWidget {
       appBar: AppBar(
         title: const Text('Feed'),
         actions: [
+          IconButton(
+            tooltip: 'Search your node',
+            onPressed: () => _open(context, SearchScreen(node: node)),
+            icon: const Icon(Icons.search),
+          ),
           IconButton(
             tooltip: 'Home node status',
             onPressed: () => _open(context, StatusScreen(node: node)),

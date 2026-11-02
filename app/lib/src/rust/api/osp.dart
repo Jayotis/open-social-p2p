@@ -105,6 +105,10 @@ abstract class OspApp implements RustOpaqueInterface {
 
   SavedFeed? savedFeed();
 
+  /// Looks through the posts and profiles the node has received. Nothing
+  /// leaves the node.
+  Future<Found> search({required String words, required int limit});
+
   Future<NodeStatus> status();
 
   /// Asks the node to sync everyone it follows now. Returns how many new
@@ -155,6 +159,55 @@ class Followed {
           identity == other.identity &&
           name == other.name &&
           connecting == other.connecting;
+}
+
+/// What a search found on the node, the best match first in each list.
+class Found {
+  final List<FoundPerson> people;
+  final List<Post> posts;
+
+  const Found({required this.people, required this.posts});
+
+  @override
+  int get hashCode => people.hashCode ^ posts.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is Found &&
+          runtimeType == other.runtimeType &&
+          people == other.people &&
+          posts == other.posts;
+}
+
+class FoundPerson {
+  final String identity;
+  final String name;
+  final String? summary;
+
+  /// Whether the node follows them.
+  final bool followed;
+
+  const FoundPerson({
+    required this.identity,
+    required this.name,
+    this.summary,
+    required this.followed,
+  });
+
+  @override
+  int get hashCode =>
+      identity.hashCode ^ name.hashCode ^ summary.hashCode ^ followed.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is FoundPerson &&
+          runtimeType == other.runtimeType &&
+          identity == other.identity &&
+          name == other.name &&
+          summary == other.summary &&
+          followed == other.followed;
 }
 
 class Media {
