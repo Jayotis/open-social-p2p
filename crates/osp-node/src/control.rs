@@ -183,6 +183,14 @@ impl Core {
                     round_trip_ms: round_trip.as_millis() as u64,
                 }
             }
+            ClientRequest::MachineName => {
+                ensure!(local, "the machine name is only shown on the node itself");
+                self.machine_name()?
+            }
+            ClientRequest::MachineHello { machine } => {
+                ensure!(local, "machines are only greeted from the node itself");
+                self.machine_hello(machine).await?
+            }
             ClientRequest::DirectContacts => ClientResponse::DirectContacts {
                 nodes: self.db.direct_contacts()?,
             },
@@ -314,6 +322,7 @@ impl Core {
             trust_requests: self.db.trust_request_count(now_ms())?,
             tor: self.tor.as_ref().map(|tor| tor.status()),
             endpoints: self.endpoints.as_ref().map(|own| Box::new(own.status())),
+            machine: self.machine.is_some(),
         })
     }
 

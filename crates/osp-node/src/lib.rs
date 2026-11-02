@@ -14,6 +14,7 @@ mod endpoints;
 mod health;
 mod home;
 mod keys;
+mod machine;
 pub mod media;
 mod network;
 mod node;

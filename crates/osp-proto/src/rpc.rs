@@ -180,6 +180,14 @@ pub enum ClientRequest {
     RemoveDirect {
         node: EndpointId,
     },
+    /// This node's machine name (local socket only, ADR 0015). It isn't in
+    /// `Status`, which phones get and people paste, as that holds the public
+    /// ID too.
+    MachineName,
+    /// Greets another machine by its ID (local socket only).
+    MachineHello {
+        machine: EndpointId,
+    },
 }
 
 fn default_feed_limit() -> u32 {
@@ -274,6 +282,19 @@ pub enum ClientResponse {
     DirectContacts {
         nodes: Vec<EndpointId>,
     },
+    MachineName {
+        machine: EndpointId,
+        /// Made from its ID, to tell machines apart by eye.
+        words: String,
+    },
+    /// What a machine said when greeted, and how long connecting and asking
+    /// took.
+    MachineGreeted {
+        words: String,
+        offers: Vec<String>,
+        connect_ms: u64,
+        round_trip_ms: u64,
+    },
     Error {
         message: String,
     },
@@ -336,6 +357,9 @@ pub struct StatusInfo {
     /// The node's media and direct endpoints, when they're on (ADR 0014).
     #[serde(default)]
     pub endpoints: Option<Box<EndpointsStatus>>,
+    /// Whether the node has a machine name (ADR 0015). Never which.
+    #[serde(default)]
+    pub machine: bool,
 }
 
 /// The node's media and direct endpoints.
@@ -357,8 +381,8 @@ pub struct TorStatus {
     pub ready: bool,
     /// How many times Tor has stopped since the node started.
     pub restarts: u32,
-    /// Whether Tor has published the node's onion service since it last
-    /// started. Until then, other nodes can't reach this one through it.
+    /// Whether Tor has published all the node's onion services since it last
+    /// started. Until then, other nodes may not reach this one through it.
     pub published: bool,
     /// Why Tor refused the onion service, if it did.
     pub onion_error: Option<String>,

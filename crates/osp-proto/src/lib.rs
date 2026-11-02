@@ -7,6 +7,7 @@
 
 pub mod binding;
 pub mod framing;
+pub mod machine;
 pub mod object;
 pub mod rpc;
 pub mod social;
@@ -29,6 +30,10 @@ pub const SOCIAL_ALPN: &[u8] = b"osp/social/1";
 
 /// ALPN a paired device uses to talk to its home node.
 pub const CLIENT_ALPN: &[u8] = b"osp/client/0";
+
+/// ALPN of the protocol between machine names (ADR 0015). Nothing else is
+/// served on a machine endpoint, and this is served on no other.
+pub const MACHINE_ALPN: &[u8] = b"osp/machine/1";
 
 /// The current time as an RFC 3339 timestamp, the format used for `published`.
 pub fn now_rfc3339() -> String {

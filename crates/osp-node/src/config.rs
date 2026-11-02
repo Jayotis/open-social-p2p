@@ -18,6 +18,7 @@ pub struct Config {
     pub swarm: SwarmConfig,
     pub tor: TorConfig,
     pub endpoints: EndpointsConfig,
+    pub machine: MachineConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -128,6 +129,23 @@ impl Default for TorConfig {
     }
 }
 
+/// The node's machine name (ADR 0015), being built: a second identity on Tor,
+/// tied to no person, under which the node gets to know other nodes in the
+/// background. It needs `[tor]`. It isn't anonymous: it shows that a machine
+/// runs this software and when it's on, and someone reaching both it and the
+/// node's public ID could match them over time.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MachineConfig {
+    pub enabled: bool,
+}
+
+impl Default for MachineConfig {
+    fn default() -> Self {
+        Self { enabled: true }
+    }
+}
+
 /// The node's media and direct endpoints (ADR 0014), being built. With it on,
 /// media and phones move onto them, and the node's main endpoint carries only
 /// messages between nodes. Phones paired before must pair again. Its address
@@ -188,6 +206,7 @@ impl Default for Config {
             swarm: SwarmConfig::default(),
             tor: TorConfig::default(),
             endpoints: EndpointsConfig::default(),
+            machine: MachineConfig::default(),
         }
     }
 }
@@ -260,6 +279,7 @@ impl Config {
             swarm: SwarmConfig::default(),
             tor: TorConfig::default(),
             endpoints: EndpointsConfig::default(),
+            machine: MachineConfig::default(),
         }
     }
 

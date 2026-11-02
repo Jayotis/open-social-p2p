@@ -43,6 +43,7 @@ use crate::{
     endpoints::{DirectGate, OwnEndpoints, Pairings, PeerEndpoints},
     home::Home,
     keys::{self, NewKey, Signer},
+    machine::MachineSide,
     media,
     network::{self, ConnTracker},
     relays::{self, Checked, RelayPolicy},
@@ -91,6 +92,10 @@ pub struct SimSettings {
     /// Social requests are delayed as if they went over Tor.
     #[cfg(feature = "sim")]
     pub tor_delay: Option<crate::simnet::TorDelay>,
+    /// Give the node a machine name on the simulated network, which has no
+    /// Tor. Off by default, as a run of hundreds of nodes needn't carry them.
+    #[cfg(feature = "sim")]
+    pub machine_names: bool,
 }
 
 impl Default for SimSettings {
@@ -108,6 +113,8 @@ impl Default for SimSettings {
             network: None,
             #[cfg(feature = "sim")]
             tor_delay: None,
+            #[cfg(feature = "sim")]
+            machine_names: false,
         }
     }
 }
@@ -127,7 +134,7 @@ impl ProtocolHandler for SharedBlobs {
 pub struct Node {
     core: Arc<Core>,
     router: Router,
-    /// The media and direct endpoints', when they're on.
+    /// The media and direct endpoints' and the machine name's, when they're on.
     endpoint_routers: Vec<Router>,
     tasks: Vec<JoinHandle<()>>,
     serving_socket: bool,
@@ -203,6 +210,8 @@ pub(crate) struct Core {
     pub tor: Option<TorSide>,
     /// The node's media and direct endpoints, when they're on (ADR 0014).
     pub endpoints: Option<OwnEndpoints>,
+    /// The node's machine name, when it's on (ADR 0015).
+    pub machine: Option<MachineSide>,
     pub sim: SimSettings,
     /// With `SimSettings::tor_delay`: when the Tor-like circuits to each
     /// node are, or will be, ready.
@@ -326,6 +335,23 @@ impl Node {
         keys::replace(&home, &backup::identity_from_words(&words()?)?)
     }
 
+    /// Forgets the node's machine name. It makes a new one when it next starts,
+    /// and starts again among machines as a stranger (ADR 0015). The node must
+    /// not be running.
+    pub fn forget_machine_name(home: &Path) -> Result<()> {
+        let home = Home::new(home);
+        if !home.is_initialized() {
+            bail!("no node in {}; run `osp init` first", home.root().display());
+        }
+        let _lock = lock_home(&home)?;
+        match std::fs::remove_file(home.machine_key()) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+                Err(e).with_context(|| format!("removing {}", home.machine_key().display()))
+            }
+            _ => Ok(()),
+        }
+    }
+
     /// Starts the node stored in `home`.
     pub async fn spawn(home: &Path) -> Result<Self> {
         Self::start(home, SimSettings::default()).await
@@ -364,6 +390,7 @@ impl Node {
             true => Some(TorSide::start(&home, &config.tor, node_key.clone(), &tracker).await?),
             false => None,
         };
+        let machine = MachineSide::start(&home, &config, tor.as_ref(), &sim).await?;
         let pairings = Pairings::default();
         let endpoints = match config.endpoints.enabled {
             true => {
@@ -462,6 +489,7 @@ impl Node {
             transcode_lock: tokio::sync::Mutex::new(()),
             tor,
             endpoints,
+            machine,
             sim,
             #[cfg(feature = "sim")]
             tor_ready: Mutex::new(HashMap::new()),
@@ -490,6 +518,14 @@ impl Node {
                     .incoming_filter(Arc::new(move |incoming| gate.check_first_packet(incoming)))
                     .accept(iroh_blobs::ALPN, blobs.clone())
                     .accept(osp_proto::CLIENT_ALPN, client.clone())
+                    .spawn(),
+            );
+        }
+        // A machine name answers its own protocol and nothing else (ADR 0015).
+        if let Some(machine) = &core.machine {
+            endpoint_routers.push(
+                Router::builder(machine.endpoint.clone())
+                    .accept(osp_proto::MACHINE_ALPN, machine.protocol())
                     .spawn(),
             );
         }
@@ -580,7 +616,13 @@ impl Node {
             ids.extend(own.media.as_ref().map(|media| media.endpoint.id()));
             ids.push(own.direct.endpoint.id());
         }
+        ids.extend(self.machine_id());
         ids
+    }
+
+    /// The node's machine name, if it has one. For tests and diagnostics.
+    pub fn machine_id(&self) -> Option<EndpointId> {
+        self.core.machine.as_ref().map(|machine| machine.id())
     }
 
     /// Asks another node for its media and direct endpoints, offering this

@@ -60,6 +60,12 @@ impl Home {
         self.root.join("direct.key")
     }
 
+    /// The key of the node's machine name (ADR 0015). It's derived from
+    /// nothing else, and isn't in backups.
+    pub fn machine_key(&self) -> PathBuf {
+        self.root.join("machine.key")
+    }
+
     pub fn db(&self) -> PathBuf {
         self.root.join("osp.db")
     }

@@ -357,7 +357,9 @@ impl Supervisor {
             for service in self.services.values_mut() {
                 if !service.published && onion::service_id(&service.key.public()) == address {
                     service.published = true;
-                    info!(onion = address, "Tor published the onion service");
+                    // Not which: a node's machine name mustn't be logged
+                    // beside its public ID (ADR 0015).
+                    info!("Tor published an onion service");
                 }
             }
         }
