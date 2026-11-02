@@ -1,6 +1,6 @@
 # ADR 0015: Nodes meet first: machine names, and what they may say
 
-**Status:** Accepted (2026-11-01). Changes how [ADR 0014](0014-finding-people-and-private-messages.md)'s directories are used, and comes before its invited alpha. [ADR 0011](0011-measuring-peers.md)'s rule that a node's record of its peers stays private doesn't change.
+**Status:** Accepted (2026-11-01). Changes how [ADR 0014](0014-finding-people-and-private-messages.md)'s directories are used, and comes before its invited alpha. [ADR 0011](0011-measuring-peers.md)'s rule that a node's record of its peers stays private doesn't change. Step 1 built (2026-11-01): a node with Tor on has a machine name that can greet another when asked, and does nothing in the background yet ([how to check it](../testing/tor.md#the-machine-name)). Its gate was met: over real Tor, two machines greeted each other, and again after one's Tor was killed, within 20 s to about 4 minutes, as [a node that has just published can take that long](../testing/tor.md#a-first-contact-can-take-minutes); the machine endpoint answers nothing else, and nothing the node says or logs names it.
 
 ## Context
 
@@ -38,7 +38,7 @@ Questions to settle:
 
 - **Every node on Tor has a second identity on Tor: its machine name.** It's a fresh random key, `machine.key`, derived from nothing else. No binding ties it to the public ID, and nothing sent under the public ID mentions it.
 - **It serves nothing else.** It has its own endpoint, its own onion service on the node's Tor, and its own protocol, `osp/machine/1`. The machine endpoint answers no other protocol, and no other endpoint answers this one, so a mistake in one can't answer for the other.
-- **It's shown as words made from the key,** never a name the owner picks, which could give them away.
+- **It's shown as words made from the key,** never a name the owner picks, which could give them away. Only `osp machine show`, on the node itself, shows it. `osp status` says only that it's on, as phones get that and people paste it, and it holds the public ID too. It isn't logged, for the same reason.
 - **It isn't in the backup.** A restored node starts again among machines as a stranger, and the owner can replace the key at any time, losing its history.
 - **On by default on a node with Tor,** said plainly at `osp init`, and off with `[machine] enabled = false`. [ADR 0012](0012-sharing-prefetched-copies.md) asks at setup because sharing copies reveals whom someone follows. This reveals no person, but it does have a cost; see "Consequences".
 

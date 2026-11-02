@@ -35,6 +35,35 @@ osp tor ping NODE_ID
 
 The first time, it says how long connecting took: usually 10 to 25 seconds, but [longer at a node that has just started](#a-first-contact-can-take-minutes). After that, it reuses the connection, as the node does, and a request takes about a second.
 
+## The machine name
+
+A node with Tor on also has a machine name ([ADR 0015](../decisions/0015-nodes-meet-first.md)): a second identity on Tor, tied to no person, under which it will get to know other nodes. So far it can only greet another machine when asked. To turn it off:
+
+```toml
+[machine]
+enabled = false
+```
+
+`osp status` says only `Machine: on`, and doesn't name it, as phones get that and people paste it, and it holds the node's public ID too. Keep the two apart when asking for help.
+
+```sh
+osp machine show            # its name: three words, and its ID
+osp machine hello MACHINE   # greet another machine, by its ID
+osp machine new             # with the node stopped: forget it, and make a new one at the next start
+```
+
+A greeting says how long connecting and asking took, and then closes the connection. The first one takes as long as any first contact over Tor, and so does one to a machine whose Tor has just restarted, which [can take minutes](#a-first-contact-can-take-minutes).
+
+To check it's kept apart, with `PUBLIC` another node's ID and `MACHINE` that node's machine ID:
+
+```sh
+osp machine hello PUBLIC    # refused: a public ID doesn't answer as a machine
+osp tor ping MACHINE        # refused: a machine name answers nothing else
+journalctl --user -u osp | grep "$(osp machine show | tail -1 | cut -c1-10)"   # expect nothing
+```
+
+It isn't anonymous. Both IDs share one Tor and come and go together, so someone reaching both can match them over time.
+
 ## Check it recovers
 
 With a ping every few seconds from one node to the other, stop either node's Tor, as a crash would. Find it by its settings file, so the system's Tor, if it runs, is left alone:
