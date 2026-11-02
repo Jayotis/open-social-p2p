@@ -212,6 +212,27 @@ const MIGRATIONS: &[&str] = &[
         key  TEXT NOT NULL UNIQUE,
         item TEXT NOT NULL
     );",
+    // 15: what this node took from directories (ADR 0015). The profiles and
+    // posts themselves are in `profiles` and `objects`, as those of anyone it
+    // heard of through a reshare. These say which are only there because of a
+    // directory, so they stay capped and go first: who was found, through which
+    // directory, when, and how many bytes it came to; which posts; and how far
+    // this node has read each directory.
+    "CREATE TABLE found_people (
+        actor     TEXT PRIMARY KEY,
+        directory TEXT NOT NULL,
+        read_ms   INTEGER NOT NULL,
+        bytes     INTEGER NOT NULL
+    );
+    CREATE TABLE found_posts (
+        id    TEXT PRIMARY KEY,
+        actor TEXT NOT NULL
+    );
+    CREATE INDEX found_posts_by_actor ON found_posts(actor);
+    CREATE TABLE directories_read (
+        directory TEXT PRIMARY KEY,
+        cursor    INTEGER NOT NULL
+    );",
 ];
 
 /// The search index (ADR 0014): a number for each post, by its object ID, and
@@ -487,35 +508,18 @@ impl Db {
         received: i64,
         held_until: Option<i64>,
     ) -> Result<bool> {
-        // Clamp author-claimed time so a future-dated post can't pin itself to the top.
-        let published = osp_proto::parse_rfc3339_ms(payload.published())
-            .unwrap_or(received)
-            .min(received);
-        let id = obj.id().to_string();
         let conn = self.conn();
         let tx = conn.unchecked_transaction()?;
-        let n = tx.execute(
-            "INSERT OR IGNORE INTO objects
-                 (id, actor, kind, published_ms, received_ms, signed, feed_ms)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            params![
-                id,
-                payload.actor().to_string(),
-                payload.kind(),
-                published,
-                received,
-                serde_json::to_string(obj)?,
-                held_until.unwrap_or(published)
-            ],
-        )?;
-        if n > 0
-            && let Payload::Note(note) = payload
-        {
+        let is_new = insert_object(&tx, obj, payload, received, held_until)?;
+        if let (true, Payload::Note(note)) = (is_new, payload) {
             declare_sizes(&tx, note)?;
-            index_for_search(&tx, &id, &note.content)?;
+        }
+        // One a directory brought now has another reason to be here.
+        if !is_new {
+            found_post_is_kept(&tx, &obj.id().to_string())?;
         }
         tx.commit()?;
-        Ok(n > 0)
+        Ok(is_new)
     }
 
     /// How many objects by `actor` arrived at or after `since_ms`.
@@ -989,6 +993,7 @@ impl Db {
         }
         for (id, received) in &dropped {
             tx.execute("DELETE FROM objects WHERE id = ?1", params![id])?;
+            tx.execute("DELETE FROM found_posts WHERE id = ?1", params![id])?;
             remove_from_search(&tx, id)?;
             if refetch {
                 tx.execute(
@@ -1050,26 +1055,9 @@ impl Db {
     /// profile. Every sync brings the profile again, usually unchanged, and
     /// then nothing is written.
     pub fn upsert_profile(&self, person: &Person, obj: &SignedObject) -> Result<()> {
-        let actor = person.actor.to_string();
-        let signed = serde_json::to_string(obj)?;
         let conn = self.conn();
-        let stored: Option<String> = conn
-            .query_row(
-                "SELECT signed FROM profiles WHERE actor = ?1",
-                params![actor],
-                |row| row.get(0),
-            )
-            .optional()?;
-        if stored.as_ref() == Some(&signed) {
-            return Ok(());
-        }
         let tx = conn.unchecked_transaction()?;
-        tx.execute(
-            "INSERT INTO profiles (actor, name, signed) VALUES (?1, ?2, ?3)
-             ON CONFLICT(actor) DO UPDATE SET name = excluded.name, signed = excluded.signed",
-            params![actor, person.name, signed],
-        )?;
-        index_for_search(&tx, &actor, &profile_text(person))?;
+        upsert_profile(&tx, person, obj)?;
         tx.commit()?;
         Ok(())
     }
@@ -1286,7 +1274,7 @@ impl Db {
             rows.collect::<rusqlite::Result<_>>()?
         };
         for machine in &oldest {
-            forget_machine(&tx, &machine.parse()?)?;
+            forget_machine(&tx, machine)?;
         }
         tx.commit()?;
         Ok(())
@@ -1303,7 +1291,7 @@ impl Db {
             rows.collect::<rusqlite::Result<_>>()?
         };
         for machine in &silent {
-            forget_machine(&tx, &machine.parse()?)?;
+            forget_machine(&tx, machine)?;
         }
         tx.commit()?;
         Ok(())
@@ -1349,6 +1337,216 @@ impl Db {
             });
         }
         Ok((entries, latest.unwrap_or(0) as u64))
+    }
+
+    // ---- what came from directories (ADR 0015) ----
+
+    pub fn is_following(&self, actor: &PublicKey) -> Result<bool> {
+        Ok(self.conn().query_row(
+            "SELECT EXISTS (SELECT 1 FROM follows WHERE actor = ?1)",
+            params![actor.to_string()],
+            |row| row.get(0),
+        )?)
+    }
+
+    /// How far this node has read a directory's lists.
+    pub fn directory_cursor(&self, directory: &EndpointId) -> Result<u64> {
+        let cursor: Option<i64> = self
+            .conn()
+            .query_row(
+                "SELECT cursor FROM directories_read WHERE directory = ?1",
+                params![directory.to_string()],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(cursor.unwrap_or(0) as u64)
+    }
+
+    pub fn set_directory_cursor(&self, directory: &EndpointId, cursor: u64) -> Result<()> {
+        self.conn().execute(
+            "INSERT OR REPLACE INTO directories_read (directory, cursor) VALUES (?1, ?2)",
+            params![directory.to_string(), cursor as i64],
+        )?;
+        Ok(())
+    }
+
+    /// Keeps someone found through `directory`: `posts`, in place of those it
+    /// brought before, and `profile` unless the one stored is newer. The caller
+    /// has checked them. A post that's here for another reason stays as it is.
+    pub fn keep_found(
+        &self,
+        directory: &EndpointId,
+        person: &Person,
+        profile: &SignedObject,
+        posts: &[(SignedObject, Payload)],
+        now: i64,
+    ) -> Result<()> {
+        let actor = person.actor.to_string();
+        let conn = self.conn();
+        let tx = conn.unchecked_transaction()?;
+        let earlier: Vec<String> = {
+            let mut stmt = tx.prepare("SELECT id FROM found_posts WHERE actor = ?1")?;
+            let rows = stmt.query_map(params![actor], |row| row.get(0))?;
+            rows.collect::<rusqlite::Result<_>>()?
+        };
+        let ids: Vec<String> = posts.iter().map(|(obj, _)| obj.id().to_string()).collect();
+        for id in earlier.iter().filter(|id| !ids.contains(id)) {
+            drop_found_post(&tx, id)?;
+        }
+        let mut bytes = serde_json::to_vec(profile)?.len();
+        for (obj, payload) in posts {
+            bytes += serde_json::to_vec(obj)?.len();
+            if insert_object(&tx, obj, payload, now, None)? {
+                tx.execute(
+                    "INSERT INTO found_posts (id, actor) VALUES (?1, ?2)",
+                    params![obj.id().to_string(), actor],
+                )?;
+            }
+        }
+        if profile_is_newer(&tx, person)? {
+            upsert_profile(&tx, person, profile)?;
+        }
+        tx.execute(
+            "INSERT OR REPLACE INTO found_people (actor, directory, read_ms, bytes)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![actor, directory.to_string(), now, bytes as i64],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Drops what `directory` brought of someone, if that's where they came
+    /// from. A directory can't take away what another brought.
+    pub fn forget_found(&self, directory: &EndpointId, actor: &PublicKey) -> Result<()> {
+        let conn = self.conn();
+        let tx = conn.unchecked_transaction()?;
+        let from_it: bool = tx.query_row(
+            "SELECT EXISTS (SELECT 1 FROM found_people WHERE actor = ?1 AND directory = ?2)",
+            params![actor.to_string(), directory.to_string()],
+            |row| row.get(0),
+        )?;
+        if from_it {
+            drop_found_person(&tx, actor)?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Drops all that `directory` brought, to read it again from the start.
+    pub fn forget_directory(&self, directory: &EndpointId) -> Result<()> {
+        let conn = self.conn();
+        let tx = conn.unchecked_transaction()?;
+        let people: Vec<String> = {
+            let mut stmt = tx.prepare("SELECT actor FROM found_people WHERE directory = ?1")?;
+            let rows = stmt.query_map(params![directory.to_string()], |row| row.get(0))?;
+            rows.collect::<rusqlite::Result<_>>()?
+        };
+        for actor in &people {
+            drop_found_person(&tx, &actor.parse()?)?;
+        }
+        tx.execute(
+            "DELETE FROM directories_read WHERE directory = ?1",
+            params![directory.to_string()],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Someone found is followed now: what came of them stays, as any follow's
+    /// posts do, and no longer counts as found.
+    pub fn found_person_is_followed(&self, actor: &PublicKey) -> Result<()> {
+        let conn = self.conn();
+        let tx = conn.unchecked_transaction()?;
+        let ids: Vec<String> = {
+            let mut stmt = tx.prepare("SELECT id FROM found_posts WHERE actor = ?1")?;
+            let rows = stmt.query_map(params![actor.to_string()], |row| row.get(0))?;
+            rows.collect::<rusqlite::Result<_>>()?
+        };
+        for id in &ids {
+            found_post_is_kept(&tx, id)?;
+        }
+        tx.execute(
+            "DELETE FROM found_people WHERE actor = ?1",
+            params![actor.to_string()],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// The owner keeps a post that came from a directory, as by resharing it.
+    pub fn found_post_stays(&self, id: &ObjectId) -> Result<()> {
+        let conn = self.conn();
+        let tx = conn.unchecked_transaction()?;
+        found_post_is_kept(&tx, &id.to_string())?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Drops those read longest ago until what's left is within the limits.
+    /// Returns how many went.
+    pub fn trim_found(&self, max_people: usize, max_bytes: u64) -> Result<usize> {
+        let conn = self.conn();
+        let tx = conn.unchecked_transaction()?;
+        let (mut people, mut bytes): (i64, i64) = tx.query_row(
+            "SELECT COUNT(*), COALESCE(SUM(bytes), 0) FROM found_people",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        let mut dropped = 0;
+        if people as usize > max_people || bytes as u64 > max_bytes {
+            let oldest: Vec<(String, i64)> = {
+                let mut stmt =
+                    tx.prepare("SELECT actor, bytes FROM found_people ORDER BY read_ms")?;
+                let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
+                rows.collect::<rusqlite::Result<_>>()?
+            };
+            for (actor, size) in oldest {
+                if people as usize <= max_people && bytes as u64 <= max_bytes {
+                    break;
+                }
+                drop_found_person(&tx, &actor.parse()?)?;
+                people -= 1;
+                bytes -= size;
+                dropped += 1;
+            }
+        }
+        tx.commit()?;
+        Ok(dropped)
+    }
+
+    /// The directory someone was found through, if they were.
+    pub fn found_through(&self, actor: &PublicKey) -> Result<Option<EndpointId>> {
+        let directory: Option<String> = self
+            .conn()
+            .query_row(
+                "SELECT directory FROM found_people WHERE actor = ?1",
+                params![actor.to_string()],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(directory.map(|directory| directory.parse()).transpose()?)
+    }
+
+    /// The directory a post came from, if it's here only because of one.
+    pub fn post_found_through(&self, id: &ObjectId) -> Result<Option<EndpointId>> {
+        let directory: Option<String> = self
+            .conn()
+            .query_row(
+                "SELECT directory FROM found_posts
+                 JOIN found_people ON found_people.actor = found_posts.actor
+                 WHERE found_posts.id = ?1",
+                params![id.to_string()],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(directory.map(|directory| directory.parse()).transpose()?)
+    }
+
+    pub fn found_count(&self) -> Result<u64> {
+        let n: i64 = self
+            .conn()
+            .query_row("SELECT COUNT(*) FROM found_people", [], |row| row.get(0))?;
+        Ok(n as u64)
     }
 
     // ---- search (ADR 0014) ----
@@ -2333,6 +2531,140 @@ fn trust_rows(conn: &Connection, sql: &str) -> Result<Vec<TrustRow>> {
     .collect()
 }
 
+/// Whether `person` is dated after the profile stored for them, or none is.
+fn profile_is_newer(conn: &Connection, person: &Person) -> Result<bool> {
+    let stored: Option<String> = conn
+        .query_row(
+            "SELECT signed FROM profiles WHERE actor = ?1",
+            params![person.actor.to_string()],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let Some(stored) = stored else {
+        return Ok(true);
+    };
+    let stored: SignedObject = serde_json::from_str(&stored).context("corrupt stored profile")?;
+    Ok(match stored.verify() {
+        Ok(known) => {
+            osp_proto::parse_rfc3339_ms(&person.published)
+                > osp_proto::parse_rfc3339_ms(known.published())
+        }
+        Err(_) => true,
+    })
+}
+
+fn upsert_profile(conn: &Connection, person: &Person, obj: &SignedObject) -> Result<()> {
+    let actor = person.actor.to_string();
+    let signed = serde_json::to_string(obj)?;
+    let stored: Option<String> = conn
+        .query_row(
+            "SELECT signed FROM profiles WHERE actor = ?1",
+            params![actor],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if stored.as_ref() == Some(&signed) {
+        return Ok(());
+    }
+    conn.execute(
+        "INSERT INTO profiles (actor, name, signed) VALUES (?1, ?2, ?3)
+         ON CONFLICT(actor) DO UPDATE SET name = excluded.name, signed = excluded.signed",
+        params![actor, person.name, signed],
+    )?;
+    index_for_search(conn, &actor, &profile_text(person))
+}
+
+/// Stores a signed object, and its words for a search. Returns false if it was
+/// already here.
+fn insert_object(
+    conn: &Connection,
+    obj: &SignedObject,
+    payload: &Payload,
+    received: i64,
+    held_until: Option<i64>,
+) -> Result<bool> {
+    // Clamp author-claimed time so a future-dated post can't pin itself to the top.
+    let published = osp_proto::parse_rfc3339_ms(payload.published())
+        .unwrap_or(received)
+        .min(received);
+    let id = obj.id().to_string();
+    let n = conn.execute(
+        "INSERT OR IGNORE INTO objects
+             (id, actor, kind, published_ms, received_ms, signed, feed_ms)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        params![
+            id,
+            payload.actor().to_string(),
+            payload.kind(),
+            published,
+            received,
+            serde_json::to_string(obj)?,
+            held_until.unwrap_or(published)
+        ],
+    )?;
+    if n > 0
+        && let Payload::Note(note) = payload
+    {
+        index_for_search(conn, &id, &note.content)?;
+    }
+    Ok(n > 0)
+}
+
+/// A post that came from a directory is kept for another reason now, so it's
+/// no longer capped or dropped with those. Only now does this node say what
+/// media it includes: with no node to fetch it from, there's no use saying so
+/// before, and these come and go.
+fn found_post_is_kept(conn: &Connection, id: &str) -> Result<()> {
+    let n = conn.execute("DELETE FROM found_posts WHERE id = ?1", params![id])?;
+    if n > 0 {
+        let signed: String = conn.query_row(
+            "SELECT signed FROM objects WHERE id = ?1",
+            params![id],
+            |row| row.get(0),
+        )?;
+        let obj: SignedObject = serde_json::from_str(&signed).context("corrupt stored object")?;
+        if let Payload::Note(note) = obj.verify()? {
+            declare_sizes(conn, &note)?;
+        }
+    }
+    Ok(())
+}
+
+/// Removes a post that came from a directory and has no other reason to be here.
+fn drop_found_post(conn: &Connection, id: &str) -> Result<()> {
+    conn.execute("DELETE FROM found_posts WHERE id = ?1", params![id])?;
+    conn.execute("DELETE FROM objects WHERE id = ?1", params![id])?;
+    remove_from_search(conn, id)
+}
+
+/// Removes everything a directory brought of someone. Their profile goes unless
+/// something else here needs it: they're followed, or a reshare holds their post.
+fn drop_found_person(conn: &Connection, actor: &PublicKey) -> Result<()> {
+    let actor_text = actor.to_string();
+    let ids: Vec<String> = {
+        let mut stmt = conn.prepare("SELECT id FROM found_posts WHERE actor = ?1")?;
+        let rows = stmt.query_map(params![actor_text], |row| row.get(0))?;
+        rows.collect::<rusqlite::Result<_>>()?
+    };
+    for id in &ids {
+        drop_found_post(conn, id)?;
+    }
+    conn.execute(
+        "DELETE FROM found_people WHERE actor = ?1",
+        params![actor_text],
+    )?;
+    let n = conn.execute(
+        "DELETE FROM profiles WHERE actor = ?1
+             AND NOT EXISTS (SELECT 1 FROM follows WHERE actor = ?1)
+             AND NOT EXISTS (SELECT 1 FROM objects WHERE actor = ?1)",
+        params![actor_text],
+    )?;
+    if n > 0 {
+        remove_from_search(conn, &actor_text)?;
+    }
+    forget_key_if_unused(conn, actor)
+}
+
 fn person_listing_key(actor: &PublicKey) -> String {
     format!("person:{actor}")
 }
@@ -2377,14 +2709,11 @@ fn drop_listed(conn: &Connection, actor: &PublicKey) -> Result<bool> {
     Ok(n > 0)
 }
 
-fn forget_machine(conn: &Connection, machine: &EndpointId) -> Result<()> {
-    conn.execute(
-        "DELETE FROM map WHERE machine = ?1",
-        params![machine.to_string()],
-    )?;
+fn forget_machine(conn: &Connection, machine: &str) -> Result<()> {
+    conn.execute("DELETE FROM map WHERE machine = ?1", params![machine])?;
     conn.execute(
         "DELETE FROM listing WHERE key = ?1",
-        params![machine_listing_key(machine)],
+        params![format!("machine:{machine}")],
     )?;
     Ok(())
 }
@@ -2395,6 +2724,7 @@ fn forget_key_if_unused(conn: &Connection, actor: &PublicKey) -> Result<()> {
     conn.execute(
         "DELETE FROM identity_keys WHERE actor = ?1
              AND NOT EXISTS (SELECT 1 FROM listed WHERE actor = ?1)
+             AND NOT EXISTS (SELECT 1 FROM found_people WHERE actor = ?1)
              AND NOT EXISTS (SELECT 1 FROM follows WHERE actor = ?1)
              AND NOT EXISTS (SELECT 1 FROM profiles WHERE actor = ?1)
              AND NOT EXISTS (SELECT 1 FROM objects WHERE actor = ?1)",
@@ -2578,7 +2908,7 @@ fn format_ms(ms: i64) -> String {
 #[cfg(test)]
 mod tests {
     use iroh::SecretKey;
-    use osp_proto::EndpointBinding;
+    use osp_proto::{Attachment, EndpointBinding};
 
     use super::*;
 
@@ -3576,6 +3906,191 @@ mod tests {
         db.put_machine(&newer, &record, 1_000_000).unwrap();
         assert!(map_has(&db, &newer));
         assert_eq!(db.directory_counts().unwrap().1 as i64, MAX_MAP);
+    }
+
+    /// Someone found through a directory, with one post, as of `now`.
+    fn found(db: &Db, directory: &EndpointId, byte: u8, text: &str, now: i64) -> PublicKey {
+        let key = SecretKey::from_bytes(&[byte; 32]);
+        let (person, profile) = signed_person(&key, "Someone", None);
+        let (note, payload) = signed_note(&key, text, EARLIER);
+        db.keep_found(directory, &person, &profile, &[(note, payload)], now)
+            .unwrap();
+        key.public()
+    }
+
+    #[test]
+    fn those_found_are_trimmed_oldest_first_and_their_keys_go_with_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(&dir.path().join("t.db")).unwrap();
+        let directory = SecretKey::from_bytes(&[9; 32]).public();
+        let oldest = found(&db, &directory, 1, "maple first", 100);
+        let middle = found(&db, &directory, 2, "maple second", 200);
+        let newest = found(&db, &directory, 3, "maple third", 300);
+        db.conn()
+            .execute(
+                "INSERT INTO identity_keys (actor, cert, cert_ms) VALUES (?1, '', 0)",
+                params![oldest.to_string()],
+            )
+            .unwrap();
+        assert_eq!(db.found_count().unwrap(), 3);
+
+        // Within limits, nothing goes.
+        assert_eq!(db.trim_found(3, u64::MAX).unwrap(), 0);
+        assert_eq!(found_posts(&db, "maple").len(), 3);
+
+        assert_eq!(db.trim_found(2, u64::MAX).unwrap(), 1);
+        assert_eq!(found_posts(&db, "maple").len(), 2);
+        assert!(db.profile(&oldest).unwrap().is_none());
+        assert!(db.found_through(&oldest).unwrap().is_none());
+        let keys: i64 = db
+            .conn()
+            .query_row("SELECT COUNT(*) FROM identity_keys", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(keys, 0);
+
+        // By bytes too: there's room for one of them.
+        let (_, one): (i64, i64) = db
+            .conn()
+            .query_row(
+                "SELECT actor, bytes FROM found_people WHERE actor = ?1",
+                params![newest.to_string()],
+                |row| Ok((0, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(db.trim_found(10, one as u64).unwrap(), 1);
+        assert!(db.profile(&middle).unwrap().is_none());
+        assert!(db.profile(&newest).unwrap().is_some());
+
+        assert_eq!(db.trim_found(0, 0).unwrap(), 1);
+        assert_eq!(db.found_count().unwrap(), 0);
+        assert!(found_posts(&db, "maple").is_empty());
+        assert!(found_people(&db, "someone").is_empty());
+    }
+
+    #[test]
+    fn someone_followed_or_a_post_kept_is_no_longer_only_found() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(&dir.path().join("t.db")).unwrap();
+        let directory = SecretKey::from_bytes(&[9; 32]).public();
+
+        // Following them: it stays through trimming, and now says its media.
+        let key = SecretKey::from_bytes(&[1; 32]);
+        let (person, profile) = signed_person(&key, "Followed", None);
+        let blob = BlobHash::from_bytes([7; 32]);
+        let with_media = Payload::Note(Note {
+            actor: key.public(),
+            content: "elm with a photo".into(),
+            published: EARLIER.into(),
+            attachment: vec![Attachment {
+                kind: osp_proto::MediaKind::Image,
+                media_type: "image/webp".into(),
+                blob,
+                size: 500,
+                width: 1,
+                height: 1,
+                duration_ms: None,
+                name: None,
+                thumbnail: None,
+                profile: "v1-720p".into(),
+            }],
+            in_reply_to: None,
+        });
+        let signed = SignedObject::sign(&key, &with_media).unwrap();
+        db.keep_found(
+            &directory,
+            &person,
+            &profile,
+            &[(signed.clone(), with_media)],
+            100,
+        )
+        .unwrap();
+        assert_eq!(db.declared_size(&blob).unwrap(), None);
+        assert_eq!(
+            db.post_found_through(&signed.id()).unwrap(),
+            Some(directory)
+        );
+        db.upsert_follow(&key.public(), &EndpointAddr::new(key.public()))
+            .unwrap();
+        db.found_person_is_followed(&key.public()).unwrap();
+        assert_eq!(db.declared_size(&blob).unwrap(), Some(500));
+        assert_eq!(db.post_found_through(&signed.id()).unwrap(), None);
+        db.trim_found(0, 0).unwrap();
+        assert_eq!(found_posts(&db, "elm").len(), 1);
+        assert_eq!(found_people(&db, "followed").len(), 1);
+
+        // A post a reshare brings as well stays when the rest of them goes,
+        // and their profile with it, as the reshare shows their name.
+        let carried = found(&db, &directory, 2, "ash carried", 100);
+        let (note, payload) = signed_note(&SecretKey::from_bytes(&[2; 32]), "ash carried", EARLIER);
+        assert!(!db.insert_object(&note, &payload).unwrap());
+        db.trim_found(0, 0).unwrap();
+        assert_eq!(found_posts(&db, "ash").len(), 1);
+        assert!(db.profile(&carried).unwrap().is_some());
+
+        // So does one the owner reshares.
+        let kept = SecretKey::from_bytes(&[3; 32]);
+        found(&db, &directory, 3, "birch reshared", 100);
+        let (note, _) = signed_note(&kept, "birch reshared", EARLIER);
+        db.found_post_stays(&note.id()).unwrap();
+        db.trim_found(0, 0).unwrap();
+        assert_eq!(found_posts(&db, "birch").len(), 1);
+    }
+
+    #[test]
+    fn a_directory_can_take_back_only_what_it_gave() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(&dir.path().join("t.db")).unwrap();
+        let (one, other) = (
+            SecretKey::from_bytes(&[8; 32]).public(),
+            SecretKey::from_bytes(&[9; 32]).public(),
+        );
+        let actor = found(&db, &one, 1, "cedar", 100);
+        db.forget_found(&other, &actor).unwrap();
+        assert_eq!(found_posts(&db, "cedar").len(), 1);
+        db.forget_found(&one, &actor).unwrap();
+        assert!(found_posts(&db, "cedar").is_empty());
+        assert!(db.profile(&actor).unwrap().is_none());
+
+        // Starting over drops what it gave, and how far it was read.
+        found(&db, &one, 1, "cedar", 100);
+        let stays = found(&db, &other, 2, "cedar again", 100);
+        db.set_directory_cursor(&one, 40).unwrap();
+        db.forget_directory(&one).unwrap();
+        assert_eq!(db.directory_cursor(&one).unwrap(), 0);
+        assert_eq!(found_posts(&db, "cedar"), ["cedar again"]);
+        assert!(db.found_through(&stays).unwrap().is_some());
+    }
+
+    #[test]
+    fn a_found_persons_older_profile_doesnt_replace_a_newer_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(&dir.path().join("t.db")).unwrap();
+        let directory = SecretKey::from_bytes(&[9; 32]).public();
+        let key = SecretKey::from_bytes(&[1; 32]);
+        let dated = |name: &str, published: &str| {
+            let person = Person {
+                actor: key.public(),
+                name: name.into(),
+                summary: None,
+                discoverable: true,
+                nodes: vec![],
+                published: published.into(),
+            };
+            let signed = SignedObject::sign(&key, &Payload::Person(person.clone())).unwrap();
+            (person, signed)
+        };
+        let (later, later_signed) = dated("Later", LATER);
+        db.keep_found(&directory, &later, &later_signed, &[], 100)
+            .unwrap();
+        let (earlier, earlier_signed) = dated("Earlier", EARLIER);
+        db.keep_found(&directory, &earlier, &earlier_signed, &[], 200)
+            .unwrap();
+        assert_eq!(found_people(&db, "later"), ["Later"]);
+        assert!(found_people(&db, "earlier").is_empty());
+        let (newest, newest_signed) = dated("Newest", "2030-01-01T00:00:00Z");
+        db.keep_found(&directory, &newest, &newest_signed, &[], 300)
+            .unwrap();
+        assert_eq!(found_people(&db, "newest"), ["Newest"]);
     }
 
     /// The text of each post a search finds, in order.

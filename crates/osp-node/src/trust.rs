@@ -216,7 +216,7 @@ fn check_note(note: &str) -> Result<String> {
 /// Text from another node made safe to show as plain text: control
 /// characters, which could move a terminal's cursor, and characters that
 /// reverse the direction text is shown in, become spaces.
-pub(crate) fn plain(text: &str) -> String {
+pub fn plain(text: &str) -> String {
     let reorders = |c: char| matches!(c, '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}');
     text.chars()
         .map(|c| {

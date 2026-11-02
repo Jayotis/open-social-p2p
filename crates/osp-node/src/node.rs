@@ -42,6 +42,7 @@ use crate::{
     db::{BlobClass, Db},
     directory::{self, DirectoryLists},
     endpoints::{DirectGate, OwnEndpoints, Pairings, PeerEndpoints},
+    health,
     home::Home,
     keys::{self, NewKey, Signer},
     machine::MachineSide,
@@ -93,6 +94,18 @@ pub struct SimSettings {
     /// How long a node waits, at most, before first asking to be listed. Tests
     /// shorten it.
     pub ask_listing_wait: Duration,
+    /// How long a node waits, at most, before first reading its directories.
+    /// Tests shorten it.
+    pub first_read_wait: Duration,
+    /// How often a node reads its directories. Tests shorten it.
+    pub read_every: Duration,
+    /// Below this much free disk, a node holds nobody from directories. Tests
+    /// raise it.
+    pub found_needs_free: u64,
+    /// Most people a node keeps from directories. Tests lower it.
+    pub max_found_people: usize,
+    /// Machines a directory greets back per hour. Tests lower it.
+    pub greets_back_per_hour: u32,
     /// The node sends and receives through this simulated network instead
     /// of IP sockets (`simnet`). Its config should have relays disabled.
     #[cfg(feature = "sim")]
@@ -120,6 +133,11 @@ impl Default for SimSettings {
             new_listings_per_hour: directory::MAX_NEW_LISTINGS_PER_HOUR,
             listed_read_every: directory::LISTED_READ_EVERY,
             ask_listing_wait: directory::ASK_LISTING_WAIT,
+            first_read_wait: directory::FIRST_READ_WAIT,
+            read_every: directory::READ_EVERY,
+            found_needs_free: health::LOW_DISK_BYTES,
+            max_found_people: directory::MAX_FOUND_PEOPLE,
+            greets_back_per_hour: directory::MAX_GREETS_BACK_PER_HOUR,
             #[cfg(feature = "sim")]
             network: None,
             #[cfg(feature = "sim")]
@@ -225,6 +243,8 @@ pub(crate) struct Core {
     pub machine: Option<MachineSide>,
     /// Wakes a directory's reading of listed nodes, for someone new.
     pub listed_now: Notify,
+    /// Directories are read by one task at a time.
+    pub reading_directories: tokio::sync::Mutex<()>,
     pub sim: SimSettings,
     /// With `SimSettings::tor_delay`: when the Tor-like circuits to each
     /// node are, or will be, ready.
@@ -513,6 +533,7 @@ impl Node {
             endpoints,
             machine,
             listed_now: Notify::new(),
+            reading_directories: tokio::sync::Mutex::new(()),
             sim,
             #[cfg(feature = "sim")]
             tor_ready: Mutex::new(HashMap::new()),
@@ -562,8 +583,13 @@ impl Node {
                     .spawn(),
             );
         }
-        if core.config.directory.list_me && !core.config.directory.known.is_empty() {
-            directory_tasks.push(tokio::spawn(directory::ask_listing_loop(core.clone())));
+        if !core.config.directory.known.is_empty() {
+            if core.config.directory.list_me {
+                directory_tasks.push(tokio::spawn(directory::ask_listing_loop(core.clone())));
+            }
+            if core.machine.is_some() {
+                directory_tasks.push(tokio::spawn(directory::read_loop(core.clone())));
+            }
         }
         let router = Router::builder(endpoint).accept(osp_proto::SOCIAL_ALPN, social);
         // With other endpoints, media and phones go through them.

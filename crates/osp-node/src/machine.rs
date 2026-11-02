@@ -26,7 +26,7 @@ use osp_proto::{
     MACHINE_ALPN,
     framing::{read_frame_max, write_frame},
     machine::{
-        MAX_LISTING_PAGE, MAX_REPLY_LEN, MAX_REQUEST_LEN, MachineInfo, MachineRecord,
+        ListingEntry, MAX_LISTING_PAGE, MAX_REPLY_LEN, MAX_REQUEST_LEN, MachineInfo, MachineRecord,
         MachineRequest, MachineResponse, OFFERS_DIRECTORY,
     },
     rpc::ClientResponse,
@@ -153,17 +153,11 @@ impl MachineSide {
     /// an event, not something kept open.
     pub async fn hello(&self, machine: EndpointId) -> Result<Greeting> {
         let started = Instant::now();
-        let conn = tokio::time::timeout(
-            CONNECT_TIMEOUT,
-            self.endpoint.connect(machine, MACHINE_ALPN),
-        )
-        .await
-        .with_context(|| format!("reaching machine {} timed out", words(&machine)))?
-        .with_context(|| format!("reaching machine {}", words(&machine)))?;
+        let conn = self.connect(machine).await?;
         let connected = started.elapsed();
         let started = Instant::now();
         let reply = ask_hello(&conn, &self.key, &self.offers).await;
-        conn.close(CLOSE_DONE.into(), b"done");
+        close(&conn);
         let record = reply?;
         Ok(Greeting {
             info: checked(&record, machine)?,
@@ -171,6 +165,41 @@ impl MachineSide {
             connected,
             asked: started.elapsed(),
         })
+    }
+
+    /// Starts a conversation with another machine, for the caller to `close`.
+    pub async fn connect(&self, machine: EndpointId) -> Result<Connection> {
+        tokio::time::timeout(
+            CONNECT_TIMEOUT,
+            self.endpoint.connect(machine, MACHINE_ALPN),
+        )
+        .await
+        .with_context(|| format!("reaching machine {} timed out", words(&machine)))?
+        .with_context(|| format!("reaching machine {}", words(&machine)))
+    }
+
+    /// Greets the machine at the other end of a conversation already started.
+    pub async fn hello_on(&self, conn: &Connection, machine: EndpointId) -> Result<MachineInfo> {
+        checked(&ask_hello(conn, &self.key, &self.offers).await?, machine)
+    }
+}
+
+/// Ends a conversation: it's an event, not something kept open.
+pub(crate) fn close(conn: &Connection) {
+    conn.close(CLOSE_DONE.into(), b"done");
+}
+
+/// Asks a directory for a page of its lists.
+pub(crate) async fn ask_listing(
+    conn: &Connection,
+    since: u64,
+    limit: u32,
+) -> Result<(Vec<ListingEntry>, u64)> {
+    let request = MachineRequest::Listing { since, limit };
+    match ask(conn, &request).await? {
+        MachineResponse::Listing { entries, latest } => Ok((entries, latest)),
+        MachineResponse::Error { message } => anyhow::bail!("it answered: {message}"),
+        MachineResponse::Hello { .. } => anyhow::bail!("it answered something else"),
     }
 }
 
@@ -184,17 +213,20 @@ pub(crate) struct Greeting {
     pub asked: Duration,
 }
 
-async fn ask_hello(conn: &Connection, key: &SecretKey, offers: &[String]) -> Result<MachineRecord> {
+async fn ask(conn: &Connection, request: &MachineRequest) -> Result<MachineResponse> {
     let (mut send, mut recv) = conn.open_bi().await?;
+    write_frame(&mut send, request).await?;
+    send.finish()?;
+    tokio::time::timeout(REQUEST_TIMEOUT, read_frame_max(&mut recv, MAX_REPLY_LEN))
+        .await
+        .context("no reply in time")?
+}
+
+async fn ask_hello(conn: &Connection, key: &SecretKey, offers: &[String]) -> Result<MachineRecord> {
     let request = MachineRequest::Hello {
         record: own_record(key, offers)?,
     };
-    write_frame(&mut send, &request).await?;
-    send.finish()?;
-    let reply = tokio::time::timeout(REQUEST_TIMEOUT, read_frame_max(&mut recv, MAX_REPLY_LEN))
-        .await
-        .context("no reply in time")??;
-    match reply {
+    match ask(conn, &request).await? {
         MachineResponse::Hello { record } => Ok(record),
         MachineResponse::Error { message } => anyhow::bail!("it answered: {message}"),
         MachineResponse::Listing { .. } => anyhow::bail!("it answered something else"),
@@ -299,7 +331,7 @@ impl MachineProtocol {
 }
 
 impl Core {
-    fn machine(&self) -> Result<&MachineSide> {
+    pub(crate) fn machine(&self) -> Result<&MachineSide> {
         self.machine.as_ref().context(
             "this node has no machine name: it needs enabled = true under [tor] and under [machine] in config.toml",
         )

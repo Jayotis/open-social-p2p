@@ -6,6 +6,10 @@
 //! from their own node as a follower would. The map is the records of machines
 //! that greeted it and answered when it greeted them back. It gives both to any
 //! machine that asks, and neither says who talks to whom.
+//!
+//! A node reads its directories in the background under its machine name, and
+//! keeps who it finds, capped and out of the feed, so a search looks through
+//! them at home and no word anyone types leaves the node.
 
 use std::{sync::Arc, time::Duration};
 
@@ -14,7 +18,10 @@ use iroh::{EndpointAddr, EndpointId};
 use n0_future::{BufferedStreamExt, StreamExt, stream};
 use osp_proto::{
     Payload, SignedObject,
-    machine::{ListingEntry, ListingItem, MAX_LISTED_PERSON_BYTES, MAX_LISTED_POSTS},
+    machine::{
+        ListingEntry, ListingItem, MAX_LISTED_PERSON_BYTES, MAX_LISTED_POSTS, MAX_LISTING_PAGE,
+        OFFERS_DIRECTORY,
+    },
     social::{SocialRequest, SocialResponse},
 };
 use tokio::sync::{Semaphore, mpsc};
@@ -22,6 +29,8 @@ use tracing::{debug, info, warn};
 
 use crate::{
     db::{Db, Listed, now_ms},
+    health,
+    machine::{self, MachineSide},
     node::Core,
     social::{PerHour, profile_date},
     sync::{jitter, random_fraction},
@@ -51,7 +60,7 @@ const OUTBOX_TAIL: u32 = 20;
 const GREET_AGAIN_AFTER: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 /// Machines greeted back per hour, at most, whoever they say they are. Names
 /// are free, and each costs Tor circuits. One left out greets again another time.
-const MAX_GREETS_BACK_PER_HOUR: u32 = 60;
+pub(crate) const MAX_GREETS_BACK_PER_HOUR: u32 = 60;
 /// Machines greeted back at once.
 const GREET_BACK_AT_ONCE: usize = 4;
 /// Greetings waiting to be answered, at most; more are left for another time.
@@ -67,6 +76,22 @@ pub(crate) const ASK_LISTING_WAIT: Duration = Duration::from_secs(60 * 60);
 const ASK_LISTING_AGAIN: Duration = Duration::from_secs(24 * 60 * 60);
 /// How soon it asks again when a directory didn't answer.
 const ASK_LISTING_RETRY: Duration = Duration::from_secs(60 * 60);
+
+/// How long after it starts a node first reads its directories, at most, at a
+/// time of its own.
+pub(crate) const FIRST_READ_WAIT: Duration = Duration::from_secs(10 * 60);
+/// How often a node reads its directories. Discovery can wait, and each read
+/// costs Tor circuits.
+pub(crate) const READ_EVERY: Duration = Duration::from_secs(6 * 60 * 60);
+/// How soon it goes on after a read that failed or wasn't finished.
+const READ_AGAIN: Duration = Duration::from_secs(10 * 60);
+/// Pages taken in one conversation. With the rest of a large directory for next
+/// time, one read stays a small thing over Tor.
+const MAX_PAGES_PER_READ: usize = 64;
+/// Most people kept from directories, and most bytes of them. Typically about
+/// 1 KB a person, so these are far apart; the bytes are there for the hostile.
+pub(crate) const MAX_FOUND_PEOPLE: usize = 5_000;
+const MAX_FOUND_BYTES: u64 = 64 << 20;
 
 /// What a machine name needs of its node to act as a directory: its lists, and
 /// a way to say who greeted it. It's handed no more, as a machine's replies come
@@ -270,6 +295,187 @@ impl Core {
     }
 }
 
+/// A node reading the directories it knows.
+impl Core {
+    /// Reads each directory this node knows, under its machine name. Returns
+    /// whether it got to the end of them all. One not answering doesn't stop the
+    /// others; if none could be read, says why.
+    pub(crate) async fn read_directories(&self) -> Result<bool> {
+        let side = self.machine()?;
+        if let Some(tor) = &self.tor {
+            tor.check_ready()?;
+        }
+        let _reading = self.reading_directories.lock().await;
+        // Strangers' posts go first when space is short.
+        if health::disk_free(self.home.root()).is_some_and(|free| free < self.sim.found_needs_free)
+        {
+            let dropped = self.db.trim_found(0, 0)?;
+            info!(
+                dropped,
+                "the disk is nearly full, so dropped people found through directories"
+            );
+            return Ok(true);
+        }
+        let mut finished = true;
+        let mut failed = None;
+        let mut answered = false;
+        for directory in &self.config.directory.known {
+            if directory.machine == side.id() {
+                continue;
+            }
+            match self.read_directory(side, directory.machine).await {
+                Ok(done) => {
+                    answered = true;
+                    finished &= done;
+                }
+                Err(e) => {
+                    warn!("reading a directory failed: {e:#}");
+                    finished = false;
+                    failed = Some(e);
+                }
+            }
+        }
+        match failed {
+            Some(e) if !answered => Err(e),
+            _ => Ok(finished),
+        }
+    }
+
+    /// One conversation with a directory: a greeting, then pages from where
+    /// this node got to. Returns whether it reached the end.
+    async fn read_directory(&self, side: &MachineSide, directory: EndpointId) -> Result<bool> {
+        let conn = side.connect(directory).await?;
+        let read = self.read_pages(side, &conn, directory).await;
+        machine::close(&conn);
+        read
+    }
+
+    async fn read_pages(
+        &self,
+        side: &MachineSide,
+        conn: &iroh::endpoint::Connection,
+        directory: EndpointId,
+    ) -> Result<bool> {
+        let info = side.hello_on(conn, directory).await?;
+        ensure!(
+            info.offers.iter().any(|offer| offer == OFFERS_DIRECTORY),
+            "that machine doesn't say it's a directory"
+        );
+        let mut cursor = self.db.directory_cursor(&directory)?;
+        for _ in 0..MAX_PAGES_PER_READ {
+            let (entries, latest) = machine::ask_listing(conn, cursor, MAX_LISTING_PAGE).await?;
+            // Its numbers never go down, so this is a directory starting over.
+            if latest < cursor {
+                info!("a directory started over, so reading it from the start");
+                self.db.forget_directory(&directory)?;
+                cursor = 0;
+                continue;
+            }
+            ensure!(
+                entries.len() <= MAX_LISTING_PAGE as usize,
+                "a page of its lists has {} entries; we asked for at most {MAX_LISTING_PAGE}",
+                entries.len()
+            );
+            let done = entries.is_empty();
+            cursor = self.take_page(directory, cursor, entries, latest)?;
+            self.db.set_directory_cursor(&directory, cursor)?;
+            self.db
+                .trim_found(self.sim.max_found_people, MAX_FOUND_BYTES)?;
+            if done || cursor >= latest {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    /// Takes in a page of a directory's lists. Numbers must rise, so each page
+    /// moves on, and a directory can't keep this node going round. One bad entry
+    /// costs only that entry. Returns the number reached.
+    fn take_page(
+        &self,
+        directory: EndpointId,
+        mut cursor: u64,
+        entries: Vec<ListingEntry>,
+        latest: u64,
+    ) -> Result<u64> {
+        for entry in entries {
+            ensure!(
+                entry.seq > cursor && entry.seq <= latest,
+                "a directory's entries are out of order"
+            );
+            cursor = entry.seq;
+            match entry.item {
+                ListingItem::Person { profile, posts } => {
+                    if let Err(e) = self.take_person(directory, &profile, posts) {
+                        debug!("skipping a directory's entry: {e:#}");
+                    }
+                }
+                ListingItem::Gone { actor } => self.db.forget_found(&directory, &actor)?,
+                // Machines are for meeting, which comes later (ADR 0015's step 3).
+                ListingItem::Machine { .. } | ListingItem::Unknown => {}
+            }
+        }
+        Ok(cursor)
+    }
+
+    /// Keeps someone a directory lists, once all of it checks out. A signature
+    /// shows who wrote something, so the directory needn't be trusted, though it
+    /// can leave things out or be behind.
+    fn take_person(
+        &self,
+        directory: EndpointId,
+        profile: &SignedObject,
+        posts: Vec<SignedObject>,
+    ) -> Result<()> {
+        let actor = profile.signer();
+        // This node has better than a directory's copy of these.
+        if actor == self.signer.identity() || self.db.is_following(&actor)? {
+            return Ok(());
+        }
+        ensure!(
+            posts.len() <= MAX_LISTED_POSTS,
+            "it lists {} posts of one person",
+            posts.len()
+        );
+        // All checked before a key is learned from any of it, so what's refused
+        // leaves nothing behind (`verify_received`).
+        let Payload::Person(person) = profile.verify()? else {
+            bail!("not a profile");
+        };
+        profile_date(&person)?;
+        // Consent travels with the record, and a later profile can take it back.
+        if !person.discoverable || self.taken_back(&person)? {
+            return self.db.forget_found(&directory, &actor);
+        }
+        for post in &posts {
+            ensure!(post.signer() == actor, "a post signed by someone else");
+            ensure!(matches!(post.verify()?, Payload::Note(_)), "not a post");
+        }
+        self.verify_received(profile)?;
+        let mut checked = Vec::new();
+        for post in posts {
+            let payload = self.verify_received(&post)?;
+            checked.push((post, payload));
+        }
+        self.db
+            .keep_found(&directory, &person, profile, &checked, now_ms())
+    }
+
+    /// Whether a later profile than `person` is stored, saying they may not be
+    /// listed. A directory that's behind, or won't let go, can't bring them back.
+    fn taken_back(&self, person: &osp_proto::Person) -> Result<bool> {
+        let Some(stored) = self.db.profile(&person.actor)? else {
+            return Ok(false);
+        };
+        let Ok(Payload::Person(known)) = stored.verify() else {
+            return Ok(false);
+        };
+        Ok(!known.discoverable
+            && osp_proto::parse_rfc3339_ms(&known.published)
+                > osp_proto::parse_rfc3339_ms(&person.published))
+    }
+}
+
 /// Someone's listing: their profile, and as many of their posts, newest first,
 /// as fit. A post that would pass the limit is left out, rather than one person
 /// taking up the page. The largest profile fits on its own.
@@ -325,7 +531,9 @@ pub(crate) async fn greet_back_loop(core: Arc<Core>, mut greeted: mpsc::Receiver
                 continue;
             }
         }
-        if machine == me || !limits.allow(machine, 1) || !limits.allow(me, MAX_GREETS_BACK_PER_HOUR)
+        if machine == me
+            || !limits.allow(machine, 1)
+            || !limits.allow(me, core.sim.greets_back_per_hour)
         {
             continue;
         }
@@ -363,6 +571,24 @@ pub(crate) async fn ask_listing_loop(core: Arc<Core>) {
         wait = match core.ask_to_be_listed().await {
             true => jitter(ASK_LISTING_AGAIN),
             false => jitter(ASK_LISTING_RETRY),
+        };
+    }
+}
+
+/// A node reading its directories: at a time of its own after it starts, then
+/// now and then, and sooner if it didn't get to the end.
+pub(crate) async fn read_loop(core: Arc<Core>) {
+    let mut wait = core.sim.first_read_wait.mul_f64(random_fraction());
+    loop {
+        tokio::time::sleep(wait).await;
+        // Messages wait for Tor, and go nowhere else (ADR 0014).
+        if let Some(tor) = &core.tor {
+            tor.ready().await;
+        }
+        let finished = core.read_directories().await.unwrap_or(false);
+        wait = match finished {
+            true => jitter(core.sim.read_every),
+            false => jitter(READ_AGAIN.min(core.sim.read_every)),
         };
     }
 }
