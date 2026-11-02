@@ -360,6 +360,16 @@ pub struct StatusInfo {
     /// Whether the node has a machine name (ADR 0015). Never which.
     #[serde(default)]
     pub machine: bool,
+    /// What this node holds as a directory, when it's one (ADR 0015).
+    #[serde(default)]
+    pub directory: Option<DirectoryStatus>,
+}
+
+/// What a directory holds.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DirectoryStatus {
+    pub people: u64,
+    pub machines: u64,
 }
 
 /// The node's media and direct endpoints.

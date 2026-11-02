@@ -26,7 +26,8 @@ use osp_proto::{
     MACHINE_ALPN,
     framing::{read_frame_max, write_frame},
     machine::{
-        MAX_REPLY_LEN, MAX_REQUEST_LEN, MachineInfo, MachineRecord, MachineRequest, MachineResponse,
+        MAX_LISTING_PAGE, MAX_REPLY_LEN, MAX_REQUEST_LEN, MachineInfo, MachineRecord,
+        MachineRequest, MachineResponse, OFFERS_DIRECTORY,
     },
     rpc::ClientResponse,
 };
@@ -36,6 +37,7 @@ use tracing::{debug, info};
 
 use crate::{
     config::Config,
+    directory::DirectoryLists,
     home::Home,
     keys,
     node::{Core, SimSettings},
@@ -63,6 +65,8 @@ const CLOSE_DONE: u32 = 0;
 
 pub(crate) struct MachineSide {
     key: SecretKey,
+    /// What its record says it offers other machines.
+    offers: Vec<String>,
     pub endpoint: Endpoint,
     /// Holds the onion service up, on Tor.
     _transport: Option<TorTransport>,
@@ -86,11 +90,16 @@ impl MachineSide {
             true => keys::load(&path),
             false => keys::create(&path),
         };
+        let mut offers = Vec::new();
+        if config.directory.serve {
+            offers.push(OFFERS_DIRECTORY.to_string());
+        }
         let side = if let Some(tor) = tor {
             let key = load()?;
             let (transport, endpoint) = tor.endpoint_for(key.clone(), MAX_STREAMS).await?;
             Some(Self {
                 key,
+                offers,
                 endpoint,
                 _transport: Some(transport),
             })
@@ -110,6 +119,7 @@ impl MachineSide {
                         .context("starting the machine endpoint")?;
                     Some(Self {
                         key,
+                        offers,
                         endpoint,
                         _transport: None,
                     })
@@ -129,17 +139,19 @@ impl MachineSide {
         self.key.public()
     }
 
-    pub fn protocol(&self) -> MachineProtocol {
+    /// With `lists`, it serves as a directory too.
+    pub fn protocol(&self, lists: Option<DirectoryLists>) -> MachineProtocol {
         MachineProtocol {
             key: self.key.clone(),
+            offers: self.offers.clone(),
             connections: Arc::new(Semaphore::new(MAX_CONNECTIONS)),
+            lists,
         }
     }
 
     /// Greets another machine, and closes the connection: a conversation is
-    /// an event, not something kept open. Returns what it says of itself, and
-    /// how long connecting and asking took.
-    async fn hello(&self, machine: EndpointId) -> Result<(MachineInfo, Duration, Duration)> {
+    /// an event, not something kept open.
+    pub async fn hello(&self, machine: EndpointId) -> Result<Greeting> {
         let started = Instant::now();
         let conn = tokio::time::timeout(
             CONNECT_TIMEOUT,
@@ -150,16 +162,32 @@ impl MachineSide {
         .with_context(|| format!("reaching machine {}", words(&machine)))?;
         let connected = started.elapsed();
         let started = Instant::now();
-        let reply = ask_hello(&conn, &self.key).await;
+        let reply = ask_hello(&conn, &self.key, &self.offers).await;
         conn.close(CLOSE_DONE.into(), b"done");
-        Ok((checked(&reply?, machine)?, connected, started.elapsed()))
+        let record = reply?;
+        Ok(Greeting {
+            info: checked(&record, machine)?,
+            record,
+            connected,
+            asked: started.elapsed(),
+        })
     }
 }
 
-async fn ask_hello(conn: &Connection, key: &SecretKey) -> Result<MachineRecord> {
+/// What greeting a machine brought.
+pub(crate) struct Greeting {
+    /// Its record, as it signed it.
+    pub record: MachineRecord,
+    /// What that says.
+    pub info: MachineInfo,
+    pub connected: Duration,
+    pub asked: Duration,
+}
+
+async fn ask_hello(conn: &Connection, key: &SecretKey, offers: &[String]) -> Result<MachineRecord> {
     let (mut send, mut recv) = conn.open_bi().await?;
     let request = MachineRequest::Hello {
-        record: own_record(key)?,
+        record: own_record(key, offers)?,
     };
     write_frame(&mut send, &request).await?;
     send.finish()?;
@@ -169,12 +197,13 @@ async fn ask_hello(conn: &Connection, key: &SecretKey) -> Result<MachineRecord> 
     match reply {
         MachineResponse::Hello { record } => Ok(record),
         MachineResponse::Error { message } => anyhow::bail!("it answered: {message}"),
+        MachineResponse::Listing { .. } => anyhow::bail!("it answered something else"),
     }
 }
 
-/// This machine's record, freshly dated. It offers nothing yet.
-fn own_record(key: &SecretKey) -> Result<MachineRecord> {
-    MachineRecord::new(key, Vec::new(), osp_proto::now_rfc3339())
+/// This machine's record, freshly dated.
+fn own_record(key: &SecretKey, offers: &[String]) -> Result<MachineRecord> {
+    MachineRecord::new(key, offers.to_vec(), osp_proto::now_rfc3339())
 }
 
 /// Checks the record of the machine at the other end of a connection.
@@ -192,7 +221,10 @@ fn checked(record: &MachineRecord, from: EndpointId) -> Result<MachineInfo> {
 #[derive(Clone)]
 pub(crate) struct MachineProtocol {
     key: SecretKey,
+    offers: Vec<String>,
     connections: Arc<Semaphore>,
+    /// A directory's lists, on a machine that is one.
+    lists: Option<DirectoryLists>,
 }
 
 impl fmt::Debug for MachineProtocol {
@@ -211,12 +243,10 @@ impl ProtocolHandler for MachineProtocol {
         let _ = tokio::time::timeout(CONNECTION_LIMIT, async {
             let remote = conn.remote_id();
             while let Ok((send, recv)) = conn.accept_bi().await {
-                let served = tokio::time::timeout(
-                    REQUEST_TIMEOUT,
-                    serve_stream(&self.key, remote, send, recv),
-                )
-                .await
-                .unwrap_or_else(|_| Err(anyhow::anyhow!("took too long")));
+                let served =
+                    tokio::time::timeout(REQUEST_TIMEOUT, self.serve_stream(remote, send, recv))
+                        .await
+                        .unwrap_or_else(|_| Err(anyhow::anyhow!("took too long")));
                 if let Err(e) = served {
                     debug!(remote = %remote.fmt_short(), "machine request failed: {e:#}");
                 }
@@ -227,29 +257,45 @@ impl ProtocolHandler for MachineProtocol {
     }
 }
 
-async fn serve_stream(
-    key: &SecretKey,
-    remote: EndpointId,
-    mut send: SendStream,
-    mut recv: RecvStream,
-) -> Result<()> {
-    let request: MachineRequest = read_frame_max(&mut recv, MAX_REQUEST_LEN).await?;
-    let reply = match request {
-        MachineRequest::Hello { record } => match checked(&record, remote) {
-            Ok(_) => MachineResponse::Hello {
-                record: own_record(key)?,
+impl MachineProtocol {
+    async fn serve_stream(
+        &self,
+        remote: EndpointId,
+        mut send: SendStream,
+        mut recv: RecvStream,
+    ) -> Result<()> {
+        let request: MachineRequest = read_frame_max(&mut recv, MAX_REQUEST_LEN).await?;
+        let reply = match request {
+            MachineRequest::Hello { record } => match checked(&record, remote) {
+                Ok(_) => {
+                    if let Some(lists) = &self.lists {
+                        lists.greeted(remote);
+                    }
+                    MachineResponse::Hello {
+                        record: own_record(&self.key, &self.offers)?,
+                    }
+                }
+                Err(e) => MachineResponse::Error {
+                    message: format!("{e:#}"),
+                },
             },
-            Err(e) => MachineResponse::Error {
-                message: format!("{e:#}"),
+            MachineRequest::Listing { since, limit } => match &self.lists {
+                Some(lists) => {
+                    let (entries, latest) = lists.listing(since, limit.min(MAX_LISTING_PAGE))?;
+                    MachineResponse::Listing { entries, latest }
+                }
+                None => MachineResponse::Error {
+                    message: "this machine isn't a directory".to_string(),
+                },
             },
-        },
-        MachineRequest::Unknown => MachineResponse::Error {
-            message: "this machine doesn't know that request".to_string(),
-        },
-    };
-    write_frame(&mut send, &reply).await?;
-    send.finish()?;
-    Ok(())
+            MachineRequest::Unknown => MachineResponse::Error {
+                message: "this machine doesn't know that request".to_string(),
+            },
+        };
+        write_frame(&mut send, &reply).await?;
+        send.finish()?;
+        Ok(())
+    }
 }
 
 impl Core {
@@ -274,12 +320,12 @@ impl Core {
         if let Some(tor) = &self.tor {
             tor.check_ready()?;
         }
-        let (info, connected, asked) = side.hello(machine).await?;
+        let greeting = side.hello(machine).await?;
         Ok(ClientResponse::MachineGreeted {
             words: words(&machine),
-            offers: info.offers,
-            connect_ms: connected.as_millis() as u64,
-            round_trip_ms: asked.as_millis() as u64,
+            offers: greeting.info.offers,
+            connect_ms: greeting.connected.as_millis() as u64,
+            round_trip_ms: greeting.asked.as_millis() as u64,
         })
     }
 }
@@ -315,10 +361,10 @@ mod tests {
     fn a_record_has_to_be_the_machine_connecteds_and_sensibly_dated() {
         let key = SecretKey::from_bytes(&[7; 32]);
         let me = key.public();
-        checked(&own_record(&key).unwrap(), me).unwrap();
+        checked(&own_record(&key, &[]).unwrap(), me).unwrap();
 
         let other = SecretKey::from_bytes(&[8; 32]).public();
-        let why = checked(&own_record(&key).unwrap(), other).unwrap_err();
+        let why = checked(&own_record(&key, &[]).unwrap(), other).unwrap_err();
         assert!(why.to_string().contains("another machine"), "{why:#}");
 
         let ahead = humantime::format_rfc3339_seconds(

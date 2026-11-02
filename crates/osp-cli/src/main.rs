@@ -1104,6 +1104,12 @@ fn print_status(s: &StatusInfo) {
     if s.machine {
         println!("Machine:   on (`osp machine show` gives its name)");
     }
+    if let Some(directory) = &s.directory {
+        println!(
+            "Directory: {} people, {} machines",
+            directory.people, directory.machines
+        );
+    }
     if let Some(own) = &s.endpoints {
         let media = match own.media {
             Some(media) => media.fmt_short().to_string(),

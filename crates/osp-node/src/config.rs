@@ -3,6 +3,7 @@
 use std::{fmt, net::SocketAddr, path::Path};
 
 use anyhow::{Context, Result};
+use iroh::EndpointId;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -156,8 +157,24 @@ impl Default for MachineConfig {
 pub struct DirectoryConfig {
     /// Say in your profile that a directory may list it and your latest posts,
     /// and that others may pass them on. Turned off, a later profile takes
-    /// that back.
+    /// that back. It's also what asks the directories below to list you.
     pub list_me: bool,
+    /// Be a directory: keep those who ask to be listed and the machines that
+    /// greet this one, and give both to any machine that asks. It needs a
+    /// machine name.
+    pub serve: bool,
+    /// The directories this node knows.
+    pub known: Vec<KnownDirectory>,
+}
+
+/// A directory's two names. Its public role means it can say openly that they
+/// go together, as nobody else's are ever shown side by side.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KnownDirectory {
+    /// Its machine name, which gives out its lists.
+    pub machine: EndpointId,
+    /// Its public ID, which people ask to be listed by.
+    pub node: EndpointId,
 }
 
 /// The node's media and direct endpoints (ADR 0014), being built. With it on,

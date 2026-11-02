@@ -40,6 +40,7 @@ use crate::{
     config::{Config, NetworkConfig, RelayChoice},
     control::{self, Origin},
     db::{BlobClass, Db},
+    directory::{self, DirectoryLists},
     endpoints::{DirectGate, OwnEndpoints, Pairings, PeerEndpoints},
     home::Home,
     keys::{self, NewKey, Signer},
@@ -85,6 +86,13 @@ pub struct SimSettings {
     /// A follower that sent a request within this long is named as a host
     /// before those that didn't. Tests shorten it.
     pub heard_lately: Duration,
+    /// New listings a directory accepts per hour. Tests lower it.
+    pub new_listings_per_hour: usize,
+    /// How often a directory reads each listed node. Tests shorten it.
+    pub listed_read_every: Duration,
+    /// How long a node waits, at most, before first asking to be listed. Tests
+    /// shorten it.
+    pub ask_listing_wait: Duration,
     /// The node sends and receives through this simulated network instead
     /// of IP sockets (`simnet`). Its config should have relays disabled.
     #[cfg(feature = "sim")]
@@ -109,6 +117,9 @@ impl Default for SimSettings {
             max_hold: sync::MAX_HOLD,
             download_sources: store::MAX_SOURCES,
             heard_lately: social::HEARD_LATELY,
+            new_listings_per_hour: directory::MAX_NEW_LISTINGS_PER_HOUR,
+            listed_read_every: directory::LISTED_READ_EVERY,
+            ask_listing_wait: directory::ASK_LISTING_WAIT,
             #[cfg(feature = "sim")]
             network: None,
             #[cfg(feature = "sim")]
@@ -212,6 +223,8 @@ pub(crate) struct Core {
     pub endpoints: Option<OwnEndpoints>,
     /// The node's machine name, when it's on (ADR 0015).
     pub machine: Option<MachineSide>,
+    /// Wakes a directory's reading of listed nodes, for someone new.
+    pub listed_now: Notify,
     pub sim: SimSettings,
     /// With `SimSettings::tor_delay`: when the Tor-like circuits to each
     /// node are, or will be, ready.
@@ -396,6 +409,10 @@ impl Node {
             false => None,
         };
         let machine = MachineSide::start(&home, &config, tor.as_ref(), &sim).await?;
+        ensure!(
+            !config.directory.serve || machine.is_some(),
+            "a directory needs a machine name: set enabled = true under [tor] and under [machine] in config.toml"
+        );
         let pairings = Pairings::default();
         let endpoints = match config.endpoints.enabled {
             true => {
@@ -495,6 +512,7 @@ impl Node {
             tor,
             endpoints,
             machine,
+            listed_now: Notify::new(),
             sim,
             #[cfg(feature = "sim")]
             tor_ready: Mutex::new(HashMap::new()),
@@ -526,13 +544,26 @@ impl Node {
                     .spawn(),
             );
         }
+        let mut directory_tasks = Vec::new();
         // A machine name answers its own protocol and nothing else (ADR 0015).
         if let Some(machine) = &core.machine {
+            let lists = core.config.directory.serve.then(|| {
+                let (greeted, greetings) = mpsc::channel(directory::GREETINGS_WAITING);
+                directory_tasks.push(tokio::spawn(directory::listed_loop(core.clone())));
+                directory_tasks.push(tokio::spawn(directory::greet_back_loop(
+                    core.clone(),
+                    greetings,
+                )));
+                DirectoryLists::new(core.db.clone(), greeted)
+            });
             endpoint_routers.push(
                 Router::builder(machine.endpoint.clone())
-                    .accept(osp_proto::MACHINE_ALPN, machine.protocol())
+                    .accept(osp_proto::MACHINE_ALPN, machine.protocol(lists))
                     .spawn(),
             );
+        }
+        if core.config.directory.list_me && !core.config.directory.known.is_empty() {
+            directory_tasks.push(tokio::spawn(directory::ask_listing_loop(core.clone())));
         }
         let router = Router::builder(endpoint).accept(osp_proto::SOCIAL_ALPN, social);
         // With other endpoints, media and phones go through them.
@@ -559,6 +590,7 @@ impl Node {
             replicas,
             sweep_uploads,
         ];
+        tasks.extend(directory_tasks);
         if core.config.network.relay != RelayChoice::Disabled {
             tasks.push(tokio::spawn(network::log_nat_changes(
                 core.endpoint_on_the_network().clone(),
@@ -623,6 +655,13 @@ impl Node {
         }
         ids.extend(self.machine_id());
         ids
+    }
+
+    /// Asks the directories this node knows to list its owner, as it does in
+    /// the background. Says whether all of them answered. For tests and
+    /// diagnostics.
+    pub async fn ask_to_be_listed(&self) -> bool {
+        self.core.ask_to_be_listed().await
     }
 
     /// The node's machine name, if it has one. For tests and diagnostics.

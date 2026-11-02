@@ -14,6 +14,7 @@ use iroh::{EndpointAddr, EndpointId, PublicKey};
 use osp_proto::{
     BlobHash, BoundEndpoint, EarlierKeys, EndpointKind, Key, Note, ObjectId, Payload, Person,
     SignedObject,
+    machine::{ListingEntry, ListingItem, MAX_LISTING_PAGE_BYTES, MachineRecord},
     rpc::{FollowInfo, PeerCounts, StorageInfo, Upload, UploadId},
 };
 use rusqlite::{Connection, OptionalExtension, params};
@@ -187,6 +188,30 @@ const MIGRATIONS: &[&str] = &[
     // 13: the endpoint a follower said it may be named by to other nodes, as
     // a host of our media, and how to reach it (ADR 0014).
     "ALTER TABLE followers ADD COLUMN host TEXT",
+    // 14: a directory's lists (ADR 0015). `listed`: who asked to be listed,
+    // the node read for them, where its outbox had got to, and when they asked
+    // and it was last tried and answered. `map`: machines that answered when
+    // greeted back, and when they last greeted and were greeted. `listing`:
+    // what readers are given, one row per person or machine as JSON
+    // (`ListingItem`), which takes a new number whenever it changes.
+    "CREATE TABLE listed (
+        actor    TEXT PRIMARY KEY,
+        node     TEXT NOT NULL,
+        latest   INTEGER NOT NULL DEFAULT 0,
+        asked_ms INTEGER NOT NULL,
+        tried_ms INTEGER NOT NULL DEFAULT 0,
+        read_ms  INTEGER
+    );
+    CREATE TABLE map (
+        machine    TEXT PRIMARY KEY,
+        heard_ms   INTEGER NOT NULL,
+        greeted_ms INTEGER NOT NULL
+    );
+    CREATE TABLE listing (
+        seq  INTEGER PRIMARY KEY AUTOINCREMENT,
+        key  TEXT NOT NULL UNIQUE,
+        item TEXT NOT NULL
+    );",
 ];
 
 /// The search index (ADR 0014): a number for each post, by its object ID, and
@@ -229,6 +254,20 @@ const MAX_TRUSTED_SWARM_PER_BLOB: i64 = 25;
 const TOUCH_EVERY_MS: i64 = 60_000;
 
 const HOUR_MS: i64 = 60 * 60 * 1000;
+
+/// Machines a directory's map holds. A full one loses whichever was heard from
+/// longest ago, and machines check in often, so a crowd of new names passes
+/// through without pushing out those still there.
+const MAX_MAP: i64 = 10_000;
+
+/// Someone a directory lists, and the node it reads for them (ADR 0015).
+#[derive(Debug, Clone)]
+pub struct Listed {
+    pub actor: PublicKey,
+    pub node: EndpointId,
+    /// Where their outbox had got to when it was last read.
+    pub latest: u64,
+}
 
 /// Why a blob is kept, which decides who it is served to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -1057,6 +1096,259 @@ impl Db {
                 |row| row.get(0),
             )
             .optional()?)
+    }
+
+    // ---- a directory's lists (ADR 0015) ----
+
+    /// The node read for someone listed, if they are.
+    pub fn listed_node(&self, actor: &PublicKey) -> Result<Option<EndpointId>> {
+        let node: Option<String> = self
+            .conn()
+            .query_row(
+                "SELECT node FROM listed WHERE actor = ?1",
+                params![actor.to_string()],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(node.map(|node| node.parse()).transpose()?)
+    }
+
+    pub fn listed_count(&self) -> Result<usize> {
+        let n: i64 = self
+            .conn()
+            .query_row("SELECT COUNT(*) FROM listed", [], |row| row.get(0))?;
+        Ok(n as usize)
+    }
+
+    /// How many people first asked to be listed at or after `since_ms`.
+    pub fn new_listings_since(&self, since_ms: i64) -> Result<usize> {
+        let n: i64 = self.conn().query_row(
+            "SELECT COUNT(*) FROM listed WHERE asked_ms >= ?1",
+            params![since_ms],
+            |row| row.get(0),
+        )?;
+        Ok(n as usize)
+    }
+
+    /// Lists someone, read through `node`. If they're listed through another
+    /// node already, reads this one instead, and soon.
+    pub fn add_listed(&self, actor: &PublicKey, node: &EndpointId) -> Result<()> {
+        self.conn().execute(
+            "INSERT INTO listed (actor, node, asked_ms) VALUES (?1, ?2, ?3)
+             ON CONFLICT(actor) DO UPDATE SET node = excluded.node, latest = 0, tried_ms = 0",
+            params![actor.to_string(), node.to_string(), now_ms()],
+        )?;
+        Ok(())
+    }
+
+    /// Those listed who haven't been tried since `tried_before_ms`, the longest
+    /// waiting first.
+    pub fn listed_due(&self, tried_before_ms: i64) -> Result<Vec<Listed>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT actor, node, latest FROM listed WHERE tried_ms <= ?1 ORDER BY tried_ms",
+        )?;
+        let rows = stmt.query_map(params![tried_before_ms], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)?,
+            ))
+        })?;
+        rows.map(|row| {
+            let (actor, node, latest) = row?;
+            Ok(Listed {
+                actor: actor.parse()?,
+                node: node.parse()?,
+                latest: latest as u64,
+            })
+        })
+        .collect()
+    }
+
+    pub fn set_listed_tried(&self, actor: &PublicKey, now: i64) -> Result<()> {
+        self.conn().execute(
+            "UPDATE listed SET tried_ms = ?2 WHERE actor = ?1",
+            params![actor.to_string(), now],
+        )?;
+        Ok(())
+    }
+
+    /// Someone's node answered, and nothing they're listed with changed.
+    pub fn set_listed_read(&self, actor: &PublicKey, latest: u64, now: i64) -> Result<()> {
+        self.conn().execute(
+            "UPDATE listed SET latest = ?2, read_ms = ?3 WHERE actor = ?1",
+            params![actor.to_string(), latest as i64, now],
+        )?;
+        Ok(())
+    }
+
+    /// What readers are given for someone listed.
+    pub fn listed_item(&self, actor: &PublicKey) -> Result<Option<ListingItem>> {
+        let item: Option<String> = self
+            .conn()
+            .query_row(
+                "SELECT item FROM listing WHERE key = ?1",
+                params![person_listing_key(actor)],
+                |row| row.get(0),
+            )
+            .optional()?;
+        item.map(|item| serde_json::from_str(&item).context("corrupt listing"))
+            .transpose()
+    }
+
+    /// Someone's node answered, and this is what readers are to be given for
+    /// them. It takes a new number only if it changed, so readers aren't sent
+    /// the same thing again.
+    pub fn put_listed(
+        &self,
+        actor: &PublicKey,
+        item: &ListingItem,
+        latest: u64,
+        now: i64,
+    ) -> Result<()> {
+        let conn = self.conn();
+        let tx = conn.unchecked_transaction()?;
+        tx.execute(
+            "UPDATE listed SET latest = ?2, read_ms = ?3 WHERE actor = ?1",
+            params![actor.to_string(), latest as i64, now],
+        )?;
+        put_listing(&tx, &person_listing_key(actor), item)?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Drops someone from the lists, telling readers they're gone. Says whether
+    /// they were listed.
+    pub fn drop_listed(&self, actor: &PublicKey) -> Result<bool> {
+        let conn = self.conn();
+        let tx = conn.unchecked_transaction()?;
+        let dropped = drop_listed(&tx, actor)?;
+        tx.commit()?;
+        Ok(dropped)
+    }
+
+    /// Drops those whose nodes haven't answered since `before_ms`, or ever,
+    /// having asked before it. Returns how many.
+    pub fn drop_silent_listed(&self, before_ms: i64) -> Result<usize> {
+        let conn = self.conn();
+        let tx = conn.unchecked_transaction()?;
+        let silent: Vec<String> = {
+            let mut stmt =
+                tx.prepare("SELECT actor FROM listed WHERE COALESCE(read_ms, asked_ms) < ?1")?;
+            let rows = stmt.query_map(params![before_ms], |row| row.get(0))?;
+            rows.collect::<rusqlite::Result<_>>()?
+        };
+        for actor in &silent {
+            drop_listed(&tx, &actor.parse()?)?;
+        }
+        tx.commit()?;
+        Ok(silent.len())
+    }
+
+    /// Notes a machine that greeted this directory. If it's on the map, says
+    /// when it was last greeted back.
+    pub fn heard_machine(&self, machine: &EndpointId, now: i64) -> Result<Option<i64>> {
+        Ok(self
+            .conn()
+            .query_row(
+                "UPDATE map SET heard_ms = ?2 WHERE machine = ?1 RETURNING greeted_ms",
+                params![machine.to_string(), now],
+                |row| row.get(0),
+            )
+            .optional()?)
+    }
+
+    /// A machine answered when greeted back: it goes on the map with its
+    /// record. If the map is full, it takes the place of the one heard from
+    /// longest ago.
+    pub fn put_machine(
+        &self,
+        machine: &EndpointId,
+        record: &MachineRecord,
+        now: i64,
+    ) -> Result<()> {
+        let conn = self.conn();
+        let tx = conn.unchecked_transaction()?;
+        tx.execute(
+            "INSERT INTO map (machine, heard_ms, greeted_ms) VALUES (?1, ?2, ?2)
+             ON CONFLICT(machine) DO UPDATE SET heard_ms = ?2, greeted_ms = ?2",
+            params![machine.to_string(), now],
+        )?;
+        let item = ListingItem::Machine {
+            record: record.clone(),
+        };
+        put_listing(&tx, &machine_listing_key(machine), &item)?;
+        let oldest: Vec<String> = {
+            let mut stmt =
+                tx.prepare("SELECT machine FROM map ORDER BY heard_ms DESC LIMIT -1 OFFSET ?1")?;
+            let rows = stmt.query_map(params![MAX_MAP], |row| row.get(0))?;
+            rows.collect::<rusqlite::Result<_>>()?
+        };
+        for machine in &oldest {
+            forget_machine(&tx, &machine.parse()?)?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Takes machines not heard from since `before_ms` off the map. Readers
+    /// aren't told: a machine's record says how old it is.
+    pub fn forget_silent_machines(&self, before_ms: i64) -> Result<()> {
+        let conn = self.conn();
+        let tx = conn.unchecked_transaction()?;
+        let silent: Vec<String> = {
+            let mut stmt = tx.prepare("SELECT machine FROM map WHERE heard_ms < ?1")?;
+            let rows = stmt.query_map(params![before_ms], |row| row.get(0))?;
+            rows.collect::<rusqlite::Result<_>>()?
+        };
+        for machine in &silent {
+            forget_machine(&tx, &machine.parse()?)?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// How many people and machines a directory holds.
+    pub fn directory_counts(&self) -> Result<(u64, u64)> {
+        let conn = self.conn();
+        let count = |table: &str| -> Result<u64> {
+            let sql = format!("SELECT COUNT(*) FROM {table}");
+            let n: i64 = conn.query_row(&sql, [], |row| row.get(0))?;
+            Ok(n as u64)
+        };
+        Ok((count("listed")?, count("map")?))
+    }
+
+    /// A page of the lists: entries numbered above `since`, in order, stopping
+    /// before `MAX_LISTING_PAGE_BYTES`. Also the newest number ever given, which
+    /// never goes down, though the row that had it may have gone.
+    pub fn listing_since(&self, since: u64, limit: u32) -> Result<(Vec<ListingEntry>, u64)> {
+        let conn = self.conn();
+        let latest: Option<i64> = conn
+            .query_row(
+                "SELECT seq FROM sqlite_sequence WHERE name = 'listing'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let mut stmt =
+            conn.prepare("SELECT seq, item FROM listing WHERE seq > ?1 ORDER BY seq LIMIT ?2")?;
+        let mut rows = stmt.query(params![since as i64, limit])?;
+        let mut entries = Vec::new();
+        let mut bytes = 0;
+        while let Some(row) = rows.next()? {
+            let item: String = row.get(1)?;
+            bytes += item.len();
+            if !entries.is_empty() && bytes > MAX_LISTING_PAGE_BYTES {
+                break;
+            }
+            entries.push(ListingEntry {
+                seq: row.get::<_, i64>(0)? as u64,
+                item: serde_json::from_str(&item).context("corrupt listing")?,
+            });
+        }
+        Ok((entries, latest.unwrap_or(0) as u64))
     }
 
     // ---- search (ADR 0014) ----
@@ -2039,6 +2331,76 @@ fn trust_rows(conn: &Connection, sql: &str) -> Result<Vec<TrustRow>> {
         })
     })
     .collect()
+}
+
+fn person_listing_key(actor: &PublicKey) -> String {
+    format!("person:{actor}")
+}
+
+fn machine_listing_key(machine: &EndpointId) -> String {
+    format!("machine:{machine}")
+}
+
+/// Puts `item` in the lists under `key`, in place of what was there, with a new
+/// number. An item that hasn't changed keeps its number.
+fn put_listing(conn: &Connection, key: &str, item: &ListingItem) -> Result<()> {
+    let item = serde_json::to_string(item)?;
+    let stored: Option<String> = conn
+        .query_row(
+            "SELECT item FROM listing WHERE key = ?1",
+            params![key],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if stored.as_ref() != Some(&item) {
+        conn.execute(
+            "INSERT OR REPLACE INTO listing (key, item) VALUES (?1, ?2)",
+            params![key, item],
+        )?;
+    }
+    Ok(())
+}
+
+fn drop_listed(conn: &Connection, actor: &PublicKey) -> Result<bool> {
+    let n = conn.execute(
+        "DELETE FROM listed WHERE actor = ?1",
+        params![actor.to_string()],
+    )?;
+    if n > 0 {
+        put_listing(
+            conn,
+            &person_listing_key(actor),
+            &ListingItem::Gone { actor: *actor },
+        )?;
+        forget_key_if_unused(conn, actor)?;
+    }
+    Ok(n > 0)
+}
+
+fn forget_machine(conn: &Connection, machine: &EndpointId) -> Result<()> {
+    conn.execute(
+        "DELETE FROM map WHERE machine = ?1",
+        params![machine.to_string()],
+    )?;
+    conn.execute(
+        "DELETE FROM listing WHERE key = ?1",
+        params![machine_listing_key(machine)],
+    )?;
+    Ok(())
+}
+
+/// Forgets what's known of a stranger's keys, once nothing here needs it, so
+/// strangers coming and going can't fill the table (`verify_received`).
+fn forget_key_if_unused(conn: &Connection, actor: &PublicKey) -> Result<()> {
+    conn.execute(
+        "DELETE FROM identity_keys WHERE actor = ?1
+             AND NOT EXISTS (SELECT 1 FROM listed WHERE actor = ?1)
+             AND NOT EXISTS (SELECT 1 FROM follows WHERE actor = ?1)
+             AND NOT EXISTS (SELECT 1 FROM profiles WHERE actor = ?1)
+             AND NOT EXISTS (SELECT 1 FROM objects WHERE actor = ?1)",
+        params![actor.to_string()],
+    )?;
+    Ok(())
 }
 
 /// Runs the migrations this database hasn't had yet, each in one transaction.
@@ -3055,6 +3417,165 @@ mod tests {
         };
         let obj = SignedObject::sign(key, &Payload::Person(person.clone())).unwrap();
         (person, obj)
+    }
+
+    fn a_machine_record(byte: u8) -> (EndpointId, MachineRecord) {
+        let key = SecretKey::from_bytes(&[byte; 32]);
+        let record = MachineRecord::new(&key, vec![], "2026-11-01T00:00:00Z".into()).unwrap();
+        (key.public(), record)
+    }
+
+    fn map_has(db: &Db, machine: &EndpointId) -> bool {
+        db.heard_machine(machine, 0).unwrap().is_some()
+    }
+
+    fn numbers(db: &Db, since: u64) -> Vec<u64> {
+        let (entries, _) = db.listing_since(since, 100).unwrap();
+        entries.iter().map(|entry| entry.seq).collect()
+    }
+
+    #[test]
+    fn a_page_of_the_lists_stops_at_its_size_with_at_least_one_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(&dir.path().join("t.db")).unwrap();
+        assert_eq!(db.listing_since(0, 10).unwrap().1, 0);
+        let key = SecretKey::from_bytes(&[1; 32]);
+        let (_, profile) = signed_person(&key, "Alice", None);
+        let (note, _) = signed_note(&key, &"x".repeat(9_000), EARLIER);
+        let item = ListingItem::Person {
+            profile,
+            posts: vec![note; 2],
+        };
+        for byte in 2..12 {
+            let actor = SecretKey::from_bytes(&[byte; 32]).public();
+            db.put_listed(&actor, &item, 1, 0).unwrap();
+        }
+
+        let (page, latest) = db.listing_since(0, 100).unwrap();
+        assert!((1..10).contains(&page.len()), "{} entries", page.len());
+        let bytes: usize = page
+            .iter()
+            .map(|entry| serde_json::to_vec(&entry.item).unwrap().len())
+            .sum();
+        assert!(bytes <= MAX_LISTING_PAGE_BYTES, "{bytes} bytes");
+        assert_eq!(latest, 10);
+        assert_eq!(db.listing_since(0, 2).unwrap().0.len(), 2);
+        // The rest come with the next page, in order.
+        let rest = numbers(&db, page.last().unwrap().seq);
+        assert_eq!(rest[0], page.last().unwrap().seq + 1);
+    }
+
+    #[test]
+    fn an_entry_takes_a_new_number_only_if_it_changed() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(&dir.path().join("t.db")).unwrap();
+        let key = SecretKey::from_bytes(&[1; 32]);
+        let actor = key.public();
+        let (_, profile) = signed_person(&key, "Alice", None);
+        let (note, _) = signed_note(&key, "A post", EARLIER);
+        db.add_listed(&actor, &actor).unwrap();
+        let bare = ListingItem::Person {
+            profile: profile.clone(),
+            posts: vec![],
+        };
+        db.put_listed(&actor, &bare, 1, 0).unwrap();
+        assert_eq!(numbers(&db, 0), [1]);
+        db.put_listed(&actor, &bare, 2, 0).unwrap();
+        assert_eq!(numbers(&db, 0), [1]);
+        let with_post = ListingItem::Person {
+            profile,
+            posts: vec![note],
+        };
+        db.put_listed(&actor, &with_post, 3, 0).unwrap();
+        assert_eq!(numbers(&db, 0), [2]);
+        assert_eq!(db.listed_due(0).unwrap()[0].latest, 3);
+    }
+
+    #[test]
+    fn the_newest_number_never_goes_down() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(&dir.path().join("t.db")).unwrap();
+        let (machine, record) = a_machine_record(1);
+        db.put_machine(&machine, &record, 100).unwrap();
+        db.forget_silent_machines(101).unwrap();
+        let (entries, latest) = db.listing_since(0, 10).unwrap();
+        assert!(entries.is_empty());
+        assert_eq!(latest, 1);
+    }
+
+    #[test]
+    fn those_silent_too_long_are_dropped() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(&dir.path().join("t.db")).unwrap();
+        let (answered, asked_lately, never) = (
+            SecretKey::from_bytes(&[1; 32]).public(),
+            SecretKey::from_bytes(&[2; 32]).public(),
+            SecretKey::from_bytes(&[3; 32]).public(),
+        );
+        for actor in [answered, asked_lately, never] {
+            db.add_listed(&actor, &actor).unwrap();
+        }
+        let now = now_ms();
+        db.conn()
+            .execute(
+                "UPDATE listed SET asked_ms = ?1 WHERE actor != ?2",
+                params![now - 1000, asked_lately.to_string()],
+            )
+            .unwrap();
+        db.set_listed_read(&answered, 0, now).unwrap();
+
+        assert_eq!(db.drop_silent_listed(now - 500).unwrap(), 1);
+        assert_eq!(db.listed_node(&never).unwrap(), None);
+        assert_eq!(db.listed_count().unwrap(), 2);
+        let (entries, _) = db.listing_since(0, 10).unwrap();
+        assert_eq!(entries[0].item, ListingItem::Gone { actor: never });
+
+        // Nor do those never listed leave a mark.
+        assert!(!db.drop_listed(&never).unwrap());
+        assert_eq!(db.listing_since(0, 10).unwrap().0.len(), 1);
+
+        let (quiet, record) = a_machine_record(4);
+        let (heard, other) = a_machine_record(5);
+        db.put_machine(&quiet, &record, now - 1000).unwrap();
+        db.put_machine(&heard, &other, now - 1000).unwrap();
+        db.heard_machine(&heard, now).unwrap();
+        db.forget_silent_machines(now - 500).unwrap();
+        assert!(!map_has(&db, &quiet));
+        assert!(map_has(&db, &heard));
+        let (entries, _) = db.listing_since(0, 10).unwrap();
+        assert!(matches!(
+            entries.last().unwrap().item,
+            ListingItem::Machine { .. }
+        ));
+        assert_eq!(db.directory_counts().unwrap(), (2, 1));
+    }
+
+    #[test]
+    fn a_full_map_loses_whichever_was_heard_from_longest_ago() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(&dir.path().join("t.db")).unwrap();
+        {
+            let conn = db.conn();
+            let tx = conn.unchecked_transaction().unwrap();
+            for i in 0..MAX_MAP {
+                tx.execute(
+                    "INSERT INTO map (machine, heard_ms, greeted_ms) VALUES (?1, ?2, 0)",
+                    params![format!("{i:064x}"), 1000 + i],
+                )
+                .unwrap();
+            }
+            tx.commit().unwrap();
+        }
+        let (oldest, record) = a_machine_record(1);
+        db.put_machine(&oldest, &record, 10).unwrap();
+        assert_eq!(db.directory_counts().unwrap().1 as i64, MAX_MAP);
+        assert!(!map_has(&db, &oldest));
+
+        // Something with a real place pushes out the longest quiet.
+        let (newer, record) = a_machine_record(2);
+        db.put_machine(&newer, &record, 1_000_000).unwrap();
+        assert!(map_has(&db, &newer));
+        assert_eq!(db.directory_counts().unwrap().1 as i64, MAX_MAP);
     }
 
     /// The text of each post a search finds, in order.
