@@ -12,10 +12,12 @@ use std::{
 use anyhow::{Context, Result, ensure};
 use iroh::{EndpointAddr, EndpointId, PublicKey};
 use osp_proto::{
-    BlobHash, BoundEndpoint, EarlierKeys, EndpointKind, Key, Note, ObjectId, Payload, SignedObject,
+    BlobHash, BoundEndpoint, EarlierKeys, EndpointKind, Key, Note, ObjectId, Payload, Person,
+    SignedObject,
     rpc::{FollowInfo, PeerCounts, StorageInfo, Upload, UploadId},
 };
 use rusqlite::{Connection, OptionalExtension, params};
+use tracing::info;
 
 use crate::{peers, trust};
 
@@ -186,6 +188,30 @@ const MIGRATIONS: &[&str] = &[
     // a host of our media, and how to reach it (ADR 0014).
     "ALTER TABLE followers ADD COLUMN host TEXT",
 ];
+
+/// The search index (ADR 0014): a number for each post, by its object ID, and
+/// each profile, by its identity, and FTS5's index of their words by that
+/// number. The words themselves stay only in the signed objects.
+///
+/// It's derived from `objects` and `profiles`, so it isn't in `MIGRATIONS`:
+/// `Db::open` builds it whenever it's missing. To change it, say for another
+/// tokenizer, a migration drops both tables.
+const SEARCH_SCHEMA: &str = "
+CREATE TABLE search_items (
+    id  INTEGER PRIMARY KEY,
+    key TEXT NOT NULL UNIQUE
+);
+CREATE VIRTUAL TABLE search_text USING fts5(
+    text,
+    content = '',
+    contentless_delete = 1,
+    tokenize = 'unicode61 remove_diacritics 2'
+);
+";
+
+/// Words of a search that count. Far more than anyone types; the rest of a
+/// long paste is ignored rather than making the node match all of it.
+const MAX_SEARCH_WORDS: usize = 32;
 
 /// Hosts remembered per blob. More than enough to find a copy; a peer
 /// can't grow the table without bound by naming hosts.
@@ -372,6 +398,8 @@ impl Db {
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.execute_batch(SCHEMA)?;
         migrate(&conn).with_context(|| format!("updating {}", path.display()))?;
+        build_search_index(&conn)
+            .with_context(|| format!("building the search index of {}", path.display()))?;
         Ok(Self {
             conn: Mutex::new(conn),
         })
@@ -424,13 +452,15 @@ impl Db {
         let published = osp_proto::parse_rfc3339_ms(payload.published())
             .unwrap_or(received)
             .min(received);
+        let id = obj.id().to_string();
         let conn = self.conn();
-        let n = conn.execute(
+        let tx = conn.unchecked_transaction()?;
+        let n = tx.execute(
             "INSERT OR IGNORE INTO objects
                  (id, actor, kind, published_ms, received_ms, signed, feed_ms)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             params![
-                obj.id().to_string(),
+                id,
                 payload.actor().to_string(),
                 payload.kind(),
                 published,
@@ -442,8 +472,10 @@ impl Db {
         if n > 0
             && let Payload::Note(note) = payload
         {
-            declare_sizes(&conn, note)?;
+            declare_sizes(&tx, note)?;
+            index_for_search(&tx, &id, &note.content)?;
         }
+        tx.commit()?;
         Ok(n > 0)
     }
 
@@ -918,6 +950,7 @@ impl Db {
         }
         for (id, received) in &dropped {
             tx.execute("DELETE FROM objects WHERE id = ?1", params![id])?;
+            remove_from_search(&tx, id)?;
             if refetch {
                 tx.execute(
                     "INSERT OR IGNORE INTO refetch (id, actor, received_ms) VALUES (?1, ?2, ?3)",
@@ -939,6 +972,7 @@ impl Db {
                 "DELETE FROM profiles WHERE actor = ?1",
                 params![actor.to_string()],
             )?;
+            remove_from_search(&tx, &actor.to_string())?;
         }
         tx.commit()?;
         Ok(dropped.len())
@@ -973,12 +1007,31 @@ impl Db {
 
     // ---- profiles ----
 
-    pub fn upsert_profile(&self, actor: &PublicKey, name: &str, obj: &SignedObject) -> Result<()> {
-        self.conn().execute(
+    /// Stores `obj`, the signed form of `person`, in place of the identity's
+    /// profile. Every sync brings the profile again, usually unchanged, and
+    /// then nothing is written.
+    pub fn upsert_profile(&self, person: &Person, obj: &SignedObject) -> Result<()> {
+        let actor = person.actor.to_string();
+        let signed = serde_json::to_string(obj)?;
+        let conn = self.conn();
+        let stored: Option<String> = conn
+            .query_row(
+                "SELECT signed FROM profiles WHERE actor = ?1",
+                params![actor],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if stored.as_ref() == Some(&signed) {
+            return Ok(());
+        }
+        let tx = conn.unchecked_transaction()?;
+        tx.execute(
             "INSERT INTO profiles (actor, name, signed) VALUES (?1, ?2, ?3)
              ON CONFLICT(actor) DO UPDATE SET name = excluded.name, signed = excluded.signed",
-            params![actor.to_string(), name, serde_json::to_string(obj)?],
+            params![actor, person.name, signed],
         )?;
+        index_for_search(&tx, &actor, &profile_text(person))?;
+        tx.commit()?;
         Ok(())
     }
 
@@ -1004,6 +1057,46 @@ impl Db {
                 |row| row.get(0),
             )
             .optional()?)
+    }
+
+    // ---- search (ADR 0014) ----
+
+    /// Stored posts matching what a person typed: the best match first, and
+    /// among equals the newest.
+    pub fn search_posts(&self, words: &str, limit: u32) -> Result<Vec<SignedObject>> {
+        self.search(
+            words,
+            limit,
+            "SELECT objects.signed FROM search_text
+             JOIN search_items ON search_items.id = search_text.rowid
+             JOIN objects ON objects.id = search_items.key
+             WHERE search_text MATCH ?1
+             ORDER BY bm25(search_text), objects.published_ms DESC LIMIT ?2",
+        )
+    }
+
+    /// Stored profiles matching what a person typed: the best match first.
+    pub fn search_profiles(&self, words: &str, limit: u32) -> Result<Vec<SignedObject>> {
+        self.search(
+            words,
+            limit,
+            "SELECT profiles.signed FROM search_text
+             JOIN search_items ON search_items.id = search_text.rowid
+             JOIN profiles ON profiles.actor = search_items.key
+             WHERE search_text MATCH ?1
+             ORDER BY bm25(search_text), profiles.name LIMIT ?2",
+        )
+    }
+
+    fn search(&self, words: &str, limit: u32, sql: &str) -> Result<Vec<SignedObject>> {
+        let Some(query) = search_query(words) else {
+            return Ok(vec![]);
+        };
+        let conn = self.conn();
+        let mut stmt = conn.prepare(sql)?;
+        let rows = stmt.query_map(params![query, limit], |row| row.get::<_, String>(0))?;
+        rows.map(|r| serde_json::from_str(&r?).context("corrupt stored object"))
+            .collect()
     }
 
     // ---- blobs ----
@@ -2016,6 +2109,105 @@ fn backfill_declared_sizes(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+/// The words of a profile that a search looks through.
+fn profile_text(person: &Person) -> String {
+    match &person.summary {
+        Some(summary) => format!("{}\n{summary}", person.name),
+        None => person.name.clone(),
+    }
+}
+
+/// Puts `text` in the search index for one post or profile, in place of what
+/// the index held for it.
+fn index_for_search(conn: &Connection, key: &str, text: &str) -> Result<()> {
+    let id: i64 = conn.query_row(
+        "INSERT INTO search_items (key) VALUES (?1)
+         ON CONFLICT (key) DO UPDATE SET key = key
+         RETURNING id",
+        params![key],
+        |row| row.get(0),
+    )?;
+    conn.execute(
+        "INSERT OR REPLACE INTO search_text (rowid, text) VALUES (?1, ?2)",
+        params![id, text],
+    )?;
+    Ok(())
+}
+
+fn remove_from_search(conn: &Connection, key: &str) -> Result<()> {
+    let id: Option<i64> = conn
+        .query_row(
+            "DELETE FROM search_items WHERE key = ?1 RETURNING id",
+            params![key],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if let Some(id) = id {
+        conn.execute("DELETE FROM search_text WHERE rowid = ?1", params![id])?;
+    }
+    Ok(())
+}
+
+/// Builds the search index if it's missing, from the posts and profiles
+/// stored: on a database from before it, or one it was dropped from.
+fn build_search_index(conn: &Connection) -> Result<()> {
+    let built: bool = conn.query_row(
+        "SELECT EXISTS (SELECT 1 FROM sqlite_schema WHERE name = 'search_text')",
+        [],
+        |row| row.get(0),
+    )?;
+    if built {
+        return Ok(());
+    }
+    let tx = conn.unchecked_transaction()?;
+    tx.execute_batch(SEARCH_SCHEMA)?;
+    let mut indexed = 0;
+    {
+        let mut stmt = tx.prepare(
+            "SELECT signed FROM objects WHERE kind = 'Note'
+             UNION ALL SELECT signed FROM profiles",
+        )?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+        for json in rows {
+            let obj: SignedObject =
+                serde_json::from_str(&json?).context("corrupt stored object")?;
+            // Checked when it arrived; one that fails today's checks can't be
+            // shown, so it isn't indexed.
+            match obj.verify() {
+                Ok(Payload::Note(note)) => {
+                    index_for_search(&tx, &obj.id().to_string(), &note.content)?;
+                }
+                Ok(Payload::Person(person)) => {
+                    index_for_search(&tx, &person.actor.to_string(), &profile_text(&person))?;
+                }
+                _ => continue,
+            }
+            indexed += 1;
+        }
+    }
+    tx.commit()?;
+    if indexed > 0 {
+        info!(indexed, "built the search index");
+    }
+    Ok(())
+}
+
+/// What a person typed, as an FTS5 query: every word has to start a word in
+/// the text, so `table` finds "tables". FTS5 has a query syntax of its own,
+/// so each word goes in quotes, which leaves `OR`, `NEAR(`, `text:` and `*`
+/// plain words. `None` if nothing was typed.
+fn search_query(words: &str) -> Option<String> {
+    let words: Vec<String> = words
+        .split_whitespace()
+        .take(MAX_SEARCH_WORDS)
+        // SQLite reads a NUL as the end of the query, leaving a quote open.
+        .map(|word| word.replace(char::is_control, ""))
+        .filter(|word| !word.is_empty())
+        .map(|word| format!("\"{}\"*", word.replace('"', "\"\"")))
+        .collect();
+    (!words.is_empty()).then(|| words.join(" "))
+}
+
 fn format_ms(ms: i64) -> String {
     let t = UNIX_EPOCH + std::time::Duration::from_millis(ms.max(0) as u64);
     humantime::format_rfc3339_seconds(t).to_string()
@@ -2833,5 +3025,416 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM hosts", [], |row| row.get(0))
             .unwrap();
         assert_eq!(stored, MAX_HOSTS_PER_BLOB);
+    }
+
+    fn signed_note(key: &SecretKey, content: &str, published: &str) -> (SignedObject, Payload) {
+        let payload = Payload::Note(Note {
+            actor: key.public(),
+            content: content.into(),
+            published: published.into(),
+            attachment: vec![],
+            in_reply_to: None,
+        });
+        (SignedObject::sign(key, &payload).unwrap(), payload)
+    }
+
+    fn store_note(db: &Db, key: &SecretKey, content: &str, published: &str) -> ObjectId {
+        let (obj, payload) = signed_note(key, content, published);
+        assert!(db.insert_object(&obj, &payload).unwrap());
+        obj.id()
+    }
+
+    fn signed_person(key: &SecretKey, name: &str, summary: Option<&str>) -> (Person, SignedObject) {
+        let person = Person {
+            actor: key.public(),
+            name: name.into(),
+            summary: summary.map(String::from),
+            nodes: vec![],
+            published: osp_proto::now_rfc3339(),
+        };
+        let obj = SignedObject::sign(key, &Payload::Person(person.clone())).unwrap();
+        (person, obj)
+    }
+
+    /// The text of each post a search finds, in order.
+    fn found_posts(db: &Db, words: &str) -> Vec<String> {
+        db.search_posts(words, 50)
+            .unwrap()
+            .iter()
+            .map(|obj| match obj.verify().unwrap() {
+                Payload::Note(note) => note.content,
+                other => panic!("found {other:?}"),
+            })
+            .collect()
+    }
+
+    /// The name on each profile a search finds, in order.
+    fn found_people(db: &Db, words: &str) -> Vec<String> {
+        db.search_profiles(words, 50)
+            .unwrap()
+            .iter()
+            .map(|obj| match obj.verify().unwrap() {
+                Payload::Person(person) => person.name,
+                other => panic!("found {other:?}"),
+            })
+            .collect()
+    }
+
+    /// How many things the index itself holds under `word`. A search would
+    /// also check each is still stored.
+    fn indexed(db: &Db, word: &str) -> i64 {
+        db.conn()
+            .query_row(
+                "SELECT COUNT(*) FROM search_text WHERE search_text MATCH ?1",
+                params![word],
+                |row| row.get(0),
+            )
+            .unwrap()
+    }
+
+    const EARLIER: &str = "2026-01-01T00:00:00Z";
+    const LATER: &str = "2026-02-01T00:00:00Z";
+
+    #[test]
+    fn a_search_finds_words_their_starts_and_letters_without_accents() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(&dir.path().join("t.db")).unwrap();
+        let key = SecretKey::generate();
+        let text = "The Final Cut of my #woodworking tables, at a Café in Zürich";
+        store_note(&db, &key, text, EARLIER);
+        store_note(&db, &key, "Something else entirely", EARLIER);
+        for words in [
+            "final",
+            "FINAL",
+            "table",
+            "wood",
+            "#woodworking",
+            "cafe",
+            "CAFÉ",
+            "zurich",
+            "  cut   final  ",
+        ] {
+            assert_eq!(found_posts(&db, words), [text], "searching for {words:?}");
+        }
+        // Every word has to be there.
+        assert!(found_posts(&db, "final entirely").is_empty());
+        assert!(found_posts(&db, "ood").is_empty());
+    }
+
+    #[test]
+    fn a_search_shows_the_best_match_first_then_the_newest() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(&dir.path().join("t.db")).unwrap();
+        let key = SecretKey::generate();
+        let best = "oak oak oak oak";
+        let long = "oak among a good many other words that have nothing to do with it at all";
+        store_note(&db, &key, best, EARLIER);
+        store_note(&db, &key, long, LATER);
+        store_note(&db, &key, "pine, with nothing else to say", LATER);
+        assert_eq!(found_posts(&db, "oak"), [best, long]);
+
+        // The same words, so only the date tells these apart.
+        let id_old = store_note(&db, &key, "elm table", EARLIER);
+        let id_new = store_note(&db, &key, "elm table", LATER);
+        let ids: Vec<ObjectId> = db
+            .search_posts("elm", 50)
+            .unwrap()
+            .iter()
+            .map(|obj| obj.id())
+            .collect();
+        assert_eq!(ids, [id_new, id_old]);
+        assert_eq!(db.search_posts("elm", 1).unwrap()[0].id(), id_new);
+    }
+
+    #[test]
+    fn what_someone_types_is_only_ever_words_to_look_for() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(&dir.path().join("t.db")).unwrap();
+        let key = SecretKey::generate();
+        let both = "apple and pear";
+        let apple = "just an apple";
+        let pear = "just a pear";
+        for text in [both, apple, pear] {
+            store_note(&db, &key, text, EARLIER);
+        }
+
+        // FTS5's operators would change these; as words, nothing matches them.
+        for words in [
+            "apple OR pear",
+            "apple NOT pear",
+            "NOT apple",
+            "apple AND pear AND nothing",
+            "NEAR(apple pear)",
+            "text:apple",
+            "{text}:apple",
+            "(apple OR pear)",
+            "^just AND pear OR apple",
+        ] {
+            assert!(
+                found_posts(&db, words).is_empty(),
+                "searching for {words:?}"
+            );
+        }
+        // Punctuation is only punctuation, on its own or stuck to a word.
+        for words in [
+            "\"", "\"\"", "\"\"\"", "*", "**", "(", ")", "()", ":", "^", "-", "+", "'", "--", ";",
+            "\\", "\0", "\0\0", "\u{7}", "NEAR", "!!!", "\"*", "*\"",
+        ] {
+            found_posts(&db, words);
+            found_people(&db, words);
+        }
+        for words in [
+            "apple\"",
+            "\"apple",
+            "\"apple\"",
+            "apple*",
+            "*apple",
+            "apple)",
+            "(apple",
+            "ap\0ple",
+            "\0apple",
+            "apple !!!",
+            "!!! apple",
+            "apple \"",
+            "\" apple",
+            "apple *",
+        ] {
+            let mut found = found_posts(&db, words);
+            found.sort();
+            assert_eq!(found, [both, apple], "searching for {words:?}");
+        }
+        // Nothing to look for.
+        for words in ["", "   ", "\n\t", "\0", "\u{7} \u{1}"] {
+            assert_eq!(search_query(words), None, "searching for {words:?}");
+            assert!(found_posts(&db, words).is_empty());
+        }
+
+        // Very long input: past the limit on words, the rest doesn't count.
+        let many = format!("apple {}", "z ".repeat(100_000));
+        assert!(found_posts(&db, &many).is_empty());
+        let many = format!("{}pear", "apple ".repeat(MAX_SEARCH_WORDS));
+        let mut found = found_posts(&db, &many);
+        found.sort();
+        assert_eq!(found, [both, apple]);
+        assert!(found_posts(&db, &"x".repeat(1 << 20)).is_empty());
+    }
+
+    #[test]
+    fn what_a_post_says_is_only_ever_text() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(&dir.path().join("t.db")).unwrap();
+        let key = SecretKey::generate();
+        let tricky = "a\0b \"unclosed (OR) NEAR( text:x '; DROP TABLE objects; --";
+        store_note(&db, &key, tricky, EARLIER);
+        // No text at all: a post of only media.
+        store_note(&db, &key, "", EARLIER);
+        assert_eq!(found_posts(&db, "unclosed"), [tricky]);
+        assert_eq!(found_posts(&db, "drop table"), [tricky]);
+    }
+
+    #[test]
+    fn a_post_stored_twice_is_found_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(&dir.path().join("t.db")).unwrap();
+        let (obj, payload) = signed_note(&SecretKey::generate(), "once", EARLIER);
+        assert!(db.insert_object(&obj, &payload).unwrap());
+        assert!(!db.insert_object(&obj, &payload).unwrap());
+        assert_eq!(found_posts(&db, "once"), ["once"]);
+    }
+
+    #[test]
+    fn a_newer_profile_takes_the_old_ones_place_in_a_search() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(&dir.path().join("t.db")).unwrap();
+        let (alice, bob) = (SecretKey::generate(), SecretKey::generate());
+        let (person, obj) = signed_person(&alice, "Alice Archer", Some("Makes bows"));
+        db.upsert_profile(&person, &obj).unwrap();
+        let (person, obj) = signed_person(&bob, "Bob Baker", None);
+        db.upsert_profile(&person, &obj).unwrap();
+        assert_eq!(found_people(&db, "alice"), ["Alice Archer"]);
+        assert_eq!(found_people(&db, "bows"), ["Alice Archer"]);
+        assert_eq!(found_people(&db, "baker"), ["Bob Baker"]);
+        // Posts and people are looked through apart.
+        assert!(found_posts(&db, "alice").is_empty());
+        store_note(&db, &bob, "a note about alice", EARLIER);
+        assert_eq!(found_people(&db, "alice"), ["Alice Archer"]);
+
+        let (person, obj) = signed_person(&alice, "Alice Smith", Some("Forges nails"));
+        db.upsert_profile(&person, &obj).unwrap();
+        assert_eq!(found_people(&db, "smith"), ["Alice Smith"]);
+        assert_eq!(found_people(&db, "alice"), ["Alice Smith"]);
+        assert!(found_people(&db, "archer").is_empty());
+        assert!(found_people(&db, "bows").is_empty());
+        let items: i64 = db
+            .conn()
+            .query_row("SELECT COUNT(*) FROM search_items", [], |row| row.get(0))
+            .unwrap();
+        // Both profiles, and Bob's note.
+        assert_eq!(items, 3);
+
+        // The same profile again, as every sync brings it, changes nothing.
+        let before: i64 = db
+            .conn()
+            .query_row("SELECT total_changes()", [], |row| row.get(0))
+            .unwrap();
+        db.upsert_profile(&person, &obj).unwrap();
+        let after: i64 = db
+            .conn()
+            .query_row("SELECT total_changes()", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(after, before);
+    }
+
+    #[test]
+    fn what_a_revoked_key_signed_leaves_the_index_too() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(&dir.path().join("t.db")).unwrap();
+        let alice = SecretKey::generate();
+        let certify = |published: &str, earlier| {
+            osp_proto::CertifiedKey::certify(
+                &alice,
+                SecretKey::generate(),
+                published.into(),
+                earlier,
+            )
+            .unwrap()
+        };
+        let old = certify(EARLIER, EarlierKeys::Retired);
+        let new = certify(LATER, EarlierKeys::Revoked);
+        for (key, text) in [(&old, "oldkey post"), (&new, "newkey post")] {
+            let payload = signed_note(&alice, text, EARLIER).1;
+            let obj = SignedObject::sign_certified(key, &payload).unwrap();
+            assert!(db.insert_object(&obj, &payload).unwrap());
+        }
+        let (person, _) = signed_person(&alice, "Oldkey Alice", None);
+        let payload = Payload::Person(person.clone());
+        let obj = SignedObject::sign_certified(&old, &payload).unwrap();
+        db.upsert_profile(&person, &obj).unwrap();
+
+        assert_eq!(indexed(&db, "oldkey"), 2);
+        assert_eq!(found_people(&db, "alice"), ["Oldkey Alice"]);
+
+        let before = osp_proto::parse_rfc3339_ms(LATER).unwrap();
+        assert_eq!(db.drop_revoked(&alice.public(), before, false).unwrap(), 1);
+        assert_eq!(indexed(&db, "oldkey"), 0);
+        assert_eq!(indexed(&db, "newkey"), 1);
+        assert_eq!(found_posts(&db, "post"), ["newkey post"]);
+        assert!(found_people(&db, "alice").is_empty());
+        let items: i64 = db
+            .conn()
+            .query_row("SELECT COUNT(*) FROM search_items", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(items, 1);
+    }
+
+    #[test]
+    fn a_post_taken_out_of_the_index_is_gone_even_after_a_vacuum() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(&dir.path().join("t.db")).unwrap();
+        let key = SecretKey::generate();
+        let ids: Vec<ObjectId> = (0..20)
+            .map(|i| store_note(&db, &key, &format!("post{i}th"), EARLIER))
+            .collect();
+        // Gaps in the objects table, for `VACUUM` to close.
+        for id in ids.iter().step_by(2) {
+            db.conn()
+                .execute("DELETE FROM objects WHERE id = ?1", params![id.to_string()])
+                .unwrap();
+            remove_from_search(&db.conn(), &id.to_string()).unwrap();
+        }
+        db.conn().execute_batch("VACUUM").unwrap();
+        for i in 0..20 {
+            let found = found_posts(&db, &format!("post{i}th"));
+            assert_eq!(found.len(), i % 2, "post {i}");
+        }
+        remove_from_search(&db.conn(), &ids[1].to_string()).unwrap();
+        assert!(found_posts(&db, "post1th").is_empty());
+        assert_eq!(found_posts(&db, "post3th"), ["post3th"]);
+    }
+
+    #[test]
+    fn a_database_from_before_search_is_indexed_when_opened() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("old.db");
+        let key = SecretKey::generate();
+        let (note, _) = signed_note(&key, "written before search", EARLIER);
+        let (_, profile) = signed_person(&key, "Early Bird", Some("Was here first"));
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(SCHEMA).unwrap();
+            for sql in MIGRATIONS {
+                conn.execute_batch(sql).unwrap();
+            }
+            conn.pragma_update(None, "user_version", MIGRATIONS.len() as i64)
+                .unwrap();
+            let actor = key.public().to_string();
+            conn.execute(
+                "INSERT INTO objects (id, actor, kind, published_ms, received_ms, signed)
+                 VALUES (?1, ?2, 'Note', 1, 1, ?3)",
+                params![
+                    note.id().to_string(),
+                    actor,
+                    serde_json::to_string(&note).unwrap()
+                ],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO profiles (actor, name, signed) VALUES (?1, 'Early Bird', ?2)",
+                params![actor, serde_json::to_string(&profile).unwrap()],
+            )
+            .unwrap();
+        }
+        let db = Db::open(&path).unwrap();
+        assert_eq!(found_posts(&db, "written"), ["written before search"]);
+        assert_eq!(found_people(&db, "early"), ["Early Bird"]);
+        assert_eq!(found_people(&db, "first"), ["Early Bird"]);
+        drop(db);
+
+        // Opening again doesn't build it twice.
+        let db = Db::open(&path).unwrap();
+        assert_eq!(found_posts(&db, "written"), ["written before search"]);
+        let (obj, payload) = signed_note(&key, "written after search", LATER);
+        assert!(db.insert_object(&obj, &payload).unwrap());
+
+        // Lost, it comes back from the posts and profiles stored.
+        db.conn()
+            .execute_batch("DROP TABLE search_text; DROP TABLE search_items;")
+            .unwrap();
+        drop(db);
+        let db = Db::open(&path).unwrap();
+        assert_eq!(
+            found_posts(&db, "written"),
+            ["written after search", "written before search"]
+        );
+        assert_eq!(found_people(&db, "early"), ["Early Bird"]);
+    }
+
+    #[test]
+    fn a_stored_post_that_no_longer_checks_out_isnt_indexed() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.db");
+        let db = Db::open(&path).unwrap();
+        let key = SecretKey::generate();
+        store_note(&db, &key, "one good post", EARLIER);
+        let bad = store_note(&db, &key, "one bad post", EARLIER);
+        // Its row now holds different words under the same signature.
+        let (obj, _) = signed_note(&key, "one bad post", EARLIER);
+        let (changed, _) = signed_note(&key, "one changed post", EARLIER);
+        let mut json = serde_json::to_value(obj).unwrap();
+        json["payload"] = serde_json::to_value(changed).unwrap()["payload"].clone();
+        db.conn()
+            .execute(
+                "UPDATE objects SET signed = ?2 WHERE id = ?1",
+                params![bad.to_string(), json.to_string()],
+            )
+            .unwrap();
+        db.conn()
+            .execute_batch("DROP TABLE search_text; DROP TABLE search_items;")
+            .unwrap();
+        drop(db);
+        let db = Db::open(&path).unwrap();
+        assert_eq!(found_posts(&db, "one"), ["one good post"]);
+        assert_eq!(indexed(&db, "good"), 1);
+        assert_eq!(indexed(&db, "changed"), 0);
     }
 }

@@ -172,6 +172,40 @@ async fn a_phone_pairs_with_the_direct_endpoint() {
     node.shutdown().await.unwrap();
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn a_phone_searches_what_its_node_has_received() {
+    let dir = tempfile::tempdir().unwrap();
+    let node = start_node(dir.path(), "Alice").await;
+    let req = ClientRequest::Post {
+        content: "A table of green oak".into(),
+        attachments: vec![],
+        uploads: vec![],
+        upload: None,
+    };
+    assert!(matches!(
+        node.handle(req).await,
+        ClientResponse::Posted { .. }
+    ));
+    let phone = Client::open(&dir.path().join("phone"), ClientOptions::local_test())
+        .await
+        .unwrap();
+    phone
+        .pair(&new_pairing(&node).await, "Test phone")
+        .await
+        .unwrap();
+
+    let (people, posts) = phone.search("oak", 50).await.unwrap();
+    assert!(people.is_empty());
+    assert_eq!(posts.len(), 1);
+    assert_eq!(posts[0].content, "A table of green oak");
+    let (people, posts) = phone.search("alice", 50).await.unwrap();
+    assert_eq!(people.len(), 1);
+    assert_eq!(people[0].actor, node.identity());
+    assert!(posts.is_empty());
+    phone.shutdown().await;
+    node.shutdown().await.unwrap();
+}
+
 /// Over Tor a sync takes up to minutes, so a phone asking for one isn't kept
 /// waiting for it (ADR 0014); what arrives is in the feed when it looks again.
 #[tokio::test(flavor = "multi_thread")]

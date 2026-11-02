@@ -218,9 +218,7 @@ impl Core {
                 };
                 // One dated far ahead would outrank every later move (ADR 0009).
                 match profile_date(&person) {
-                    Ok(_) => self
-                        .db
-                        .upsert_profile(&person.actor, &person.name, &profile)?,
+                    Ok(_) => self.db.upsert_profile(&person, &profile)?,
                     Err(e) => warn!(%actor, "keeping the profile we have: {e:#}"),
                 }
             }
@@ -329,7 +327,7 @@ impl Core {
                     Payload::Person(person) if wanted_authors.contains(&person.actor) => {
                         // Second-hand, possibly stale: only use it if we know nothing better.
                         if self.db.profile(&person.actor)?.is_none() {
-                            self.db.upsert_profile(&person.actor, &person.name, &obj)?;
+                            self.db.upsert_profile(person, &obj)?;
                         }
                     }
                     Payload::Note(note) if wanted_posts.contains(&obj.id()) => {

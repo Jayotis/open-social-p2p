@@ -424,7 +424,7 @@ impl Core {
                 "this profile is older than the one we have"
             );
         }
-        self.db.upsert_profile(&actor, &person.name, profile)?;
+        self.db.upsert_profile(&person, profile)?;
         remember(&self.lookup, addr);
         // A different node: the follow starts over there (`upsert_follow`),
         // and the sync this wakes subscribes to it.

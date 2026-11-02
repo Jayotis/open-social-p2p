@@ -16,7 +16,7 @@ use osp_proto::{
     framing::{read_frame, write_frame},
     rpc::{
         AttachmentInfo, ClientRequest, ClientResponse, FeedItem, FetchedFile, PeerRecord,
-        ResharedBy, StatusInfo,
+        PersonInfo, ResharedBy, StatusInfo,
     },
     social::SocialRequest,
     types::{MAX_ATTACHMENTS, MAX_CONTENT_BYTES},
@@ -123,6 +123,7 @@ impl Core {
             ClientRequest::Show { id } => ClientResponse::Item {
                 item: self.show(&id).await?,
             },
+            ClientRequest::Search { words, limit } => self.search(&words, limit.min(100)).await?,
             ClientRequest::Reshare { id, host } => ClientResponse::Posted {
                 id: self.reshare(&id, host).await?,
             },
@@ -569,6 +570,30 @@ impl Core {
         self.feed_item(&obj)
             .await?
             .context("object is not a post or its original isn't available")
+    }
+
+    /// Looks through what this node has received. A reshare has no words of
+    /// its own: the post it reshares is stored too, and found as itself.
+    async fn search(&self, words: &str, limit: u32) -> Result<ClientResponse> {
+        let followed: HashSet<_> = self.db.follows()?.iter().map(|f| f.actor).collect();
+        let mut people = Vec::new();
+        for obj in self.db.search_profiles(words, limit)? {
+            if let Ok(Payload::Person(person)) = obj.verify() {
+                people.push(PersonInfo {
+                    actor: person.actor,
+                    name: person.name,
+                    summary: person.summary,
+                    followed: followed.contains(&person.actor),
+                });
+            }
+        }
+        let mut posts = Vec::new();
+        for obj in self.db.search_posts(words, limit)? {
+            if let Some(item) = self.feed_item(&obj).await? {
+                posts.push(item);
+            }
+        }
+        Ok(ClientResponse::Found { people, posts })
     }
 
     /// Turns a stored Note or Announce into a feed item; None if it can't be shown.

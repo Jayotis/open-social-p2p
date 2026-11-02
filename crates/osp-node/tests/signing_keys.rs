@@ -53,6 +53,21 @@ async fn feed_texts(node: &Node) -> Vec<String> {
     }
 }
 
+/// The names on the profiles and the texts of the posts a search finds.
+async fn search(node: &Node, words: &str) -> (Vec<String>, Vec<String>) {
+    let req = ClientRequest::Search {
+        words: words.into(),
+        limit: 50,
+    };
+    match call(node, req).await {
+        ClientResponse::Found { people, posts } => (
+            people.into_iter().map(|p| p.name).collect(),
+            posts.into_iter().map(|p| p.content).collect(),
+        ),
+        other => panic!("unexpected {other:?}"),
+    }
+}
+
 async fn following(node: &Node) -> Vec<FollowInfo> {
     match call(node, ClientRequest::Following).await {
         ClientResponse::Following { follows } => follows,
@@ -500,6 +515,8 @@ async fn a_follower_keeps_only_valid_copies_of_what_it_dropped() {
     let mut feed = feed_texts(&bob).await;
     feed.sort();
     assert_eq!(feed, ["one", "two"]);
+    assert_eq!(search(&bob, "one").await.1, ["one"]);
+    assert_eq!(search(&bob, "alice").await.0, ["Alice"]);
 
     // She revokes the first key. Bob drops both posts and asks her node for
     // them again, but it doesn't know how to answer yet.
@@ -510,6 +527,10 @@ async fn a_follower_keeps_only_valid_copies_of_what_it_dropped() {
     ));
     assert!(feed_texts(&bob).await.is_empty());
     assert!(!author.asked().is_empty());
+    // A search no longer finds them, and finds her newer profile once.
+    assert!(search(&bob, "one").await.1.is_empty());
+    assert!(search(&bob, "two").await.1.is_empty());
+    assert_eq!(search(&bob, "alice").await.0, ["Alice"]);
     let dropped = HashSet::from([one.id(), two.id()]);
     for ids in author.asked() {
         assert_eq!(ids.into_iter().collect::<HashSet<_>>(), dropped);
@@ -523,6 +544,9 @@ async fn a_follower_keeps_only_valid_copies_of_what_it_dropped() {
         signed(&second, &note(&alice, "not asked for")),
     ]);
     assert_eq!(feed_texts(&bob).await, ["one"]);
+    // The copy signed by the new key is found again; the other stays out.
+    assert_eq!(search(&bob, "one").await.1, ["one"]);
+    assert!(search(&bob, "two").await.1.is_empty());
     // What was asked for is forgotten, whether it came back or not.
     let asked = author.asked().len();
     feed_texts(&bob).await;
@@ -589,9 +613,13 @@ async fn a_reader_that_doesnt_follow_just_drops_what_a_revoked_key_signed() {
     let old = certify(&alice, -3600, EarlierKeys::Retired);
     carols.reshare(&carol, &signed(&old, &note(&alice, "old key")));
     assert_eq!(feed_texts(&bob).await, ["old key"]);
+    assert_eq!(search(&bob, "old").await.1, ["old key"]);
     let new = certify(&alice, 0, EarlierKeys::Revoked);
     carols.reshare(&carol, &signed(&new, &note(&alice, "new key")));
     assert_eq!(feed_texts(&bob).await, ["new key"]);
+    // With nothing to ask for it again, the post is out for good.
+    assert!(search(&bob, "old").await.1.is_empty());
+    assert_eq!(search(&bob, "new").await.1, ["new key"]);
 
     // He didn't follow her, so nothing was kept to ask her node for, even
     // once he does.
