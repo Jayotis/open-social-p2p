@@ -1,6 +1,6 @@
 # ADR 0015: Nodes meet first: machine names, and what they may say
 
-**Status:** Proposed (2026-11-01). Changes how [ADR 0014](0014-finding-people-and-private-messages.md)'s directories are used, and comes before its invited alpha. [ADR 0011](0011-measuring-peers.md)'s rule that a node's record of its peers stays private doesn't change.
+**Status:** Accepted (2026-11-01). Changes how [ADR 0014](0014-finding-people-and-private-messages.md)'s directories are used, and comes before its invited alpha. [ADR 0011](0011-measuring-peers.md)'s rule that a node's record of its peers stays private doesn't change.
 
 ## Context
 
