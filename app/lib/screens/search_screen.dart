@@ -5,8 +5,9 @@ import '../node.dart';
 import '../src/rust/api/osp.dart';
 import '../widgets/post_card.dart';
 
-/// Looks through the posts and profiles your home node has received
-/// (ADR 0014). It's only that node's copy: nothing leaves it.
+/// Looks through the posts and profiles your home node holds: from those you
+/// follow, and from the directories it reads (ADR 0015). It's only that node's
+/// copy: nothing leaves it.
 class SearchScreen extends StatefulWidget {
   const SearchScreen({super.key, required this.node});
 
@@ -92,8 +93,9 @@ class _SearchScreenState extends State<SearchScreen> {
       ),
       body: _found == null
           ? const _Message(
-              "Finds posts and people your home node has already received. "
-              "It only looks on your node, so nobody sees what you search for.",
+              "Finds posts and people your home node already holds, from "
+              "those you follow and the directories it reads. It only looks "
+              "on your node, so nobody sees what you search for.",
             )
           : FutureBuilder<Found>(
               future: _found,
@@ -127,7 +129,7 @@ class _Results extends StatelessWidget {
       children: [
         if (found.people.isNotEmpty) const _Heading('People'),
         for (final person in found.people)
-          _PersonTile(person: person, you: node.paired?.identity),
+          _PersonTile(node: node, person: person, you: node.paired?.identity),
         if (found.posts.isNotEmpty) const _Heading('Posts'),
         for (final post in found.posts) PostCard(node: node, post: post),
       ],
@@ -135,28 +137,77 @@ class _Results extends StatelessWidget {
   }
 }
 
-class _PersonTile extends StatelessWidget {
-  const _PersonTile({required this.person, required this.you});
+class _PersonTile extends StatefulWidget {
+  const _PersonTile({
+    required this.node,
+    required this.person,
+    required this.you,
+  });
 
+  final HomeNode node;
   final FoundPerson person;
 
   /// This node's identity, if known.
   final String? you;
 
   @override
+  State<_PersonTile> createState() => _PersonTileState();
+}
+
+class _PersonTileState extends State<_PersonTile> {
+  bool _following = false;
+  bool _asking = false;
+
+  /// Following is a person's act: the node then asks their own node, and what
+  /// they post reaches the feed once it answers, which may take a while.
+  Future<void> _follow() async {
+    final messenger = ScaffoldMessenger.of(context);
+    setState(() => _asking = true);
+    try {
+      await widget.node.app.followPerson(identity: widget.person.identity);
+      if (!mounted) return;
+      setState(() => _following = true);
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text(
+            "Following ${widget.person.name}. "
+            "Their posts reach your feed once their node answers.",
+          ),
+        ),
+      );
+    } catch (e) {
+      messenger.showSnackBar(
+        SnackBar(content: Text("Couldn't follow: ${describeError(e)}")),
+      );
+    } finally {
+      if (mounted) setState(() => _asking = false);
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
-    final label = person.identity == you
-        ? 'You'
-        : person.followed
-        ? 'Following'
-        : null;
+    final person = widget.person;
+    final you = person.identity == widget.you;
+    final following = person.followed || _following;
+    final Widget trailing = you
+        ? const Text('You')
+        : following
+        ? const Text('Following')
+        : TextButton(
+            onPressed: _asking ? null : _follow,
+            child: const Text('Follow'),
+          );
+    final about = [
+      if (person.summary != null) person.summary!,
+      if (person.foundThrough != null) 'From directory ${person.foundThrough}',
+    ];
     return ListTile(
       leading: CircleAvatar(
         child: Text(person.name.isEmpty ? '?' : person.name[0].toUpperCase()),
       ),
       title: Text(person.name),
-      subtitle: person.summary != null ? Text(person.summary!) : null,
-      trailing: label != null ? Text(label) : null,
+      subtitle: about.isEmpty ? null : Text(about.join('\n')),
+      trailing: trailing,
     );
   }
 }

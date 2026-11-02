@@ -125,6 +125,9 @@ pub struct FoundPerson {
     pub summary: Option<String>,
     /// Whether the node follows them.
     pub followed: bool,
+    /// The directory they came from, in words, if they're on the node only
+    /// because of one.
+    pub found_through: Option<String>,
 }
 
 pub struct Post {
@@ -138,6 +141,9 @@ pub struct Post {
     pub reshared_by: Option<String>,
     /// Whether the resharer keeps and serves a copy of its media.
     pub resharer_hosts: bool,
+    /// The directory it came from, in words, if it's on the node only because
+    /// of one.
+    pub found_through: Option<String>,
 }
 
 pub struct Media {
@@ -284,6 +290,7 @@ impl OspApp {
                     name: p.name,
                     summary: p.summary,
                     followed: p.followed,
+                    found_through: p.found_through,
                 })
                 .collect(),
             posts: posts.into_iter().map(post).collect(),
@@ -380,6 +387,16 @@ impl OspApp {
     pub async fn follow(&self, ticket: String) -> Result<()> {
         self.client
             .request(&ClientRequest::Follow { ticket })
+            .await?;
+        Ok(())
+    }
+
+    /// Follows someone a search found, by their identity. The node asks their
+    /// own node before anything of theirs reaches the feed.
+    pub async fn follow_person(&self, identity: String) -> Result<()> {
+        let actor = identity.parse()?;
+        self.client
+            .request(&ClientRequest::FollowPerson { actor })
             .await?;
         Ok(())
     }
@@ -631,6 +648,7 @@ fn post(item: FeedItem) -> Post {
             .collect(),
         reshared_by,
         resharer_hosts,
+        found_through: item.found_through,
     }
 }
 
