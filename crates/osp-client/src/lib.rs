@@ -273,6 +273,11 @@ pub struct Client {
     /// The open connection to the home node, if any. Held across a connect
     /// so two callers don't dial at once.
     conn: tokio::sync::Mutex<Option<Connection>>,
+    /// When a dial last failed, and why: the answer for callers that were
+    /// waiting for it.
+    dial_failed: Mutex<Option<(Instant, String)>>,
+    /// Wakes a dial in progress, to give it up.
+    stop_dial: tokio::sync::Notify,
     media: tokio::sync::OnceCell<MediaServer>,
     post_give_up: Duration,
 }
@@ -325,6 +330,8 @@ impl Client {
             lookup,
             pairing: Mutex::new(pairing),
             conn: tokio::sync::Mutex::new(None),
+            dial_failed: Mutex::new(None),
+            stop_dial: tokio::sync::Notify::new(),
             media: tokio::sync::OnceCell::new(),
             post_give_up: options.post_give_up,
         }))
@@ -368,8 +375,11 @@ impl Client {
     /// Forgets the home node and everything saved from it. The device key
     /// stays, so pairing again shows up as the same device.
     pub async fn forget(&self) -> Result<()> {
-        self.disconnect().await;
+        // In this order, so nothing waiting for the connection dials next, and
+        // a node that isn't answering doesn't hold this up.
         *self.lock_pairing() = None;
+        self.stop_dial.notify_waiters();
+        self.disconnect().await;
         for file in ["pairing.json", "feed.json", PENDING_POST] {
             match std::fs::remove_file(self.dir.join(file)) {
                 Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.into()),
@@ -707,16 +717,35 @@ impl Client {
     }
 
     async fn connection(&self) -> Result<Connection> {
+        let asked = Instant::now();
         let mut guard = self.conn.lock().await;
         if let Some(conn) = guard.as_ref()
             && conn.close_reason().is_none()
         {
             return Ok(conn.clone());
         }
+        // A dial that failed while this caller waited is its answer too, or
+        // a queue of requests would each take the whole wait in turn.
+        if let Some((at, why)) = &*self.lock_dial_failed()
+            && *at >= asked
+        {
+            bail!("{why}");
+        }
         let node = self.pairing().context("not paired with a home node")?.node;
-        let conn = self.dial(&node, None).await?;
-        *guard = Some(conn.clone());
-        Ok(conn)
+        let dialled = tokio::select! {
+            dialled = self.dial(&node, None) => dialled,
+            () = self.stop_dial.notified() => Err(anyhow::anyhow!("stopped connecting to the home node")),
+        };
+        match dialled {
+            Ok(conn) => {
+                *guard = Some(conn.clone());
+                Ok(conn)
+            }
+            Err(e) => {
+                *self.lock_dial_failed() = Some((Instant::now(), format!("{e:#}")));
+                Err(e)
+            }
+        }
     }
 
     /// Connects to the home node. `pass` is a pairing ticket's, offered with
@@ -743,6 +772,10 @@ impl Client {
 
     fn lock_pairing(&self) -> std::sync::MutexGuard<'_, Option<Pairing>> {
         self.pairing.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn lock_dial_failed(&self) -> std::sync::MutexGuard<'_, Option<(Instant, String)>> {
+        self.dial_failed.lock().unwrap_or_else(|e| e.into_inner())
     }
 }
 
