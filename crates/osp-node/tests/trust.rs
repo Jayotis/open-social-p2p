@@ -183,6 +183,7 @@ impl Peer {
             actor: self.identity.public(),
             name: name.to_string(),
             summary: None,
+            discoverable: false,
             nodes,
             published: osp_proto::now_rfc3339(),
         });

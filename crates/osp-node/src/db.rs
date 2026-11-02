@@ -3049,6 +3049,7 @@ mod tests {
             actor: key.public(),
             name: name.into(),
             summary: summary.map(String::from),
+            discoverable: false,
             nodes: vec![],
             published: osp_proto::now_rfc3339(),
         };

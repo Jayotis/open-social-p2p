@@ -184,6 +184,11 @@ pub struct Person {
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summary: Option<String>,
+    /// Whether a directory may list this profile and its latest posts, and
+    /// others may pass them on (ADR 0015). A later profile can take it back.
+    /// An extension to AS2, named as Mastodon names it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub discoverable: bool,
     /// Endpoint IDs of this identity's home nodes. An extension to AS2.
     pub nodes: Vec<EndpointId>,
     pub published: String,
@@ -329,4 +334,35 @@ pub enum EarlierKeys {
     Retired,
     /// Someone else may have them: what they signed is no longer valid.
     Revoked,
+}
+
+#[cfg(test)]
+mod tests {
+    use iroh_base::SecretKey;
+
+    use super::*;
+
+    fn person(discoverable: bool) -> Person {
+        Person {
+            actor: SecretKey::from_bytes(&[1; 32]).public(),
+            name: "Alice".into(),
+            summary: None,
+            discoverable,
+            nodes: vec![],
+            published: "2026-11-01T00:00:00Z".into(),
+        }
+    }
+
+    #[test]
+    fn a_profile_says_nothing_of_being_listed_unless_it_may_be() {
+        let json = serde_json::to_string(&person(false)).unwrap();
+        assert!(!json.contains("discoverable"), "{json}");
+        // So one from before it means no, and signed bytes stay as they were.
+        let back: Person = serde_json::from_str(&json).unwrap();
+        assert!(!back.discoverable);
+
+        let json = serde_json::to_string(&person(true)).unwrap();
+        assert!(json.contains(r#""discoverable":true"#), "{json}");
+        assert!(serde_json::from_str::<Person>(&json).unwrap().discoverable);
+    }
 }

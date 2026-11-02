@@ -10,6 +10,9 @@ use serde::{Deserialize, Serialize};
 pub struct Config {
     /// Display name in this identity's profile.
     pub name: String,
+    /// A few words about you in this identity's profile, for people looking
+    /// for you to find.
+    pub summary: Option<String>,
     pub network: NetworkConfig,
     pub sync: SyncConfig,
     pub media: MediaConfig,
@@ -19,6 +22,7 @@ pub struct Config {
     pub tor: TorConfig,
     pub endpoints: EndpointsConfig,
     pub machine: MachineConfig,
+    pub directory: DirectoryConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -146,6 +150,16 @@ impl Default for MachineConfig {
     }
 }
 
+/// Directories (ADR 0015), being built.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DirectoryConfig {
+    /// Say in your profile that a directory may list it and your latest posts,
+    /// and that others may pass them on. Turned off, a later profile takes
+    /// that back.
+    pub list_me: bool,
+}
+
 /// The node's media and direct endpoints (ADR 0014), being built. With it on,
 /// media and phones move onto them, and the node's main endpoint carries only
 /// messages between nodes. Phones paired before must pair again. Its address
@@ -198,6 +212,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             name: "Anonymous".to_string(),
+            summary: None,
             network: NetworkConfig::default(),
             sync: SyncConfig::default(),
             media: MediaConfig::default(),
@@ -207,6 +222,7 @@ impl Default for Config {
             tor: TorConfig::default(),
             endpoints: EndpointsConfig::default(),
             machine: MachineConfig::default(),
+            directory: DirectoryConfig::default(),
         }
     }
 }
@@ -260,6 +276,7 @@ impl Config {
     pub fn local_test(name: &str) -> Self {
         Self {
             name: name.to_string(),
+            summary: None,
             network: NetworkConfig {
                 relay: RelayChoice::Disabled,
                 address_lookup: false,
@@ -280,6 +297,7 @@ impl Config {
             tor: TorConfig::default(),
             endpoints: EndpointsConfig::default(),
             machine: MachineConfig::default(),
+            directory: DirectoryConfig::default(),
         }
     }
 
