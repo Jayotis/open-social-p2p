@@ -1,6 +1,6 @@
 # Open Social P2P: the phone app
 
-The phone app is a remote control for your home node ([ADR 0001](../docs/decisions/0001-home-node-architecture.md)). It pairs with the node by QR code and then talks only to it ([ADR 0008](../docs/decisions/0008-device-pairing-and-client-protocol.md)). With it you can read your feed, play videos, post photos and videos, reshare, follow people by their QR code and see whether your node is healthy.
+The phone app is a remote control for your home node ([ADR 0001](../docs/decisions/0001-home-node-architecture.md)). It pairs with the node by QR code and then talks only to it ([ADR 0008](../docs/decisions/0008-device-pairing-and-client-protocol.md)). With it you can read your feed, search what your node has received, play videos, post photos and videos, reshare, follow people by their QR code and see whether your node is healthy.
 
 All networking is Rust: [`crates/osp-client`](../crates/osp-client/), reached through [flutter_rust_bridge](https://cjycode.com/flutter_rust_bridge/). This directory holds the Flutter UI (`lib/`) and a thin bridge crate (`rust/`).
 
