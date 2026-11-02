@@ -939,7 +939,7 @@ pub(crate) fn profile_date(person: &Person) -> Result<i64> {
 
 /// A date in Unix milliseconds, if it is one and isn't further ahead of our
 /// clock than `MAX_DATED_AHEAD`. `what` names the object in errors.
-fn dated(published: &str, what: &str) -> Result<i64> {
+pub(crate) fn dated(published: &str, what: &str) -> Result<i64> {
     let published = osp_proto::parse_rfc3339_ms(published)
         .with_context(|| format!("the {what} has no valid date"))?;
     let ahead = Duration::from_millis(published.saturating_sub(now_ms()).max(0) as u64);

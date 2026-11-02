@@ -170,6 +170,10 @@ enum Command {
     /// [endpoints] in config.toml, being built (ADR 0014)
     #[command(subcommand)]
     Direct(DirectCommand),
+    /// This node's machine name, tied to no person, under which it gets to know
+    /// other nodes, being built (ADR 0015)
+    #[command(subcommand)]
+    Machine(MachineCommand),
 }
 
 /// Nodes are given by their full public node ID.
@@ -182,6 +186,19 @@ enum DirectCommand {
     Allow { node: EndpointId },
     /// Stop allowing a node a direct connection, and close any it has
     Remove { node: EndpointId },
+}
+
+#[derive(Subcommand)]
+enum MachineCommand {
+    /// Show this node's machine name. Anyone with it and your node ID can tell
+    /// the two are one node, so keep them apart
+    Show,
+    /// Greet another machine by its ID, over Tor. Needs `enabled = true` under
+    /// [tor] in config.toml, on both nodes
+    Hello { machine: EndpointId },
+    /// Forget this node's machine name. It makes a new one when it next starts,
+    /// and other machines know it as a stranger. The node must be stopped
+    New,
 }
 
 #[derive(Subcommand)]
@@ -300,6 +317,12 @@ async fn main() -> Result<()> {
         }
         Command::Keys(KeysCommand::Protect) => return protect(&home),
         Command::Keys(KeysCommand::Replace) => return replace(&home),
+        Command::Machine(MachineCommand::New) => {
+            Node::forget_machine_name(&home)?;
+            println!("This node's machine name is forgotten. It makes a new one when it next");
+            println!("starts, and other machines know it as a stranger.");
+            return Ok(());
+        }
         // The daemon writes the file, so send an absolute path.
         Command::Backup(BackupCommand::Export { file, no_media }) => ClientRequest::ExportBackup {
             path: std::path::absolute(&file)?,
@@ -373,6 +396,10 @@ async fn main() -> Result<()> {
         Command::Service(ServiceCommand::Uninstall) => return service::uninstall(),
         Command::Status => ClientRequest::Status,
         Command::Tor(TorCommand::Ping { node }) => ClientRequest::TorPing { node },
+        Command::Machine(MachineCommand::Show) => ClientRequest::MachineName,
+        Command::Machine(MachineCommand::Hello { machine }) => {
+            ClientRequest::MachineHello { machine }
+        }
         Command::Direct(DirectCommand::List) => ClientRequest::DirectContacts,
         Command::Direct(DirectCommand::Allow { node }) => ClientRequest::AllowDirect { node },
         Command::Direct(DirectCommand::Remove { node }) => ClientRequest::RemoveDirect { node },
@@ -449,6 +476,11 @@ fn init(home: &Path, mut config: Config, check_words: bool, share: Option<bool>)
     Node::init_with_words(home, &config, &words.join(" "))?;
     println!();
     println!("Created a node in {}", home.display());
+    println!();
+    println!("With Tor on, this node also gets to know other nodes in the background, under a");
+    println!("machine name tied to no profile. It isn't anonymous: it shows that a machine runs");
+    println!("this software and when it's on, and someone reaching it and your node could match");
+    println!("them over time. To turn it off, set enabled = false under [machine] in config.toml.");
     println!();
     println!("Start it with: osp --home {} daemon", home.display());
     Ok(())
@@ -867,6 +899,25 @@ fn print(resp: ClientResponse, json: bool) -> Result<()> {
                 println!("{node}");
             }
         }
+        ClientResponse::MachineName { machine, words } => {
+            println!("{words}");
+            println!("{machine}");
+        }
+        ClientResponse::MachineGreeted {
+            words,
+            offers,
+            connect_ms,
+            round_trip_ms,
+        } => {
+            println!(
+                "Greeted {words}: connected in {}, asked in {}",
+                secs(connect_ms),
+                secs(round_trip_ms)
+            );
+            if !offers.is_empty() {
+                println!("It offers: {}", offers.join(", "));
+            }
+        }
         ClientResponse::TorPinged {
             connect_ms,
             round_trip_ms,
@@ -1049,6 +1100,9 @@ fn print_status(s: &StatusInfo) {
             n => format!("{n} streams"),
         };
         println!("Tor:       {}{published}, {streams}{restarts}", tor.state);
+    }
+    if s.machine {
+        println!("Machine:   on (`osp machine show` gives its name)");
     }
     if let Some(own) = &s.endpoints {
         let media = match own.media {

@@ -75,6 +75,30 @@ impl TorSide {
         })
     }
 
+    /// An endpoint on this Tor with `key`, with an onion service of its own,
+    /// which the node's connection records don't see (ADR 0015). The transport
+    /// holds the onion service up.
+    pub async fn endpoint_for(
+        &self,
+        key: SecretKey,
+        max_streams: u32,
+    ) -> Result<(TorTransport, Endpoint)> {
+        let transport = TorTransport::new(&self.tor, key.clone())
+            .await
+            .context("starting a Tor transport")?;
+        let quic = osp_tor::quic_config()
+            .max_concurrent_bidi_streams(max_streams.into())
+            .max_concurrent_uni_streams(0u32.into())
+            .build();
+        let endpoint = Endpoint::builder(transport.preset())
+            .transport_config(quic)
+            .secret_key(key)
+            .bind()
+            .await
+            .context("starting an endpoint on Tor")?;
+        Ok((transport, endpoint))
+    }
+
     /// Fails, and says why, unless Tor is ready to carry messages.
     pub fn check_ready(&self) -> Result<()> {
         let phase = self.tor.state().borrow().phase.clone();
