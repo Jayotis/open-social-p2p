@@ -37,3 +37,4 @@ pub use home::Home;
 #[cfg(feature = "sim")]
 pub use node::SimSettings;
 pub use node::{Node, Restored};
+pub use trust::plain;

@@ -10,6 +10,7 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail, ensure};
+use iroh::{EndpointAddr, PublicKey};
 use n0_future::{BufferedStreamExt, StreamExt, stream};
 use osp_proto::{
     Announce, Attachment, BlobRef, FollowTicket, Note, ObjectId, Payload, SignedObject,
@@ -31,7 +32,7 @@ use tracing::{debug, info, warn};
 use crate::{
     config::RelayChoice,
     db::{BlobClass, now_ms},
-    health, media, network,
+    health, machine, media, network,
     node::{Core, check_addr, remember},
     social::FOLLOWER_SILENCE,
 };
@@ -90,6 +91,10 @@ impl Core {
             },
             ClientRequest::Follow { ticket } => {
                 self.follow(&ticket.parse()?).await?;
+                ClientResponse::Ok
+            }
+            ClientRequest::FollowPerson { actor } => {
+                self.follow_person(&actor).await?;
                 ClientResponse::Ok
             }
             ClientRequest::Unfollow { actor } => {
@@ -190,6 +195,20 @@ impl Core {
             ClientRequest::MachineHello { machine } => {
                 ensure!(local, "machines are only greeted from the node itself");
                 self.machine_hello(machine).await?
+            }
+            ClientRequest::ReadDirectories => {
+                ensure!(
+                    local,
+                    "directories are only read by hand on the node itself"
+                );
+                ensure!(
+                    !self.config.directory.known.is_empty(),
+                    "this node knows no directories: add them under [directory] in config.toml"
+                );
+                self.read_directories().await?;
+                ClientResponse::DirectoriesRead {
+                    found: self.db.found_count()?,
+                }
             }
             ClientRequest::DirectContacts => ClientResponse::DirectContacts {
                 nodes: self.db.direct_contacts()?,
@@ -330,6 +349,7 @@ impl Core {
                 }
                 false => None,
             },
+            found_people: self.db.found_count()?,
         })
     }
 
@@ -341,10 +361,39 @@ impl Core {
         check_addr(&ticket.node)?;
         remember(&self.lookup, &ticket.node);
         self.db.upsert_follow(&ticket.actor, &ticket.node)?;
+        self.db.found_person_is_followed(&ticket.actor)?;
         // The sync this wakes also subscribes, so we're told about new posts.
         self.lock_subscribed().remove(&ticket.actor);
         self.sync_soon(&ticket.actor);
         Ok(())
+    }
+
+    /// Follows someone by the profile this node holds of them. What it holds
+    /// may have come from a directory and be out of date, so it's only taken as
+    /// where to ask: the sync this wakes first asks that node for their profile,
+    /// and goes no further unless the node speaks for them (ADR 0014).
+    async fn follow_person(&self, actor: &PublicKey) -> Result<()> {
+        let profile = self.db.profile(actor)?.with_context(|| {
+            format!(
+                "this node holds no profile of {}; search for them first",
+                actor.fmt_short()
+            )
+        })?;
+        let Payload::Person(person) = profile.verify()? else {
+            bail!(
+                "what this node holds of {} is not a profile",
+                actor.fmt_short()
+            );
+        };
+        let node = *person
+            .nodes
+            .first()
+            .with_context(|| format!("the profile of {} names no node", actor.fmt_short()))?;
+        let ticket = FollowTicket {
+            actor: *actor,
+            node: EndpointAddr::new(node),
+        };
+        self.follow(&ticket).await
     }
 
     pub(crate) async fn post(
@@ -424,6 +473,8 @@ impl Core {
 
     async fn reshare(self: &Arc<Self>, id: &ObjectId, host: bool) -> Result<ObjectId> {
         let (note_id, note) = self.resolve_note(id)?;
+        // The reshare needs it for as long as it's in the outbox.
+        self.db.found_post_stays(&note_id)?;
         if host {
             // Check the whole post fits before fetching any of it.
             let mut needed = 0;
@@ -600,12 +651,20 @@ impl Core {
                     name: person.name,
                     summary: person.summary,
                     followed: followed.contains(&person.actor),
+                    found_through: self
+                        .db
+                        .found_through(&person.actor)?
+                        .map(|directory| machine::words(&directory)),
                 });
             }
         }
         let mut posts = Vec::new();
         for obj in self.db.search_posts(words, limit)? {
-            if let Some(item) = self.feed_item(&obj).await? {
+            if let Some(mut item) = self.feed_item(&obj).await? {
+                item.found_through = self
+                    .db
+                    .post_found_through(&item.id)?
+                    .map(|directory| machine::words(&directory));
                 posts.push(item);
             }
         }
@@ -646,6 +705,7 @@ impl Core {
             content: note.content,
             attachments,
             reshared_by,
+            found_through: None,
         }))
     }
 

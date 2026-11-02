@@ -35,6 +35,12 @@ pub enum ClientRequest {
     Follow {
         ticket: String,
     },
+    /// Follows someone by their identity, with no follow code, if this node
+    /// holds their profile, as after a search found them (ADR 0015). It names
+    /// their node, and their own node is asked next.
+    FollowPerson {
+        actor: PublicKey,
+    },
     Unfollow {
         actor: PublicKey,
     },
@@ -188,6 +194,9 @@ pub enum ClientRequest {
     MachineHello {
         machine: EndpointId,
     },
+    /// Reads the directories this node knows now, as it does in the background
+    /// (local socket only).
+    ReadDirectories,
 }
 
 fn default_feed_limit() -> u32 {
@@ -287,6 +296,11 @@ pub enum ClientResponse {
         /// Made from its ID, to tell machines apart by eye.
         words: String,
     },
+    /// The directories this node knows were read: how many people it now holds
+    /// that it found through them.
+    DirectoriesRead {
+        found: u64,
+    },
     /// What a machine said when greeted, and how long connecting and asking
     /// took.
     MachineGreeted {
@@ -363,6 +377,9 @@ pub struct StatusInfo {
     /// What this node holds as a directory, when it's one (ADR 0015).
     #[serde(default)]
     pub directory: Option<DirectoryStatus>,
+    /// How many people this node holds that it found through directories.
+    #[serde(default)]
+    pub found_people: u64,
 }
 
 /// What a directory holds.
@@ -612,6 +629,10 @@ pub struct PersonInfo {
     pub summary: Option<String>,
     /// Whether this node follows them.
     pub followed: bool,
+    /// The directory they came from, in words made from its machine name, if
+    /// they're here only because of one (ADR 0015).
+    #[serde(default)]
+    pub found_through: Option<String>,
 }
 
 /// A post as shown in a feed, with reshare context.
@@ -624,6 +645,10 @@ pub struct FeedItem {
     pub content: String,
     pub attachments: Vec<AttachmentInfo>,
     pub reshared_by: Option<ResharedBy>,
+    /// The directory it came from, in words made from its machine name, if
+    /// it's here only because of one (ADR 0015).
+    #[serde(default)]
+    pub found_through: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

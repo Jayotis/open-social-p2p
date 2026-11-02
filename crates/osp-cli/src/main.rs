@@ -6,6 +6,7 @@
 mod service;
 
 use std::{
+    fmt::Write as _,
     io::IsTerminal,
     net::SocketAddr,
     path::{Path, PathBuf},
@@ -14,7 +15,7 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
-use osp_node::{Config, Home, Node, RelayChoice};
+use osp_node::{Config, Home, Node, RelayChoice, plain};
 use osp_proto::{
     EarlierKeys, EndpointId, ObjectId, PublicKey,
     framing::{read_frame, write_frame},
@@ -95,7 +96,7 @@ enum Command {
         #[arg(long)]
         no_qr: bool,
     },
-    /// Follow someone by their ticket
+    /// Follow someone by their ticket, or by the identity `osp search` showed
     Follow { ticket: String },
     /// Stop following someone
     Unfollow { actor: PublicKey },
@@ -174,6 +175,17 @@ enum Command {
     /// other nodes, being built (ADR 0015)
     #[command(subcommand)]
     Machine(MachineCommand),
+    /// The directories this node reads, to find people it doesn't follow yet,
+    /// being built (ADR 0015)
+    #[command(subcommand)]
+    Directory(DirectoryCommand),
+}
+
+#[derive(Subcommand)]
+enum DirectoryCommand {
+    /// Read the directories under [directory] in config.toml now, rather than
+    /// waiting for the next read in the background
+    Read,
 }
 
 /// Nodes are given by their full public node ID.
@@ -400,10 +412,14 @@ async fn main() -> Result<()> {
         Command::Machine(MachineCommand::Hello { machine }) => {
             ClientRequest::MachineHello { machine }
         }
+        Command::Directory(DirectoryCommand::Read) => ClientRequest::ReadDirectories,
         Command::Direct(DirectCommand::List) => ClientRequest::DirectContacts,
         Command::Direct(DirectCommand::Allow { node }) => ClientRequest::AllowDirect { node },
         Command::Direct(DirectCommand::Remove { node }) => ClientRequest::RemoveDirect { node },
-        Command::Follow { ticket } => ClientRequest::Follow { ticket },
+        Command::Follow { ticket } => match ticket.parse() {
+            Ok(actor) => ClientRequest::FollowPerson { actor },
+            Err(_) => ClientRequest::Follow { ticket },
+        },
         Command::Unfollow { actor } => ClientRequest::Unfollow { actor },
         Command::Following => ClientRequest::Following,
         Command::Devices => ClientRequest::Devices,
@@ -899,6 +915,9 @@ fn print(resp: ClientResponse, json: bool) -> Result<()> {
                 println!("{node}");
             }
         }
+        ClientResponse::DirectoriesRead { found } => {
+            println!("Read. This node holds {found} people it found through directories.");
+        }
         ClientResponse::MachineName { machine, words } => {
             println!("{words}");
             println!("{machine}");
@@ -941,7 +960,7 @@ fn print(resp: ClientResponse, json: bool) -> Result<()> {
             for f in follows {
                 println!(
                     "{}  {}",
-                    f.name.as_deref().unwrap_or("(name unknown)"),
+                    plain(f.name.as_deref().unwrap_or("(name unknown)")),
                     f.actor
                 );
                 match (f.last_sync, f.last_error) {
@@ -967,11 +986,14 @@ fn print(resp: ClientResponse, json: bool) -> Result<()> {
             }
             for person in people {
                 let followed = if person.followed { " (following)" } else { "" };
-                println!("{}{followed}", person.name);
+                println!("{}{followed}", plain(&person.name));
                 if let Some(summary) = person.summary {
-                    println!("  {summary}");
+                    println!("  {}", plain(&summary));
                 }
                 println!("  identity: {}", person.actor);
+                if let Some(directory) = person.found_through {
+                    println!("  found through directory {directory}");
+                }
                 println!();
             }
             for item in posts {
@@ -1110,6 +1132,9 @@ fn print_status(s: &StatusInfo) {
             directory.people, directory.machines
         );
     }
+    if s.found_people > 0 {
+        println!("Found:     {} people through directories", s.found_people);
+    }
     if let Some(own) = &s.endpoints {
         let media = match own.media {
             Some(media) => media.fmt_short().to_string(),
@@ -1166,7 +1191,7 @@ fn print_peers(peers: &[PeerRecord]) {
         println!();
         println!(
             "{}  {}  {}",
-            p.name.as_deref().unwrap_or("(unknown)"),
+            plain(p.name.as_deref().unwrap_or("(unknown)")),
             p.node.fmt_short(),
             what.join(", ")
         );
@@ -1320,21 +1345,31 @@ fn uptime(secs: u64) -> String {
 }
 
 fn print_item(item: &FeedItem) {
+    print!("{}", item_text(item));
+}
+
+/// A post as shown in a terminal. Names and words come from other people, so
+/// they're made plain first: a directory brings words from strangers.
+fn item_text(item: &FeedItem) -> String {
+    let mut out = String::new();
     let author = item
         .actor_name
         .clone()
         .unwrap_or_else(|| item.actor.fmt_short().to_string());
-    println!("{author} · {}", item.published);
+    let _ = writeln!(out, "{} · {}", plain(&author), plain(&item.published));
     if let Some(by) = &item.reshared_by {
         let name = by
             .name
             .clone()
             .unwrap_or_else(|| by.actor.fmt_short().to_string());
         let hosting = if by.hosting { " (hosting)" } else { "" };
-        println!("  reshared by {name}{hosting}");
+        let _ = writeln!(out, "  reshared by {}{hosting}", plain(&name));
     }
-    if !item.content.is_empty() {
-        println!("  {}", item.content);
+    if let Some(directory) = &item.found_through {
+        let _ = writeln!(out, "  found through directory {directory}");
+    }
+    for line in item.content.lines() {
+        let _ = writeln!(out, "  {}", plain(line));
     }
     for a in &item.attachments {
         let m = &a.attachment;
@@ -1343,7 +1378,8 @@ fn print_item(item: &FeedItem) {
             .map(|ms| format!(" {:.1}s", ms as f64 / 1000.0))
             .unwrap_or_default();
         let local = if a.local { "stored" } else { "not downloaded" };
-        println!(
+        let _ = writeln!(
+            out,
             "  [{:?} {}x{}{} {}, {local}]",
             m.kind,
             m.width,
@@ -1352,7 +1388,8 @@ fn print_item(item: &FeedItem) {
             size(m.size)
         );
     }
-    println!("  id: {}", item.id);
+    let _ = writeln!(out, "  id: {}", item.id);
+    out
 }
 
 fn size(bytes: u64) -> String {
@@ -1361,5 +1398,47 @@ fn size(bytes: u64) -> String {
         b if b >= 1 << 20 => format!("{:.1} MB", b as f64 / (1u64 << 20) as f64),
         b if b >= 1 << 10 => format!("{:.0} KB", b as f64 / 1024.0),
         b => format!("{b} B"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use osp_proto::rpc::ResharedBy;
+
+    use super::*;
+
+    #[test]
+    fn nothing_from_another_person_can_move_the_terminals_cursor() {
+        let actor: PublicKey = "ae".repeat(32).parse().unwrap();
+        let escape = "\u{1b}[2J\u{1b}]0;owned\u{7}";
+        let item = FeedItem {
+            id: osp_proto::ObjectId::of(b"post"),
+            actor,
+            actor_name: Some(format!("Mallory{escape}")),
+            published: format!("2026-11-01{escape}"),
+            content: format!("First line{escape}\nSecond line{escape}"),
+            attachments: vec![],
+            reshared_by: Some(ResharedBy {
+                actor,
+                name: Some(format!("Mallory{escape}")),
+                announce: osp_proto::ObjectId::of(b"reshare"),
+                published: "2026-11-01".into(),
+                hosting: false,
+            }),
+            found_through: Some("oak-ash-elm".into()),
+        };
+        let shown = item_text(&item);
+        let bad: Vec<_> = shown
+            .chars()
+            .filter(|c| c.is_control() && *c != '\n')
+            .collect();
+        assert!(bad.is_empty(), "{bad:?} in {shown:?}");
+        // Lines stay lines, and it says where it came from.
+        assert!(shown.contains("First line"), "{shown}");
+        assert!(shown.contains("\n  Second line"), "{shown}");
+        assert!(
+            shown.contains("found through directory oak-ash-elm"),
+            "{shown}"
+        );
     }
 }

@@ -175,7 +175,7 @@ async fn a_phone_pairs_with_the_direct_endpoint() {
 /// A phone gets `Status`, and a machine name mustn't be tied to the public ID
 /// it holds (ADR 0015), so only the node itself shows it or greets with it.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_phone_is_never_told_the_machine_name() {
+async fn a_phone_is_never_told_the_machine_name_nor_acts_under_it() {
     let dir = tempfile::tempdir().unwrap();
     let node = start_node(dir.path(), "Alice").await;
     let phone = Client::open(&dir.path().join("phone"), ClientOptions::local_test())
@@ -191,6 +191,10 @@ async fn a_phone_is_never_told_the_machine_name() {
     for (req, expected) in [
         (ClientRequest::MachineName, "only shown on the node itself"),
         (hello, "only greeted from the node itself"),
+        (
+            ClientRequest::ReadDirectories,
+            "only read by hand on the node itself",
+        ),
     ] {
         let why = phone.request(&req).await.unwrap_err();
         assert!(format!("{why:#}").contains(expected), "{why:#}");
