@@ -963,15 +963,14 @@ async fn a_node_with_no_follows_finds_a_stranger_and_searches_with_nobody_there(
     assert_eq!(read_directories(&carol).await, 1);
     assert_eq!(status(&carol).await.found_people, 1);
 
-    // Reading greeted the directory, and it greets a machine back.
-    let on_the_map = |entry: &ListingEntry| match &entry.item {
-        ListingItem::Machine { record } => Some(record.verify().unwrap().machine),
+    // Reading greeted the directory, and it greets a machine back. Alice's
+    // machine may be on the map too, and sooner, so look for Carol's.
+    let carols = carol.machine_id().unwrap();
+    let carol_on_the_map = |entry: &ListingEntry| match &entry.item {
+        ListingItem::Machine { record } if record.verify().unwrap().machine == carols => Some(()),
         _ => None,
     };
-    assert_eq!(
-        wait_for_entry(&net, &directory, 0, on_the_map).await,
-        carol.machine_id().unwrap()
-    );
+    wait_for_entry(&net, &directory, 0, carol_on_the_map).await;
 
     // With the others gone, it's all still here.
     let alices_identity = alice.identity();
