@@ -9,11 +9,58 @@ on:
 permissions:
   contents: read
 
+# A new push to a pull request stops the run it replaces. Runs on main each
+# get a group of their own, so none is stopped.
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  changes:
+    # Which of the slow jobs a change needs, so a change to the docs alone
+    # runs only the quick checks. A path not named below counts as Rust, and a
+    # change under .github runs everything.
+    runs-on: ubuntu-latest
+    outputs:
+      rust: ${{ steps.paths.outputs.rust }}
+      flutter: ${{ steps.paths.outputs.flutter }}
+      ios: ${{ steps.paths.outputs.ios }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - id: paths
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          if git cat-file -e "$BASE^{commit}" 2>/dev/null; then
+            files=$(git diff --name-only "$BASE" HEAD)
+          else
+            # Nothing to compare with, such as a new branch: run everything.
+            files=.github/
+          fi
+          printf '%s\n' "$files"
+          all=false
+          grep -Eq '^\.github/' <<< "$files" && all=true
+          # What can't change what Rust builds or tests.
+          not_rust='^(docs/|notes/|app/(lib|test|android|ios|icon|assets)/|app/[^/]+$|[^/]+\.md$|LICENSE$|codemagic\.yaml$|\.gitignore$|\.gitleaks\.toml$)'
+          rust=$all
+          grep -Evq "$not_rust" <<< "$files" && rust=true
+          # The app's Dart, not the Rust under app/rust (the rust job's).
+          flutter=$all
+          awk '/^app\// && !/^app\/rust\// { f = 1 } END { exit !f }' <<< "$files" && flutter=true
+          # The iPhone check is of dependencies only.
+          ios=$all
+          grep -Eq '^(Cargo\.(toml|lock)|rust-toolchain)' <<< "$files" && ios=true
+          echo "rust=$rust flutter=$flutter ios=$ios"
+          { echo "rust=$rust"; echo "flutter=$flutter"; echo "ios=$ios"; } >> "$GITHUB_OUTPUT"
+
   rust:
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -56,6 +103,8 @@ jobs:
   flutter:
     # The Android app's Dart code. The Rust it calls is built and tested by
     # the rust job (app/rust is a workspace member). No APK is built here.
+    needs: changes
+    if: needs.changes.outputs.flutter == 'true'
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -77,6 +126,8 @@ jobs:
     # that broke on iOS before (libc 0.2.190 left out a type netdev uses).
     # Crates with C build scripts, such as ring, need Apple's compiler, so the
     # whole app is only built on Codemagic (codemagic.yaml).
+    needs: changes
+    if: needs.changes.outputs.ios == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
