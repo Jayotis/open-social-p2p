@@ -19,7 +19,7 @@ Each record captures one significant decision: the problem, the options consider
 | [0013](0013-trusted-followers.md) | Trusted followers, asked for and allowed on the phone | Accepted |
 | [0014](0014-finding-people-and-private-messages.md) | Finding people and content, with messages between nodes over Tor | Accepted; how directories are used and step 4 changed by 0015 |
 | [0015](0015-nodes-meet-first.md) | Nodes meet first: machine names, and what they may say | Accepted |
-| [0016](0016-machine-acquaintances.md) | Machine acquaintances, reciprocity and referrals | Proposed |
+| [0016](0016-machine-acquaintances.md) | Machine acquaintances, reciprocity and referrals | Proposed; stage A decided, with ADR 0015's step 3 |
 | [0017](0017-one-hop-forwarding.md) | One-hop forwarding over earned links | Proposed |
 | [0018](0018-earned-direct-connections.md) | Earned direct connections | Proposed |
 | [0019](0019-taking-posts-and-media-down.md) | Taking posts and media down | Proposed |

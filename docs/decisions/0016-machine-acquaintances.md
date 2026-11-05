@@ -1,6 +1,6 @@
 # ADR 0016: Machine acquaintances, reciprocity and referrals
 
-**Status:** Proposed (2026-11-04). Not built. Follows on from [ADR 0015](0015-nodes-meet-first.md), whose rules stand: its step 3 is this record's first stage, its local record grows here, and its statements get more detail. Direct connections are in [ADR 0018](0018-earned-direct-connections.md), not here.
+**Status:** Proposed (2026-11-04). Not built. Follows on from [ADR 0015](0015-nodes-meet-first.md), whose rules stand: its step 3 is this record's first stage, its local record grows here, and its statements get more detail. Direct connections are in [ADR 0018](0018-earned-direct-connections.md), not here. Stage A, with the three rules in "Keeping discovery open", is decided (2026-11-05) and comes with ADR 0015's step 3; the rest stays proposed.
 
 ## Context
 
@@ -60,7 +60,7 @@ Six degrees isn't a guarantee, and being close isn't being trusted.
 
 **A crowd of fake machines can still crowd out honest ones.** Being known grants nothing, so they get no address and no access. What they can do is become the only voice a node hears: answering reliably under many names, they fill its table and use up its dials, and it stops meeting honest machines and directories. This is an eclipse, [shown on Bitcoin](https://www.usenix.org/conference/usenixsecurity15/technical-sessions/presentation/heilman). Here it takes a server running many names over Tor for weeks, and pays little: the node can't find others, and the operator sees which machines it talks to. Unlikely in the alpha; it matters more once discovery feeds anything else.
 
-ADR 0015's limits are the main defence: half of the 256 places stay with the machines known longest, and one source can fill at most a quarter of the rest. Proposed here, on top of those:
+ADR 0015's limits are the main defence: half of the 256 places stay with the machines known longest, and one source can fill at most a quarter of the rest. On top of those, three rules, built with ADR 0015's step 3:
 
 - **Where a record came from stays counted** after its machine has been met, so meeting it doesn't free a place in its source's quarter.
 - **Some of the six dials an hour go to records from sources that supplied few of the table's machines,** with no extra dials. The share is set before the simulator run.
@@ -126,7 +126,7 @@ Before any of these is built: signing domains, expiry, replay handling, frame li
 
 **Operational.** Peers, referrals and evidence all stay bounded. Discovery keeps working when a directory goes away. How many Tor circuits this costs is measured in stage A, and each later stage adds to it.
 
-**Changes to accepted records.** None to ADR 0015's limits. "Keeping discovery open" adds three rules to them, to be named in ADR 0015 when this is accepted. The rest adds detail to ADR 0015.
+**Changes to accepted records.** "Keeping discovery open" adds three rules to ADR 0015's limits. They're built with its step 3, and named in ADR 0015 then. The rest adds detail to ADR 0015.
 
 **Licensing.** No new dependency.
 
@@ -134,7 +134,7 @@ Before any of these is built: signing domains, expiry, replay handling, frame li
 
 | Stage | Work | Gate |
 | --- | --- | --- |
-| A | ADR 0015 step 3: `Known`, stages, local record, limits | ADR 0015's: nodes meet others with no human act, including with the directory off; one hostile node can't fill a table; circuits measured. Also: fake names under several keys, referring one another, can't push out the machines known longest |
+| A | ADR 0015 step 3: `Known`, stages, local record, limits, and the three rules in "Keeping discovery open" | ADR 0015's: nodes meet others with no human act, including with the directory off; one hostile node can't fill a table; circuits measured. Also: fake names under several keys, referring one another, can't push out the machines known longest |
 | B | The record's separate measures, fading | Valid referrals earn a place; greeting spam and claims earn nothing |
 | C | Using it when busy | Newcomers still get answers; measured against fake machines |
 | D | Statements, corrections and two-report checks | False reports and outages don't mark down innocent machines without a check |
