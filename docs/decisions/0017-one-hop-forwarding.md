@@ -70,6 +70,7 @@ Earned peers swap lists of whom they've earned a link with, capped by ADR 0018. 
 - **OSP media between earned peers only.** No general proxy, no internet exit, no address chosen by the asker, nothing on the local network.
 - **It earns nothing.** Forwarded bytes don't count as [work](0018-earned-direct-connections.md#what-counts-as-work), and F has already earned its place. So there's no reason to make fake traffic.
 - **It never fails open.** If anything is refused or fails, the transfer uses a relay or reports an error, and never dials a stranger directly.
+- **F checks the ends, not the contents.** It can't see inside, so it can't tell an OSP video from any other bytes. What it can check is that both ends are its earned peers' media endpoints, on OSP's media protocol. Stage B says how before it's built, so this doesn't become a general proxy.
 - **After a [delete](0019-taking-posts-and-media-down.md),** hosts running the standard software stop serving, so a forwarder has nothing to carry. It can't refuse a file itself, as it can't see one.
 
 ### What it doesn't solve
@@ -98,10 +99,12 @@ Each mark is set before its run.
 
 | Stage | Work | Gate |
 | --- | --- | --- |
-| A | Measuring only: in `osp-sim` with relays and ADR 0018, count relayed bytes between pairs sharing an earned peer | **Build further only if at least a quarter of relayed bytes qualify** (a starting value) |
+| A | Measuring only: in `osp-sim` with relays and ADR 0018, count relayed bytes between pairs sharing an earned peer | **Build further only if at least a quarter of relayed bytes qualify** (a starting value), counting only forwarders that said yes and have upload to spare |
 | B | Lists of earned peers; forwarding with limits; asking at setup | V and H fetch through F, and neither learns the other's address, in a packet capture. Limits, pause and busy all work |
 | C | Hostile tests: loops, floods, a forwarder that drops traffic, false lists, a node asking for an address it has no link with | No open proxy, no amplification, no stranger gets an address; failures fall back to relays |
 | D | Full run: B8 with several posts, compared with relays alone and with ADR 0018 alone | Marks for startup, seeking, creator upload, relay bytes and each node's data use |
+
+Stage A runs one workload three ways: relays alone, ADR 0018 alone, and ADR 0018 with forwarding. A quarter is counted of what's still relayed after ADR 0018. Sharing an earned peer isn't enough: it counts only if that peer said yes and has upload left under its limits. It reports relay bytes saved, the upload added to forwarders' homes, and how often a transfer fell back to a relay.
 
 `osp-sim` has no relays and no routers yet: the first is ADR 0014's "measuring media's default", and the second needs real networks as well.
 

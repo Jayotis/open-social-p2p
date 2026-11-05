@@ -27,3 +27,5 @@ Each record captures one significant decision: the problem, the options consider
 Proposals under review that may become ADRs: [peer reciprocity and recognition](../12-peer-reciprocity-and-recognition.md) (its first phase, measuring, is ADR 0011) and [hosting roles and the follower swarm](../13-hosting-roles-and-follower-swarm.md) (its first phase is accepted, and whether to share copies is asked at setup, ADR 0012). See the [critical review](../reviews/2026-10-21-review-of-docs-12-and-13.md) for what blocks them.
 
 A record marked *Accepted* can still be superseded. Write a new ADR that links back to it rather than rewriting history.
+
+A [review of ADRs 0016 to 0019](../reviews/2026-11-04-review-of-adrs-0016-to-0019.md) checked their drafts against the code and outside sources, and they were revised after it. It changes no ADR's status.
