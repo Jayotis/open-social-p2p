@@ -6,20 +6,20 @@
 
 **OSP is for people to post and be found in public.** It isn't a private platform, and nothing here is anonymity. Someone who wants more can use an alias, a VPN, or a node away from home. The aim is a network ordinary people can use, and that takes tradeoffs: [the vision](../01-vision-and-principles.md) says to avoid exposing home addresses *unnecessarily*.
 
-A node today chooses one rule for direct connections: anyone, people it follows, contacts approved by hand, or nobody. `anyone` shows its address to strangers. `nobody` sends every byte through relays, and [ADR 0014](0014-finding-people-and-private-messages.md) says that costs someone bandwidth. `follows` and `approved` need a person to act, and they don't reach the people who most need a link: followers of one creator, who hold the same files and have never heard of each other.
+A node today chooses one rule for direct connections: anyone, people it follows, contacts approved by hand, or nobody. `anyone` shows its address to strangers. `nobody` sends media through relays, and [ADR 0014](0014-finding-people-and-private-messages.md) says that costs someone bandwidth. `follows` and `approved` need a person to act, and they don't reach the people who most need a link: followers of one creator, who hold the same files and have never heard of each other.
 
 So a node should be able to earn a direct connection by doing useful work over time: it works for the information. Strangers don't get an address.
 
 **What a revealed address can lead to** (general knowledge, not tested here):
 
-| Harm | How likely | Needs the person's name? |
+| Harm | How likely | What it takes |
 | --- | --- | --- |
-| Someone floods the connection until the internet drops | The likeliest targeted harm; happens to streamers and gamers | Yes |
-| Rough location: a city or an ISP, not a street address | Easy, but matters mostly to someone already after them | Yes |
-| Someone reports traffic from the address to its ISP | Depends on what the node sends | No |
-| Being hacked | Low, about the same as being online | No |
+| Someone floods the connection until the internet drops | The likeliest targeted harm; happens to streamers and gamers | The address, and a reason to go after that account. Knowing the account is enough; a real name isn't needed |
+| Rough location: a city or an ISP, not a street address | Easy, but matters mostly to someone already after them | The address |
+| Someone reports traffic from the address to its ISP | Depends on what the node sends | The address |
+| Being hacked | Low, about the same as being online | The address, and a flaw in something the machine has open |
 
-For most people this is low and can be recovered from: many home addresses change when the router restarts, and a VPN covers the rest. The first two fall mostly on people who attract hostility.
+For most people this is low and can be recovered from: a new address from the ISP ends it, and a VPN covers the rest. Restarting the router often keeps the same address, so it isn't a way out on its own. The first two fall mostly on people who attract hostility.
 
 Questions to settle:
 
@@ -49,6 +49,7 @@ Questions to settle:
 - **It counts:** a download from that node that completed, whole or its part of one, each chunk checked against the hash.
 - **A peer can't push work at a node.** A node asks only for what it wants, and doesn't ask for a file it holds.
 - **Fakes crediting each other gets nowhere** ([the review's A4](../reviews/2026-10-21-review-of-docs-12-and-13.md)). Each node counts only what it received itself, and nothing is shared.
+- **Size counts too.** Three tiny files, or one file asked for in many small pieces, isn't real work. So layer 4 also needs a minimum of checked bytes, set in the simulator, and a piece fetched twice counts once.
 - **The other direction** is media this node served to that peer. It's needed for "both ways", as it shows the pair actually trade, but it isn't work on its own, as a peer can ask for anything.
 - **It doesn't count:** `Hello`, machine records, a reference or vouch, anything a node says of itself, uptime, forwarded bytes, or bytes that failed the check.
 - **Nothing from the machine layer counts.** Using it would tie a machine name to a public ID.
@@ -63,10 +64,10 @@ Each layer is reached by working through the one before. Values are starting val
 | 1. Has served us | One completed download from it | On record, nothing more |
 | 2. Regular source | Completed downloads on 3 different days, no bad data | Tried sooner when fetching |
 | 3. Both ways | Layer 2, and this node has served it on 3 different days | Ahead of strangers when busy |
-| 4. Earned | Layer 3 held, at least 30 days since first contact, and room under the caps | A direct connection, if both sides' rules allow it |
+| 4. Earned | Layer 3 held, at least 30 days since first contact, enough checked bytes, and room under the caps | A direct connection, if both sides' rules allow it |
 
 - **Layers 2 and 3 change who gets served first,** so each needs its own B8 run, and layer 3 needs the review's evidence on newcomers (A3). They can start as labels with no effect.
-- **Counting days** takes one new counter per peer, in each direction. ADR 0011's rule holds: faded totals, not which files or when.
+- **Counting days** takes one new counter per peer, in each direction, counting each day once, across restarts too. ADR 0011's rule holds: faded totals, not which files or when.
 - **It's per node,** as ADR 0011's rows are. Grouping a person's nodes can come later.
 
 ### Limits
@@ -81,7 +82,7 @@ Most of this exists and is tested in ADR 0014's direct endpoint:
 
 1. When a peer reaches layer 4, the node asks it for its endpoints over Tor, offering its own direct endpoint, as [`Endpoints`](../../crates/osp-node/src/endpoints.rs) does now.
 2. The other node's rule decides for itself. Its direct endpoint comes back only if both allow it.
-3. The direct endpoint keeps refusing everyone else on the first packet, before any address is shown.
+3. The direct endpoint keeps refusing everyone else on the first packet, before any address is shown. One gap stays, as ADR 0014 found: someone who already knows one of the node's addresses and its port, and comes straight to it, may be told its other addresses before it's refused.
 4. If either side stops allowing it, its direct endpoint refuses and the other falls back on the media endpoint. It never falls back on a direct connection with a stranger.
 
 No new proof, endpoint or protocol is needed. New: the rule, the check behind it, the request at layer 4, and using an earned peer's direct endpoint when another node names that peer as a host.
@@ -90,7 +91,7 @@ No new proof, endpoint or protocol is needed. New: the rule, the check behind it
 
 - `osp direct list` shows who has earned a link, and `osp peers` shows each peer's layer.
 - `osp direct remove <node>` drops one, and a new `osp direct deny <node>` keeps it out.
-- **`osp direct reset` drops every earned peer at once** and goes back to relays. With a new address from the ISP or a VPN, that's the way out for someone who has become a target.
+- **`osp direct reset` drops every earned peer at once,** sets the rule to `nobody` and closes direct connections, so a peer approved by hand doesn't keep one. The owner's phones aren't affected. Turning `earned` on again is the owner's choice. With a new address from the ISP or a VPN, that's the way out for someone who has become a target.
 - None of this makes an address secret again.
 
 ### Asked at setup
@@ -111,7 +112,7 @@ Offered once its tests pass, with yes recommended. Existing nodes keep their rul
 
 - **It doesn't stop a patient attacker.** It makes them pay. At a few hundred MB a month for each node, a rented server with a few terabytes could still reach thousands. Meanwhile it does real work. This is a price, not a wall.
 - A rate cap doesn't protect one node: one earned peer is enough to get its address.
-- **Aiming at one person is harder.** A peer earns a place only with a node that keeps fetching from it, and it can't make a node do that. If it does get there, it knows the address and the public ID, and only an alias keeps the name from it.
+- **Aiming at one person is harder.** A peer earns a place only with a node that keeps fetching from it, and it can't make a node do that. It can try, by hosting what that person watches and serving it fast, so the price check tries that too. If it does get there, it knows the address and the public ID, and only an alias keeps the name from it.
 
 **Responsibility.** A follower's node shares copies of what its owner follows, and an earned peer can see its address doing so. Each owner answers for what their node sends, and setup says so. They can drop a file with [ADR 0019](0019-taking-posts-and-media-down.md)'s `osp block`.
 
@@ -132,15 +133,15 @@ Offered once its tests pass, with yes recommended. Existing nodes keep their rul
 | --- | --- | --- |
 | 1 | A relay in `osp-sim`, and ADR 0014's "measuring media's default" | Relay bytes counted with 0, 20 and 50% of followers fetching through relays |
 | 2 | Day counters and layers, shown in `osp peers`, changing nothing. A shortened clock in `osp-sim`, as this takes a month | A B8 run with several posts shows **how often pairs meet again** |
-| 3 | The rule, the handover, `deny`, `reset`, asking at setup | **At least a quarter of relayed bytes move to direct links** (a starting value). Refused nodes learn no address, in a packet capture |
+| 3 | The rule, the handover, `deny`, `reset`, asking at setup | **At least a quarter of relayed bytes move to direct links** (a starting value). Refused nodes arriving through a relay learn no address, in a packet capture |
 | 4 | Effects of layers 2 and 3, one at a time | B8's marks, and the review's A3 |
 
 Not before the invited alpha: a handful of nodes won't reach layer 4 and have too little to exchange.
 
 ## Validation
 
-- **A price check.** An attacker holding 10 and 25% of nodes, serving real media for three simulated months: what share of honest addresses does it hold, and how many bytes did it serve to get there? The result is reported, and decides whether setup recommends yes.
-- **Admission.** A stranger, or a node with only machine evidence or self-reported bytes, never gets an address. A peer that sent bad data loses its place. After `reset`, nothing connects directly.
+- **A price check.** An attacker holding 10 and 25% of nodes, serving real media for three simulated months: what share of honest addresses does it hold, and how many bytes did it serve to get there? It also tries tiny files, split requests, and a fast host aimed at one node. The result is reported, and decides whether setup recommends yes.
+- **Admission.** A stranger, or a node with only machine evidence or self-reported bytes, never gets an address. A peer that sent bad data loses its place. After `reset`, nothing connects directly, including peers approved by hand.
 - **Leak test,** as in ADR 0014 and ADR 0015. Nothing public gains an address, and nothing ties a machine name to a public ID.
 
 **Revisit** if pairs rarely meet again, if the price check shows addresses going too cheaply, if newcomers end up with worse service than they have today, or if people ask for the separation that unbinding `WhoHosts` would give.

@@ -56,6 +56,18 @@ Every node keeps a small set of machines it knows, not a table of the world: ADR
 
 Six degrees isn't a guarantee, and being close isn't being trusted.
 
+### Keeping discovery open
+
+**A crowd of fake machines can still crowd out honest ones.** Being known grants nothing, so they get no address and no access. What they can do is become the only voice a node hears: answering reliably under many names, they fill its table and use up its dials, and it stops meeting honest machines and directories. This is an eclipse, [shown on Bitcoin](https://www.usenix.org/conference/usenixsecurity15/technical-sessions/presentation/heilman). Here it takes a server running many names over Tor for weeks, and pays little: the node can't find others, and the operator sees which machines it talks to. Unlikely in the alpha; it matters more once discovery feeds anything else.
+
+ADR 0015's limits are the main defence: half of the 256 places stay with the machines known longest, and one source can fill at most a quarter of the rest. Proposed here, on top of those:
+
+- **Where a record came from stays counted** after its machine has been met, so meeting it doesn't free a place in its source's quarter.
+- **Some of the six dials an hour go to records from sources that supplied few of the table's machines,** with no extra dials. The share is set before the simulator run.
+- **Directories set in `config.toml` are kept apart** from machines met through others, so a full table can't push them out, and the node goes back to them when the rest fail.
+
+Several names can still be one operator, so these make an eclipse harder, not impossible. A node whose only start is hostile is cut off from honest machines. Nothing here fixes that, and it's stated as a limit.
+
 ### The local record
 
 Each node keeps, for each machine it knows, these things apart:
@@ -110,11 +122,11 @@ Before any of these is built: signing domains, expiry, replay handling, frame li
 
 **Privacy.** A machine's records, its times and who it has met can link machines, and two names sharing one Tor can be matched over time, as ADR 0015 says. A statement shows that one machine dealt with another. Requests carry no searches or follows.
 
-**Abuse.** Anyone can make machine keys, and an old name isn't an independent operator. Since this record grants no access, fakes gain little: at most they get asked first. That is why the stakes stay low.
+**Abuse.** Anyone can make machine keys, and an old name isn't an independent operator. Since this record grants no access, fakes gain little: at most they get asked first, or crowd out honest machines as above. That is why the stakes stay low.
 
 **Operational.** Peers, referrals and evidence all stay bounded. Discovery keeps working when a directory goes away. How many Tor circuits this costs is measured in stage A, and each later stage adds to it.
 
-**Changes to accepted records.** None. This adds detail to ADR 0015.
+**Changes to accepted records.** None to ADR 0015's limits. "Keeping discovery open" adds three rules to them, to be named in ADR 0015 when this is accepted. The rest adds detail to ADR 0015.
 
 **Licensing.** No new dependency.
 
@@ -122,7 +134,7 @@ Before any of these is built: signing domains, expiry, replay handling, frame li
 
 | Stage | Work | Gate |
 | --- | --- | --- |
-| A | ADR 0015 step 3: `Known`, stages, local record, limits | ADR 0015's: nodes meet others with no human act, including with the directory off; one hostile node can't fill a table; circuits measured |
+| A | ADR 0015 step 3: `Known`, stages, local record, limits | ADR 0015's: nodes meet others with no human act, including with the directory off; one hostile node can't fill a table; circuits measured. Also: fake names under several keys, referring one another, can't push out the machines known longest |
 | B | The record's separate measures, fading | Valid referrals earn a place; greeting spam and claims earn nothing |
 | C | Using it when busy | Newcomers still get answers; measured against fake machines |
 | D | Statements, corrections and two-report checks | False reports and outages don't mark down innocent machines without a check |
@@ -131,5 +143,7 @@ Before any of these is built: signing domains, expiry, replay handling, frame li
 ## Validation
 
 In `osp-sim`: at least 300 ordinary nodes and 100 fake keys, several under one operator, with colluding referrals, offline machines, a failing disk, false accusations, a split network and returning newcomers. Measure dials to meet a machine, useful records per request, Tor circuits, database size, innocent machines marked down, and fairness to newcomers. ADR 0015's leak test still applies: nothing ties a machine name to a public ID.
+
+Stage A runs ADR 0015's gate once, with some hostile names under one operator referring one another, and reports how many honest machines each node kept. Circuits counted in `osp-sim` are an estimate; the real number comes from a run over real Tor.
 
 **Revisit** if acquaintances split into cliques, if one operator's names crowd out the rest, if the record shuts out newcomers, or if two-report checks often mark down the innocent.
