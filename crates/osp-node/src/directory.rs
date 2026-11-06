@@ -363,7 +363,9 @@ impl Core {
         );
         let mut cursor = self.db.directory_cursor(&directory)?;
         for _ in 0..MAX_PAGES_PER_READ {
-            let (entries, latest) = machine::ask_listing(conn, cursor, MAX_LISTING_PAGE).await?;
+            let (entries, latest) = side
+                .listing(conn, directory, cursor, MAX_LISTING_PAGE)
+                .await?;
             // Its numbers never go down, so this is a directory starting over.
             if latest < cursor {
                 info!("a directory started over, so reading it from the start");
@@ -377,7 +379,7 @@ impl Core {
                 entries.len()
             );
             let done = entries.is_empty();
-            cursor = self.take_page(directory, cursor, entries, latest)?;
+            cursor = self.take_page(side, directory, cursor, entries, latest)?;
             self.db.set_directory_cursor(&directory, cursor)?;
             self.db
                 .trim_found(self.sim.max_found_people, MAX_FOUND_BYTES)?;
@@ -393,6 +395,7 @@ impl Core {
     /// costs only that entry. Returns the number reached.
     fn take_page(
         &self,
+        side: &MachineSide,
         directory: EndpointId,
         mut cursor: u64,
         entries: Vec<ListingEntry>,
@@ -411,8 +414,10 @@ impl Core {
                     }
                 }
                 ListingItem::Gone { actor } => self.db.forget_found(&directory, &actor)?,
-                // Machines are for meeting, which comes later (ADR 0015's step 3).
-                ListingItem::Machine { .. } | ListingItem::Unknown => {}
+                // The node's first machines to meet, counted against the
+                // directory as their source, as any other machine's would be.
+                ListingItem::Machine { record } => side.acquaintances.on_map(directory, &record),
+                ListingItem::Unknown => {}
             }
         }
         Ok(cursor)
@@ -550,8 +555,10 @@ pub(crate) async fn greet_back_loop(core: Arc<Core>, mut greeted: mpsc::Receiver
                     Ok(greeting) => core.db.put_machine(&machine, &greeting.record, now_ms()),
                     Err(e) => Err(e),
                 };
-                if let Err(e) = kept {
-                    debug!(machine = %machine.fmt_short(), "greeting a machine back failed: {e:#}");
+                // Not which, as a log holds the public ID too, and the error
+                // names it.
+                if kept.is_err() {
+                    debug!("greeting a machine back failed");
                 }
             }
             drop(place);
@@ -576,20 +583,29 @@ pub(crate) async fn ask_listing_loop(core: Arc<Core>) {
 }
 
 /// A node reading its directories: at a time of its own after it starts, then
-/// now and then, and sooner if it didn't get to the end.
+/// now and then, and sooner if it didn't get to the end, or if the machines it
+/// met have all stopped answering (ADR 0016), though no sooner than
+/// `READ_AGAIN` after the last read.
 pub(crate) async fn read_loop(core: Arc<Core>) {
-    let mut wait = core.sim.first_read_wait.mul_f64(random_fraction());
+    let again = READ_AGAIN.min(core.sim.read_every);
+    tokio::time::sleep(core.sim.first_read_wait.mul_f64(random_fraction())).await;
     loop {
-        tokio::time::sleep(wait).await;
         // Messages wait for Tor, and go nowhere else (ADR 0014).
         if let Some(tor) = &core.tor {
             tor.ready().await;
         }
         let finished = core.read_directories().await.unwrap_or(false);
-        wait = match finished {
+        let wait = match finished {
             true => jitter(core.sim.read_every),
-            false => jitter(READ_AGAIN.min(core.sim.read_every)),
+            false => jitter(again),
         };
+        let soonest = tokio::time::Instant::now() + again;
+        tokio::select! {
+            _ = tokio::time::sleep(wait) => {}
+            _ = core.read_directories_now.notified() => {
+                tokio::time::sleep_until(soonest).await;
+            }
+        }
     }
 }
 

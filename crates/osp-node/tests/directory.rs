@@ -904,6 +904,7 @@ impl FakeDirectory {
                     latest: lists.latest,
                 }
             }
+            MachineRequest::Known => MachineResponse::Known { records: vec![] },
             MachineRequest::Unknown => panic!("a request it doesn't know"),
         }
     }

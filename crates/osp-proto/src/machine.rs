@@ -30,6 +30,8 @@ pub const MAX_LISTING_PAGE: u32 = 100;
 pub const MAX_LISTING_PAGE_BYTES: usize = 64 * 1024;
 /// Most posts a directory lists of one person.
 pub const MAX_LISTED_POSTS: usize = 5;
+/// Most records in a reply to `Known`.
+pub const MAX_KNOWN: usize = 20;
 /// Largest listing of one person, in bytes.
 pub const MAX_LISTED_PERSON_BYTES: usize = 32 * 1024;
 
@@ -122,6 +124,10 @@ pub enum MachineRequest {
     /// sequence number greater than `since`. Asking for none still says where
     /// the end is. Other machines say they aren't directories.
     Listing { since: u64, limit: u32 },
+    /// Some machines you've met lately: up to `MAX_KNOWN` of their records, as
+    /// they signed them, picked at random. It carries nothing of what the
+    /// asker wants, and the reply says nothing of how or when they met.
+    Known,
     /// A request from a later version. It gets an error rather than a closed
     /// connection, so requests can be added.
     #[serde(other)]
@@ -138,6 +144,9 @@ pub enum MachineResponse {
         entries: Vec<ListingEntry>,
         /// The newest sequence number in the lists.
         latest: u64,
+    },
+    Known {
+        records: Vec<MachineRecord>,
     },
     Error {
         message: String,
@@ -288,6 +297,18 @@ mod tests {
         let reply = MachineResponse::Hello { record: largest };
         let len = serde_json::to_vec(&reply).unwrap().len();
         assert!(len <= MAX_REPLY_LEN as usize, "{len} bytes");
+    }
+
+    #[test]
+    fn a_full_known_reply_of_the_largest_records_fits() {
+        let largest = signed_payload(&key(1), vec![0xff; MAX_RECORD_BYTES]);
+        let reply = MachineResponse::Known {
+            records: vec![largest; MAX_KNOWN],
+        };
+        let len = serde_json::to_vec(&reply).unwrap().len();
+        assert!(len <= MAX_REPLY_LEN as usize, "{len} bytes");
+        let request = serde_json::to_vec(&MachineRequest::Known).unwrap();
+        assert_eq!(request, br#"{"op":"known"}"#);
     }
 
     #[test]

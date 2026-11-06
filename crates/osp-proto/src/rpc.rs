@@ -295,6 +295,13 @@ pub enum ClientResponse {
         machine: EndpointId,
         /// Made from its ID, to tell machines apart by eye.
         words: String,
+        /// How many machines it knows at each stage (ADR 0015).
+        #[serde(default)]
+        heard_of: u64,
+        #[serde(default)]
+        met: u64,
+        #[serde(default)]
+        known: u64,
     },
     /// The directories this node knows were read: how many people it now holds
     /// that it found through them.

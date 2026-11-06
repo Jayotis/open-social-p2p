@@ -17,6 +17,7 @@ mod home;
 mod keys;
 mod machine;
 pub mod media;
+mod meet;
 mod network;
 mod node;
 mod peers;
@@ -34,6 +35,7 @@ pub use config::{Config, DirectRule, KnownDirectory, RelayChoice};
 pub use db::BlobClass;
 pub use endpoints::PeerEndpoints;
 pub use home::Home;
+pub use meet::{Acquaintance, MeetingTimes, Stage};
 #[cfg(feature = "sim")]
 pub use node::SimSettings;
 pub use node::{Node, Restored};

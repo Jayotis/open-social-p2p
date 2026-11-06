@@ -278,7 +278,7 @@ async fn two_machines_greet_each_other_and_their_nodes_dont_notice() {
     let (their_machine, my_machine) = (bob.machine_id().unwrap(), alice.machine_id().unwrap());
     assert_ne!(their_machine, my_machine);
 
-    let ClientResponse::MachineName { machine, words } =
+    let ClientResponse::MachineName { machine, words, .. } =
         call(&bob, ClientRequest::MachineName).await
     else {
         panic!("no name");
