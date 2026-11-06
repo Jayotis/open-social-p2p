@@ -918,9 +918,16 @@ fn print(resp: ClientResponse, json: bool) -> Result<()> {
         ClientResponse::DirectoriesRead { found } => {
             println!("Read. This node holds {found} people it found through directories.");
         }
-        ClientResponse::MachineName { machine, words } => {
+        ClientResponse::MachineName {
+            machine,
+            words,
+            heard_of,
+            met,
+            known,
+        } => {
             println!("{words}");
             println!("{machine}");
+            println!("It knows {known} machines, has met {met} more and heard of {heard_of}.");
         }
         ClientResponse::MachineGreeted {
             words,

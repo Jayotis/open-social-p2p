@@ -47,6 +47,7 @@ use crate::{
     keys::{self, NewKey, Signer},
     machine::MachineSide,
     media,
+    meet::{self, Acquaintance, MeetingTimes},
     network::{self, ConnTracker},
     relays::{self, Checked, RelayPolicy},
     social::{self, Heard, PerHour, SocialProtocol},
@@ -106,6 +107,9 @@ pub struct SimSettings {
     pub max_found_people: usize,
     /// Machines a directory greets back per hour. Tests lower it.
     pub greets_back_per_hour: u32,
+    /// How long things take among machines (ADR 0015's step 3). The
+    /// simulator and tests run them faster.
+    pub meeting: MeetingTimes,
     /// The node sends and receives through this simulated network instead
     /// of IP sockets (`simnet`). Its config should have relays disabled.
     #[cfg(feature = "sim")]
@@ -138,6 +142,7 @@ impl Default for SimSettings {
             found_needs_free: health::LOW_DISK_BYTES,
             max_found_people: directory::MAX_FOUND_PEOPLE,
             greets_back_per_hour: directory::MAX_GREETS_BACK_PER_HOUR,
+            meeting: MeetingTimes::default(),
             #[cfg(feature = "sim")]
             network: None,
             #[cfg(feature = "sim")]
@@ -245,6 +250,8 @@ pub(crate) struct Core {
     pub listed_now: Notify,
     /// Directories are read by one task at a time.
     pub reading_directories: tokio::sync::Mutex<()>,
+    /// Wakes the reading of directories, when the machines met all fail.
+    pub read_directories_now: Notify,
     pub sim: SimSettings,
     /// With `SimSettings::tor_delay`: when the Tor-like circuits to each
     /// node are, or will be, ready.
@@ -428,7 +435,7 @@ impl Node {
             true => Some(TorSide::start(&home, &config.tor, node_key.clone(), &tracker).await?),
             false => None,
         };
-        let machine = MachineSide::start(&home, &config, tor.as_ref(), &sim).await?;
+        let machine = MachineSide::start(&home, &config, tor.as_ref(), &db, &sim).await?;
         ensure!(
             !config.directory.serve || machine.is_some(),
             "a directory needs a machine name: set enabled = true under [tor] and under [machine] in config.toml"
@@ -534,6 +541,7 @@ impl Node {
             machine,
             listed_now: Notify::new(),
             reading_directories: tokio::sync::Mutex::new(()),
+            read_directories_now: Notify::new(),
             sim,
             #[cfg(feature = "sim")]
             tor_ready: Mutex::new(HashMap::new()),
@@ -582,6 +590,7 @@ impl Node {
                     .accept(osp_proto::MACHINE_ALPN, machine.protocol(lists))
                     .spawn(),
             );
+            directory_tasks.push(tokio::spawn(meet::meet_loop(core.clone())));
         }
         if !core.config.directory.known.is_empty() {
             if core.config.directory.list_me {
@@ -693,6 +702,23 @@ impl Node {
     /// The node's machine name, if it has one. For tests and diagnostics.
     pub fn machine_id(&self) -> Option<EndpointId> {
         self.core.machine.as_ref().map(|machine| machine.id())
+    }
+
+    /// The machines its machine name knows (ADR 0015). For tests and the
+    /// simulator: this is the record that never leaves the node.
+    pub fn acquaintances(&self) -> Vec<Acquaintance> {
+        self.core
+            .machine
+            .as_ref()
+            .map(|machine| machine.acquaintances.acquaintances())
+            .unwrap_or_default()
+    }
+
+    /// Estimated Tor circuits its machine name has built, with Tor-like
+    /// delays on the simulated network.
+    #[cfg(feature = "sim")]
+    pub fn machine_circuits(&self) -> Option<u64> {
+        self.core.machine.as_ref()?.circuits()
     }
 
     /// Asks another node for its media and direct endpoints, offering this

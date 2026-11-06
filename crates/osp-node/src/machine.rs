@@ -11,12 +11,13 @@
 //! That isn't anonymity: both keys share one Tor and come and go together.
 
 use std::{
+    collections::HashSet,
     fmt,
     sync::Arc,
     time::{Duration, Instant},
 };
 
-use anyhow::{Context, Result, ensure};
+use anyhow::{Context, Result, bail, ensure};
 use iroh::{
     Endpoint, EndpointId, SecretKey,
     endpoint::{Connection, RecvStream, SendStream},
@@ -26,8 +27,8 @@ use osp_proto::{
     MACHINE_ALPN,
     framing::{read_frame_max, write_frame},
     machine::{
-        ListingEntry, MAX_LISTING_PAGE, MAX_REPLY_LEN, MAX_REQUEST_LEN, MachineInfo, MachineRecord,
-        MachineRequest, MachineResponse, OFFERS_DIRECTORY,
+        ListingEntry, MAX_KNOWN, MAX_LISTING_PAGE, MAX_REPLY_LEN, MAX_REQUEST_LEN, MachineInfo,
+        MachineRecord, MachineRequest, MachineResponse, OFFERS_DIRECTORY,
     },
     rpc::ClientResponse,
 };
@@ -37,9 +38,11 @@ use tracing::{debug, info};
 
 use crate::{
     config::Config,
+    db::Db,
     directory::DirectoryLists,
     home::Home,
     keys,
+    meet::{Acquaintances, Stage, Talk},
     node::{Core, SimSettings},
     social,
     tor::TorSide,
@@ -68,19 +71,25 @@ pub(crate) struct MachineSide {
     /// What its record says it offers other machines.
     offers: Vec<String>,
     pub endpoint: Endpoint,
+    /// The machines it knows, and its record of each.
+    pub acquaintances: Arc<Acquaintances>,
     /// Holds the onion service up, on Tor.
     _transport: Option<TorTransport>,
+    #[cfg(feature = "sim")]
+    sim_tor: Option<Arc<SimTor>>,
 }
 
 impl MachineSide {
     /// Starts the node's machine name, making its key if it's new: on Tor, or
     /// on the simulated network if that's asked for. Without either, or with
-    /// `[machine]` off, the node has none.
+    /// `[machine]` off, the node has none. A new name starts again among
+    /// machines as a stranger, knowing none of them.
     pub async fn start(
         home: &Home,
         config: &Config,
         tor: Option<&TorSide>,
-        #[cfg_attr(not(feature = "sim"), allow(unused_variables))] sim: &SimSettings,
+        db: &Arc<Db>,
+        sim: &SimSettings,
     ) -> Result<Option<Self>> {
         if !config.machine.enabled {
             return Ok(None);
@@ -88,21 +97,19 @@ impl MachineSide {
         let path = home.machine_key();
         let load = || match path.exists() {
             true => keys::load(&path),
-            false => keys::create(&path),
+            false => {
+                db.forget_machines()?;
+                keys::create(&path)
+            }
         };
         let mut offers = Vec::new();
         if config.directory.serve {
             offers.push(OFFERS_DIRECTORY.to_string());
         }
-        let side = if let Some(tor) = tor {
+        let started = if let Some(tor) = tor {
             let key = load()?;
             let (transport, endpoint) = tor.endpoint_for(key.clone(), MAX_STREAMS).await?;
-            Some(Self {
-                key,
-                offers,
-                endpoint,
-                _transport: Some(transport),
-            })
+            Some((key, endpoint, Some(transport)))
         } else {
             #[cfg(feature = "sim")]
             match (&sim.network, sim.machine_names) {
@@ -117,22 +124,36 @@ impl MachineSide {
                         .bind()
                         .await
                         .context("starting the machine endpoint")?;
-                    Some(Self {
-                        key,
-                        offers,
-                        endpoint,
-                        _transport: None,
-                    })
+                    Some((key, endpoint, None))
                 }
                 _ => None,
             }
             #[cfg(not(feature = "sim"))]
             None
         };
-        if side.is_some() {
-            info!("the machine name is on");
-        }
-        Ok(side)
+        let Some((key, endpoint, transport)) = started else {
+            return Ok(None);
+        };
+        // This machine and the directories it was told of are kept apart from
+        // the machines it meets (ADR 0016).
+        let apart: HashSet<EndpointId> = config
+            .directory
+            .known
+            .iter()
+            .map(|directory| directory.machine)
+            .chain([key.public()])
+            .collect();
+        let acquaintances = Acquaintances::load(db.clone(), apart, sim.meeting)?;
+        info!("the machine name is on");
+        Ok(Some(Self {
+            key,
+            offers,
+            endpoint,
+            acquaintances: Arc::new(acquaintances),
+            _transport: transport,
+            #[cfg(feature = "sim")]
+            sim_tor: sim.tor_delay.map(|delay| Arc::new(SimTor::new(delay))),
+        }))
     }
 
     pub fn id(&self) -> EndpointId {
@@ -146,7 +167,44 @@ impl MachineSide {
             offers: self.offers.clone(),
             connections: Arc::new(Semaphore::new(MAX_CONNECTIONS)),
             lists,
+            acquaintances: self.acquaintances.clone(),
+            #[cfg(feature = "sim")]
+            sim_tor: self.sim_tor.clone(),
         }
+    }
+
+    /// Estimated Tor circuits this machine has built, on the simulated
+    /// network with Tor-like delays.
+    #[cfg(feature = "sim")]
+    pub fn circuits(&self) -> Option<u64> {
+        let sim = self.sim_tor.as_ref()?;
+        Some(sim.circuits.load(std::sync::atomic::Ordering::Relaxed))
+    }
+
+    /// A conversation with a machine to meet it or check in: a greeting, then
+    /// `Known`. A machine that doesn't know `Known` yet has still answered.
+    pub async fn talk(&self, machine: EndpointId) -> Result<Talk> {
+        let conn = self.connect(machine).await?;
+        let talked = async {
+            let record = self.ask_hello(&conn, machine).await?;
+            checked(&record, machine)?;
+            let (known, too_many) = match self.ask(&conn, machine, &MachineRequest::Known).await {
+                Ok(MachineResponse::Known { mut records }) => {
+                    let too_many = records.len() > MAX_KNOWN;
+                    records.truncate(MAX_KNOWN);
+                    (records, too_many)
+                }
+                _ => (Vec::new(), false),
+            };
+            Ok(Talk {
+                record,
+                known,
+                too_many,
+            })
+        }
+        .await;
+        close(&conn);
+        talked
     }
 
     /// Greets another machine, and closes the connection: a conversation is
@@ -156,7 +214,7 @@ impl MachineSide {
         let conn = self.connect(machine).await?;
         let connected = started.elapsed();
         let started = Instant::now();
-        let reply = ask_hello(&conn, &self.key, &self.offers).await;
+        let reply = self.ask_hello(&conn, machine).await;
         close(&conn);
         let record = reply?;
         Ok(Greeting {
@@ -169,6 +227,10 @@ impl MachineSide {
 
     /// Starts a conversation with another machine, for the caller to `close`.
     pub async fn connect(&self, machine: EndpointId) -> Result<Connection> {
+        #[cfg(feature = "sim")]
+        if let Some(sim) = &self.sim_tor {
+            sim.connecting(self.id(), machine).await;
+        }
         tokio::time::timeout(
             CONNECT_TIMEOUT,
             self.endpoint.connect(machine, MACHINE_ALPN),
@@ -180,7 +242,54 @@ impl MachineSide {
 
     /// Greets the machine at the other end of a conversation already started.
     pub async fn hello_on(&self, conn: &Connection, machine: EndpointId) -> Result<MachineInfo> {
-        checked(&ask_hello(conn, &self.key, &self.offers).await?, machine)
+        checked(&self.ask_hello(conn, machine).await?, machine)
+    }
+
+    /// Asks a directory for a page of its lists.
+    pub async fn listing(
+        &self,
+        conn: &Connection,
+        directory: EndpointId,
+        since: u64,
+        limit: u32,
+    ) -> Result<(Vec<ListingEntry>, u64)> {
+        let request = MachineRequest::Listing { since, limit };
+        match self.ask(conn, directory, &request).await? {
+            MachineResponse::Listing { entries, latest } => Ok((entries, latest)),
+            MachineResponse::Error { message } => bail!("it answered: {message}"),
+            _ => bail!("it answered something else"),
+        }
+    }
+
+    async fn ask(
+        &self,
+        conn: &Connection,
+        #[cfg_attr(not(feature = "sim"), allow(unused_variables))] machine: EndpointId,
+        request: &MachineRequest,
+    ) -> Result<MachineResponse> {
+        let (mut send, mut recv) = conn.open_bi().await?;
+        write_frame(&mut send, request).await?;
+        send.finish()?;
+        let reply = tokio::time::timeout(REQUEST_TIMEOUT, read_frame_max(&mut recv, MAX_REPLY_LEN))
+            .await
+            .context("no reply in time")??;
+        #[cfg(feature = "sim")]
+        if let Some(sim) = &self.sim_tor {
+            let bytes = serde_json::to_vec(&reply).map_or(0, |v| v.len());
+            tokio::time::sleep(sim.delay.request(&self.id(), &machine, bytes)).await;
+        }
+        Ok(reply)
+    }
+
+    async fn ask_hello(&self, conn: &Connection, machine: EndpointId) -> Result<MachineRecord> {
+        let request = MachineRequest::Hello {
+            record: own_record(&self.key, &self.offers)?,
+        };
+        match self.ask(conn, machine, &request).await? {
+            MachineResponse::Hello { record } => Ok(record),
+            MachineResponse::Error { message } => bail!("it answered: {message}"),
+            _ => bail!("it answered something else"),
+        }
     }
 }
 
@@ -189,17 +298,42 @@ pub(crate) fn close(conn: &Connection) {
     conn.close(CLOSE_DONE.into(), b"done");
 }
 
-/// Asks a directory for a page of its lists.
-pub(crate) async fn ask_listing(
-    conn: &Connection,
-    since: u64,
-    limit: u32,
-) -> Result<(Vec<ListingEntry>, u64)> {
-    let request = MachineRequest::Listing { since, limit };
-    match ask(conn, &request).await? {
-        MachineResponse::Listing { entries, latest } => Ok((entries, latest)),
-        MachineResponse::Error { message } => anyhow::bail!("it answered: {message}"),
-        MachineResponse::Hello { .. } => anyhow::bail!("it answered something else"),
+/// Tor-like delays on the simulated network, which has no Tor, and an
+/// estimate of the circuits Tor would build. Each conversation with an onion
+/// service builds two at the machine asking, one to an introduction point and
+/// one to a rendezvous point, and one at the machine asked, to that rendezvous
+/// point. Conversations are events hours apart, so none reuses another's, as
+/// Tor stops putting new streams on a circuit ten minutes after its first.
+/// Not counted: the few circuits an onion service holds to its own
+/// introduction points all the time.
+#[cfg(feature = "sim")]
+pub(crate) struct SimTor {
+    delay: crate::simnet::TorDelay,
+    circuits: std::sync::atomic::AtomicU64,
+}
+
+#[cfg(feature = "sim")]
+impl SimTor {
+    fn new(delay: crate::simnet::TorDelay) -> Self {
+        Self {
+            delay,
+            circuits: Default::default(),
+        }
+    }
+
+    /// Waits as connecting to `machine` over Tor would: for new circuits,
+    /// then a round trip.
+    async fn connecting(&self, me: EndpointId, machine: EndpointId) {
+        self.circuits
+            .fetch_add(2, std::sync::atomic::Ordering::Relaxed);
+        tokio::time::sleep(self.delay.first_connect()).await;
+        tokio::time::sleep(self.delay.round_trip(&me, &machine)).await;
+    }
+
+    /// A machine reached this one.
+    fn reached_by(&self) {
+        self.circuits
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 }
 
@@ -211,26 +345,6 @@ pub(crate) struct Greeting {
     pub info: MachineInfo,
     pub connected: Duration,
     pub asked: Duration,
-}
-
-async fn ask(conn: &Connection, request: &MachineRequest) -> Result<MachineResponse> {
-    let (mut send, mut recv) = conn.open_bi().await?;
-    write_frame(&mut send, request).await?;
-    send.finish()?;
-    tokio::time::timeout(REQUEST_TIMEOUT, read_frame_max(&mut recv, MAX_REPLY_LEN))
-        .await
-        .context("no reply in time")?
-}
-
-async fn ask_hello(conn: &Connection, key: &SecretKey, offers: &[String]) -> Result<MachineRecord> {
-    let request = MachineRequest::Hello {
-        record: own_record(key, offers)?,
-    };
-    match ask(conn, &request).await? {
-        MachineResponse::Hello { record } => Ok(record),
-        MachineResponse::Error { message } => anyhow::bail!("it answered: {message}"),
-        MachineResponse::Listing { .. } => anyhow::bail!("it answered something else"),
-    }
 }
 
 /// This machine's record, freshly dated.
@@ -257,6 +371,10 @@ pub(crate) struct MachineProtocol {
     connections: Arc<Semaphore>,
     /// A directory's lists, on a machine that is one.
     lists: Option<DirectoryLists>,
+    /// Who greets it is heard of, and `Known` comes from these.
+    acquaintances: Arc<Acquaintances>,
+    #[cfg(feature = "sim")]
+    sim_tor: Option<Arc<SimTor>>,
 }
 
 impl fmt::Debug for MachineProtocol {
@@ -271,6 +389,10 @@ impl ProtocolHandler for MachineProtocol {
             conn.close(CLOSE_BUSY.into(), b"busy");
             return Ok(());
         };
+        #[cfg(feature = "sim")]
+        if let Some(sim) = &self.sim_tor {
+            sim.reached_by();
+        }
         // Anyone can make a name for free, so one gets a short, bounded turn.
         let _ = tokio::time::timeout(CONNECTION_LIMIT, async {
             let remote = conn.remote_id();
@@ -279,8 +401,9 @@ impl ProtocolHandler for MachineProtocol {
                     tokio::time::timeout(REQUEST_TIMEOUT, self.serve_stream(remote, send, recv))
                         .await
                         .unwrap_or_else(|_| Err(anyhow::anyhow!("took too long")));
+                // Not who: a log holds the public ID too.
                 if let Err(e) = served {
-                    debug!(remote = %remote.fmt_short(), "machine request failed: {e:#}");
+                    debug!("machine request failed: {e:#}");
                 }
             }
         })
@@ -303,6 +426,7 @@ impl MachineProtocol {
                     if let Some(lists) = &self.lists {
                         lists.greeted(remote);
                     }
+                    self.acquaintances.greeted(&record);
                     MachineResponse::Hello {
                         record: own_record(&self.key, &self.offers)?,
                     }
@@ -319,6 +443,10 @@ impl MachineProtocol {
                 None => MachineResponse::Error {
                     message: "this machine isn't a directory".to_string(),
                 },
+            },
+            // Only what the machine itself met: nothing the owner does changes it.
+            MachineRequest::Known => MachineResponse::Known {
+                records: self.acquaintances.known_reply(&remote),
             },
             MachineRequest::Unknown => MachineResponse::Error {
                 message: "this machine doesn't know that request".to_string(),
@@ -339,10 +467,16 @@ impl Core {
 
     /// This node's machine name, for its owner.
     pub(crate) fn machine_name(&self) -> Result<ClientResponse> {
-        let machine = self.machine()?.id();
+        let side = self.machine()?;
+        let machine = side.id();
+        let known = side.acquaintances.acquaintances();
+        let count = |stage| known.iter().filter(|a| a.stage == stage).count() as u64;
         Ok(ClientResponse::MachineName {
             words: words(&machine),
             machine,
+            heard_of: count(Stage::Heard),
+            met: count(Stage::Met),
+            known: count(Stage::Known),
         })
     }
 

@@ -20,7 +20,7 @@ use osp_proto::{
 use rusqlite::{Connection, OptionalExtension, params};
 use tracing::info;
 
-use crate::{peers, trust};
+use crate::{meet, peers, trust};
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS objects (
@@ -232,6 +232,29 @@ const MIGRATIONS: &[&str] = &[
     CREATE TABLE directories_read (
         directory TEXT PRIMARY KEY,
         cursor    INTEGER NOT NULL
+    );",
+    // 16: the machines this node's machine name knows (ADR 0015's step 3),
+    // and its record of each, which never leaves the node: its latest record
+    // as it signed it, where that first came from, when it was heard of, met,
+    // last dialled and last answered, dials in a row unanswered, and faded
+    // counts as JSON (`meet::Counts`), last faded at `faded_ms`. And when
+    // each of the last hour's new machines was dialled, and whether that dial
+    // went to the source heard from less (ADR 0016's rule 2).
+    "CREATE TABLE machines (
+        machine     TEXT PRIMARY KEY,
+        record      TEXT NOT NULL,
+        source      TEXT NOT NULL,
+        heard_ms    INTEGER NOT NULL,
+        met_ms      INTEGER,
+        tried_ms    INTEGER NOT NULL,
+        tries       INTEGER NOT NULL,
+        answered_ms INTEGER,
+        counts      TEXT NOT NULL,
+        faded_ms    INTEGER NOT NULL
+    );
+    CREATE TABLE machine_dials (
+        at_ms      INTEGER NOT NULL,
+        less_heard INTEGER NOT NULL
     );",
 ];
 
@@ -1337,6 +1360,124 @@ impl Db {
             });
         }
         Ok((entries, latest.unwrap_or(0) as u64))
+    }
+
+    // ---- the machines this node knows (ADR 0015's step 3) ----
+
+    /// The machines stored, and when the last hour's new ones were dialled. A
+    /// row that doesn't read back is left out.
+    pub fn machines(&self) -> Result<(Vec<meet::Entry>, Vec<meet::Dial>)> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT machine, record, source, heard_ms, met_ms, tried_ms, tries, answered_ms,
+                    counts, faded_ms
+             FROM machines",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                (
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                    row.get(7)?,
+                ),
+                row.get::<_, String>(8)?,
+                row.get(9)?,
+            ))
+        })?;
+        let mut entries = Vec::new();
+        for row in rows {
+            let (machine, record, source, times, counts, faded_ms) = row?;
+            let (heard_ms, met_ms, tried_ms, tries, answered_ms) = times;
+            let entry = (|| -> Result<meet::Entry> {
+                let machine: EndpointId = machine.parse()?;
+                let record: MachineRecord = serde_json::from_str(&record)?;
+                let info = record.verify()?;
+                ensure!(info.machine == machine, "a record of another machine");
+                Ok(meet::Entry {
+                    machine,
+                    published_ms: osp_proto::parse_rfc3339_ms(&info.published)
+                        .context("undated")?,
+                    record,
+                    source: meet::Source::from_db(&source)?,
+                    heard_ms,
+                    met_ms,
+                    tried_ms,
+                    tries,
+                    answered_ms,
+                    counts: serde_json::from_str(&counts)?,
+                    faded_ms,
+                })
+            })();
+            match entry {
+                Ok(entry) => entries.push(entry),
+                Err(e) => tracing::warn!("leaving out a machine stored that doesn't read: {e:#}"),
+            }
+        }
+        let mut stmt =
+            conn.prepare("SELECT at_ms, less_heard FROM machine_dials ORDER BY at_ms")?;
+        let dials = stmt
+            .query_map([], |row| {
+                Ok(meet::Dial {
+                    at_ms: row.get(0)?,
+                    less_heard: row.get(1)?,
+                })
+            })?
+            .collect::<rusqlite::Result<_>>()?;
+        Ok((entries, dials))
+    }
+
+    /// Writes what changed in the table, all at once.
+    pub fn save_machines(&self, changes: &meet::Changes) -> Result<()> {
+        let conn = self.conn();
+        let tx = conn.unchecked_transaction()?;
+        for e in &changes.put {
+            tx.execute(
+                "INSERT OR REPLACE INTO machines (machine, record, source, heard_ms, met_ms,
+                    tried_ms, tries, answered_ms, counts, faded_ms)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                params![
+                    e.machine.to_string(),
+                    serde_json::to_string(&e.record)?,
+                    e.source.to_db(),
+                    e.heard_ms,
+                    e.met_ms,
+                    e.tried_ms,
+                    e.tries,
+                    e.answered_ms,
+                    serde_json::to_string(&e.counts)?,
+                    e.faded_ms,
+                ],
+            )?;
+        }
+        for machine in &changes.removed {
+            tx.execute(
+                "DELETE FROM machines WHERE machine = ?1",
+                params![machine.to_string()],
+            )?;
+        }
+        if let Some(dials) = &changes.dials {
+            tx.execute("DELETE FROM machine_dials", [])?;
+            for dial in dials {
+                tx.execute(
+                    "INSERT INTO machine_dials (at_ms, less_heard) VALUES (?1, ?2)",
+                    params![dial.at_ms, dial.less_heard],
+                )?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Forgets every machine known, for a new machine name.
+    pub fn forget_machines(&self) -> Result<()> {
+        self.conn()
+            .execute_batch("DELETE FROM machines; DELETE FROM machine_dials;")?;
+        Ok(())
     }
 
     // ---- what came from directories (ADR 0015) ----
