@@ -8,6 +8,8 @@
 //! follower holds the video.
 //!
 //! [B8 test plan]: ../../docs/testing/b8-creator-upload.md
+//!
+//! `meeting` is another scenario: machines meeting machines (ADR 0015).
 
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
@@ -29,6 +31,8 @@ use osp_proto::{
 };
 use serde::Serialize;
 use tracing::info;
+
+pub mod meeting;
 
 /// Bytes per second of video the node's encoder makes from noise: its
 /// 1,500 kbit/s ceiling, plus audio and the container. Measured on a
