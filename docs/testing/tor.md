@@ -104,9 +104,31 @@ Following asks their own node first, and goes no further unless it speaks for th
 
 **What a directory sees:** which machine name read its lists, and when, and which public ID asked to be listed. It sees no search words, and nothing ties the two names together except what any machine and public ID on one Tor can show ([ADR 0015](../decisions/0015-nodes-meet-first.md#consequences)).
 
-**Not yet:** the media of a post found through a directory opens only once you follow its author, and machines on a directory's map aren't dialled yet, as meeting comes in step 3.
+**Not yet:** the media of a post found through a directory opens only once you follow its author.
 
 The whole of it over real Tor, which takes minutes: `OSP_TOR=/usr/bin/tor cargo test -p osp-node --test directory -- --ignored --nocapture`.
+
+## Machines meeting
+
+A node's machine name gets to know other machines on its own ([ADR 0015](../decisions/0015-nodes-meet-first.md), step 3). It starts with the machines on its directories' maps, greets a few new ones an hour, asks each one it meets for some of the machines it has met lately (`Known`), and checks in with each about once a day, at times of its own. Nothing its owner follows, posts or searches for changes what it says, and its record of the machines never leaves the node.
+
+```sh
+osp machine show    # its name, then "It knows 0 machines, has met 2 more and heard of 5."
+```
+
+A machine is **heard of** when a signed record of it arrives, **met** once it answers, and **known** after a month of answering with the records it passed on checking out. Being known grants nothing: known machines are checked in with first, and keep their places when the table is full.
+
+**Its limits,** from ADR 0015 and the three rules ADR 0016 adds:
+
+- At most 256 machines. Half the places go to those known longest, so a crowd of new names can't push them out.
+- Records from one source fill at most a quarter of the rest, 32 places. A machine met still counts against whoever passed on its record, and all those that greet unasked count as one source, as names are free.
+- 6 new machines dialled an hour, 2 of them from the sources that supplied the fewest of the table's machines.
+- The directories in `config.toml` are never in the table, so a full one can't push them out. When none of the machines met answers and none is left to try, the node reads its directories again, no sooner than 10 minutes after the last time.
+- Only a machine never met gives up its place to a newcomer. One heard of that doesn't answer three dials, 6 hours apart, is forgotten, and so is one met that hasn't answered for 30 days.
+
+`osp machine new` forgets them all with the name: the node starts again among machines as a stranger.
+
+**What it costs:** each conversation over Tor builds about three circuits, two at the machine asking and one at the machine asked. [The simulator](meeting.md#results) estimates about 400 a day for each of 100 nodes; a count over real Tor is to come.
 
 ## Check it recovers
 
