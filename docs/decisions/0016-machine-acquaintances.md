@@ -1,6 +1,6 @@
 # ADR 0016: Machine acquaintances, reciprocity and referrals
 
-**Status:** Proposed (2026-11-04). Not built. Follows on from [ADR 0015](0015-nodes-meet-first.md), whose rules stand: its step 3 is this record's first stage, its local record grows here, and its statements get more detail. Direct connections are in [ADR 0018](0018-earned-direct-connections.md), not here. Stage A, with the three rules in "Keeping discovery open", is decided (2026-11-05) and comes with ADR 0015's step 3; the rest stays proposed.
+**Status:** Proposed (2026-11-04). Not built. Follows on from [ADR 0015](0015-nodes-meet-first.md), whose rules stand: its step 3 is this record's first stage, its local record grows here, and its statements get more detail. Direct connections are in [ADR 0018](0018-earned-direct-connections.md), not here. Stage A, with the three rules in "Keeping discovery open", is decided (2026-11-05) and built with ADR 0015's step 3 (2026-11-06), the share of dials for sources heard from less being 2 of the 6 an hour ([results](../testing/meeting.md)); the rest stays proposed.
 
 ## Context
 
