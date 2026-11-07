@@ -67,6 +67,7 @@ class _ComposeScreenState extends State<ComposeScreen> {
   @override
   void initState() {
     super.initState();
+    widget.node.addListener(_nodeChanged);
     final unsent = widget.unsent;
     if (unsent != null) {
       _text.text = unsent.text;
@@ -82,8 +83,20 @@ class _ComposeScreenState extends State<ComposeScreen> {
 
   @override
   void dispose() {
+    widget.node.removeListener(_nodeChanged);
     _text.dispose();
     super.dispose();
+  }
+
+  /// A phone that goes offline while sending shows as waiting at once,
+  /// rather than once the upload has had no answer for 30 seconds. It goes
+  /// back to sending when the upload moves again.
+  void _nodeChanged() {
+    if (!mounted || _sending == null || _waiting) return;
+    if (widget.node.phoneOffline) {
+      setState(() => _waiting = true);
+      _notify();
+    }
   }
 
   Future<void> _pick() async {

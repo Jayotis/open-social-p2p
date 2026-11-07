@@ -112,6 +112,11 @@ class HomeNode extends ChangeNotifier with WidgetsBindingObserver {
     _poll = null;
   }
 
+  /// As when the phone's network changes.
+  @visibleForTesting
+  void networkChangedForTests(List<ConnectivityResult> results) =>
+      _setNetwork(results);
+
   void _setNetwork(List<ConnectivityResult> results) {
     onMobileData =
         results.contains(ConnectivityResult.mobile) &&
