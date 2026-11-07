@@ -1,4 +1,4 @@
-//! The node-to-node protocol `osp/social/1` (ADR 0003): serving our profile
+//! The node-to-node protocol `osp/social/2` (ADR 0003): serving our profile
 //! and outbox, and asking other nodes for theirs.
 
 use std::{
@@ -87,7 +87,7 @@ const HOUR: Duration = Duration::from_secs(60 * 60);
 /// never be replaced; this still lets clocks a few minutes apart work.
 const MAX_DATED_AHEAD: Duration = Duration::from_secs(5 * 60);
 
-/// Accepts incoming `osp/social/1` connections.
+/// Accepts incoming `osp/social/2` connections.
 #[derive(Clone)]
 pub(crate) struct SocialProtocol {
     core: Arc<Core>,
@@ -203,15 +203,22 @@ impl Core {
                     // Include what each reshare points at, and its author's
                     // profile, so a reader can show it even if the author is offline.
                     let mut extra = Vec::new();
-                    if let Ok(Payload::Announce(a)) = object.verify() {
-                        if let Some(target) = self.db.get_object(&a.object)? {
-                            extra.push(target);
+                    match object.verify() {
+                        Ok(Payload::Announce(a)) => {
+                            if let Some(target) = self.db.get_object(&a.object)? {
+                                extra.push(target);
+                            }
+                            if let Some(profile) = self.db.profile(&a.object_actor)?
+                                && !referenced.contains(&profile)
+                            {
+                                extra.push(profile);
+                            }
                         }
-                        if let Some(profile) = self.db.profile(&a.object_actor)?
-                            && !referenced.contains(&profile)
-                        {
-                            extra.push(profile);
+                        // A forward carries the author's delete (ADR 0019).
+                        Ok(Payload::ForwardDelete(f)) => {
+                            extra.extend(self.db.delete_by_id(&f.delete)?);
                         }
+                        _ => {}
                     }
                     // Keep the page well inside the frame limit; the rest
                     // comes with the next page.
@@ -373,11 +380,15 @@ impl Core {
                     ids.len()
                 );
                 // From the outbox: our own posts and reshares, never what
-                // we keep of others'.
+                // we keep of others'. One we deleted is answered with its
+                // `Delete` (ADR 0019).
                 let mut objects = Vec::new();
+                let me = self.signer.identity();
                 for id in &ids {
                     if let Some(obj) = self.db.outbox_object(id)? {
                         objects.push(obj);
+                    } else if let Some(delete) = self.db.delete_of(id, &me)? {
+                        objects.push(delete);
                     }
                 }
                 SocialResponse::Objects { objects }

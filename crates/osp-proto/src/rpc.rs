@@ -84,6 +84,12 @@ pub enum ClientRequest {
         #[serde(default)]
         host: bool,
     },
+    /// Delete one of your posts or reshares (ADR 0019). Nodes running the
+    /// standard software drop it as they hear; copies people saved stay.
+    /// It can't be undone.
+    Delete {
+        id: ObjectId,
+    },
     /// Make sure a post's media is stored locally; optionally export it to a
     /// directory on the home node (local socket only).
     Fetch {
@@ -662,6 +668,10 @@ pub struct FeedItem {
     /// it's here only because of one (ADR 0015).
     #[serde(default)]
     pub found_through: Option<String>,
+    /// What the node's owner may delete here (ADR 0019): their reshare, if
+    /// this is one, or else their own post.
+    #[serde(default)]
+    pub deletable: Option<ObjectId>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

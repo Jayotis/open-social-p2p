@@ -163,6 +163,9 @@ enum Command {
         #[arg(long)]
         host: bool,
     },
+    /// Delete one of your posts or reshares, everywhere the software reaches.
+    /// It can't be undone, and copies people saved stay
+    Delete { id: ObjectId },
     /// Download a post's media, optionally saving it to a directory
     Fetch {
         id: ObjectId,
@@ -425,6 +428,15 @@ async fn main() -> Result<()> {
             ClientRequest::Untrust {
                 actor: only_one(&who, actors, "trusted person", "osp trust list")?,
             }
+        }
+        Command::Delete { id } => {
+            let resp = send(&home, ClientRequest::Delete { id }).await?;
+            if let (false, ClientResponse::Ok) = (cli.json, &resp) {
+                println!("Deleted. Nodes running this software drop it as they hear, within");
+                println!("minutes for those online; copies people saved stay.");
+                return Ok(());
+            }
+            return print(resp, cli.json);
         }
         Command::Trust(TrustCommand::Ask { who, note }) => {
             let ask = ClientRequest::AskTrust {
@@ -1563,6 +1575,10 @@ fn item_text(item: &FeedItem) -> String {
         );
     }
     let _ = writeln!(out, "  id: {}", item.id);
+    // Your reshare has an ID of its own, which is what deleting it takes.
+    if let Some(yours) = item.deletable.filter(|id| *id != item.id) {
+        let _ = writeln!(out, "  your reshare: {yours}");
+    }
     out
 }
 
@@ -1600,6 +1616,7 @@ mod tests {
                 hosting: false,
             }),
             found_through: Some("oak-ash-elm".into()),
+            deletable: None,
         };
         let shown = item_text(&item);
         let bad: Vec<_> = shown

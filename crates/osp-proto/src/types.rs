@@ -85,6 +85,8 @@ pub enum Payload {
     Note(Note),
     Announce(Announce),
     Key(Key),
+    Delete(Delete),
+    ForwardDelete(ForwardDelete),
 }
 
 impl Payload {
@@ -95,6 +97,8 @@ impl Payload {
             Payload::Note(n) => n.actor,
             Payload::Announce(a) => a.actor,
             Payload::Key(k) => k.actor,
+            Payload::Delete(d) => d.actor,
+            Payload::ForwardDelete(f) => f.actor,
         }
     }
 
@@ -105,6 +109,8 @@ impl Payload {
             Payload::Note(_) => "Note",
             Payload::Announce(_) => "Announce",
             Payload::Key(_) => "Key",
+            Payload::Delete(_) => "Delete",
+            Payload::ForwardDelete(_) => "ForwardDelete",
         }
     }
 
@@ -114,6 +120,8 @@ impl Payload {
             Payload::Note(n) => &n.published,
             Payload::Announce(a) => &a.published,
             Payload::Key(k) => &k.published,
+            Payload::Delete(d) => &d.published,
+            Payload::ForwardDelete(f) => &f.published,
         }
     }
 
@@ -150,7 +158,10 @@ impl Payload {
                     a.check_limits()?;
                 }
             }
-            Payload::Announce(_) | Payload::Key(_) => {}
+            Payload::Announce(_)
+            | Payload::Key(_)
+            | Payload::Delete(_)
+            | Payload::ForwardDelete(_) => {}
         }
         Ok(())
     }
@@ -324,6 +335,29 @@ pub struct Key {
     /// What happens to every key certified before this one.
     #[serde(rename = "earlierKeys")]
     pub earlier_keys: EarlierKeys,
+}
+
+/// Its author takes back a post or reshare (ADR 0019). Only the identity that
+/// signed `object` may delete it, and a node that hears of it keeps the
+/// `Delete` for good, so an old copy can't come back.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Delete {
+    pub actor: PublicKey,
+    /// The post or reshare, by its ID.
+    pub object: ObjectId,
+    pub published: String,
+}
+
+/// A resharer passing on the author's `Delete` of a post it reshared (ADR
+/// 0019), as a reshare passes on its post: the `Delete` itself comes with the
+/// outbox page. Not AS2. The resharer's signature shows where it came from;
+/// only the author's, on the `Delete`, gives the right to delete.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ForwardDelete {
+    pub actor: PublicKey,
+    /// The author's `Delete`, by its ID.
+    pub delete: ObjectId,
+    pub published: String,
 }
 
 /// What a newer key certificate does to the keys certified before it.
