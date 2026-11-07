@@ -48,9 +48,9 @@ step "Creating nodes"
 for who in alice bob carol; do
     name="$(tr '[:lower:]' '[:upper:]' <<<"${who:0:1}")${who:1}"
     if [[ $INTERNET == 1 ]]; then
-        osp "$who" init --skip-word-check --name "$name" >/dev/null
+        osp "$who" init --skip-word-check --no-share --no-tor --name "$name" >/dev/null
     else
-        osp "$who" init --skip-word-check --name "$name" --relay disabled --bind 127.0.0.1:0 --no-address-lookup >/dev/null
+        osp "$who" init --skip-word-check --no-share --no-tor --name "$name" --relay disabled --bind 127.0.0.1:0 --no-address-lookup >/dev/null
     fi
 done
 
