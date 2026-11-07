@@ -305,7 +305,7 @@ impl Core {
         if let Some(tor) = &self.tor {
             tor.check_ready()?;
         }
-        let _reading = self.reading_directories.lock().await;
+        let mut failing = self.reading_directories.lock().await;
         // Strangers' posts go first when space is short.
         if health::disk_free(self.home.root()).is_some_and(|free| free < self.sim.found_needs_free)
         {
@@ -323,13 +323,22 @@ impl Core {
             if directory.machine == side.id() {
                 continue;
             }
+            let short = directory.machine.fmt_short();
             match self.read_directory(side, directory.machine).await {
                 Ok(done) => {
+                    if failing.remove(&directory.machine) {
+                        info!(directory = %short, "a directory answers again");
+                    }
                     answered = true;
                     finished &= done;
                 }
                 Err(e) => {
-                    warn!("reading a directory failed: {e:#}");
+                    // Said once: one that's gone is tried every few minutes.
+                    if failing.insert(directory.machine) {
+                        warn!(directory = %short, "reading a directory failed: {e:#}");
+                    } else {
+                        debug!(directory = %short, "reading a directory failed again: {e:#}");
+                    }
                     finished = false;
                     failed = Some(e);
                 }

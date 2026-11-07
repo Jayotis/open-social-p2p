@@ -248,8 +248,9 @@ pub(crate) struct Core {
     pub machine: Option<MachineSide>,
     /// Wakes a directory's reading of listed nodes, for someone new.
     pub listed_now: Notify,
-    /// Directories are read by one task at a time.
-    pub reading_directories: tokio::sync::Mutex<()>,
+    /// Directories are read by one task at a time. It holds those whose last
+    /// read failed, so that a directory that's gone is warned of once.
+    pub reading_directories: tokio::sync::Mutex<HashSet<EndpointId>>,
     /// Wakes the reading of directories, when the machines met all fail.
     pub read_directories_now: Notify,
     pub sim: SimSettings,
@@ -540,7 +541,7 @@ impl Node {
             endpoints,
             machine,
             listed_now: Notify::new(),
-            reading_directories: tokio::sync::Mutex::new(()),
+            reading_directories: tokio::sync::Mutex::new(HashSet::new()),
             read_directories_now: Notify::new(),
             sim,
             #[cfg(feature = "sim")]
