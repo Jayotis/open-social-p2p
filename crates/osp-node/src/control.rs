@@ -69,7 +69,7 @@ impl Core {
         match self.client_request(req, origin).await {
             Ok(resp) => resp,
             Err(e) => ClientResponse::Error {
-                message: format!("{e:#}"),
+                message: error_text(&e),
             },
         }
     }
@@ -801,4 +801,44 @@ pub(crate) async fn serve_unix(core: Arc<Core>, path: PathBuf) -> Result<JoinHan
             });
         }
     }))
+}
+
+/// An error and its causes in a line, as `{:#}` writes them, leaving out a
+/// cause the line already ends with: iroh's errors often repeat their
+/// source's text, so a timeout read `timed out: timed out: timed out`.
+fn error_text(e: &anyhow::Error) -> String {
+    let mut text = String::new();
+    for cause in e.chain() {
+        let cause = cause.to_string();
+        if text.ends_with(&cause) {
+            continue;
+        }
+        if !text.is_empty() {
+            text.push_str(": ");
+        }
+        text.push_str(&cause);
+    }
+    text
+}
+
+#[cfg(test)]
+mod tests {
+    use anyhow::anyhow;
+
+    use super::error_text;
+
+    #[test]
+    fn an_error_says_each_cause_once() {
+        let e = anyhow!("timed out")
+            .context("timed out")
+            .context("timed out");
+        assert_eq!(error_text(&e), "timed out");
+        // A cause that ends what came before adds nothing.
+        let e = anyhow!("no route").context("connecting: no route");
+        assert_eq!(error_text(&e), "connecting: no route");
+        let e = anyhow!("no route")
+            .context("connecting")
+            .context("following Bob");
+        assert_eq!(error_text(&e), "following Bob: connecting: no route");
+    }
 }
