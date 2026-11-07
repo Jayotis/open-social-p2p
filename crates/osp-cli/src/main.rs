@@ -3,6 +3,25 @@
 //! `osp daemon` runs the node; most other commands talk to the running
 //! daemon over the Unix socket in the node's home directory.
 
+/// Stands in for the standard `println!` in this crate (it's defined first),
+/// so that output nobody reads any more, as in `osp feed | head`, ends the
+/// program as a closed pipe ends others, instead of with a panic.
+macro_rules! println {
+    () => {
+        $crate::write_out(format_args!("\n"))
+    };
+    ($($arg:tt)*) => {
+        $crate::write_out(format_args!("{}\n", format_args!($($arg)*)))
+    };
+}
+
+/// The same for `print!`.
+macro_rules! print {
+    ($($arg:tt)*) => {
+        $crate::write_out(format_args!($($arg)*))
+    };
+}
+
 mod service;
 
 use std::{
@@ -449,6 +468,18 @@ async fn main() -> Result<()> {
     };
     let resp = send(&home, request).await?;
     print(resp, cli.json)
+}
+
+/// Writes to standard output. If its reader has gone, the program ends with
+/// the code a shell gives one killed by a closed pipe (128 + SIGPIPE).
+fn write_out(args: std::fmt::Arguments) {
+    use std::io::Write as _;
+    if let Err(e) = std::io::stdout().write_fmt(args) {
+        if e.kind() == std::io::ErrorKind::BrokenPipe {
+            std::process::exit(141);
+        }
+        panic!("failed printing to stdout: {e}");
+    }
 }
 
 fn default_home() -> PathBuf {
