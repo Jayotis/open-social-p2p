@@ -52,7 +52,11 @@ class _PeopleScreenState extends State<PeopleScreen> {
       () => widget.node.app.unfollow(identity: person.identity),
       'You no longer follow ${person.name}.',
     );
-    if (mounted) setState(() => _following = widget.node.app.following());
+    if (mounted) {
+      setState(() {
+        _following = widget.node.app.following();
+      });
+    }
   }
 
   Future<void> _askTrust(Followed person) async {
@@ -94,7 +98,11 @@ class _PeopleScreenState extends State<PeopleScreen> {
         ),
       );
       await widget.node.refresh(sync: true);
-      if (mounted) setState(() => _following = widget.node.app.following());
+      if (mounted) {
+        setState(() {
+          _following = widget.node.app.following();
+        });
+      }
     } catch (e) {
       messenger.showSnackBar(
         SnackBar(content: Text("Couldn't follow: ${describeError(e)}")),
