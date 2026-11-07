@@ -333,6 +333,12 @@ pub struct BackupInfo {
     pub media_missing: usize,
     /// The size of the file.
     pub bytes: u64,
+    /// Followers' nodes trusted (ADR 0013).
+    #[serde(default)]
+    pub trusted: usize,
+    /// Nodes allowed a direct connection by the rule `approved` (ADR 0014).
+    #[serde(default)]
+    pub direct_contacts: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

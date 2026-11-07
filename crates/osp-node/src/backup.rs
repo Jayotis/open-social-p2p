@@ -40,7 +40,7 @@ use tokio::io::{AsyncWrite, AsyncWriteExt, BufWriter};
 use tracing::warn;
 
 use crate::{
-    db::{BlobClass, Db},
+    db::{BlobClass, Db, now_ms},
     home::Home,
     keys::{self, Signer},
     node::Core,
@@ -140,6 +140,21 @@ struct Manifest {
     followers: Vec<EndpointAddr>,
     /// Media of own posts, in the order their bytes follow the manifest.
     media: Vec<MediaRecord>,
+    /// Followers' nodes trusted (ADR 0013). Files made before have none.
+    #[serde(default)]
+    trusted: Vec<TrustedRecord>,
+    /// Nodes allowed a direct connection by the rule `approved` (ADR 0014).
+    #[serde(default)]
+    direct_contacts: Vec<PublicKey>,
+}
+
+/// A node trusted, and whose it is: the identity whose profile listed it,
+/// and its name there.
+#[derive(Debug, Serialize, Deserialize)]
+struct TrustedRecord {
+    node: PublicKey,
+    actor: PublicKey,
+    name: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -447,6 +462,14 @@ impl Core {
             });
         }
         manifest.followers = self.db.followers()?;
+        for trusted in self.db.trusted()? {
+            manifest.trusted.push(TrustedRecord {
+                node: trusted.node,
+                actor: trusted.actor,
+                name: trusted.name,
+            });
+        }
+        manifest.direct_contacts = self.db.direct_contacts()?;
         let mut media_missing = 0;
         if media {
             for (blob, class) in self.db.blobs()? {
@@ -480,6 +503,8 @@ impl Core {
             media_files: manifest.media.len(),
             media_missing,
             bytes,
+            trusted: manifest.trusted.len(),
+            direct_contacts: manifest.direct_contacts.len(),
         })
     }
 
@@ -604,6 +629,15 @@ impl BackupFile {
             // Each says again whether it shares when it next subscribes.
             db.add_follower(addr, false)?;
         }
+        // Trust and direct contacts are for other people's nodes, which
+        // haven't moved, so they hold for the new node too.
+        let now = now_ms();
+        for trusted in &m.trusted {
+            db.trust_nodes(&trusted.actor, &trusted.name, &[trusted.node], now)?;
+        }
+        for node in &m.direct_contacts {
+            db.add_direct_contact(node)?;
+        }
         let dir = home.restored_media();
         fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
         for media in &m.media {
@@ -623,6 +657,8 @@ impl BackupFile {
             media_files: m.media.len(),
             media_missing: 0,
             bytes: self.bytes,
+            trusted: m.trusted.len(),
+            direct_contacts: m.direct_contacts.len(),
         })
     }
 }
