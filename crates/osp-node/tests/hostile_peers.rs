@@ -234,8 +234,22 @@ async fn a_flood_of_stalled_requests_gets_busy_replies_and_then_clears() {
         }
         flood.push(conn);
     }
+    // The node takes up each connection's requests on its own, and `stall`
+    // returns once they're sent: the latecomer's can come first, and be
+    // served, until the stalled ones have all been taken up.
     let latecomer = stranger(&addr, SOCIAL_ALPN).await;
-    assert!(is_busy(&ask(&latecomer, &SocialRequest::GetProfile).await));
+    let mut turned_away = false;
+    for _ in 0..50 {
+        if is_busy(&ask(&latecomer, &SocialRequest::GetProfile).await) {
+            turned_away = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(
+        turned_away,
+        "a node that's full should turn a newcomer away"
+    );
 
     // The owner's own requests don't go through those limits.
     assert!(matches!(

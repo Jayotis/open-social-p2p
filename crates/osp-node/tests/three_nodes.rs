@@ -350,8 +350,14 @@ async fn a_second_node_on_the_same_home_is_refused() {
 
     // A lock that's let go a moment later is waited for, as when a child
     // process that's starting still has a copy of it.
+    // Taking it here waits a moment too, for the same reason: another test's
+    // child process can still hold a copy of the lock `again` just let go.
     let held = std::fs::File::open(Home::new(&home).lock()).unwrap();
-    rustix::fs::flock(&held, rustix::fs::FlockOperation::NonBlockingLockExclusive).unwrap();
+    let give_up = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while rustix::fs::flock(&held, rustix::fs::FlockOperation::NonBlockingLockExclusive).is_err() {
+        assert!(std::time::Instant::now() < give_up, "the lock stays held");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
     let release = std::thread::spawn(move || {
         std::thread::sleep(std::time::Duration::from_millis(300));
         drop(held);
