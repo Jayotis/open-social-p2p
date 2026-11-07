@@ -1,6 +1,6 @@
 # ADR 0019: Taking posts and media down
 
-**Status:** Proposed (2026-11-04). Not built. Carries out [ADR 0004](0004-signed-objects-and-ids.md)'s plan for deletions, and answers part of [doc 05](../05-security-privacy-and-governance.md)'s question: "What does a valid takedown request mean for independent home hosts?" [Doc 03](../03-peer-distribution-and-scoring.md) calls takedown review and copyright reporting "required, not optional".
+**Status:** Accepted (2026-11-06), with an undo before a delete is sent ("Details"). Step 1 built (2026-11-06) but for its gate: `Delete` and `ForwardDelete` on `osp/social/2`, tombstones, the daily check of reshares without a follow, `osp delete` and the app's Delete with a minute's undo, with tests of each rule. The simulator run that is its gate is next. Carries out [ADR 0004](0004-signed-objects-and-ids.md)'s plan for deletions, and answers part of [doc 05](../05-security-privacy-and-governance.md)'s question: "What does a valid takedown request mean for independent home hosts?" [Doc 03](../03-peer-distribution-and-scoring.md) calls takedown review and copyright reporting "required, not optional".
 
 Revised 2026-11-05: a [review](../reviews/2026-11-04-review-of-adrs-0016-to-0019.md) found that the first draft's way of passing a delete on through reshares would be refused by sync, and that tombstones which expire let deleted posts come back.
 
@@ -80,6 +80,7 @@ A new signed object, `Delete { actor, object, published }`, as ADR 0004 planned.
 - **What it can't reach.** A node that missed a delete can still take an old copy from somewhere that missed it too, such as a node running changed software. A signature shows who wrote a post, not that it's still up.
 - **A new protocol name,** `osp/social/2`, as ADR 0010 did. Older nodes can't read the new objects, so a node on `osp/social/1` can't sync with one on `/2`, and can't quietly keep serving a deleted post to it; it has to update. The app's delete button needs the updated node too.
 - The app says plainly what it does, as doc 05 asks: copies on nodes running the standard software go as they hear of it, and copies people saved don't.
+- **An undo first.** Once sent, a `Delete` can't be taken back, and tombstones refuse the post for good. So the app waits about a minute before sending it, with an Undo button (decided 2026-11-06).
 
 ### How far it reaches
 

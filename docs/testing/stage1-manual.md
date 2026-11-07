@@ -40,10 +40,13 @@ osp follow <ticket>
 osp post "Hello" --attach clip.mp4 # transcoded to 720p, metadata stripped
 osp feed
 osp reshare <post-id> --host       # reshare and keep/serve a copy
+osp delete <post-id>               # delete your post, or your reshare (`osp feed` shows its ID)
 osp fetch <post-id> --out ~/Downloads
 osp status                         # relay, NAT, connections (direct/relay), storage
 osp peers                          # what this node measured about the nodes it deals with
 ```
+
+**Deleting** ([ADR 0019](../decisions/0019-taking-posts-and-media-down.md)) can't be undone; in the app, Delete waits a minute with an Undo first. Your followers' nodes drop the post, its reshares and its media at once if online, or at their next sync. A node that reshared it passes the delete on to its own followers, and one that no longer follows you asks your node about it once a day. Each keeps a tombstone, so an old copy can't come back. Copies people saved stay, and so do copies on nodes running other software. Nodes on the new protocol (`osp/social/2`) can't talk to nodes on the old one, so every node updates.
 
 Use `--home DIR` (or `OSP_HOME=DIR`) to run several nodes on one machine. Add `--json` to any command for machine-readable output. Logging detail: `RUST_LOG=osp_node=debug osp daemon`.
 
