@@ -283,6 +283,9 @@ const MIGRATIONS: &[&str] = &[
     // (`directory::READER`). One from before passed over entries a later one
     // takes, so a later one reads that directory again from the start.
     "ALTER TABLE directories_read ADD COLUMN reader INTEGER NOT NULL DEFAULT 0;",
+    // 19: whether each of the last hour's dials went to a machine that greeted
+    // this one unasked (ADR 0016).
+    "ALTER TABLE machine_dials ADD COLUMN greeted_back INTEGER NOT NULL DEFAULT 0;",
 ];
 
 /// The search index (ADR 0014): a number for each post, by its object ID, and
@@ -1710,13 +1713,14 @@ impl Db {
                 Err(e) => tracing::warn!("leaving out a machine stored that doesn't read: {e:#}"),
             }
         }
-        let mut stmt =
-            conn.prepare("SELECT at_ms, less_heard FROM machine_dials ORDER BY at_ms")?;
+        let mut stmt = conn
+            .prepare("SELECT at_ms, less_heard, greeted_back FROM machine_dials ORDER BY at_ms")?;
         let dials = stmt
             .query_map([], |row| {
                 Ok(meet::Dial {
                     at_ms: row.get(0)?,
                     less_heard: row.get(1)?,
+                    greeted_back: row.get(2)?,
                 })
             })?
             .collect::<rusqlite::Result<_>>()?;
@@ -1756,8 +1760,9 @@ impl Db {
             tx.execute("DELETE FROM machine_dials", [])?;
             for dial in dials {
                 tx.execute(
-                    "INSERT INTO machine_dials (at_ms, less_heard) VALUES (?1, ?2)",
-                    params![dial.at_ms, dial.less_heard],
+                    "INSERT INTO machine_dials (at_ms, less_heard, greeted_back)
+                     VALUES (?1, ?2, ?3)",
+                    params![dial.at_ms, dial.less_heard, dial.greeted_back],
                 )?;
             }
         }
