@@ -13,7 +13,7 @@ use anyhow::{Context, Result, bail, ensure};
 use iroh::{EndpointAddr, PublicKey};
 use n0_future::{BufferedStreamExt, StreamExt, stream};
 use osp_proto::{
-    Announce, Attachment, BlobRef, FollowTicket, Note, ObjectId, Payload, SignedObject,
+    Announce, Attachment, BlobRef, Delete, FollowTicket, Note, ObjectId, Payload, SignedObject,
     framing::{read_frame, write_frame},
     rpc::{
         AttachmentInfo, ClientRequest, ClientResponse, DirectoryStatus, FeedItem, FetchedFile,
@@ -132,6 +132,10 @@ impl Core {
             ClientRequest::Reshare { id, host } => ClientResponse::Posted {
                 id: self.reshare(&id, host).await?,
             },
+            ClientRequest::Delete { id } => {
+                self.delete(&id).await?;
+                ClientResponse::Ok
+            }
             ClientRequest::Fetch { id, out_dir } => {
                 ensure!(
                     local || out_dir.is_none(),
@@ -498,6 +502,46 @@ impl Core {
         .await
     }
 
+    /// Deletes one of the owner's posts or reshares (ADR 0019): signs a
+    /// `Delete`, acts on it here, and puts it in the outbox, telling followers
+    /// at once. A reshare's files are no longer hosted for others.
+    async fn delete(self: &Arc<Self>, id: &ObjectId) -> Result<()> {
+        let me = self.signer.identity();
+        let obj = self
+            .db
+            .outbox_object(id)?
+            .with_context(|| format!("{} isn't one of your posts or reshares", id.fmt_short()))?;
+        let reshared = match obj.verify()? {
+            Payload::Note(_) => None,
+            Payload::Announce(a) => Some(a.object),
+            _ => bail!("{} isn't a post or reshare", id.fmt_short()),
+        };
+        let d = Delete {
+            actor: me,
+            object: *id,
+            published: osp_proto::now_rfc3339(),
+        };
+        let payload = Payload::Delete(d.clone());
+        let delete = self.signer.sign(&payload)?;
+        let deleted = self
+            .db
+            .apply_delete(&delete, &d, true, &me)?
+            .context("it's deleted already")?;
+        self.store.let_go(&deleted.files).await;
+        if let Some(post) = reshared
+            && let Some(note) = self.stored_note(&post)?
+        {
+            let files: Vec<_> = note.blobs().collect();
+            self.db.stop_hosting(&files)?;
+        }
+        self.db.insert_object(&delete, &payload)?;
+        let seq = self.db.append_outbox(&delete.id())?;
+        let core = self.clone();
+        tokio::spawn(async move { core.notify_followers(seq).await });
+        info!(post = %id.fmt_short(), "deleted");
+        Ok(())
+    }
+
     /// Signs, stores and appends to our outbox, then tells followers.
     async fn publish(self: &Arc<Self>, payload: Payload) -> Result<ObjectId> {
         let obj = self.signer.sign(&payload)?;
@@ -568,7 +612,7 @@ impl Core {
         }
     }
 
-    async fn notify_followers(&self, seq: u64) {
+    pub(crate) async fn notify_followers(&self, seq: u64) {
         // Followers who don't know we moved would refuse the notice.
         self.tell_moved().await;
         let req = &SocialRequest::Notify {
@@ -697,6 +741,11 @@ impl Core {
                 attachment: a,
             });
         }
+        let me = self.signer.identity();
+        let deletable = match &reshared_by {
+            Some(by) if by.actor == me => Some(by.announce),
+            _ => (note.actor == me).then_some(id),
+        };
         Ok(Some(FeedItem {
             id,
             actor: note.actor,
@@ -706,6 +755,7 @@ impl Core {
             attachments,
             reshared_by,
             found_through: None,
+            deletable,
         }))
     }
 
@@ -725,6 +775,9 @@ impl Core {
             }
             Payload::Person(_) => bail!("{id} is a profile, not a post"),
             Payload::Key(_) => bail!("{id} is a key certificate, not a post"),
+            Payload::Delete(_) | Payload::ForwardDelete(_) => {
+                bail!("{id} is a delete, not a post")
+            }
         }
     }
 }

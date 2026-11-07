@@ -12,8 +12,8 @@ use std::{
 use anyhow::{Context, Result, ensure};
 use iroh::{EndpointAddr, EndpointId, PublicKey};
 use osp_proto::{
-    BlobHash, BoundEndpoint, EarlierKeys, EndpointKind, Key, Note, ObjectId, Payload, Person,
-    SignedObject,
+    BlobHash, BoundEndpoint, Delete, EarlierKeys, EndpointKind, Key, Note, ObjectId, Payload,
+    Person, SignedObject,
     machine::{ListingEntry, ListingItem, MAX_LISTING_PAGE_BYTES, MachineRecord},
     rpc::{FollowInfo, PeerCounts, StorageInfo, Upload, UploadId},
 };
@@ -256,6 +256,29 @@ const MIGRATIONS: &[&str] = &[
         at_ms      INTEGER NOT NULL,
         less_heard INTEGER NOT NULL
     );",
+    // 17: posts and reshares deleted by their authors (ADR 0019), kept for
+    // good: each one's ID and author, the signed `Delete` and its own ID, and
+    // when it arrived here, as the date in it is only its signer's word.
+    // And what each stored post or reshare refers to: the files a post names,
+    // the post a reshare points at, so a `Delete` finds them without reading
+    // every object. A trigger forgets an object's refs with it, however it goes.
+    "CREATE TABLE tombstones (
+        id        TEXT PRIMARY KEY,
+        actor     TEXT NOT NULL,
+        delete_id   TEXT NOT NULL UNIQUE,
+        signed      TEXT NOT NULL,
+        received_ms INTEGER NOT NULL
+    );
+    CREATE TABLE refs (
+        ref TEXT NOT NULL,
+        id  TEXT NOT NULL,
+        PRIMARY KEY (ref, id)
+    );
+    CREATE INDEX refs_by_id ON refs(id);
+    CREATE TRIGGER refs_go_with_objects AFTER DELETE ON objects
+    BEGIN
+        DELETE FROM refs WHERE id = old.id;
+    END;",
 ];
 
 /// The search index (ADR 0014): a number for each post, by its object ID, and
@@ -314,6 +337,18 @@ pub struct Listed {
 }
 
 /// Why a blob is kept, which decides who it is served to.
+/// What a `Delete` did on this node (`Db::apply_delete`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Deleted {
+    /// Whether this node held the post or reshare, and removed it.
+    pub removed: bool,
+    /// Files no post kept here names any more: to stop serving, and let go.
+    pub files: Vec<BlobHash>,
+    /// Whether one of the reshares that went was this node's owner's, so
+    /// they pass the `Delete` on.
+    pub ours: bool,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum BlobClass {
     /// Fetched when one of my devices opened it. Served only to them;
@@ -571,9 +606,16 @@ impl Db {
     /// Stores `obj` in place of the object with its ID: the same payload,
     /// signed again by a newer key (ADR 0010).
     pub fn replace_signed(&self, obj: &SignedObject) -> Result<()> {
-        self.conn().execute(
+        let conn = self.conn();
+        let (id, json) = (obj.id().to_string(), serde_json::to_string(obj)?);
+        conn.execute(
             "UPDATE objects SET signed = ?2 WHERE id = ?1",
-            params![obj.id().to_string(), serde_json::to_string(obj)?],
+            params![id, json],
+        )?;
+        // One of our deletes is kept in its tombstone too (ADR 0019).
+        conn.execute(
+            "UPDATE tombstones SET signed = ?2 WHERE delete_id = ?1",
+            params![id, json],
         )?;
         Ok(())
     }
@@ -621,6 +663,226 @@ impl Db {
             "UPDATE objects SET feed_ms = ?1 WHERE feed_ms > ?1",
             params![now_ms()],
         )?)
+    }
+
+    // ---- deletes (ADR 0019) ----
+
+    /// Acts on `delete`, the verified signed form of `d`. If this node holds
+    /// the post or reshare it names, it must be `d.actor`'s: it goes, with a
+    /// post's reshares, from objects, the outbox, the feed, search and found
+    /// posts, and the post's files go unless another post kept here names
+    /// them. A tombstone is kept if something went, or with `always`, as for
+    /// a `Delete` in an outbox this node syncs, so an old copy arriving later
+    /// is refused. `None` if it was deleted already, or wasn't here and
+    /// isn't to be kept. `me` is this node's owner, whose reshares say so.
+    pub fn apply_delete(
+        &self,
+        delete: &SignedObject,
+        d: &Delete,
+        always: bool,
+        me: &PublicKey,
+    ) -> Result<Option<Deleted>> {
+        let conn = self.conn();
+        let tx = conn.unchecked_transaction()?;
+        let target = d.object.to_string();
+        let already: Option<i64> = tx
+            .query_row(
+                "SELECT 1 FROM tombstones WHERE id = ?1",
+                params![target],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if already.is_some() {
+            return Ok(None);
+        }
+        let held: Option<(String, String)> = tx
+            .query_row(
+                "SELECT actor, signed FROM objects WHERE id = ?1",
+                params![target],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        if let Some((actor, _)) = &held {
+            ensure!(
+                *actor == d.actor.to_string(),
+                "a delete of a post by someone else, refused"
+            );
+        } else if !always {
+            return Ok(None);
+        }
+        tx.execute(
+            "INSERT INTO tombstones (id, actor, delete_id, signed, received_ms)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                target,
+                d.actor.to_string(),
+                delete.id().to_string(),
+                serde_json::to_string(delete)?,
+                now_ms()
+            ],
+        )?;
+        let mut deleted = Deleted {
+            removed: held.is_some(),
+            files: Vec::new(),
+            ours: false,
+        };
+        if let Some((_, json)) = held {
+            let obj: SignedObject = serde_json::from_str(&json).context("corrupt stored object")?;
+            let mut gone = vec![target.clone()];
+            let note = match obj.verify() {
+                Ok(Payload::Note(note)) => Some(note),
+                _ => None,
+            };
+            if note.is_some() {
+                let mut stmt = tx.prepare(
+                    "SELECT refs.id, objects.actor FROM refs JOIN objects ON objects.id = refs.id
+                     WHERE refs.ref = ?1 AND objects.kind = 'Announce'",
+                )?;
+                let reshares = stmt.query_map(params![target], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })?;
+                for reshare in reshares {
+                    let (id, actor) = reshare?;
+                    deleted.ours |= actor == me.to_string();
+                    gone.push(id);
+                }
+            }
+            for id in &gone {
+                tx.execute("DELETE FROM objects WHERE id = ?1", params![id])?;
+                tx.execute("DELETE FROM outbox WHERE id = ?1", params![id])?;
+                tx.execute("DELETE FROM found_posts WHERE id = ?1", params![id])?;
+                tx.execute("DELETE FROM refetch WHERE id = ?1", params![id])?;
+                remove_from_search(&tx, id)?;
+            }
+            for blob in note.iter().flat_map(|n| n.blobs()) {
+                let blob_hex = blob.to_string();
+                let named: Option<i64> = tx
+                    .query_row(
+                        "SELECT 1 FROM refs WHERE ref = ?1 LIMIT 1",
+                        params![blob_hex],
+                        |row| row.get(0),
+                    )
+                    .optional()?;
+                if named.is_some() || deleted.files.contains(&blob) {
+                    continue;
+                }
+                for table in ["blobs", "hosts", "swarm", "declared_sizes"] {
+                    let column = if table == "blobs" { "hash" } else { "blob" };
+                    tx.execute(
+                        &format!("DELETE FROM {table} WHERE {column} = ?1"),
+                        params![blob_hex],
+                    )?;
+                }
+                deleted.files.push(blob);
+            }
+        }
+        tx.commit()?;
+        Ok(Some(deleted))
+    }
+
+    /// Whether `obj`'s author deleted it, or, for a reshare, the post it
+    /// points at.
+    pub fn is_deleted(&self, obj: &SignedObject, payload: &Payload) -> Result<bool> {
+        is_deleted(&self.conn(), &obj.id(), payload)
+    }
+
+    /// Whether a post kept here names `blob`.
+    pub fn is_named(&self, blob: &BlobHash) -> Result<bool> {
+        Ok(self
+            .conn()
+            .query_row(
+                "SELECT 1 FROM refs WHERE ref = ?1 LIMIT 1",
+                params![blob.to_string()],
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_some())
+    }
+
+    /// Stops hosting `blobs` for others, keeping them as cache, now that the
+    /// owner deleted the reshare that promised to host them (ADR 0019).
+    pub fn stop_hosting(&self, blobs: &[BlobHash]) -> Result<()> {
+        let conn = self.conn();
+        for blob in blobs {
+            conn.execute(
+                "UPDATE blobs SET class = 'cache' WHERE hash = ?1 AND class = 'replica'",
+                params![blob.to_string()],
+            )?;
+        }
+        Ok(())
+    }
+
+    /// The posts the owner reshared, each with its author, from the outbox.
+    pub fn own_reshares(&self, me: &PublicKey) -> Result<Vec<(ObjectId, PublicKey)>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT objects.signed FROM outbox JOIN objects ON objects.id = outbox.id
+             WHERE objects.kind = 'Announce' AND objects.actor = ?1",
+        )?;
+        let rows = stmt.query_map(params![me.to_string()], |row| row.get::<_, String>(0))?;
+        let mut reshares = Vec::new();
+        for json in rows {
+            let obj: SignedObject =
+                serde_json::from_str(&json?).context("corrupt stored object")?;
+            if let Ok(Payload::Announce(a)) = obj.verify() {
+                reshares.push((a.object, a.object_actor));
+            }
+        }
+        Ok(reshares)
+    }
+
+    /// When this node heard that `id`'s author deleted it, if it did.
+    #[cfg(test)]
+    pub fn deleted_at(&self, id: &ObjectId) -> Result<Option<i64>> {
+        Ok(self
+            .conn()
+            .query_row(
+                "SELECT received_ms FROM tombstones WHERE id = ?1",
+                params![id.to_string()],
+                |row| row.get(0),
+            )
+            .optional()?)
+    }
+
+    /// Whether `id`'s author deleted it.
+    pub fn is_tombstoned(&self, id: &ObjectId) -> Result<bool> {
+        Ok(self
+            .conn()
+            .query_row(
+                "SELECT 1 FROM tombstones WHERE id = ?1",
+                params![id.to_string()],
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_some())
+    }
+
+    /// The signed `Delete` of `id`, if its author deleted it and it's `actor`'s.
+    pub fn delete_of(&self, id: &ObjectId, actor: &PublicKey) -> Result<Option<SignedObject>> {
+        let json: Option<String> = self
+            .conn()
+            .query_row(
+                "SELECT signed FROM tombstones WHERE id = ?1 AND actor = ?2",
+                params![id.to_string(), actor.to_string()],
+                |row| row.get(0),
+            )
+            .optional()?;
+        json.map(|j| serde_json::from_str(&j).context("corrupt tombstone"))
+            .transpose()
+    }
+
+    /// A signed `Delete` this node keeps, by its own ID, as a forward carries it.
+    pub fn delete_by_id(&self, delete_id: &ObjectId) -> Result<Option<SignedObject>> {
+        let json: Option<String> = self
+            .conn()
+            .query_row(
+                "SELECT signed FROM tombstones WHERE delete_id = ?1",
+                params![delete_id.to_string()],
+                |row| row.get(0),
+            )
+            .optional()?;
+        json.map(|j| serde_json::from_str(&j).context("corrupt tombstone"))
+            .transpose()
     }
 
     // ---- our outbox ----
@@ -1022,6 +1284,32 @@ impl Db {
                 tx.execute(
                     "INSERT OR IGNORE INTO refetch (id, actor, received_ms) VALUES (?1, ?2, ?3)",
                     params![id, actor.to_string(), received],
+                )?;
+            }
+        }
+        // A thief's deletes go too (ADR 0019): the post they named is asked
+        // for again, and comes back if the owner's node still has it.
+        let mut undone = Vec::new();
+        {
+            let mut stmt = tx.prepare("SELECT id, signed FROM tombstones WHERE actor = ?1")?;
+            let rows = stmt.query_map(params![actor.to_string()], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?;
+            for row in rows {
+                let (id, json) = row?;
+                let delete: SignedObject =
+                    serde_json::from_str(&json).context("corrupt tombstone")?;
+                if signed_before(&delete, before_ms) {
+                    undone.push(id);
+                }
+            }
+        }
+        for id in &undone {
+            tx.execute("DELETE FROM tombstones WHERE id = ?1", params![id])?;
+            if refetch {
+                tx.execute(
+                    "INSERT OR IGNORE INTO refetch (id, actor, received_ms) VALUES (?1, ?2, ?3)",
+                    params![id, actor.to_string(), now_ms()],
                 )?;
             }
         }
@@ -2724,6 +3012,10 @@ fn insert_object(
     received: i64,
     held_until: Option<i64>,
 ) -> Result<bool> {
+    // Its author deleted it, or the post it reshares: an old copy stays out.
+    if is_deleted(conn, &obj.id(), payload)? {
+        return Ok(false);
+    }
     // Clamp author-claimed time so a future-dated post can't pin itself to the top.
     let published = osp_proto::parse_rfc3339_ms(payload.published())
         .unwrap_or(received)
@@ -2743,12 +3035,63 @@ fn insert_object(
             held_until.unwrap_or(published)
         ],
     )?;
-    if n > 0
-        && let Payload::Note(note) = payload
-    {
-        index_for_search(conn, &id, &note.content)?;
+    if n > 0 {
+        add_refs(conn, &id, payload)?;
+        if let Payload::Note(note) = payload {
+            index_for_search(conn, &id, &note.content)?;
+        }
     }
     Ok(n > 0)
+}
+
+/// Whether `id`'s author deleted it, or, for a reshare, the post it points at.
+fn is_deleted(conn: &Connection, id: &ObjectId, payload: &Payload) -> Result<bool> {
+    let tombstoned = |id: &ObjectId| -> Result<bool> {
+        Ok(conn
+            .query_row(
+                "SELECT 1 FROM tombstones WHERE id = ?1",
+                params![id.to_string()],
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_some())
+    };
+    Ok(tombstoned(id)? || matches!(payload, Payload::Announce(a) if tombstoned(&a.object)?))
+}
+
+/// Notes what a stored object refers to: the files a post names, and the post
+/// a reshare points at.
+fn add_refs(conn: &Connection, id: &str, payload: &Payload) -> Result<()> {
+    let refs: Vec<String> = match payload {
+        Payload::Note(note) => note.blobs().map(|blob| blob.to_string()).collect(),
+        Payload::Announce(a) => vec![a.object.to_string()],
+        _ => Vec::new(),
+    };
+    for r in refs {
+        conn.execute(
+            "INSERT OR IGNORE INTO refs (ref, id) VALUES (?1, ?2)",
+            params![r, id],
+        )?;
+    }
+    Ok(())
+}
+
+/// Fills in `refs` from the posts and reshares stored before it existed.
+fn backfill_refs(conn: &Connection) -> Result<()> {
+    let mut stmt =
+        conn.prepare("SELECT id, signed FROM objects WHERE kind IN ('Note', 'Announce')")?;
+    let rows = stmt.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })?;
+    for row in rows {
+        let (id, json) = row?;
+        let obj: SignedObject = serde_json::from_str(&json).context("corrupt stored object")?;
+        // Checked when it arrived; one that fails today's checks names nothing.
+        if let Ok(payload) = obj.verify() {
+            add_refs(conn, &id, &payload)?;
+        }
+    }
+    Ok(())
 }
 
 /// A post that came from a directory is kept for another reason now, so it's
@@ -2893,6 +3236,9 @@ fn migrate(conn: &Connection) -> Result<()> {
         // database gets there in the same call.
         if version == 9 {
             backfill_declared_sizes(&tx)?;
+        }
+        if version == 17 {
+            backfill_refs(&tx)?;
         }
         tx.pragma_update(None, "user_version", version)?;
         tx.commit()?;
@@ -3836,6 +4182,177 @@ mod tests {
         assert_eq!(db.blob_class(&replica).unwrap(), Some(BlobClass::Replica));
     }
 
+    fn signed_reshare(
+        key: &SecretKey,
+        post: &SignedObject,
+        author: PublicKey,
+    ) -> (SignedObject, Payload) {
+        let payload = Payload::Announce(osp_proto::Announce {
+            actor: key.public(),
+            object: post.id(),
+            object_actor: author,
+            published: osp_proto::now_rfc3339(),
+            hosting: false,
+        });
+        (SignedObject::sign(key, &payload).unwrap(), payload)
+    }
+
+    fn signed_delete(key: &SecretKey, object: ObjectId) -> (SignedObject, Delete) {
+        let d = Delete {
+            actor: key.public(),
+            object,
+            published: osp_proto::now_rfc3339(),
+        };
+        let obj = SignedObject::sign(key, &Payload::Delete(d.clone())).unwrap();
+        (obj, d)
+    }
+
+    #[test]
+    fn a_delete_takes_the_post_its_reshares_and_the_files_nothing_else_names() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(&dir.path().join("t.db")).unwrap();
+        let (alice, bob, carol, dave) = (
+            SecretKey::generate(),
+            SecretKey::generate(),
+            SecretKey::generate(),
+            SecretKey::generate(),
+        );
+        let (only, shared) = (BlobHash::from_bytes([1; 32]), BlobHash::from_bytes([2; 32]));
+        let (post, payload) = note_with_media(&alice, &[(only, 10), (shared, 10)]);
+        assert!(db.insert_object(&post, &payload).unwrap());
+        let (other, other_payload) = note_with_media(&dave, &[(shared, 10)]);
+        db.insert_object(&other, &other_payload).unwrap();
+        for blob in [only, shared] {
+            db.put_blob(&blob, BlobClass::Prefetch, 10).unwrap();
+        }
+        let (bobs, bobs_payload) = signed_reshare(&bob, &post, alice.public());
+        db.insert_object(&bobs, &bobs_payload).unwrap();
+        let (mine, my_payload) = signed_reshare(&carol, &post, alice.public());
+        db.insert_object(&mine, &my_payload).unwrap();
+        assert!(db.is_named(&only).unwrap());
+
+        // Carol's node hears Alice deleted it.
+        let (delete, d) = signed_delete(&alice, post.id());
+        let deleted = db
+            .apply_delete(&delete, &d, false, &carol.public())
+            .unwrap();
+        assert_eq!(
+            deleted,
+            Some(Deleted {
+                removed: true,
+                files: vec![only],
+                ours: true,
+            })
+        );
+        for id in [post.id(), bobs.id(), mine.id()] {
+            assert_eq!(db.get_object(&id).unwrap(), None);
+        }
+        assert_eq!(db.blob_class(&only).unwrap(), None);
+        assert!(!db.is_named(&only).unwrap());
+        // Dave's post names the other file, so it stays.
+        assert_eq!(db.blob_class(&shared).unwrap(), Some(BlobClass::Prefetch));
+        assert!(db.get_object(&other.id()).unwrap().is_some());
+        assert!(
+            db.search_posts("media", 10)
+                .unwrap()
+                .iter()
+                .all(|o| o.id() != post.id())
+        );
+
+        // Once is enough, and an old copy, or a reshare of it, stays out.
+        assert_eq!(
+            db.apply_delete(&delete, &d, false, &carol.public())
+                .unwrap(),
+            None
+        );
+        assert!(!db.insert_object(&post, &payload).unwrap());
+        assert!(!db.insert_object(&bobs, &bobs_payload).unwrap());
+        assert_eq!(db.get_object(&post.id()).unwrap(), None);
+        assert_eq!(db.delete_by_id(&delete.id()).unwrap(), Some(delete.clone()));
+        assert_eq!(
+            db.delete_of(&post.id(), &alice.public()).unwrap(),
+            Some(delete)
+        );
+        assert_eq!(db.delete_of(&post.id(), &bob.public()).unwrap(), None);
+    }
+
+    #[test]
+    fn only_a_posts_author_can_delete_it_and_a_reshares_only_the_resharer() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(&dir.path().join("t.db")).unwrap();
+        let (alice, bob) = (SecretKey::generate(), SecretKey::generate());
+        let me = SecretKey::generate().public();
+        let (post, payload) = signed_note(&alice, "oak", EARLIER);
+        db.insert_object(&post, &payload).unwrap();
+        let (reshare, reshare_payload) = signed_reshare(&bob, &post, alice.public());
+        db.insert_object(&reshare, &reshare_payload).unwrap();
+
+        let (forged, d) = signed_delete(&bob, post.id());
+        assert!(db.apply_delete(&forged, &d, true, &me).is_err());
+        assert!(db.get_object(&post.id()).unwrap().is_some());
+        assert!(!db.is_tombstoned(&post.id()).unwrap());
+
+        // Bob deleting his reshare takes only that.
+        let (delete, d) = signed_delete(&bob, reshare.id());
+        let deleted = db.apply_delete(&delete, &d, false, &me).unwrap().unwrap();
+        assert!(deleted.removed && !deleted.ours && deleted.files.is_empty());
+        assert_eq!(db.get_object(&reshare.id()).unwrap(), None);
+        assert!(db.get_object(&post.id()).unwrap().is_some());
+    }
+
+    #[test]
+    fn a_delete_in_an_outbox_is_kept_for_a_post_never_held() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(&dir.path().join("t.db")).unwrap();
+        let alice = SecretKey::generate();
+        let me = SecretKey::generate().public();
+        let (post, payload) = signed_note(&alice, "oak", EARLIER);
+        let (delete, d) = signed_delete(&alice, post.id());
+
+        // Through a forward, one for a post not held is let pass.
+        assert_eq!(db.apply_delete(&delete, &d, false, &me).unwrap(), None);
+        assert!(!db.is_tombstoned(&post.id()).unwrap());
+        // From the author's outbox, it's kept, and a stale copy later is refused.
+        let before = now_ms();
+        let kept = db.apply_delete(&delete, &d, true, &me).unwrap().unwrap();
+        assert!(!kept.removed);
+        assert!(db.is_tombstoned(&post.id()).unwrap());
+        // When it came is noted here, whatever date it gives itself.
+        let at = db.deleted_at(&post.id()).unwrap().unwrap();
+        assert!(at >= before && at <= now_ms());
+        assert!(!db.insert_object(&post, &payload).unwrap());
+    }
+
+    #[test]
+    fn a_database_from_before_deletes_learns_what_each_post_names() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("old.db");
+        let key = SecretKey::generate();
+        let blob = BlobHash::from_bytes([1; 32]);
+        {
+            // A database from before migration 17, holding a post with media.
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(SCHEMA).unwrap();
+            for sql in &MIGRATIONS[..16] {
+                conn.execute_batch(sql).unwrap();
+            }
+            conn.pragma_update(None, "user_version", 16).unwrap();
+            let (obj, _) = note_with_media(&key, &[(blob, 500)]);
+            conn.execute(
+                "INSERT INTO objects (id, actor, kind, published_ms, received_ms, signed)
+                 VALUES (?1, ?2, 'Note', 1, 1, ?3)",
+                params![
+                    obj.id().to_string(),
+                    key.public().to_string(),
+                    serde_json::to_string(&obj).unwrap()
+                ],
+            )
+            .unwrap();
+        }
+        let db = Db::open(&path).unwrap();
+        assert!(db.is_named(&blob).unwrap());
+    }
+
     #[test]
     fn hosts_per_blob_are_capped() {
         let dir = tempfile::tempdir().unwrap();
@@ -4461,6 +4978,44 @@ mod tests {
             .query_row("SELECT total_changes()", [], |row| row.get(0))
             .unwrap();
         assert_eq!(after, before);
+    }
+
+    /// A thief's delete goes with the rest of what a revoked key signed (ADR
+    /// 0019), and the post it named is asked for again.
+    #[test]
+    fn a_delete_signed_by_a_key_revoked_since_is_undone() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(&dir.path().join("t.db")).unwrap();
+        let alice = SecretKey::generate();
+        let me = SecretKey::generate().public();
+        let stolen = osp_proto::CertifiedKey::certify(
+            &alice,
+            SecretKey::generate(),
+            EARLIER.into(),
+            EarlierKeys::Retired,
+        )
+        .unwrap();
+        let (post, payload) = signed_note(&alice, "oak", EARLIER);
+        db.insert_object(&post, &payload).unwrap();
+        let d = Delete {
+            actor: alice.public(),
+            object: post.id(),
+            published: EARLIER.into(),
+        };
+        let thiefs = SignedObject::sign_certified(&stolen, &Payload::Delete(d.clone())).unwrap();
+        db.apply_delete(&thiefs, &d, true, &me).unwrap().unwrap();
+        assert!(db.is_tombstoned(&post.id()).unwrap());
+
+        let before = osp_proto::parse_rfc3339_ms(LATER).unwrap();
+        db.drop_revoked(&alice.public(), before, true).unwrap();
+        assert!(!db.is_tombstoned(&post.id()).unwrap());
+        let due = db.refetch_due(&alice.public(), 10).unwrap();
+        assert_eq!(
+            due.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+            [post.id()]
+        );
+        // The owner's copy, fetched again, is taken.
+        assert!(db.insert_object_received(&post, &payload, 1).unwrap());
     }
 
     #[test]

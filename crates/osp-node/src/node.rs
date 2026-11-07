@@ -194,7 +194,7 @@ pub(crate) struct Core {
     pub store: ContentStore,
     /// Our signed profile, served to anyone who asks.
     pub profile: SignedObject,
-    /// Open `osp/social/1` connections, reused across requests.
+    /// Open `osp/social/2` connections, reused across requests.
     pub conns: Arc<Mutex<HashMap<EndpointId, Connection>>>,
     /// Those being set up in the background.
     pub readying: social::Readying,
@@ -618,6 +618,7 @@ impl Node {
             tokio::spawn(async move { core.refetch_replicas().await })
         };
         let sweep_uploads = tokio::spawn(core.clone().sweep_uploads_loop());
+        let reshares = tokio::spawn(sync::reshares_loop(core.clone()));
         let mut tasks = vec![
             serving_rules,
             sync_loop,
@@ -625,6 +626,7 @@ impl Node {
             tell_moved,
             replicas,
             sweep_uploads,
+            reshares,
         ];
         tasks.extend(directory_tasks);
         if core.config.network.relay != RelayChoice::Disabled {
@@ -741,6 +743,18 @@ impl Node {
 
     pub fn blob_class(&self, hash: &BlobHash) -> Result<Option<BlobClass>> {
         self.core.db.blob_class(hash)
+    }
+
+    /// Whether this node keeps a tombstone for `id`: its author deleted it
+    /// (ADR 0019). For tests.
+    pub fn knows_deleted(&self, id: &ObjectId) -> Result<bool> {
+        self.core.db.is_tombstoned(id)
+    }
+
+    /// Asks the authors this node's owner reshared but doesn't follow whether
+    /// they deleted those posts, as the node does once a day. For tests.
+    pub async fn check_reshares_now(&self) -> Result<usize> {
+        self.core.check_unfollowed_reshares().await
     }
 
     /// Downloads a blob of at most `size` bytes from specific nodes into

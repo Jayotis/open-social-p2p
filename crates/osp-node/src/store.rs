@@ -900,6 +900,13 @@ impl ContentStore {
         Ok(())
     }
 
+    /// Lets go of the files of a deleted post (ADR 0019). The database has
+    /// forgotten them already, so they're refused from then on, and the
+    /// collector deletes them.
+    pub(crate) async fn let_go(&self, files: &[BlobHash]) {
+        self.untag(files.to_vec()).await;
+    }
+
     /// Lets the collector delete blobs the database has already forgotten.
     /// One that fails keeps its tag until the next start (see `reconcile`).
     async fn untag(&self, hashes: Vec<BlobHash>) {

@@ -1,7 +1,7 @@
 //! Messages of the machine protocol `osp/machine/1` (ADR 0015): what nodes say
 //! to each other under their machine names, which are tied to no person.
 //!
-//! As in `osp/social/1`, one QUIC bidirectional stream per request: the asking
+//! As in `osp/social/2`, one QUIC bidirectional stream per request: the asking
 //! machine sends one [`MachineRequest`] frame, and the other answers with one
 //! [`MachineResponse`].
 

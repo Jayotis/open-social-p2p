@@ -18,7 +18,7 @@ use anyhow::{Result, anyhow, bail, ensure};
 use iroh::{EndpointAddr, EndpointId, PublicKey};
 use n0_future::{BufferedStreamExt, StreamExt, stream};
 use osp_proto::{
-    BlobHash, Note, ObjectId, Payload, SignedObject,
+    BlobHash, Delete, ForwardDelete, Note, ObjectId, Payload, SignedObject, now_rfc3339,
     social::{MAX_GET_OBJECTS, MAX_OUTBOX_PAGE, SocialRequest, SocialResponse},
 };
 use tokio::sync::mpsc;
@@ -137,10 +137,14 @@ impl Core {
             let mut candidates = Vec::new();
             for (follow, result) in results {
                 match result {
-                    Ok((n, blobs)) => {
+                    Ok((n, blobs, forwards)) => {
                         new_objects += n;
                         candidates.extend(blobs);
                         self.lock_sync_retries().remove(&follow.actor);
+                        for seq in forwards {
+                            let core = self.clone();
+                            tokio::spawn(async move { core.notify_followers(seq).await });
+                        }
                     }
                     Err(e) => {
                         warn!(actor = %follow.actor.fmt_short(), "sync failed: {e:#}");
@@ -199,8 +203,9 @@ impl Core {
     }
 
     /// Fetches new outbox entries from one followed node. Returns the number
-    /// of new objects, and the media worth prefetching.
-    async fn sync_follow(&self, follow: &Follow) -> Result<(usize, Vec<Wanted>)> {
+    /// of new objects, the media worth prefetching, and the forwards of
+    /// deletes this node put in its own outbox, to tell its followers of.
+    async fn sync_follow(&self, follow: &Follow) -> Result<(usize, Vec<Wanted>, Vec<u64>)> {
         let actor = follow.actor.fmt_short();
         // The profile gives us a display name and proves the node speaks for this identity.
         match self
@@ -251,6 +256,7 @@ impl Core {
             MAX_NEW_PER_DAY.saturating_sub(self.db.objects_received_since(&follow.actor, day_ago)?);
         let mut new_objects = 0;
         let mut blobs = Vec::new();
+        let mut forwards = Vec::new();
         for _ in 0..MAX_PAGES_PER_SYNC {
             if budget == 0 {
                 warn!(%actor, "took {MAX_NEW_PER_DAY} new objects today; the rest waits");
@@ -302,20 +308,32 @@ impl Core {
             }
 
             // Keep only what this page's reshares point at: the reshared
-            // post, and its author's profile.
+            // post, and its author's profile; and the deletes its forwards
+            // carry.
             let mut wanted_posts = HashSet::new();
             let mut wanted_authors = HashSet::new();
+            let mut wanted_deletes = HashSet::new();
             for (_, payload) in &checked {
-                if let Payload::Announce(a) = payload {
-                    wanted_posts.insert(a.object);
-                    wanted_authors.insert(a.object_actor);
+                match payload {
+                    Payload::Announce(a) => {
+                        wanted_posts.insert(a.object);
+                        wanted_authors.insert(a.object_actor);
+                    }
+                    Payload::ForwardDelete(f) => {
+                        wanted_deletes.insert(f.delete);
+                    }
+                    _ => {}
                 }
             }
             let mut notes: HashMap<ObjectId, Note> = HashMap::new();
+            let mut deletes: HashMap<ObjectId, (SignedObject, Delete)> = HashMap::new();
             for obj in referenced {
                 // What it's for comes first, so a page can't make us learn
                 // the keys of identities no reshare names.
-                if !wanted_posts.contains(&obj.id()) && !wanted_authors.contains(&obj.signer()) {
+                if !wanted_posts.contains(&obj.id())
+                    && !wanted_authors.contains(&obj.signer())
+                    && !wanted_deletes.contains(&obj.id())
+                {
                     debug!(%actor, "ignoring a referenced object no reshare points at");
                     continue;
                 }
@@ -336,6 +354,9 @@ impl Core {
                         }
                         notes.insert(obj.id(), note.clone());
                     }
+                    Payload::Delete(d) if wanted_deletes.contains(&obj.id()) => {
+                        deletes.insert(obj.id(), (obj.clone(), d.clone()));
+                    }
                     _ => debug!(%actor, "ignoring a referenced object no reshare points at"),
                 }
             }
@@ -344,6 +365,33 @@ impl Core {
                 // A later entry in the page may have revoked the key that signed this one.
                 if self.db.signed_by_revoked_key(&object)? {
                     warn!(%actor, "skipping an outbox entry signed by a key revoked since");
+                    continue;
+                }
+                match &payload {
+                    // The account's own: kept even for a post never held
+                    // here, so a stale copy arriving later is refused. Not
+                    // counted against today's limit.
+                    Payload::Delete(d) => {
+                        self.act_on_delete(&object, d, true, &mut forwards).await?;
+                        continue;
+                    }
+                    // A resharer passing on the author's: acted on only for
+                    // a post held here, and only if it's the author's.
+                    Payload::ForwardDelete(f) => {
+                        match deletes.get(&f.delete) {
+                            Some((delete, d)) => {
+                                self.act_on_delete(delete, d, false, &mut forwards).await?
+                            }
+                            None => debug!(%actor, "a forwarded delete came without the delete"),
+                        }
+                        continue;
+                    }
+                    _ => {}
+                }
+                // Deleted by its author, or the post it reshares: an old
+                // copy stays out, and names no hosts.
+                if self.db.is_deleted(&object, &payload)? {
+                    debug!(%actor, "skipping a post its author deleted");
                     continue;
                 }
                 // The post a reshare points at, sent with this page or stored before.
@@ -386,7 +434,10 @@ impl Core {
                             blobs.extend(self.ahead(files, is_new, follow.synced).await?);
                         }
                     }
-                    Payload::Person(_) | Payload::Key(_) => {}
+                    Payload::Person(_)
+                    | Payload::Key(_)
+                    | Payload::Delete(_)
+                    | Payload::ForwardDelete(_) => {}
                 }
             }
             self.db.set_follow_synced(&follow.actor, cursor)?;
@@ -395,7 +446,66 @@ impl Core {
             }
         }
         self.subscribe_if_due(follow).await;
-        Ok((new_objects, blobs))
+        Ok((new_objects, blobs, forwards))
+    }
+
+    /// Acts on an author's `Delete` (ADR 0019), whose signature the caller
+    /// checked: what it names goes from this node, its files stop being
+    /// served and go, and if this node's owner reshared the post, a
+    /// `ForwardDelete` in their outbox passes it on to their followers, once.
+    /// With `always`, a tombstone is kept even for a post never held here.
+    /// One that doesn't hold up is skipped, not the whole sync.
+    pub(crate) async fn act_on_delete(
+        &self,
+        delete: &SignedObject,
+        d: &Delete,
+        always: bool,
+        forwards: &mut Vec<u64>,
+    ) -> Result<()> {
+        let author = d.actor.fmt_short();
+        if self.db.signed_by_revoked_key(delete)? {
+            warn!(%author, "skipping a delete signed by a key revoked since");
+            return Ok(());
+        }
+        let me = self.signer.identity();
+        let deleted = match self.db.apply_delete(delete, d, always, &me) {
+            Ok(Some(deleted)) => deleted,
+            Ok(None) => return Ok(()),
+            Err(e) => {
+                warn!(%author, "skipping a delete: {e:#}");
+                return Ok(());
+            }
+        };
+        if deleted.removed {
+            info!(%author, post = %d.object.fmt_short(), "a post was deleted by its author");
+        }
+        self.store.let_go(&deleted.files).await;
+        self.lock_holds().remove(&d.object);
+        if deleted.ours {
+            let forward = Payload::ForwardDelete(ForwardDelete {
+                actor: me,
+                delete: delete.id(),
+                published: now_rfc3339(),
+            });
+            let obj = self.signer.sign(&forward)?;
+            self.db.insert_object(&obj, &forward)?;
+            forwards.push(self.db.append_outbox(&obj.id())?);
+        }
+        Ok(())
+    }
+
+    /// Keeps a file only while a post kept here names it. A post deleted
+    /// while its file was on its way (ADR 0019) leaves it named by nothing:
+    /// it's let go rather than kept.
+    async fn still_named(&self, blob: &BlobHash, size: u64) -> Result<u64> {
+        if self.db.is_named(blob)? {
+            return Ok(size);
+        }
+        if self.db.blob_class(blob)? != Some(BlobClass::Own) {
+            self.db.remove_blob(blob)?;
+            self.store.let_go(&[*blob]).await;
+        }
+        bail!("its post was deleted while it downloaded")
     }
 
     /// Asks a followed node again for the objects we dropped when its
@@ -710,9 +820,11 @@ impl Core {
             sources.spare(&authors);
             sources.in_turn.sort_by_key(|s| authors.contains(&s.node));
         }
-        self.store
+        let size = self
+            .store
             .download(blob, sources, BlobClass::Prefetch, wanted.size)
             .await?;
+        self.still_named(blob, size).await?;
         let mut untold = Vec::new();
         for tracker in &wanted.trackers {
             let told = self
@@ -842,7 +954,7 @@ impl Core {
             .download(blob, sources.clone(), class, declared)
             .await
         {
-            Ok(size) => Ok(size),
+            Ok(size) => self.still_named(blob, size).await,
             Err(first_error) => {
                 // Ask the nodes we follow who else has it, then try again,
                 // one at a time. Someone waiting isn't kept waiting on
@@ -855,7 +967,8 @@ impl Core {
                     return Err(first_error);
                 }
                 let found = Sources::one_at_a_time(found);
-                self.store.download(blob, found, class, declared).await
+                let size = self.store.download(blob, found, class, declared).await?;
+                self.still_named(blob, size).await
             }
         }
     }
@@ -1165,6 +1278,84 @@ async fn sleep_until(at: Option<Instant>) {
 /// `d` varied at random by up to half either way.
 pub(crate) fn jitter(d: Duration) -> Duration {
     d.mul_f64(0.5 + random_fraction())
+}
+
+/// How often a node asks authors it doesn't follow about the posts its
+/// owner reshared (ADR 0019).
+const RESHARES_CHECKED_EVERY: Duration = Duration::from_secs(24 * 60 * 60);
+
+/// Once a day, at a time of its own, asks the nodes of authors whose posts
+/// this node's owner reshared, but who they don't follow, whether those were
+/// deleted (ADR 0019). Followed authors' deletes come with their outboxes.
+pub(crate) async fn reshares_loop(core: Arc<Core>) {
+    let first = Duration::from_secs(60 * 60).mul_f64(random_fraction());
+    tokio::time::sleep(first).await;
+    loop {
+        // Messages wait for Tor, and go nowhere else (ADR 0014).
+        if let Some(tor) = &core.tor {
+            tor.ready().await;
+        }
+        if let Err(e) = core.check_unfollowed_reshares().await {
+            warn!("asking about reshared posts failed: {e:#}");
+        }
+        tokio::time::sleep(jitter(RESHARES_CHECKED_EVERY)).await;
+    }
+}
+
+impl Core {
+    /// Asks the nodes of authors this node's owner reshared, but doesn't
+    /// follow, for those posts with `GetObjects`, which answers one that was
+    /// deleted with its `Delete` (ADR 0019). Returns how many were deleted.
+    pub(crate) async fn check_unfollowed_reshares(self: &Arc<Self>) -> Result<usize> {
+        let me = self.signer.identity();
+        let followed: HashSet<PublicKey> = self.db.follows()?.iter().map(|f| f.actor).collect();
+        let mut by_author: HashMap<PublicKey, Vec<ObjectId>> = HashMap::new();
+        for (post, author) in self.db.own_reshares(&me)? {
+            if !followed.contains(&author) && author != me {
+                by_author.entry(author).or_default().push(post);
+            }
+        }
+        let mut forwards = Vec::new();
+        let mut deleted = 0;
+        for (author, posts) in by_author {
+            // The node its profile names, as the reshare carried it.
+            let Some(node) = self.nodes_of(&author).first().copied() else {
+                debug!(author = %author.fmt_short(), "no node known for a reshared post's author");
+                continue;
+            };
+            let addr = EndpointAddr::new(node);
+            for asked in posts.chunks(MAX_GET_OBJECTS) {
+                let req = SocialRequest::GetObjects {
+                    ids: asked.to_vec(),
+                };
+                let objects = match self.social_request(&addr, &req).await {
+                    Ok(SocialResponse::Objects { objects }) => objects,
+                    Ok(_) => bail!("unexpected reply to GetObjects"),
+                    Err(e) => {
+                        debug!(author = %author.fmt_short(), "couldn't ask about reshared posts: {e:#}");
+                        break;
+                    }
+                };
+                for obj in objects {
+                    if obj.signer() != author {
+                        continue;
+                    }
+                    let Ok(Payload::Delete(d)) = self.verify_received(&obj) else {
+                        continue;
+                    };
+                    if asked.contains(&d.object) {
+                        self.act_on_delete(&obj, &d, false, &mut forwards).await?;
+                        deleted += 1;
+                    }
+                }
+            }
+        }
+        for seq in forwards {
+            let core = self.clone();
+            tokio::spawn(async move { core.notify_followers(seq).await });
+        }
+        Ok(deleted)
+    }
 }
 
 /// A random number from 0 to 1.
