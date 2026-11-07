@@ -106,7 +106,7 @@ Each mark is set before its run.
 
 Stage A runs one workload three ways: relays alone, ADR 0018 alone, and ADR 0018 with forwarding. A quarter is counted of what's still relayed after ADR 0018. Sharing an earned peer isn't enough: it counts only if that peer said yes and has upload left under its limits. It reports relay bytes saved, the upload added to forwarders' homes, and how often a transfer fell back to a relay.
 
-`osp-sim` has no relays and no routers yet: the first is ADR 0014's "measuring media's default", and the second needs real networks as well.
+`osp-sim` has a relay since ADR 0014's "measuring media's default" ([results](../testing/network-conditions.md#media-through-relays)), but no routers yet, which need real networks as well.
 
 ## Validation
 
