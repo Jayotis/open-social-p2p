@@ -12,7 +12,7 @@ fn a_reader_that_goes_away_ends_it_quietly() {
     let out = Command::new(env!("CARGO_BIN_EXE_osp"))
         .arg("--home")
         .arg(&home)
-        .args(["init", "--skip-word-check", "--share"])
+        .args(["init", "--skip-word-check", "--share", "--no-list-me"])
         .stdin(Stdio::null())
         .stdout(writer)
         .stderr(Stdio::piped())

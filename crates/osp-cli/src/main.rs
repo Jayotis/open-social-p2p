@@ -38,6 +38,7 @@ use osp_node::{Config, Home, Node, RelayChoice, plain};
 use osp_proto::{
     EarlierKeys, EndpointId, ObjectId, PublicKey,
     framing::{read_frame, write_frame},
+    machine::MAX_LISTED_POSTS,
     rpc::{
         ClientRequest, ClientResponse, DeviceInfo, Direction, FeedItem, PeerRecord, Reached,
         StatusInfo, TrustInfo,
@@ -104,6 +105,17 @@ enum Command {
         /// Don't share them. Otherwise you're asked
         #[arg(long)]
         no_share: bool,
+        /// Leave Tor off, for tests on one machine or a home network. The node then
+        /// reaches only nodes with it off too, and anyone who connects learns its address
+        #[arg(long)]
+        no_tor: bool,
+        /// Ask the directories this node knows to list your profile and latest posts, so
+        /// people can find you (ADR 0015). Otherwise you're asked
+        #[arg(long, conflicts_with_all = ["no_list_me", "no_tor"])]
+        list_me: bool,
+        /// Don't ask to be listed. Otherwise you're asked, unless Tor is off
+        #[arg(long)]
+        no_list_me: bool,
     },
     /// Run the node in the foreground (Ctrl-C to stop)
     Daemon,
@@ -317,13 +329,15 @@ async fn main() -> Result<()> {
             skip_word_check,
             share,
             no_share,
+            no_tor,
+            list_me,
+            no_list_me,
         } => {
             let lookup = !no_address_lookup;
-            let config = init_config(name, &relay, bind, lookup, backup.is_some());
-            let share = match (share, no_share) {
-                (true, _) => Some(true),
-                (_, true) => Some(false),
-                _ => None,
+            let config = init_config(name, &relay, bind, lookup, backup.is_some(), !no_tor);
+            let answers = Answers {
+                share: answered(share, no_share),
+                list_me: answered(list_me, no_list_me),
             };
             if restore {
                 let old_key = match (retired, revoked) {
@@ -331,9 +345,9 @@ async fn main() -> Result<()> {
                     (_, true) => Some(EarlierKeys::Revoked),
                     _ => None,
                 };
-                return restore_node(&home, config, backup.as_deref(), old_key, share);
+                return restore_node(&home, config, backup.as_deref(), old_key, answers).await;
             }
-            return init(&home, config, !skip_word_check, share);
+            return init(&home, config, !skip_word_check, answers).await;
         }
         Command::Daemon => return daemon(&home).await,
         // These read the node's files rather than asking the daemon: only
@@ -495,6 +509,7 @@ fn init_config(
     bind: Option<SocketAddr>,
     address_lookup: bool,
     from_backup: bool,
+    tor: bool,
 ) -> Config {
     let mut config = Config::default();
     if let Some(name) = name {
@@ -509,12 +524,32 @@ fn init_config(
     };
     config.network.bind = bind;
     config.network.address_lookup = address_lookup;
+    // On for new nodes only: a config without them keeps them off, as a node
+    // on Tor reaches only nodes on Tor (ADR 0014).
+    config.tor.enabled = tor;
+    config.endpoints.enabled = tor;
     config
 }
 
-fn init(home: &Path, mut config: Config, check_words: bool, share: Option<bool>) -> Result<()> {
+/// What `osp init`'s flags already answer.
+struct Answers {
+    share: Option<bool>,
+    list_me: Option<bool>,
+}
+
+/// A yes-or-no flag pair: `None` if neither was given, so it's asked.
+fn answered(yes: bool, no: bool) -> Option<bool> {
+    match (yes, no) {
+        (true, _) => Some(true),
+        (_, true) => Some(false),
+        _ => None,
+    }
+}
+
+async fn init(home: &Path, mut config: Config, check_words: bool, answers: Answers) -> Result<()> {
     // Asked first, so words aren't shown for a node that isn't made.
-    config.swarm.share_prefetched = ask_share(share)?;
+    config.swarm.share_prefetched = ask_share(answers.share)?;
+    config.directory.list_me = ask_list_me(answers.list_me, config.tor.enabled)?;
     let words = osp_node::backup::new_identity_words();
     print_words(&words);
     if check_words {
@@ -523,30 +558,75 @@ fn init(home: &Path, mut config: Config, check_words: bool, share: Option<bool>)
     Node::init_with_words(home, &config, &words.join(" "))?;
     println!();
     println!("Created a node in {}", home.display());
-    println!();
-    println!("With Tor on, this node also gets to know other nodes in the background, under a");
-    println!("machine name tied to no profile. It isn't anonymous: it shows that a machine runs");
-    println!("this software and when it's on, and someone reaching it and your node could match");
-    println!("them over time. To turn it off, set enabled = false under [machine] in config.toml.");
+    if config.tor.enabled {
+        println!();
+        println!("With Tor on, this node also gets to know other nodes in the background, under a");
+        println!(
+            "machine name tied to no profile. It isn't anonymous: it shows that a machine runs"
+        );
+        println!(
+            "this software and when it's on, and someone reaching it and your node could match"
+        );
+        println!(
+            "them over time. To turn it off, set enabled = false under [machine] in config.toml."
+        );
+    }
+    say_missing(&config).await;
     println!();
     println!("Start it with: osp --home {} daemon", home.display());
     Ok(())
 }
 
-fn restore_node(
+/// Says what this machine still needs for the node to work, and how to get it.
+async fn say_missing(config: &Config) {
+    let mut missing = Vec::new();
+    if config.tor.enabled && !runs(&config.tor.binary, "--version") {
+        missing.push("Tor, to reach other nodes: sudo apt install tor".to_string());
+    }
+    if !osp_node::media::tools_available(&config.media).await {
+        missing.push("ffmpeg, for photos and videos: sudo apt install ffmpeg".to_string());
+    } else if !osp_node::media::heic_tool_available(&config.media).await {
+        missing.push(
+            "heif-convert, for photos from iPhones: sudo apt install libheif-examples".to_string(),
+        );
+    }
+    if missing.is_empty() {
+        return;
+    }
+    println!();
+    println!("This machine still needs (the commands are for Debian and Ubuntu):");
+    for what in &missing {
+        println!("- {what}");
+    }
+    println!("The node starts anyway, and `osp status` says what's missing.");
+}
+
+/// Whether `program` runs and says it's fine.
+fn runs(program: &str, version_flag: &str) -> bool {
+    std::process::Command::new(program)
+        .arg(version_flag)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
+async fn restore_node(
     home: &Path,
     mut config: Config,
     backup: Option<&Path>,
     old_key: Option<EarlierKeys>,
-    share: Option<bool>,
+    answers: Answers,
 ) -> Result<()> {
     let words = read_words()?;
     let old_key = match old_key {
         Some(choice) => choice,
         None => ask_old_key(backup.is_some())?,
     };
-    // A backup doesn't keep the settings, so this is asked again.
-    config.swarm.share_prefetched = ask_share(share)?;
+    // A backup doesn't keep the settings, so these are asked again.
+    config.swarm.share_prefetched = ask_share(answers.share)?;
+    config.directory.list_me = ask_list_me(answers.list_me, config.tor.enabled)?;
     let restored = Node::restore(home, &config, &words, backup, old_key)?;
     println!("Restored identity {}", restored.identity);
     println!("on a new node in {}.", home.display());
@@ -568,6 +648,7 @@ fn restore_node(
     }
     println!("- your phone pairs again (`osp pair`);");
     println!("- never start the old node again, or your followers get two nodes for you.");
+    say_missing(&config).await;
     println!();
     println!("Start it with: osp --home {} daemon", home.display());
     Ok(())
@@ -626,12 +707,49 @@ fn ask_share(choice: Option<bool>) -> Result<bool> {
     println!();
     println!("Recommended: yes. You can change it later: `share_prefetched` under [swarm] in");
     println!("config.toml.");
+    ask_yes_no(
+        "Share copies of posts from people you follow?",
+        "--share or --no-share",
+    )
+}
+
+/// Asks whether to ask directories to list this node's profile and latest
+/// posts (ADR 0015), unless `choice` already says. With Tor off it isn't
+/// asked, as directories are reached only through Tor. There's no default:
+/// being listed shows your profile and posts to anyone, so it needs a yes.
+fn ask_list_me(choice: Option<bool>, tor: bool) -> Result<bool> {
+    if !tor {
+        return Ok(false);
+    }
+    if let Some(list_me) = choice {
+        return Ok(list_me);
+    }
+    println!();
+    println!("Directories let people find each other without swapping follow codes. A");
+    println!("directory is a node someone runs for this; the ones yours reads go under");
+    println!("[[directory.known]] in config.toml.");
+    println!();
+    println!("If you ask them to list you:");
+    println!(
+        "- your profile and latest {MAX_LISTED_POSTS} posts go into them, where anyone who reads one"
+    );
+    println!("  can see them and pass them on;");
+    println!("- they reach your node through Tor, so they don't learn your internet address.");
+    println!("If not, people find you only through a follow code you give them (`osp invite`).");
+    println!();
+    println!("You can change it later: `list_me` under [directory] in config.toml.");
+    ask_yes_no("Ask directories to list you?", "--list-me or --no-list-me")
+}
+
+/// Asks `question` until the answer is yes or no. With no answer at all, nothing
+/// is made, and the error names the `flags` that answer it.
+fn ask_yes_no(question: &str, flags: &str) -> Result<bool> {
     loop {
-        print!("Share copies of posts from people you follow? (yes / no): ");
+        print!("{question} (yes / no): ");
         std::io::Write::flush(&mut std::io::stdout())?;
         let mut line = String::new();
         if std::io::stdin().read_line(&mut line)? == 0 {
-            bail!("no answer; nothing was created (or pass --share or --no-share)");
+            bail!("no answer; nothing was created (or pass {flags})");
         }
         match line.trim().to_lowercase().as_str() {
             "yes" | "y" => return Ok(true),
