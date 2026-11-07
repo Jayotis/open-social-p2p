@@ -144,6 +144,9 @@ pub struct Post {
     /// The directory it came from, in words, if it's on the node only because
     /// of one.
     pub found_through: Option<String>,
+    /// What the owner may delete here (ADR 0019): their reshare, if this is
+    /// one, or else their own post. `None` for anyone else's.
+    pub deletable: Option<String>,
 }
 
 pub struct Media {
@@ -372,6 +375,14 @@ impl OspApp {
             let _ = stop.send(());
         }
         self.client.discard_post().await
+    }
+
+    /// Deletes one of the owner's posts or reshares, by `Post::deletable`
+    /// (ADR 0019). It can't be undone: the app waits before calling this.
+    pub async fn delete_post(&self, id: String) -> Result<()> {
+        let id: ObjectId = id.parse()?;
+        self.client.request(&ClientRequest::Delete { id }).await?;
+        Ok(())
     }
 
     /// Reshares a post; with `host`, the node also keeps and serves its media.
@@ -649,6 +660,7 @@ fn post(item: FeedItem) -> Post {
         reshared_by,
         resharer_hosts,
         found_through: item.found_through,
+        deletable: item.deletable.map(|id| id.to_string()),
     }
 }
 

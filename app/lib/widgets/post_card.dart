@@ -57,6 +57,56 @@ class PostCard extends StatelessWidget {
     }
   }
 
+  /// Deletes the owner's post or reshare after a minute, with an undo
+  /// meanwhile, saying first what deleting does (ADR 0019).
+  Future<void> _delete(BuildContext context) async {
+    final id = post.deletable!;
+    final reshare = id != post.id;
+    final what = reshare ? 'your reshare' : 'your post';
+    final sure = await showModalBottomSheet<bool>(
+      context: context,
+      builder: (context) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.delete_outline),
+              title: Text('Delete $what'),
+              subtitle: Text(
+                reshare
+                    ? 'It goes from the feeds of those who follow you, and '
+                          "your node stops hosting the post's media."
+                    : 'Nodes running this software drop it, and its photos '
+                          'and videos, as they hear: within minutes for those '
+                          "online. Copies people saved stay. It can't be "
+                          'undone once sent.',
+              ),
+              onTap: () => Navigator.pop(context, true),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (sure != true || !context.mounted) return;
+    final messenger = ScaffoldMessenger.of(context);
+    node.deleteLater(
+      id,
+      onFailed: (e) => messenger.showSnackBar(
+        SnackBar(content: Text("Couldn't delete it: ${describeError(e)}")),
+      ),
+    );
+    messenger.showSnackBar(
+      SnackBar(
+        content: Text('Deleting $what in a minute.'),
+        duration: HomeNode.deleteWait,
+        action: SnackBarAction(
+          label: 'Undo',
+          onPressed: () => node.undoDelete(id),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -117,6 +167,14 @@ class PostCard extends StatelessWidget {
           Row(
             mainAxisAlignment: MainAxisAlignment.end,
             children: [
+              if (post.deletable != null)
+                TextButton.icon(
+                  onPressed: node.reachability == Reachability.online
+                      ? () => _delete(context)
+                      : null,
+                  icon: const Icon(Icons.delete_outline),
+                  label: const Text('Delete'),
+                ),
               TextButton.icon(
                 onPressed: node.reachability == Reachability.online
                     ? () => _reshare(context)

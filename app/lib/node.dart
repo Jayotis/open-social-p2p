@@ -41,6 +41,20 @@ class HomeNode extends ChangeNotifier with WidgetsBindingObserver {
 
   List<Post> posts = [];
 
+  /// How long a delete waits for an undo before it's sent (ADR 0019): once
+  /// sent, it can't be taken back.
+  static const deleteWait = Duration(minutes: 1);
+
+  /// Deletes waiting out [deleteWait], by what they delete.
+  final Map<String, Timer> _deleting = {};
+
+  /// The feed, less the posts whose delete is waiting.
+  List<Post> get visiblePosts =>
+      posts.where((p) => !_deleting.containsKey(p.deletable)).toList();
+
+  /// Whether the app is in the background, where the connection is let go.
+  bool _inBackground = false;
+
   /// Set while showing the saved feed instead of a fresh one.
   DateTime? savedAt;
   bool onMobileData = false;
@@ -94,8 +108,46 @@ class HomeNode extends ChangeNotifier with WidgetsBindingObserver {
     return node;
   }
 
+  /// Deletes [id] once [deleteWait] has passed, unless [undoDelete] comes
+  /// first. [onFailed] says why, if sending it fails.
+  void deleteLater(String id, {void Function(Object error)? onFailed}) {
+    _deleting[id]?.cancel();
+    _deleting[id] = Timer(deleteWait, () => _sendDelete(id, onFailed));
+    notifyListeners();
+  }
+
+  /// Keeps a post whose delete is still waiting.
+  void undoDelete(String id) {
+    _deleting.remove(id)?.cancel();
+    notifyListeners();
+  }
+
+  Future<void> _sendDelete(String id, void Function(Object)? onFailed) async {
+    _deleting.remove(id);
+    try {
+      await app.deletePost(id: id);
+      posts = posts.where((p) => p.deletable != id).toList();
+    } catch (e) {
+      onFailed?.call(e);
+    }
+    notifyListeners();
+  }
+
+  /// Sends the deletes still waiting at once: leaving the app without
+  /// undoing them says they're meant.
+  Future<void> _sendDeletesNow() async {
+    final waiting = _deleting.keys.toList();
+    for (final id in waiting) {
+      _deleting.remove(id)?.cancel();
+    }
+    await Future.wait(waiting.map((id) => _sendDelete(id, null)));
+  }
+
   @override
   void dispose() {
+    for (final timer in _deleting.values) {
+      timer.cancel();
+    }
     _poll?.cancel();
     _network?.cancel();
     WidgetsBinding.instance.removeObserver(this);
@@ -242,12 +294,17 @@ class HomeNode extends ChangeNotifier with WidgetsBindingObserver {
     if (paired == null) return;
     switch (state) {
       case AppLifecycleState.resumed:
+        _inBackground = false;
         app.resumed();
         _start();
       case AppLifecycleState.paused:
+        _inBackground = true;
         _stop();
-        // Save the battery, unless a post is still being sent.
-        if (!uploading) app.disconnect();
+        // Save the battery, unless a post is still being sent. Deletes
+        // still waiting go first.
+        _sendDeletesNow().whenComplete(() {
+          if (_inBackground && !uploading) app.disconnect();
+        });
       default:
         break;
     }

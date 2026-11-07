@@ -26,6 +26,7 @@ class FeedScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final online = node.reachability == Reachability.online;
+    final posts = node.visiblePosts;
     // Requests to be a trusted follower waiting for an answer.
     final asking = node.status?.trustRequests ?? 0;
     return Scaffold(
@@ -88,13 +89,13 @@ class FeedScreen extends StatelessWidget {
           Expanded(
             child: RefreshIndicator(
               onRefresh: () => node.refresh(sync: true),
-              child: node.posts.isEmpty
+              child: posts.isEmpty
                   ? _Empty(node: node)
                   : ListView.builder(
                       padding: const EdgeInsets.only(bottom: 88),
-                      itemCount: node.posts.length,
+                      itemCount: posts.length,
                       itemBuilder: (context, i) =>
-                          PostCard(node: node, post: node.posts[i]),
+                          PostCard(node: node, post: posts[i]),
                     ),
             ),
           ),
