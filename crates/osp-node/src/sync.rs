@@ -369,9 +369,8 @@ impl Core {
                         for blob in note.blobs() {
                             self.db.add_host(&blob, &follow.addr)?;
                         }
-                        if is_new {
-                            blobs.extend(prefetchable(note, Some(&follow.addr)));
-                        }
+                        let files = prefetchable(note, Some(&follow.addr));
+                        blobs.extend(self.ahead(files, is_new, follow.synced).await?);
                     }
                     Payload::Announce(announce) => {
                         if let Some(note) = reshared {
@@ -383,9 +382,8 @@ impl Core {
                                     self.db.add_host(&blob, addr)?;
                                 }
                             }
-                            if is_new {
-                                blobs.extend(prefetchable(&note, tracker));
-                            }
+                            let files = prefetchable(&note, tracker);
+                            blobs.extend(self.ahead(files, is_new, follow.synced).await?);
                         }
                     }
                     Payload::Person(_) | Payload::Key(_) => {}
@@ -530,6 +528,26 @@ impl Core {
             self.lock_holds().insert(obj.id(), hold);
         }
         Ok(is_new)
+    }
+
+    /// Which of a post's `files` to fetch ahead of time: all of a new post's;
+    /// and on a follow's first sync, those not here of one that is, as a post
+    /// found through a directory is, without its media (ADR 0015). The files
+    /// already here are left out, so one opened before the follow isn't then
+    /// named to anyone as a copy this node holds.
+    async fn ahead(&self, files: Vec<Wanted>, is_new: bool, synced: bool) -> Result<Vec<Wanted>> {
+        if is_new {
+            return Ok(files);
+        }
+        let mut missing = Vec::new();
+        if !synced {
+            for file in files {
+                if !self.store.has(&file.blob).await? {
+                    missing.push(file);
+                }
+            }
+        }
+        Ok(missing)
     }
 
     /// Once a sync has chosen what to prefetch, shows the posts it held
