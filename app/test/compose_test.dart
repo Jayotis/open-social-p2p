@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -138,6 +139,18 @@ void main() {
     app.sending.add(progress(PostStage.waiting));
     await settle(tester);
     expect(find.textContaining('Waiting for your home node… 50%'), findsOne);
+
+    // The phone going offline shows at once, before the upload gives up.
+    app.sending.add(progress(PostStage.sending, sent: 600, total: 1000));
+    await settle(tester);
+    expect(find.textContaining('Sending to your home node: 60%'), findsOne);
+    node.networkChangedForTests([ConnectivityResult.none]);
+    await settle(tester);
+    expect(find.textContaining('Waiting for your home node… 60%'), findsOne);
+    node.networkChangedForTests([ConnectivityResult.wifi]);
+    app.sending.add(progress(PostStage.sending, sent: 700, total: 1000));
+    await settle(tester);
+    expect(find.textContaining('Sending to your home node: 70%'), findsOne);
 
     app.sending.add(progress(PostStage.processing, sent: 1000, total: 1000));
     await settle(tester);
