@@ -184,7 +184,7 @@ In order, each step passing its gate before the next starts. Local search doesn'
 
 - **Leak test,** like phase 1's: no stranger learns the node's address through its profile, follow code, lookups, `WhoHosts` replies, directory listings or logs. A packet capture shows messages going only to Tor.
 - **`osp-sim`:** B8's swarm run passes its marks with Tor-like delays on messages, with the changed timers.
-- **Measuring media's default:** B8's swarm run with 0, 20 and 50% of followers fetching through relays, counting the bytes relayed and the creator's copies. It needs a simulated relay first.
+- **Measuring media's default:** B8's swarm run with 0, 20 and 50% of followers fetching through relays, counting the bytes relayed and the creator's copies. It needs a simulated relay first. Planned with one, and a run with 100%, today's default, in [network conditions](../testing/network-conditions.md#media-through-relays) (2026-11-07).
 - **Search:** posts and profiles are found offline; revoked posts drop out.
 - **Directories:** a node with no follows finds a stranger and follows them; with two directories and one switched off, search still works; forged or stale records are rejected.
 - **The invited alpha:** a few people, on their own Linux machines, install the node with Tor, find each other through the directory, follow and watch, without swapping follow codes or showing strangers their address.

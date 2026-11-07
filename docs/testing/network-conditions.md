@@ -14,11 +14,11 @@ The [B8 runs](b8-creator-upload.md) showed the follower swarm sparing a creator 
 
 A packet from A to B waits its turn in A's upload queue, travels A's delay and B's delay, then waits its turn in B's download queue. Each queue holds up to 100 ms of packets at its connection's speed; a packet that would wait longer is dropped, as a full home router drops it. So a busy connection first gets slower, then loses packets, and QUIC's congestion control backs off, as on a real line.
 
-A connection can also be **cut off** and restored. While it's cut off, everything it sends and everything sent to it is lost. QUIC sends again once it's back, if it hasn't given up by then.
+A connection can also be **cut off** and restored. While it's cut off, everything it sends and everything sent to it is lost. QUIC sends again once it's back, if it hasn't given up by then. A node's endpoints share its connection, as they would at home.
 
 The nodes are unchanged, and their QUIC connections run over the simulated network through iroh's custom transports. Only builds with the `sim` feature, the harness's and the tests', have it. With `--net`, nodes set **no upload cap**, as a node doesn't unless its owner sets one, and their connections hold their upload to its speed instead; `--caps` sets the caps as on loopback.
 
-Not simulated: delay that varies, and packets arriving out of order; losses in bursts; a bottleneck in the middle of the network that several nodes share; NAT, hole punching and relays; and phones. Losses follow a seed (`--seed`), but timings vary from run to run, so two runs with the same seed aren't identical.
+Not simulated: delay that varies, and packets arriving out of order; losses in bursts; a bottleneck in the middle of the network that several nodes share; NAT and hole punching; relays, except with [`--relay`](#media-through-relays); and phones. Losses follow a seed (`--seed`), but timings vary from run to run, so two runs with the same seed aren't identical.
 
 Tests in `osp-node` check delays, speeds, losses and cut-offs on real QUIC connections over the simulated network, and two nodes following each other over it. CI also runs a small `osp-sim` run over it: 12 followers on slow and fast connections with delays and some loss, two of them cut off now and then, and a latecomer.
 
@@ -505,3 +505,31 @@ osp-sim --dir /path/on/disk/run --swarm --net --latecomers 10 --tor-delay --endp
 - **The shared disk was.** Every node's store is on one disk in these runs, which real nodes don't share. With the same `cdc1670` program, moving to the NVMe partition brought 95% of followers from 925 to 638 s without endpoints, and from 1,004 to 640 s with them. The machine's time stalled on disk fell from 359 and 416 s a run to about 5 s, packets dropped by full queues from about 4% to 0.9%, and requests refused as busy from 1,803 and 2,641 to 1,004 and 919. The slowest measured upload among nodes at 5 Mbit/s rose from 2.9 and 1.4 Mbit/s to 4.8.
 - **Left open:** whether the SSD was slow by nature or from its state. A build had filled it earlier that day and it hadn't been trimmed for six days. On it, sustained writes averaged 88 MB/s with stalls of up to 3.65 s, against 432 MB/s and 160 ms on the NVMe partition. Nor does this show why the same program was slower on 11-01 than on 10-31.
 - **For the earlier results here:** those since at least 10-29 were on that SSD, so their times may say as much about the disk as about the design. Comparisons within a round still hold, as both sides had the same disk, but the disk may have narrowed the differences. They haven't been run again.
+
+## Media through relays
+
+Added on 2026-11-07, before any of these runs. [ADR 0014](../decisions/0014-finding-people-and-private-messages.md) sends media between two nodes directly only when both allow it, and through a relay otherwise. A new node allows nobody (`direct = "nobody"`), so today all media between nodes goes through relays: n0's public relays, for now. The ADR's "measuring media's default" asks how the swarm does when some or all followers fetch through relays, and how much the relays then carry.
+
+**The simulated relay.** `--relay` adds a relay to the simulated network. Everything to or from a media endpoint goes through it, as a media endpoint has no address of its own; direct endpoints and messages don't. A relayed packet takes the relay's delay twice more than a direct one. The relay limits how fast each endpoint sends through it, as iroh's relay servers do: a burst at the endpoint's own speed, then a steady rate. A packet that would wait more than 100 ms for its turn is dropped, as at a full router queue; a real relay stops reading instead, and either way QUIC slows down to the limit.
+
+The limits are those of n0's public relays, which aren't published. On 2026-11-07, one endpoint sending 20 MB to another through one got 2.7 MB through at once, then 1,000 kB/s (8 Mbit/s), so `--relay` uses those. Its delay, 20 ms each way, is a guess. Not simulated: other users of the relay, whose traffic shares its capacity (n0 says its public relays are for development and hobby use), and a relay failing or changing its limits.
+
+**Also changed:** a node's endpoints now share its connection. Before, each endpoint had a connection of its own, so a node sending media through both its media and direct endpoints could send at twice its upload speed. The earlier runs with endpoints sent media through media endpoints only, so this doesn't change them.
+
+**The runs.** The home run with `--tor-delay`, as in the gate's runs [above](#messages-and-media-on-their-own-endpoints), with `--endpoints anyone --relay --relay-only P`. The creator and the other followers allow anyone to connect directly; P% of the followers and latecomers allow nobody. They're spread through the order, so they have every upload speed (in the 50% run, only the 10 and 30 ms delays). Media to or from one of them goes through the relay; between two of the others, it's direct. One run each, one after another, on the NVMe partition:
+
+| Run | What it stands for |
+| --- | --- |
+| `--relay-only 0` | everyone allows direct connections: the relay carries nothing |
+| `--relay-only 20` and `50` | the ADR's runs |
+| `--relay-only 100` | today's default, where every follower allows nobody (added on 2026-11-07) |
+
+```sh
+osp-sim --dir /path/on/disk/run --swarm --net --latecomers 10 --tor-delay \
+  --endpoints anyone --relay --relay-only 20 \
+  --label "$(git rev-parse --short HEAD)" --out run.json
+```
+
+**Pass marks.** For each run, the home run's three [marks](#pass-marks). Recorded too: what the relay passed on, in copies of the video (all it passed on, the latecomers' and QUIC's own packets included, over the media's size); the share of packets it dropped at its limit; the times for the followers behind it and for the others; the creator's copies; and the latecomers' times.
+
+**What it decides.** Media's default, decided from these figures, not by a pass mark. They show whether relays at n0's limits carry the swarm within its marks, and how much they carry for a post with 300 followers at each share. Someone pays for every relayed byte: n0 for now, relays of our own later.
