@@ -16,11 +16,11 @@ use iroh::{
     protocol::{AcceptError, ProtocolHandler, Router},
 };
 use osp_node::{
-    Config, Home, KnownDirectory, Node, SimSettings,
+    BlobClass, Config, Home, KnownDirectory, Node, SimSettings,
     simnet::{self, Link, SimNet},
 };
 use osp_proto::{
-    Announce, CertifiedKey, EarlierKeys, MACHINE_ALPN, Note, ObjectId, Payload, Person,
+    Announce, BlobHash, CertifiedKey, EarlierKeys, MACHINE_ALPN, Note, ObjectId, Payload, Person,
     SOCIAL_ALPN, SignedObject,
     framing::{read_frame, write_frame},
     machine::{ListingEntry, ListingItem, MachineRecord, MachineRequest, MachineResponse},
@@ -1609,6 +1609,72 @@ async fn a_node_with_no_follows_finds_a_stranger_and_follows_them() {
     for node in [alice, carol] {
         node.shutdown().await.unwrap();
     }
+}
+
+/// Posts found through a directory are here before their author is
+/// followed, without their media. The follow's first sync fetches it ahead
+/// of time, as it does for the posts it brings.
+#[tokio::test(flavor = "multi_thread")]
+async fn following_someone_found_fetches_their_found_posts_media_ahead() {
+    let dir = tempfile::tempdir().unwrap();
+    let net = SimNet::new(50);
+    let directory = start_directory(dir.path(), &net, AN_HOUR).await;
+    let alice = config_knowing("Alice", &directory, true);
+    let alice = start_with(dir.path(), "Alice", &net, alice).await;
+    let photo = post_photo(&alice, dir.path(), "oak table").await;
+    assert!(alice.ask_to_be_listed().await);
+    wait_for_entry(&net, &directory, 0, listing_of(alice.identity())).await;
+
+    let carol = config_knowing("Carol", &directory, false);
+    let carol = start_with(dir.path(), "Carol", &net, carol).await;
+    read_directories(&carol).await;
+    let (_, posts) = search(&carol, "oak").await;
+    assert_eq!(posts.len(), 1);
+    assert_eq!(carol.blob_class(&photo).unwrap(), None);
+
+    let follow = ClientRequest::FollowPerson {
+        actor: alice.identity(),
+    };
+    call(&carol, follow).await;
+    call(&carol, ClientRequest::Sync).await;
+    assert_eq!(carol.blob_class(&photo).unwrap(), Some(BlobClass::Prefetch));
+
+    for node in [alice, carol, directory] {
+        node.shutdown().await.unwrap();
+    }
+}
+
+/// Posts a photo made by ffmpeg, captioned `text`, and returns its file.
+async fn post_photo(node: &Node, dir: &Path, text: &str) -> BlobHash {
+    let photo = dir.join(format!("{}.png", node.identity()));
+    let status = tokio::process::Command::new("ffmpeg")
+        .args(["-hide_banner", "-loglevel", "error", "-y"])
+        .args([
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc=size=320x240",
+            "-frames:v",
+            "1",
+        ])
+        .arg(&photo)
+        .status()
+        .await
+        .expect("ffmpeg must be installed");
+    assert!(status.success());
+    let req = ClientRequest::Post {
+        content: text.into(),
+        attachments: vec![photo],
+        uploads: vec![],
+        upload: None,
+    };
+    let ClientResponse::Posted { id } = call(node, req).await else {
+        panic!("not posted")
+    };
+    let ClientResponse::Item { item } = call(node, ClientRequest::Show { id }).await else {
+        panic!("not shown")
+    };
+    item.attachments[0].attachment.blob
 }
 
 #[tokio::test(flavor = "multi_thread")]
