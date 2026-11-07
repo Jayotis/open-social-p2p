@@ -294,7 +294,8 @@ enum KeysCommand {
 
 #[derive(Subcommand)]
 enum BackupCommand {
-    /// Write an encrypted backup of your posts, follows, followers and media
+    /// Write an encrypted backup of your posts, follows, followers and media, and whom
+    /// you trust and let connect directly
     Export {
         /// Where to write it. Keep it somewhere other than this computer.
         file: PathBuf,
