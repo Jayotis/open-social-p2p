@@ -635,6 +635,9 @@ async fn restore_node(
             "From the backup: {} posts, {} follows, {} followers and {} media files.",
             info.posts, info.follows, info.followers, info.media_files
         );
+        if let Some(line) = trust_line(info) {
+            println!("{line} (`osp trust list`, `osp direct list`)");
+        }
     }
     println!();
     println!("This is a new node, so:");
@@ -652,6 +655,17 @@ async fn restore_node(
     println!();
     println!("Start it with: osp --home {} daemon", home.display());
     Ok(())
+}
+
+/// What a backup holds of who this node trusts and lets connect directly,
+/// if anything.
+fn trust_line(info: &osp_proto::rpc::BackupInfo) -> Option<String> {
+    (info.trusted > 0 || info.direct_contacts > 0).then(|| {
+        format!(
+            "Trusted followers' nodes: {}. Contacts for direct connections: {}.",
+            info.trusted, info.direct_contacts
+        )
+    })
 }
 
 /// Asks whether someone else could have the old node's signing key.
@@ -1193,6 +1207,9 @@ fn print(resp: ClientResponse, json: bool) -> Result<()> {
                 "{} posts, {} follows, {} followers and {} media files.",
                 info.posts, info.follows, info.followers, info.media_files
             );
+            if let Some(line) = trust_line(&info) {
+                println!("{line}");
+            }
             if info.media_missing > 0 {
                 println!(
                     "{} media files of your posts are missing from this node, so the backup lacks them.",

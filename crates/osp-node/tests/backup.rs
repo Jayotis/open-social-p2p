@@ -527,10 +527,27 @@ async fn a_backup_brings_back_posts_follows_followers_and_media() {
     follow(&carol, &alice).await;
     feed_texts(&carol).await;
     assert_eq!(followers(&alice).await, 1);
+    // Alice trusts Carol's node, at her asking, and allows Bob's a direct
+    // connection.
+    let ask = ClientRequest::AskTrust {
+        actor: alice.identity(),
+        note: "Carol".into(),
+    };
+    call(&carol, ask).await;
+    let allow = ClientRequest::AnswerTrust {
+        node: carol.node_id(),
+        allow: true,
+    };
+    call(&alice, allow).await;
+    let direct = ClientRequest::AllowDirect {
+        node: bob.node_id(),
+    };
+    call(&alice, direct).await;
 
     let file = dir.path().join("alice.ospbackup");
     let info = export(&alice, &file, true).await;
     assert_eq!((info.posts, info.follows, info.followers), (3, 1, 1));
+    assert_eq!((info.trusted, info.direct_contacts), (1, 1));
     assert!(info.media_files >= 1);
     assert_eq!(info.media_missing, 0);
     assert_eq!(info.bytes, std::fs::metadata(&file).unwrap().len());
@@ -550,7 +567,22 @@ async fn a_backup_brings_back_posts_follows_followers_and_media() {
         (3, 1, 1)
     );
     assert_eq!(from_file.media_files, info.media_files);
+    assert_eq!((from_file.trusted, from_file.direct_contacts), (1, 1));
     let alice = Node::spawn(&home).await.unwrap();
+
+    // Whom she trusted, and let connect directly, she still does.
+    let ClientResponse::Trust { trusted, .. } = call(&alice, ClientRequest::TrustRequests).await
+    else {
+        panic!("no trust list");
+    };
+    let trusted: Vec<_> = trusted.iter().map(|t| (t.node, t.actor)).collect();
+    assert_eq!(trusted, [(carol.node_id(), carol.identity())]);
+    let ClientResponse::DirectContacts { nodes } =
+        call(&alice, ClientRequest::DirectContacts).await
+    else {
+        panic!("no direct contacts");
+    };
+    assert_eq!(nodes, [bob.node_id()]);
 
     // Her posts in their order with their IDs, her name, her media, her follow.
     assert_eq!(outbox_ids(&alice).await, ids);
