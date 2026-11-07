@@ -32,6 +32,7 @@ use osp_proto::{
 use serde::Serialize;
 use tracing::info;
 
+pub mod deleting;
 pub mod meeting;
 
 /// Bytes per second of video the node's encoder makes from noise: its
