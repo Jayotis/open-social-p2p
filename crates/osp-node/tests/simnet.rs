@@ -21,7 +21,7 @@ use iroh_blobs::{
 };
 use osp_node::{
     BlobClass, Config, Node, SimSettings,
-    simnet::{self, Link, SimNet},
+    simnet::{self, Link, Relay, SimLink, SimNet},
 };
 use osp_proto::{
     BlobHash, SOCIAL_ALPN,
@@ -55,8 +55,16 @@ impl ProtocolHandler for Source {
 
 /// An endpoint on `net` with `link`, and no other way to send.
 async fn endpoint(net: &SimNet, link: Link) -> Endpoint {
+    endpoint_on(&net.link(link), false).await
+}
+
+/// An endpoint on a node's `link`, through the relay if `relayed`.
+async fn endpoint_on(link: &SimLink, relayed: bool) -> Endpoint {
     let key = SecretKey::generate();
-    let transport = net.link(link).transport(key.public());
+    let transport = match relayed {
+        true => link.relayed_transport(key.public()),
+        false => link.transport(key.public()),
+    };
     Endpoint::builder(presets::Minimal)
         .relay_mode(RelayMode::Disabled)
         .clear_ip_transports()
@@ -65,6 +73,10 @@ async fn endpoint(net: &SimNet, link: Link) -> Endpoint {
         .bind()
         .await
         .unwrap()
+}
+
+fn serve(endpoint: Endpoint) -> Router {
+    Router::builder(endpoint).accept(ALPN, Source).spawn()
 }
 
 fn sim_addr(id: EndpointId) -> EndpointAddr {
@@ -150,6 +162,102 @@ async fn transfers_go_at_the_slower_ends_speed() {
     let start = Instant::now();
     fetch(&conn, 1_000_000).await;
     assert!(start.elapsed() < Duration::from_millis(900));
+}
+
+#[tokio::test]
+async fn a_nodes_endpoints_share_its_connection() {
+    let net = SimNet::new(1);
+    // Two endpoints of one node uploading at 8 Mbit/s: 1 MB from each at
+    // once takes 2 s, where each alone would take 1.
+    let node = net.link(Link {
+        up_bps: 8 * MBPS,
+        ..delay(5)
+    });
+    let a = serve(endpoint_on(&node, false).await);
+    let b = serve(endpoint_on(&node, true).await);
+    let client = endpoint(&net, delay(5)).await;
+    let ca = client.connect(sim_addr(a.endpoint().id()), ALPN);
+    let cb = client.connect(sim_addr(b.endpoint().id()), ALPN);
+    let (ca, cb) = (ca.await.unwrap(), cb.await.unwrap());
+    let start = Instant::now();
+    let (da, db) = tokio::join!(fetch(&ca, 1_000_000), fetch(&cb, 1_000_000));
+    assert_eq!((da.len(), db.len()), (1_000_000, 1_000_000));
+    let took = start.elapsed();
+    assert!(
+        took >= Duration::from_secs(2) && took < Duration::from_secs(6),
+        "{took:?}"
+    );
+    // Cutting the node off by one endpoint cuts off the other too.
+    assert!(net.set_online(a.endpoint().id(), false));
+    let waiting = tokio::spawn(async move { fetch(&cb, 1_000).await.len() });
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert!(!waiting.is_finished(), "nothing gets through while cut off");
+    net.set_online(a.endpoint().id(), true);
+    let got = tokio::time::timeout(Duration::from_secs(10), waiting).await;
+    assert_eq!(got.unwrap().unwrap(), 1_000);
+}
+
+#[tokio::test]
+async fn a_relayed_endpoint_goes_through_the_relay() {
+    // 50 ms each way to the relay; 8 Mbit/s for each endpoint after 100 kB.
+    let relay = Relay {
+        delay: Duration::from_millis(50),
+        bps: 8 * MBPS,
+        burst_bytes: 100_000,
+    };
+    let net = SimNet::with_relay(1, relay);
+    let server = serve(endpoint_on(&net.link(delay(5)), true).await);
+    let client = endpoint(&net, delay(5)).await;
+    let conn = client
+        .connect(sim_addr(server.endpoint().id()), ALPN)
+        .await
+        .unwrap();
+    // Both ways through it: 20 ms direct, 220 ms relayed.
+    let start = Instant::now();
+    fetch(&conn, 10).await;
+    let took = start.elapsed();
+    assert!(
+        took >= Duration::from_millis(220) && took < Duration::from_secs(1),
+        "{took:?}"
+    );
+    // 1 MB at 8 Mbit/s, less the burst: 0.9 s at least, though neither
+    // end limits its speed.
+    let start = Instant::now();
+    assert_eq!(fetch(&conn, 1_000_000).await.len(), 1_000_000);
+    let took = start.elapsed();
+    assert!(
+        took >= Duration::from_millis(900) && took < Duration::from_secs(5),
+        "{took:?}"
+    );
+    let stats = net.stats();
+    assert!(stats.relayed_bytes >= 1_000_000, "{stats:?}");
+    assert_eq!(stats.relayed, stats.packets - stats.relay_full, "{stats:?}");
+    client.close().await;
+    server.shutdown().await.unwrap();
+
+    // Between two endpoints that aren't relayed, nothing goes through it.
+    let before = net.stats();
+    let (_client, _server, conn) = connected(&net, delay(5), delay(5)).await;
+    fetch(&conn, 100_000).await;
+    let after = net.stats();
+    assert!(after.packets > before.packets);
+    assert_eq!(after.relayed, before.relayed);
+}
+
+#[tokio::test]
+async fn without_a_relay_a_relayed_endpoint_goes_direct() {
+    let net = SimNet::new(1);
+    let server = serve(endpoint_on(&net.link(delay(5)), true).await);
+    let client = endpoint(&net, delay(5)).await;
+    let conn = client
+        .connect(sim_addr(server.endpoint().id()), ALPN)
+        .await
+        .unwrap();
+    let start = Instant::now();
+    fetch(&conn, 10).await;
+    assert!(start.elapsed() < Duration::from_millis(200));
+    let stats = net.stats();
+    assert_eq!((stats.relayed, stats.relayed_bytes), (0, 0));
 }
 
 #[tokio::test]
