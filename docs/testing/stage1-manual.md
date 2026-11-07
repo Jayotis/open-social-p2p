@@ -4,7 +4,7 @@ How to run the prototype home node by hand, on one machine or across several, an
 
 ## Build
 
-Requirements: Rust (stable), ffmpeg and libheif-examples (`sudo apt install ffmpeg libheif-examples`). They're only needed on nodes that post media, and libheif-examples only for HEIC photos, as iPhones take them.
+Requirements: Rust (stable), Tor, ffmpeg and libheif-examples (`sudo apt install tor ffmpeg libheif-examples`). Tor is needed unless the node is made with `--no-tor` (below). ffmpeg is only needed on nodes that post media, and libheif-examples only for HEIC photos, as iPhones take them.
 
 ```sh
 cargo build --release      # produces target/release/osp
@@ -31,7 +31,7 @@ The script starts three daemons (alice, bob, carol), runs the publish → reshar
 ## Running a node by hand
 
 ```sh
-osp init --name "Your name"        # asks whether to share, shows 24 recovery words, asks for three back, creates ~/.local/share/osp
+osp init --name "Your name"        # asks whether to share and to be listed, shows 24 recovery words, asks for three back, creates ~/.local/share/osp
 osp daemon                         # leave running, or `osp service install` (see the M2 guide)
 
 # in another terminal
@@ -53,6 +53,8 @@ Your identity is the 24 recovery words that `osp init` shows. They are the only 
 
 `osp init` also asks whether to share copies of posts from people you follow with other nodes (the follower swarm), after explaining what that shows others; yes is recommended ([ADR 0012](../decisions/0012-sharing-prefetched-copies.md)). `--share` or `--no-share` answers without asking. The answer is `share_prefetched` under `[swarm]` in `config.toml`; change it there and restart the node.
 
+A new node has Tor on, with its media and direct endpoints ([how it works](tor.md)), so it reaches only nodes with Tor on too. So `osp init` also asks whether to ask directories to list your profile and latest posts ([ADR 0015](../decisions/0015-nodes-meet-first.md)), with no recommendation: `--list-me` or `--no-list-me` answers it, and it's `list_me` under `[directory]`. `osp init --no-tor` leaves Tor off and doesn't ask: for tests on one machine or a home network, where nodes connect directly and show each other their addresses. The script above and the cross-machine scenario below use it.
+
 A node made before this keeps `identity.key`, and `osp status` reports it. Stop the node, run `osp keys protect` (it shows the words, asks for three back, and deletes `identity.key`), then start the node again.
 
 - **Moving to another computer while the old one works:** stop the node, copy its whole home directory to the new computer, and run `osp service install` there. The node keeps its node ID, so followers and phones don't notice. Never run the old copy again.
@@ -68,7 +70,7 @@ A node made before this keeps `identity.key`, and `osp status` reports it. Stop 
 | B, resharer and host | Home network |
 | C, viewer | Home network |
 
-1. On each machine: `osp init --name A|B|C`, then start the daemon.
+1. On each machine: `osp init --no-tor --name A|B|C`, then start the daemon. Without `--no-tor`, the nodes talk through Tor and nothing below about direct connections applies.
 2. B: `osp follow <A's ticket>`. C: `osp follow <B's ticket>`.
 3. A: `osp post "cross-machine test" --attach clip.mp4`.
 4. B: `osp sync && osp feed`, then `osp reshare <id> --host`.
