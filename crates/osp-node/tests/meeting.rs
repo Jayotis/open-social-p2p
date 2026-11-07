@@ -544,9 +544,9 @@ async fn known_names_only_machines_met_and_follows_and_searches_change_nothing()
 }
 
 /// Greetings from new names, however many, fill only the share of those who
-/// greet unasked.
+/// greet unasked, 32 places, and the 8 they take in turn.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_crowd_of_names_greeting_fills_only_one_share() {
+async fn a_crowd_of_names_greeting_fills_only_one_share_and_the_turns() {
     let dir = tempfile::tempdir().unwrap();
     let net = SimNet::new(4);
     // An hour as long as a real one, so few are dialled back, and none forgotten.
@@ -565,11 +565,11 @@ async fn a_crowd_of_names_greeting_fills_only_one_share() {
             .filter(|a| a.source.is_none())
             .count()
     };
-    for _ in 0..40 {
+    for _ in 0..50 {
         record_of(&net, a).await;
-        assert!(greeted(&alice) <= 32);
+        assert!(greeted(&alice) <= 40);
     }
-    assert_eq!(greeted(&alice), 32);
+    assert_eq!(greeted(&alice), 40);
     alice.shutdown().await.unwrap();
 }
 

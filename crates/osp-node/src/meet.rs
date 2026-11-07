@@ -40,6 +40,10 @@ pub(crate) const MAX_MACHINES: usize = 256;
 pub(crate) const KEPT_LONGEST: usize = MAX_MACHINES / 2;
 /// Most of the other places that records from one source can fill.
 pub(crate) const PER_SOURCE: usize = (MAX_MACHINES - KEPT_LONGEST) / 4;
+/// Places beyond those limits that machines greeting this one take in turn,
+/// so a newcomer still gets a place when those who greet have filled their
+/// share (ADR 0016).
+pub(crate) const GREETER_TURNS: usize = 8;
 /// New machines dialled an hour, at most.
 pub(crate) const DIALS_PER_HOUR: usize = 6;
 /// One dial in this many goes to a record from the source that supplied the
@@ -233,6 +237,8 @@ pub(crate) enum Heard {
     SourceFull,
     /// The table is full, and nothing gives up its place for it.
     Full,
+    /// It greeted this machine, and took a turn (`GREETER_TURNS`).
+    Turn,
 }
 
 /// Rows to write after a change.
@@ -250,6 +256,8 @@ pub(crate) struct Dial {
     pub at_ms: i64,
     /// Whether it went to the source heard from less (ADR 0016's rule 2).
     pub less_heard: bool,
+    /// Whether it went to a machine that greeted this one unasked.
+    pub greeted_back: bool,
 }
 
 impl Changes {
@@ -314,7 +322,7 @@ impl Table {
                 table.entries.insert(entry.machine, entry);
             }
         }
-        while table.entries.len() > MAX_MACHINES {
+        while table.entries.len() > MAX_MACHINES + GREETER_TURNS {
             let protected = table.protected(now);
             let Some(worst) = table
                 .entries
@@ -422,7 +430,10 @@ impl Table {
         let shares = self.shares(&protected);
         let share = shares.get(&source).copied().unwrap_or(0);
         if share >= PER_SOURCE {
-            return Ok(Heard::SourceFull);
+            return Ok(match source {
+                Source::Greeted => self.take_turn(record, machine, published, &protected, now),
+                Source::Machine(_) => Heard::SourceFull,
+            });
         }
         if self.entries.len() >= MAX_MACHINES {
             // Only a machine never met gives up its place, so a crowd of
@@ -438,11 +449,49 @@ impl Table {
                 .map(|e| e.machine);
             match given_up {
                 Some(other) => self.remove(&other),
+                None if source == Source::Greeted => {
+                    return Ok(self.take_turn(record, machine, published, &protected, now));
+                }
                 None => return Ok(Heard::Full),
             }
         }
         self.insert(record, machine, published, source, now);
         Ok(Heard::Added)
+    }
+
+    /// A machine that greeted this one, with no place for it otherwise, takes
+    /// one of `GREETER_TURNS` places beyond the limits, in place of the greeter
+    /// that took one longest ago. Met or not, each gives its place up in turn,
+    /// so a crowd greeting under many names can't keep them.
+    fn take_turn(
+        &mut self,
+        record: &MachineRecord,
+        machine: EndpointId,
+        published: i64,
+        protected: &HashSet<EndpointId>,
+        now: i64,
+    ) -> Heard {
+        let mut greeters: Vec<&Entry> = self
+            .entries
+            .values()
+            .filter(|e| e.source == Source::Greeted && !protected.contains(&e.machine))
+            .collect();
+        greeters.sort_by_key(|e| (e.heard_ms, e.machine));
+        // Those heard of last, as many as are over the share or the table's size.
+        let turns = (greeters.len().saturating_sub(PER_SOURCE))
+            .max(self.entries.len().saturating_sub(MAX_MACHINES))
+            .min(greeters.len());
+        let gives_up = greeters[greeters.len() - turns..]
+            .first()
+            .filter(|_| turns >= GREETER_TURNS)
+            .map(|e| e.machine);
+        if let Some(other) = gives_up {
+            self.remove(&other);
+        } else if self.entries.len() >= MAX_MACHINES + GREETER_TURNS {
+            return Heard::Full;
+        }
+        self.insert(record, machine, published, Source::Greeted, now);
+        Heard::Turn
     }
 
     fn insert(
@@ -482,18 +531,26 @@ impl Table {
         self.dials.retain(|dial| dial.at_ms > hour_ago);
         self.dials_changed |= self.dials.len() != before;
         while self.dials.len() < DIALS_PER_HOUR && plan.dials.len() < DIALS_PER_ROUND {
+            // One an hour goes to a machine that greeted this one, so a
+            // newcomer isn't left behind every machine heard of before it.
+            let greeter = match self.dials.iter().any(|d| d.greeted_back) {
+                false => self.next_greeter(now),
+                true => None,
+            };
             // While those to the source heard from less are no more than a
             // third of the hour's, the next is one: the 1st and 4th of a fresh
             // hour, and still 2 of 6 as the hour slides on.
             let less_heard_so_far = self.dials.iter().filter(|d| d.less_heard).count();
-            let less_heard = less_heard_so_far * LESS_HEARD_EVERY <= self.dials.len();
-            let Some(machine) = self.next_dial(now, less_heard) else {
+            let less_heard =
+                greeter.is_none() && less_heard_so_far * LESS_HEARD_EVERY <= self.dials.len();
+            let Some(machine) = greeter.or_else(|| self.next_dial(now, less_heard)) else {
                 break;
             };
             self.tried(&machine, now);
             self.dials.push(Dial {
                 at_ms: now,
                 less_heard,
+                greeted_back: greeter.is_some(),
             });
             self.dials_changed = true;
             plan.dials.push(machine);
@@ -523,12 +580,7 @@ impl Table {
     /// with `less_heard`, one from the source that supplied the fewest of the
     /// table's machines.
     fn next_dial(&self, now: i64, less_heard: bool) -> Option<EndpointId> {
-        let again = ms(self.times.try_again_after);
-        let candidates = self
-            .entries
-            .values()
-            .filter(|e| e.met_ms.is_none() && e.tries < MAX_TRIES)
-            .filter(|e| e.tried_ms == 0 || now - e.tried_ms >= again);
+        let candidates = self.candidates(now);
         let pick = match less_heard {
             false => candidates.min_by_key(|e| (e.heard_ms, e.machine)),
             true => {
@@ -540,6 +592,28 @@ impl Table {
             }
         };
         pick.map(|e| e.machine)
+    }
+
+    /// A machine that greeted this one unasked and hasn't been met, picked at
+    /// random, so a crowd greeting under many names gets only its share.
+    fn next_greeter(&self, now: i64) -> Option<EndpointId> {
+        let greeters: Vec<&Entry> = self
+            .candidates(now)
+            .filter(|e| e.source == Source::Greeted)
+            .collect();
+        let pick = (random_fraction() * greeters.len() as f64) as usize;
+        greeters
+            .get(pick.min(greeters.len().saturating_sub(1)))
+            .map(|e| e.machine)
+    }
+
+    /// Machines heard of and never met, that may be dialled now.
+    fn candidates(&self, now: i64) -> impl Iterator<Item = &Entry> {
+        let again = ms(self.times.try_again_after);
+        self.entries
+            .values()
+            .filter(|e| e.met_ms.is_none() && e.tries < MAX_TRIES)
+            .filter(move |e| e.tried_ms == 0 || now - e.tried_ms >= again)
     }
 
     /// Whether a machine heard of is waiting to be dialled.
@@ -1118,8 +1192,48 @@ mod tests {
         }
         hear_many(&mut t, Source::Greeted, 100, now);
         let after: HashSet<EndpointId> = t.entries.keys().copied().collect();
-        assert_eq!(before, after);
-        assert_eq!(t.len(), MAX_MACHINES);
+        assert!(before.is_subset(&after));
+        // Those greeting only took turns.
+        assert_eq!(t.len(), MAX_MACHINES + GREETER_TURNS);
+    }
+
+    #[test]
+    fn machines_greeting_a_full_table_take_turns_met_or_not() {
+        let now = start();
+        let (mut t, _) = full_table(KEPT_LONGEST, now);
+        let before: HashSet<EndpointId> = t.entries.keys().copied().collect();
+        let greet = |t: &mut Table, at: i64| {
+            let (id, record) = machine(at);
+            assert_eq!(t.hear(&record, Source::Greeted, at).unwrap(), Heard::Turn);
+            id
+        };
+        let first: Vec<EndpointId> = (0..GREETER_TURNS as i64)
+            .map(|i| greet(&mut t, now + i))
+            .collect();
+        assert_eq!(t.len(), MAX_MACHINES + GREETER_TURNS);
+        // Met, the first still gives its place up to the next greeter.
+        meet(&mut t, &first[0], now + 10);
+        let next = greet(&mut t, now + 20);
+        assert!(t.get(&first[0]).is_none() && t.get(&next).is_some());
+        assert!(first[1..].iter().all(|m| t.get(m).is_some()));
+        assert_eq!(t.len(), MAX_MACHINES + GREETER_TURNS);
+        // Nothing else gave up a place.
+        assert!(before.iter().all(|m| t.get(m).is_some()));
+
+        // With room in the table, those beyond the greeters' share take turns.
+        let mut t = table();
+        assert_eq!(
+            hear_many(&mut t, Source::Greeted, PER_SOURCE, now).len(),
+            PER_SOURCE
+        );
+        let turns: Vec<EndpointId> = (0..GREETER_TURNS as i64 + 3)
+            .map(|i| greet(&mut t, now + 1 + i))
+            .collect();
+        assert_eq!(t.len(), PER_SOURCE + GREETER_TURNS);
+        assert_eq!(
+            turns.iter().filter(|m| t.get(m).is_some()).count(),
+            GREETER_TURNS
+        );
     }
 
     #[test]
@@ -1260,6 +1374,31 @@ mod tests {
     }
 
     #[test]
+    fn one_dial_an_hour_goes_to_a_machine_that_greeted_unasked() {
+        let now = start();
+        let mut t = table();
+        let crowd = Source::Machine(machine(now).0);
+        hear_many(&mut t, crowd, PER_SOURCE, now);
+        let few = hear_many(&mut t, Source::Machine(machine(now).0), 2, now + 1);
+        // Heard of last, so dialled last but for this rule.
+        let greeters = hear_many(&mut t, Source::Greeted, 4, now + 2);
+
+        let mut dialled = Vec::new();
+        for minute in 0..20 {
+            dialled.extend(t.plan(now + minute * 60_000).dials);
+        }
+        assert_eq!(dialled.len(), DIALS_PER_HOUR);
+        assert!(greeters.contains(&dialled[0]));
+        assert_eq!(dialled.iter().filter(|m| greeters.contains(m)).count(), 1);
+        // The source heard from less still gets its two.
+        assert_eq!(dialled.iter().filter(|m| few.contains(m)).count(), 2);
+
+        // The next hour, another greeter.
+        let next = t.plan(now + HOUR_MS + 60_000).dials;
+        assert!(greeters.contains(&next[0]) && !dialled.contains(&next[0]));
+    }
+
+    #[test]
     fn one_never_answering_is_dropped_after_a_few_tries_and_counts_against_its_source() {
         let now = start();
         let mut t = table();
@@ -1349,6 +1488,7 @@ mod tests {
         for _ in 0..PER_SOURCE + 8 {
             a.on_map(map, &machine(now).1);
         }
+        a.greeted(&machine(now).1);
         let mut dialled = 0;
         for minute in 0..3 {
             dialled += a.plan(now + minute * 60_000).dials.len();
@@ -1357,17 +1497,18 @@ mod tests {
         let before: HashSet<EndpointId> = a.acquaintances().iter().map(|a| a.machine).collect();
         let dials_before = a.table.lock().unwrap().dials.clone();
         assert!(dials_before.iter().any(|d| d.less_heard));
+        assert!(dials_before.iter().any(|d| d.greeted_back));
         drop(a);
 
         let a = load();
         let after: HashSet<EndpointId> = a.acquaintances().iter().map(|a| a.machine).collect();
         assert_eq!(after, before);
-        // Which dials went to the source heard from less, too.
+        // Which dials went to the source heard from less and to a greeter, too.
         assert_eq!(a.table.lock().unwrap().dials, dials_before);
-        assert_eq!(after.len(), PER_SOURCE);
+        assert_eq!(after.len(), PER_SOURCE + 1);
         // The source's share is still full, and the hour's dials still used.
         a.on_map(map, &machine(now).1);
-        assert_eq!(a.acquaintances().len(), PER_SOURCE);
+        assert_eq!(a.acquaintances().len(), PER_SOURCE + 1);
         assert!(a.plan(now + 4 * 60_000).dials.is_empty());
         assert!(!a.plan(now + HOUR_MS + 1).dials.is_empty());
     }
