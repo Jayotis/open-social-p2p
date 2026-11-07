@@ -44,7 +44,7 @@ use iroh_blobs::{
         GcConfig, ProtectCb, ProtectOutcome,
         fs::{FsStore, options::Options},
     },
-    util::connection_pool::{self, ConnectionPool},
+    util::connection_pool::{self, ConnectionPool, PoolConnectError},
 };
 use n0_future::{FuturesUnordered, StreamExt, boxed::BoxStream};
 use osp_proto::BlobHash;
@@ -556,7 +556,7 @@ impl ContentStore {
                 Outcome::Busy => busy = true,
                 _ => {}
             }
-            if attempt.outcome != Outcome::Unreachable {
+            if !matches!(attempt.outcome, Outcome::Unreachable | Outcome::NotTried) {
                 answered.push(node.node);
             }
             if Instant::now() >= deadline {
@@ -646,7 +646,10 @@ impl ContentStore {
             if attempt.outcome == Outcome::Completed {
                 done.push((attempt.source, attempt.rate()));
             } else {
-                failed.push((attempt.source, attempt.outcome));
+                // One not tried stays off `failed`, so it's asked in turn.
+                if attempt.outcome != Outcome::NotTried {
+                    failed.push((attempt.source, attempt.outcome));
+                }
                 let rest = part.reached()..part.end();
                 if !rest.is_empty() {
                     todo.push_front(rest);
@@ -713,7 +716,7 @@ impl ContentStore {
             Err(_) => Outcome::Failed,
             Ok(Err(e)) => {
                 debug!(node = %node.fmt_short(), "couldn't connect: {e}");
-                Outcome::Unreachable
+                connect_outcome(&e)
             }
             Ok(Ok(conn)) => {
                 let mut progress = self
@@ -1270,6 +1273,10 @@ pub(crate) enum Outcome {
     /// We stopped it: more arrived than the post says the blob has. That
     /// says nothing about the node, which can only send the blob the hash names.
     Stopped,
+    /// We didn't ask it: our own connection pool was at one of its limits
+    /// (64 attempts to connect at once, say) or shutting down. That says
+    /// nothing about the node, so its record leaves this out.
+    NotTried,
 }
 
 impl Attempt {
@@ -1377,6 +1384,18 @@ fn wait_until(ready: Arc<AtomicBool>) -> ProtectCb {
         };
         Box::pin(async move { outcome })
     })
+}
+
+/// What a failed attempt to connect says about the node. The pool's own
+/// limits, and its shutting down, say nothing: it didn't try.
+fn connect_outcome(e: &PoolConnectError) -> Outcome {
+    match e {
+        PoolConnectError::TooManyPendingConnections { .. }
+        | PoolConnectError::TooManyConnections { .. }
+        | PoolConnectError::Shutdown { .. }
+        | PoolConnectError::Closed { .. } => Outcome::NotTried,
+        _ => Outcome::Unreachable,
+    }
 }
 
 fn new_pool(endpoint: &Endpoint) -> ConnectionPool {
@@ -2253,6 +2272,25 @@ mod tests {
             builder = builder.address_lookup(lookup.clone());
         }
         builder.bind().await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_node_our_own_pool_had_no_room_for_isnt_held_against_it() {
+        let endpoint = local_endpoint(None).await;
+        let nowhere = SecretKey::generate().public();
+        let mut options = connection_pool::Options::default();
+        options.max_pending_connections = 0;
+        let full = ConnectionPool::new(endpoint.clone(), iroh_blobs::ALPN, options);
+        let Err(e) = full.get_or_connect(nowhere).await else {
+            panic!("a pool with no room connected");
+        };
+        assert_eq!(connect_outcome(&e), Outcome::NotTried, "{e}");
+
+        let pool = new_pool(&endpoint);
+        let Err(e) = pool.get_or_connect(nowhere).await else {
+            panic!("connected to nobody");
+        };
+        assert_eq!(connect_outcome(&e), Outcome::Unreachable, "{e}");
     }
 
     #[tokio::test]

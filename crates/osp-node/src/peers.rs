@@ -81,6 +81,11 @@ fn add(c: &mut PeerCounts, event: Event) {
                 c.answer_ms += ms(took);
             }
         }
+        // Our own pool was full: the node wasn't tried, so it isn't counted.
+        Event::Download {
+            outcome: Outcome::NotTried,
+            ..
+        } => {}
         Event::Download {
             outcome,
             bytes,
@@ -98,6 +103,8 @@ fn add(c: &mut PeerCounts, event: Event) {
                 Outcome::HandedOn => c.handed_on += 1.0,
                 // We stopped it; that says nothing about the node.
                 Outcome::Stopped => {}
+                // Left out above, before it counts as a try.
+                Outcome::NotTried => {}
             }
             if bytes > 0 {
                 c.received_bytes += bytes as f64;
@@ -186,9 +193,11 @@ mod tests {
             Outcome::Failed,
             Outcome::HandedOn,
             Outcome::Stopped,
+            Outcome::NotTried,
         ] {
             add(&mut c, download(outcome, 0));
         }
+        // All but the one not tried.
         assert_eq!(c.tries, 10.0);
         assert_eq!(c.unreached, 2.0);
         assert_eq!(
