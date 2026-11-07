@@ -94,7 +94,7 @@ impl OwnEndpoints {
             let builder = endpoint_builder(net, lookup, &relays)?
                 .hooks(tracker.with_relays(relays))
                 .clear_ip_transports();
-            let endpoint = sim_network(builder, sim, &key)
+            let endpoint = sim_network(builder, sim, &key, true)
                 .secret_key(key)
                 .bind()
                 .await
@@ -118,7 +118,7 @@ impl OwnEndpoints {
             };
             builder = builder.clear_ip_transports().bind_addr(addr)?;
         }
-        let endpoint = sim_network(builder, sim, &key)
+        let endpoint = sim_network(builder, sim, &key, false)
             .secret_key(key)
             .bind()
             .await
@@ -144,18 +144,26 @@ impl OwnEndpoints {
     }
 }
 
-/// On the simulated network, an endpoint's packets go through it.
+/// On the simulated network, an endpoint's packets go through it, and a
+/// `relayed` one's through its relay, if it has one.
 #[cfg(feature = "sim")]
 fn sim_network(
     builder: iroh::endpoint::Builder,
     sim: &SimSettings,
     key: &SecretKey,
+    relayed: bool,
 ) -> iroh::endpoint::Builder {
     match &sim.network {
-        Some(network) => builder
-            .clear_ip_transports()
-            .add_custom_transport(network.transport(key.public()))
-            .address_lookup(network.lookup()),
+        Some(network) => {
+            let transport = match relayed {
+                true => network.relayed_transport(key.public()),
+                false => network.transport(key.public()),
+            };
+            builder
+                .clear_ip_transports()
+                .add_custom_transport(transport)
+                .address_lookup(network.lookup())
+        }
         None => builder,
     }
 }
@@ -165,6 +173,7 @@ fn sim_network(
     builder: iroh::endpoint::Builder,
     _sim: &SimSettings,
     _key: &SecretKey,
+    _relayed: bool,
 ) -> iroh::endpoint::Builder {
     builder
 }

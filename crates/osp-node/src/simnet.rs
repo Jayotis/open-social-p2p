@@ -4,7 +4,9 @@
 //! delay, a chance of losing each packet, and a router queue that fills up.
 //! A connection can be cut off and restored. Real QUIC runs over it, so
 //! congestion control, retransmission and timeouts behave as they would on
-//! such a connection.
+//! such a connection. A node's endpoints share its connection. A network
+//! may have a relay, which carries everything to or from an endpoint with
+//! no address of its own, such as a media endpoint (ADR 0014).
 //!
 //! It plugs into iroh as a custom transport. That API is behind iroh's
 //! `unstable-custom-transports` feature, outside its semver guarantees, so
@@ -61,6 +63,21 @@ pub struct Link {
     pub loss: f64,
 }
 
+/// A relay, as iroh's relay servers are: it limits how fast each endpoint
+/// sends through it, with a token bucket. It has room for everyone: what a
+/// shared relay's other users take isn't simulated.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Relay {
+    /// How long a packet takes between the relay and the middle of the
+    /// network, each way. A relayed packet takes this twice more than a
+    /// direct one.
+    pub delay: Duration,
+    /// How fast each endpoint may send through it, in bits per second, once
+    /// it has sent `burst_bytes` at its own speed. 0 is no limit.
+    pub bps: u64,
+    pub burst_bytes: u64,
+}
+
 /// One network that nodes join. Cloning it gives another handle to the
 /// same network.
 #[derive(Debug, Clone)]
@@ -68,11 +85,13 @@ pub struct SimNet {
     net: Arc<Net>,
 }
 
-/// A node's place on a network: what `SimSettings::network` takes.
+/// A node's place on a network: what `SimSettings::network` takes. Its
+/// clones share one connection, so a node's endpoints all go through it.
 #[derive(Debug, Clone)]
 pub struct SimLink {
     pub net: SimNet,
     pub link: Link,
+    line: Arc<Mutex<Line>>,
 }
 
 /// What the network did with the packets sent into it.
@@ -88,12 +107,17 @@ pub struct NetStats {
     /// Dropped because the sender or receiver was cut off, or the receiver
     /// wasn't on the network.
     pub cut_off: u64,
+    /// Passed on by the relay, and dropped at its limit.
+    pub relayed: u64,
+    pub relayed_bytes: u64,
+    pub relay_full: u64,
 }
 
 #[derive(Debug)]
 struct Net {
     ports: RwLock<HashMap<EndpointId, Arc<Port>>>,
     seed: u64,
+    relay: Option<Relay>,
     /// Orders packets that reach a node at the same moment.
     next_seq: AtomicU64,
     stats: Counters,
@@ -107,13 +131,22 @@ struct Counters {
     lost: AtomicU64,
     queue_full: AtomicU64,
     cut_off: AtomicU64,
+    relayed: AtomicU64,
+    relayed_bytes: AtomicU64,
+    relay_full: AtomicU64,
 }
 
-/// A node on the network.
+/// An endpoint on the network.
 #[derive(Debug)]
 struct Port {
     id: EndpointId,
-    state: Mutex<PortState>,
+    /// Its node's connection.
+    line: Arc<Mutex<Line>>,
+    /// Whether everything to or from it goes through the relay, if the
+    /// network has one.
+    relayed: bool,
+    /// What's this endpoint's own: its losses and its share of the relay.
+    own: Mutex<PortState>,
     /// Packets on their way in, earliest first, by when they reach this
     /// node's connection.
     arriving: Mutex<BinaryHeap<Arriving>>,
@@ -121,13 +154,20 @@ struct Port {
     wake: Notify,
 }
 
+/// A node's connection, which all its endpoints share.
 #[derive(Debug)]
-struct PortState {
+struct Line {
     link: Link,
     online: bool,
     up: Queue,
     down: Queue,
+}
+
+#[derive(Debug)]
+struct PortState {
     rng: Rng,
+    /// What it may send through the relay.
+    relay: Bucket,
 }
 
 #[derive(Debug)]
@@ -190,6 +230,45 @@ impl Queue {
     }
 }
 
+/// What one endpoint may send through the relay. A packet waits until the
+/// bytes it needs have built up again, after those ahead of it; one that
+/// would wait longer than `QUEUE` is dropped.
+#[derive(Debug, Default)]
+struct Bucket {
+    /// Bytes it may send without waiting; below 0 while packets wait.
+    bytes: f64,
+    /// When `bytes` was worked out. None before the first packet, when the
+    /// bucket is full.
+    at: Option<Instant>,
+}
+
+impl Bucket {
+    /// When a packet of `bytes` that reaches the relay at `now` will have
+    /// passed it; `None` if it's dropped. Packets must come in time order.
+    fn admit(&mut self, now: Instant, bytes: usize, relay: &Relay) -> Option<Instant> {
+        if relay.bps == 0 {
+            return Some(now);
+        }
+        let per_sec = relay.bps as f64 / 8.0;
+        let full = relay.burst_bytes as f64;
+        let had = match self.at {
+            Some(at) => {
+                (self.bytes + now.saturating_duration_since(at).as_secs_f64() * per_sec).min(full)
+            }
+            None => full,
+        };
+        self.at = Some(now);
+        let left = had - bytes as f64;
+        let wait = Duration::from_secs_f64(left.min(0.0).abs() / per_sec);
+        if wait > QUEUE {
+            self.bytes = had;
+            return None;
+        }
+        self.bytes = left;
+        Some(now + wait)
+    }
+}
+
 /// A small random number generator (SplitMix64), so each node's losses
 /// follow from the network's seed.
 #[derive(Debug)]
@@ -212,13 +291,23 @@ impl Rng {
 }
 
 impl SimNet {
-    /// A new, empty network. Each node's chances of losing packets follow
-    /// from `seed` and the node's ID.
+    /// A new, empty network. Each endpoint's chances of losing packets
+    /// follow from `seed` and the endpoint's ID.
     pub fn new(seed: u64) -> Self {
+        Self::with(seed, None)
+    }
+
+    /// The same, with a relay.
+    pub fn with_relay(seed: u64, relay: Relay) -> Self {
+        Self::with(seed, Some(relay))
+    }
+
+    fn with(seed: u64, relay: Option<Relay>) -> Self {
         Self {
             net: Arc::new(Net {
                 ports: RwLock::default(),
                 seed,
+                relay,
                 next_seq: AtomicU64::new(0),
                 stats: Counters::default(),
             }),
@@ -230,16 +319,22 @@ impl SimNet {
         SimLink {
             net: self.clone(),
             link,
+            line: Arc::new(Mutex::new(Line {
+                link,
+                online: true,
+                up: Queue::default(),
+                down: Queue::default(),
+            })),
         }
     }
 
-    /// Cuts a node off, or connects it again. While it's cut off, what it
-    /// sends and what reaches it are lost. Returns whether the node is on
-    /// this network.
+    /// Cuts a node off, or connects it again, by any of its endpoints'
+    /// IDs. While it's cut off, what it sends and what reaches it are lost.
+    /// Returns whether the endpoint is on this network.
     pub fn set_online(&self, node: EndpointId, online: bool) -> bool {
         match self.net.port(&node) {
             Some(port) => {
-                lock(&port.state).online = online;
+                lock(&port.line).online = online;
                 true
             }
             None => false,
@@ -256,19 +351,33 @@ impl SimNet {
             lost: c.lost.load(Relaxed),
             queue_full: c.queue_full.load(Relaxed),
             cut_off: c.cut_off.load(Relaxed),
+            relayed: c.relayed.load(Relaxed),
+            relayed_bytes: c.relayed_bytes.load(Relaxed),
+            relay_full: c.relay_full.load(Relaxed),
         }
     }
 }
 
 impl SimLink {
-    /// The transport for node `id` to put on its endpoint
-    /// (`Builder::add_custom_transport`). The node joins the network when
-    /// its endpoint binds, and leaves when the endpoint closes.
+    /// The transport for endpoint `id` to put on its endpoint
+    /// (`Builder::add_custom_transport`). The endpoint joins the network
+    /// when it binds, and leaves when it closes.
     pub fn transport(&self, id: EndpointId) -> Arc<dyn CustomTransport> {
+        self.transport_for(id, false)
+    }
+
+    /// The same, for an endpoint with no address of its own: everything to
+    /// or from it goes through the network's relay, if it has one.
+    pub fn relayed_transport(&self, id: EndpointId) -> Arc<dyn CustomTransport> {
+        self.transport_for(id, true)
+    }
+
+    fn transport_for(&self, id: EndpointId, relayed: bool) -> Arc<dyn CustomTransport> {
         Arc::new(Transport {
             net: self.net.net.clone(),
             id,
-            link: self.link,
+            line: self.line.clone(),
+            relayed,
         })
     }
 
@@ -390,37 +499,61 @@ impl Net {
     }
 
     /// Sends one packet from `from` to `to`, through `from`'s upload queue
-    /// and both delays. It goes through `to`'s download queue when it
-    /// reaches `to` (`deliver`).
+    /// and both delays, and the relay if either end goes through it. It goes
+    /// through `to`'s download queue when it reaches `to` (`deliver`).
     fn send(&self, from: &Port, to: EndpointId, data: &[u8]) {
         let c = &self.stats;
         c.packets.fetch_add(1, Relaxed);
         c.bytes.fetch_add(data.len() as u64, Relaxed);
+        let port = self.port(&to);
+        let relay = self
+            .relay
+            .filter(|_| from.relayed || port.as_ref().is_some_and(|p| p.relayed));
         let left = {
-            let mut s = lock(&from.state);
-            if !s.online {
+            let mut own = lock(&from.own);
+            let mut line = lock(&from.line);
+            if !line.online {
                 c.cut_off.fetch_add(1, Relaxed);
                 return;
             }
-            let loss = s.link.loss;
-            if s.rng.chance(loss) {
+            let loss = line.link.loss;
+            if own.rng.chance(loss) {
                 c.lost.fetch_add(1, Relaxed);
                 return;
             }
-            let up_bps = s.link.up_bps;
-            match s.up.admit(Instant::now(), data.len(), up_bps) {
-                Some(left) => left + s.link.delay,
+            let up_bps = line.link.up_bps;
+            let left = match line.up.admit(Instant::now(), data.len(), up_bps) {
+                Some(left) => left + line.link.delay,
                 None => {
                     c.queue_full.fetch_add(1, Relaxed);
                     return;
                 }
+            };
+            drop(line);
+            // Under the same lock as the upload queue, so the relay gets
+            // each endpoint's packets in the order they left.
+            match relay {
+                Some(relay) if port.is_some() => {
+                    match own.relay.admit(left + relay.delay, data.len(), &relay) {
+                        Some(passed) => {
+                            c.relayed.fetch_add(1, Relaxed);
+                            c.relayed_bytes.fetch_add(data.len() as u64, Relaxed);
+                            passed + relay.delay
+                        }
+                        None => {
+                            c.relay_full.fetch_add(1, Relaxed);
+                            return;
+                        }
+                    }
+                }
+                _ => left,
             }
         };
-        let Some(port) = self.port(&to) else {
+        let Some(port) = port else {
             c.cut_off.fetch_add(1, Relaxed);
             return;
         };
-        let at = left + lock(&port.state).link.delay;
+        let at = left + lock(&port.line).link.delay;
         let packet = Packet {
             from: from.id,
             data: data.into(),
@@ -445,21 +578,22 @@ impl Net {
             let now = Instant::now();
             let next_arrival = {
                 let mut arriving = lock(&port.arriving);
-                let mut s = lock(&port.state);
+                let mut own = lock(&port.own);
+                let mut line = lock(&port.line);
                 while arriving.peek().is_some_and(|a| a.at <= now) {
                     let Some(a) = arriving.pop() else { break };
-                    if !s.online {
+                    if !line.online {
                         c.cut_off.fetch_add(1, Relaxed);
                         continue;
                     }
-                    let loss = s.link.loss;
-                    if s.rng.chance(loss) {
+                    let loss = line.link.loss;
+                    if own.rng.chance(loss) {
                         c.lost.fetch_add(1, Relaxed);
                         continue;
                     }
                     // From when it arrived, however late this task woke.
-                    let down_bps = s.link.down_bps;
-                    match s.down.admit(a.at, a.packet.data.len(), down_bps) {
+                    let down_bps = line.link.down_bps;
+                    match line.down.admit(a.at, a.packet.data.len(), down_bps) {
                         Some(left) => leaving.push_back((left, a.packet)),
                         None => {
                             c.queue_full.fetch_add(1, Relaxed);
@@ -501,7 +635,8 @@ impl Net {
 struct Transport {
     net: Arc<Net>,
     id: EndpointId,
-    link: Link,
+    line: Arc<Mutex<Line>>,
+    relayed: bool,
 }
 
 impl CustomTransport for Transport {
@@ -511,17 +646,16 @@ impl CustomTransport for Transport {
 }
 
 impl Transport {
-    /// Puts the node on the network.
+    /// Puts the endpoint on the network.
     fn join(&self) -> Endpoint {
         let id_bytes: [u8; 8] = self.id.as_bytes()[..8].try_into().expect("8 bytes");
         let port = Arc::new(Port {
             id: self.id,
-            state: Mutex::new(PortState {
-                link: self.link,
-                online: true,
-                up: Queue::default(),
-                down: Queue::default(),
+            line: self.line.clone(),
+            relayed: self.relayed,
+            own: Mutex::new(PortState {
                 rng: Rng(self.net.seed ^ u64::from_le_bytes(id_bytes)),
+                relay: Bucket::default(),
             }),
             arriving: Mutex::default(),
             wake: Notify::new(),
@@ -691,6 +825,39 @@ mod tests {
     }
 
     #[test]
+    fn the_relay_lets_a_burst_through_then_holds_an_endpoint_to_its_limit() {
+        let now = Instant::now();
+        // 1,250 bytes a millisecond, after 12,500 at once.
+        let relay = Relay {
+            delay: Duration::ZERO,
+            bps: 10 * MBPS,
+            burst_bytes: 12_500,
+        };
+        let ms = Duration::from_millis(1);
+        let mut b = Bucket::default();
+        for _ in 0..10 {
+            assert_eq!(b.admit(now, 1_250, &relay), Some(now));
+        }
+        assert_eq!(b.admit(now, 1_250, &relay), Some(now + ms));
+        assert_eq!(b.admit(now, 1_250, &relay), Some(now + 2 * ms));
+        // Waiting up to the queue's 100 ms is fine; longer is dropped.
+        for _ in 0..98 {
+            assert!(b.admit(now, 1_250, &relay).is_some());
+        }
+        assert_eq!(b.admit(now, 1_250, &relay), None);
+        // It builds up again at its limit, and no more than a burst.
+        let later = now + Duration::from_secs(10);
+        for _ in 0..10 {
+            assert_eq!(b.admit(later, 1_250, &relay), Some(later));
+        }
+        assert_eq!(b.admit(later, 1_250, &relay), Some(later + ms));
+        // No limit: nothing waits.
+        let free = Relay { bps: 0, ..relay };
+        let mut b = Bucket::default();
+        assert!((0..1_000).all(|_| b.admit(now, 1_250, &free) == Some(now)));
+    }
+
+    #[test]
     fn losses_follow_the_chance_and_the_seed() {
         let mut rng = Rng(1);
         assert!((0..1_000).all(|_| !rng.chance(0.0)));
@@ -708,9 +875,16 @@ mod tests {
     /// A node on `net` with no delay or limits.
     fn join(net: &SimNet) -> Endpoint {
         let id = iroh::SecretKey::generate().public();
-        let link = Link::default();
+        let line = net.link(Link::default()).line;
         let net = net.net.clone();
-        Transport { net, id, link }.join()
+        let relayed = false;
+        Transport {
+            net,
+            id,
+            line,
+            relayed,
+        }
+        .join()
     }
 
     #[tokio::test]

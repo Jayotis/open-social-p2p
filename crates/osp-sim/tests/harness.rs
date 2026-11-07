@@ -31,6 +31,7 @@ async fn a_small_run_measures_the_creators_upload() {
         trust_mbps: Vec::new(),
         tor_delay: false,
         endpoints: None,
+        relay_only_percent: 0,
         label: "test".into(),
     };
     let report = osp_sim::run(&scenario).await.unwrap();
@@ -118,6 +119,7 @@ fn with_the_swarm(dir: &Path) -> Scenario {
         trust_mbps: Vec::new(),
         tor_delay: false,
         endpoints: None,
+        relay_only_percent: 0,
         label: "test".into(),
     }
 }
@@ -291,6 +293,7 @@ async fn a_small_run_with_tor_like_messages_and_media_on_its_own_endpoints() {
             flaky: 2,
             outage_secs: 3,
             outage_every_secs: 12,
+            relay: None,
             seed: 1,
         }),
         latecomers: 1,
@@ -317,6 +320,85 @@ async fn a_small_run_with_tor_like_messages_and_media_on_its_own_endpoints() {
     assert!(report.network.as_ref().unwrap().outages >= 2, "{summary}");
 }
 
+/// Half the followers allow nobody to connect directly, so their media goes
+/// through a relay; the others and the creator allow anyone.
+fn half_behind_a_relay(dir: &Path) -> Scenario {
+    Scenario {
+        video_bytes: 3_000_000,
+        network: Some(Network {
+            creator_down_mbps: 100,
+            creator_delay_ms: 20,
+            creator_loss_percent: 0.0,
+            down_mbps: vec![50, 100, 300],
+            delay_ms: vec![10, 20, 40],
+            loss_percent: vec![0.0],
+            caps: false,
+            flaky: 0,
+            outage_secs: 30,
+            outage_every_secs: 300,
+            relay: Some(osp_sim::N0_RELAY),
+            seed: 1,
+        }),
+        endpoints: Some(DirectRule::Anyone),
+        relay_only_percent: 50,
+        prefetch_spread: Duration::from_secs(30),
+        time_limit: Duration::from_secs(300),
+        ..with_the_swarm(dir)
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_small_run_with_half_the_followers_behind_a_relay() {
+    let dir = tempfile::tempdir().unwrap();
+    let report = osp_sim::run(&half_behind_a_relay(dir.path()))
+        .await
+        .unwrap();
+    let summary = report.summary();
+    println!("{summary}");
+    assert_eq!(report.holding(), 12, "{summary}");
+    assert!(
+        summary.contains("relay: 8 Mbit/s for each endpoint after 2.7 MB at once, 20 ms each way"),
+        "{summary}"
+    );
+    assert!(
+        summary.contains("6 followers (50%) allow nobody to connect directly"),
+        "{summary}"
+    );
+    assert!(
+        report.relay_only_time_until(true, 100).is_some(),
+        "{summary}"
+    );
+    assert!(
+        report.relay_only_time_until(false, 100).is_some(),
+        "{summary}"
+    );
+    // At least the copy each follower behind it received.
+    let packets = report.network.as_ref().unwrap().packets;
+    let relayed = packets.relayed_bytes as f64 / report.media_bytes as f64;
+    assert!(relayed >= 6.0, "{summary}");
+}
+
+#[tokio::test]
+async fn a_run_with_a_relay_refuses_settings_that_cant_work() {
+    let dir = tempfile::tempdir().unwrap();
+    let refused = async |change: fn(&mut Scenario)| {
+        let mut s = half_behind_a_relay(dir.path());
+        change(&mut s);
+        osp_sim::run(&s).await.unwrap_err().to_string()
+    };
+    let err = refused(|s| (s.endpoints, s.relay_only_percent) = (None, 0)).await;
+    assert!(err.contains("a relay needs endpoints"), "{err}");
+    let err = refused(|s| {
+        s.endpoints = None;
+        s.network.as_mut().unwrap().relay = None;
+    })
+    .await;
+    assert!(err.contains("relay-only followers need endpoints"), "{err}");
+    let err = refused(|s| s.relay_only_percent = 101).await;
+    assert!(err.contains("percentage"), "{err}");
+    assert!(!dir.path().join("run").exists(), "refused before starting");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_small_run_over_a_simulated_network() {
     let dir = tempfile::tempdir().unwrap();
@@ -335,6 +417,7 @@ async fn a_small_run_over_a_simulated_network() {
             flaky: 2,
             outage_secs: 3,
             outage_every_secs: 12,
+            relay: None,
             seed: 1,
         }),
         latecomers: 1,

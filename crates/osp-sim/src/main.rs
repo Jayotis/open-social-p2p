@@ -64,6 +64,16 @@ struct Cli {
     /// taking turns: the middle one of each group of `followers / flaky`.
     #[arg(long, default_value_t = 0, requires = "net")]
     flaky: usize,
+    /// With --endpoints: media endpoints go through a relay with the limits
+    /// of n0's public relays, as measured (`osp_sim::N0_RELAY`), unless both
+    /// ends allow a direct connection.
+    #[arg(long, requires = "endpoints")]
+    relay: bool,
+    /// With --endpoints: this share of followers, strangers and latecomers, in
+    /// percent, allow nobody to connect directly: every fifth with 20, every
+    /// other with 50.
+    #[arg(long, default_value_t = 0, requires = "endpoints")]
+    relay_only: usize,
     /// How long each outage lasts, in seconds.
     #[arg(long, default_value_t = 30, requires = "flaky")]
     outage_secs: u64,
@@ -169,6 +179,7 @@ async fn main() -> Result<()> {
             flaky: cli.flaky,
             outage_secs: cli.outage_secs,
             outage_every_secs: cli.outage_every_secs,
+            relay: cli.relay.then_some(osp_sim::N0_RELAY),
             seed: cli.seed,
         }),
         swarm: cli.swarm,
@@ -187,6 +198,7 @@ async fn main() -> Result<()> {
         trust_mbps: cli.trust_mbps,
         tor_delay: cli.tor_delay,
         endpoints: cli.endpoints,
+        relay_only_percent: cli.relay_only,
         label: cli.label,
     };
     let result = osp_sim::run(&scenario).await;

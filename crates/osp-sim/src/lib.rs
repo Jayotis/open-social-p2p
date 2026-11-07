@@ -23,7 +23,7 @@ use n0_future::{BufferedStreamExt, StreamExt, join_all, stream};
 use osp_node::{
     Config, DirectRule, Node, SimSettings,
     config::SyncConfig,
-    simnet::{Link, NetStats, SimLink, SimNet, TorDelay},
+    simnet::{Link, NetStats, Relay, SimLink, SimNet, TorDelay},
 };
 use osp_proto::{
     BlobHash, EndpointId, ObjectId,
@@ -124,8 +124,12 @@ pub struct Scenario {
     /// Nodes have media and direct endpoints with this rule for who may
     /// connect directly (ADR 0014): media goes through them, and messages stay
     /// on each node's main endpoint. It takes `network`, which stands in for
-    /// the relays a media endpoint needs.
+    /// the relays a media endpoint needs, unless it has a relay.
     pub endpoints: Option<DirectRule>,
+    /// This share of followers, strangers and latecomers, in percent, allow
+    /// nobody to connect directly, whatever `endpoints` says: every fifth
+    /// with 20, every other with 50.
+    pub relay_only_percent: usize,
     /// Free text kept with the report, such as the commit tested.
     pub label: String,
 }
@@ -157,9 +161,32 @@ pub struct Network {
     pub flaky: usize,
     pub outage_secs: u64,
     pub outage_every_secs: u64,
+    /// A relay, which carries everything to or from a media endpoint.
+    /// Without it, media endpoints connect over the network like the rest.
+    pub relay: Option<RelaySettings>,
     /// The random packet losses follow from this.
     pub seed: u64,
 }
+
+/// A relay's limits, as in `osp_node::simnet::Relay`.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+pub struct RelaySettings {
+    /// What each endpoint may send through it, in megabits per second, once
+    /// it has sent `burst_bytes`.
+    pub mbps: u64,
+    pub burst_bytes: u64,
+    /// Its delay to the middle of the network, each way.
+    pub delay_ms: u64,
+}
+
+/// n0's public relays, which nodes use for now. Their limits aren't published:
+/// on 2026-11-07, an endpoint sending 20 MB through one got 2.7 MB through at
+/// once, then 1,000 kB/s. The delay is a guess.
+pub const N0_RELAY: RelaySettings = RelaySettings {
+    mbps: 8,
+    burst_bytes: 2_700_000,
+    delay_ms: 20,
+};
 
 /// A run's simulated network: its settings, and what it did with packets.
 #[derive(Debug, Clone, Serialize)]
@@ -191,6 +218,8 @@ pub struct Report {
     pub tor_delay: bool,
     /// Who may connect directly, if nodes have media and direct endpoints.
     pub endpoints: Option<String>,
+    /// The share of followers that allow nobody to, in percent.
+    pub relay_only_percent: usize,
     pub time_limit_secs: u64,
     /// The video, and its media altogether (the video and its thumbnail).
     pub video_bytes: u64,
@@ -375,11 +404,30 @@ pub async fn run(s: &Scenario) -> Result<Report> {
         s.endpoints.is_none() || s.network.is_some(),
         "media endpoints need the simulated network, which stands in for relays"
     );
+    ensure!(s.relay_only_percent <= 100, "relay-only is a percentage");
+    ensure!(
+        s.relay_only_percent == 0 || s.endpoints.is_some(),
+        "relay-only followers need endpoints"
+    );
+    ensure!(
+        s.network.as_ref().and_then(|n| n.relay).is_none() || s.endpoints.is_some(),
+        "a relay needs endpoints: only media endpoints go through it"
+    );
     std::fs::create_dir_all(&s.dir)?;
     let started = osp_proto::now_rfc3339();
     let source = make_video(&s.dir, s.video_bytes).await?;
 
-    let net = s.network.as_ref().map(|n| SimNet::new(n.seed));
+    let net = s.network.as_ref().map(|n| match n.relay {
+        Some(r) => SimNet::with_relay(
+            n.seed,
+            Relay {
+                delay: Duration::from_millis(r.delay_ms),
+                bps: r.mbps * MBPS,
+                burst_bytes: r.burst_bytes,
+            },
+        ),
+        None => SimNet::new(n.seed),
+    });
     let lifted = SimSettings {
         new_followers_per_hour: (s.followers + s.latecomers)
             .max(SimSettings::default().new_followers_per_hour),
@@ -689,6 +737,7 @@ pub async fn run(s: &Scenario) -> Result<Report> {
         trusted,
         tor_delay: s.tor_delay,
         endpoints: s.endpoints.map(|rule| rule.to_string()),
+        relay_only_percent: s.relay_only_percent,
         time_limit_secs: s.time_limit.as_secs(),
         video_bytes,
         media_bytes,
@@ -733,6 +782,14 @@ pub async fn run(s: &Scenario) -> Result<Report> {
 impl Scenario {
     fn tor_delay(&self) -> Option<TorDelay> {
         self.tor_delay.then(TorDelay::default)
+    }
+
+    /// Who the `i`th follower, stranger or latecomer lets connect directly.
+    fn direct_rule(&self, i: usize) -> Option<DirectRule> {
+        match relay_only(i, self.relay_only_percent) {
+            true => Some(DirectRule::Nobody),
+            false => self.endpoints,
+        }
     }
 
     /// The creator's place on the simulated network, if the run has one.
@@ -790,6 +847,20 @@ impl Report {
     /// ever did.
     pub fn time_until(&self, percent: usize) -> Option<f64> {
         time_until(&self.stayed(), percent)
+    }
+
+    /// The same, for those that stayed and allow nobody to connect directly
+    /// (`relayed`), or for the others.
+    pub fn relay_only_time_until(&self, relayed: bool, percent: usize) -> Option<f64> {
+        let held: Vec<Option<f64>> = self
+            .held_after_secs
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| !self.dropped_out.contains(i))
+            .filter(|(i, _)| relay_only(*i, self.relay_only_percent) == relayed)
+            .map(|(_, h)| *h)
+            .collect();
+        time_until(&held, percent)
     }
 
     /// The same, for the strangers.
@@ -892,9 +963,35 @@ impl Report {
             );
         }
         if let Some(rule) = &self.endpoints {
+            let relays = match self.network.as_ref().and_then(|n| n.settings.relay) {
+                Some(_) => {
+                    "media goes through the relay below unless both ends allow a direct connection"
+                }
+                None => "the simulated network stands in for relays",
+            };
             let _ = writeln!(
                 out,
-                "media and direct endpoints: direct connections with {rule}; the simulated network stands in for relays"
+                "media and direct endpoints: direct connections with {rule}; {relays}"
+            );
+        }
+        if self.relay_only_percent > 0 {
+            let count = (0..self.followers)
+                .filter(|i| relay_only(*i, self.relay_only_percent))
+                .count();
+            let times = |relayed| {
+                format!(
+                    "50% at {}, 95% at {}, all at {}",
+                    time(self.relay_only_time_until(relayed, 50)),
+                    time(self.relay_only_time_until(relayed, 95)),
+                    time(self.relay_only_time_until(relayed, 100)),
+                )
+            };
+            let _ = writeln!(
+                out,
+                "{count} followers ({}%) allow nobody to connect directly; they held the video: {}; the others: {}",
+                self.relay_only_percent,
+                times(true),
+                times(false),
             );
         }
         if self.tor_delay {
@@ -946,6 +1043,18 @@ impl Report {
                 share(p.queue_full),
                 share(p.cut_off),
             );
+            if let Some(r) = &n.relay {
+                let _ = writeln!(
+                    out,
+                    "relay: {} Mbit/s for each endpoint after {:.1} MB at once, {} ms each way; it passed on {:.1} copies of the media ({:.0} MB) and dropped {:.2}% of the packets sent through it at its limit",
+                    r.mbps,
+                    r.burst_bytes as f64 / 1e6,
+                    r.delay_ms,
+                    copies(p.relayed_bytes as f64),
+                    p.relayed_bytes as f64 / 1e6,
+                    100.0 * p.relay_full as f64 / (p.relayed + p.relay_full).max(1) as f64,
+                );
+            }
         }
         if !self.dropped_out.is_empty() {
             let had_it = self.dropped_out.iter();
@@ -1163,7 +1272,6 @@ async fn make_video(dir: &Path, bytes: u64) -> Result<PathBuf> {
     Ok(out)
 }
 
-/// Starts a node that caps its upload at `upload_cap` Mbit/s (0: no cap).
 /// Cuts off or connects again every endpoint of a node. Returns whether it's
 /// on this network.
 fn set_online(net: &SimNet, node: &Node, online: bool) -> bool {
@@ -1174,6 +1282,7 @@ fn set_online(net: &SimNet, node: &Node, online: bool) -> bool {
     on_the_network
 }
 
+/// Starts a node that caps its upload at `upload_cap` Mbit/s (0: no cap).
 async fn start(
     home: &Path,
     name: &str,
@@ -1327,6 +1436,12 @@ fn time_until(held: &[Option<f64>], percent: usize) -> Option<f64> {
     times.get(needed - 1).copied()
 }
 
+/// Whether the `i`th follower, stranger or latecomer is one of the `percent`
+/// in a hundred that allow nobody to connect directly, spread evenly.
+fn relay_only(i: usize, percent: usize) -> bool {
+    (i * percent) % 100 < percent
+}
+
 /// Whether follower `i` of `followers` is one of the `drop_out` that stop:
 /// the last of each group of `followers / drop_out`.
 fn drops_out(i: usize, drop_out: usize, followers: usize) -> bool {
@@ -1373,7 +1488,8 @@ async fn start_all(
                 ..sim.clone()
             };
             let name = format!("{name}{i}");
-            async move { start(&home, &name, cap, s.swarm, s.endpoints, sim).await }
+            let rule = s.direct_rule(i);
+            async move { start(&home, &name, cap, s.swarm, rule, sim).await }
         })
         .buffered_ordered(STARTING_AT_ONCE)
         .collect::<Vec<_>>()
@@ -1881,7 +1997,27 @@ mod tests {
             flaky: 0,
             outage_secs: 30,
             outage_every_secs: 300,
+            relay: None,
             seed: 1,
+        }
+    }
+
+    #[test]
+    fn relay_only_followers_are_spread_through_the_order() {
+        let picked = |percent| {
+            (0..300)
+                .filter(|i| relay_only(*i, percent))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(picked(0).len(), 0);
+        assert_eq!(picked(20).len(), 60);
+        assert_eq!(picked(20)[..3], [0, 5, 10]);
+        assert_eq!(picked(50).len(), 150);
+        assert_eq!(picked(100).len(), 300);
+        // Every upload speed of three, in equal numbers.
+        for percent in [20, 50] {
+            let at = |speed| picked(percent).iter().filter(|i| *i % 3 == speed).count();
+            assert_eq!((at(0), at(1)), (at(2), at(2)), "{percent}%");
         }
     }
 
@@ -1936,6 +2072,7 @@ mod tests {
             trust_mbps: Vec::new(),
             tor_delay: false,
             endpoints: None,
+            relay_only_percent: 0,
             label: String::new(),
         };
         let net = SimNet::new(1);
