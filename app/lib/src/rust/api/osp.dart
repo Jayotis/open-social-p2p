@@ -33,6 +33,10 @@ abstract class OspApp implements RustOpaqueInterface {
   /// Carries on sending the pending post where it stopped.
   Stream<PostProgress> continuePost();
 
+  /// Deletes one of the owner's posts or reshares, by `Post::deletable`
+  /// (ADR 0019). It can't be undone: the app waits before calling this.
+  Future<void> deletePost({required String id});
+
   String deviceId();
 
   /// Stops the post being sent, if any, and discards the pending post on
@@ -401,6 +405,10 @@ class Post {
   /// of one.
   final String? foundThrough;
 
+  /// What the owner may delete here (ADR 0019): their reshare, if this is
+  /// one, or else their own post. `None` for anyone else's.
+  final String? deletable;
+
   const Post({
     required this.id,
     required this.author,
@@ -410,6 +418,7 @@ class Post {
     this.resharedBy,
     required this.resharerHosts,
     this.foundThrough,
+    this.deletable,
   });
 
   @override
@@ -421,7 +430,8 @@ class Post {
       media.hashCode ^
       resharedBy.hashCode ^
       resharerHosts.hashCode ^
-      foundThrough.hashCode;
+      foundThrough.hashCode ^
+      deletable.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -435,7 +445,8 @@ class Post {
           media == other.media &&
           resharedBy == other.resharedBy &&
           resharerHosts == other.resharerHosts &&
-          foundThrough == other.foundThrough;
+          foundThrough == other.foundThrough &&
+          deletable == other.deletable;
 }
 
 class PostProgress {
