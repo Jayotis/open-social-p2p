@@ -1,6 +1,6 @@
 # ADR 0003: Native node-to-node social protocol (v0)
 
-**Status:** Accepted (2026-10-21). The protocol is now `osp/social/1`, since [ADR 0010](0010-signing-keys-and-revocation.md) changed how objects are signed; the requests below are unchanged.
+**Status:** Accepted (2026-10-21). The protocol is now `osp/social/2`: version 1 came when [ADR 0010](0010-signing-keys-and-revocation.md) changed how objects are signed, and version 2 with [ADR 0019](0019-taking-posts-and-media-down.md)'s deletes; the requests below are unchanged.
 
 ## Context
 
