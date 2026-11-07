@@ -6,6 +6,8 @@ Tor hides addresses; it doesn't make anyone anonymous.
 
 ## Turn it on
 
+A node made by `osp init` has it on already, unless it was made with `--no-tor`; `osp init` says if Tor isn't installed. For a node made before:
+
 1. Install Tor: `sudo apt install tor` on Debian or Ubuntu. The node runs its own Tor from that program, with its settings and data in the `tor` folder of the node's home. It doesn't use or change the system's Tor service, which you can turn off if nothing else needs it: `sudo systemctl disable --now tor`.
 2. In the node's `config.toml`. Tor takes the [media and direct endpoints](direct-endpoint.md) too, as media and phones can't go over it, and the node won't start without them:
 
@@ -90,7 +92,7 @@ machine = "..."
 node = "..."
 ```
 
-Restart the node. `list_me` says in your signed profile that a directory may list it and your latest posts, and that others may pass them on. Your node then asks each directory, from your public ID and never your machine name, at a time of its own within the hour, and again each day. To be dropped, turn it off and restart: the profile saying no takes it back, by the time the directory next reads your node, within the hour.
+Restart the node. `osp init` asks about `list_me` for a new node (`--list-me` or `--no-list-me` answers it). It says in your signed profile that a directory may list it and your latest posts, and that others may pass them on. Your node then asks each directory, from your public ID and never your machine name, at a time of its own within the hour, and again each day. To be dropped, turn it off and restart: the profile saying no takes it back, by the time the directory next reads your node, within the hour.
 
 ```sh
 osp directory read       # read them now, rather than waiting

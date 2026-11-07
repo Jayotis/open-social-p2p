@@ -59,7 +59,7 @@ Still to evaluate:
 
 ## Building the prototype
 
-Requirements: Rust (stable), ffmpeg, and libheif-examples for iPhone photos (HEIC).
+Requirements: Rust (stable), Tor (a new node uses it unless made with `osp init --no-tor`), ffmpeg, and libheif-examples for iPhone photos (HEIC).
 
 ```sh
 cargo build
