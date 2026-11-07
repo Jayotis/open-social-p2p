@@ -176,7 +176,8 @@ pub enum ListingItem {
     /// Someone no longer listed. It isn't signed, as it can only take away what
     /// came from this directory, and a directory can always leave things out.
     Gone { actor: PublicKey },
-    /// An entry from a later version, which a reader passes over.
+    /// An entry from a later version, which a reader passes over. Once it
+    /// takes that kind, it reads each directory again from the start.
     #[serde(other)]
     Unknown,
 }

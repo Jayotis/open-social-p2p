@@ -279,6 +279,10 @@ const MIGRATIONS: &[&str] = &[
     BEGIN
         DELETE FROM refs WHERE id = old.id;
     END;",
+    // 18: which reader got as far as each directory's cursor
+    // (`directory::READER`). One from before passed over entries a later one
+    // takes, so a later one reads that directory again from the start.
+    "ALTER TABLE directories_read ADD COLUMN reader INTEGER NOT NULL DEFAULT 0;",
 ];
 
 /// The search index (ADR 0014): a number for each post, by its object ID, and
@@ -1778,23 +1782,30 @@ impl Db {
         )?)
     }
 
-    /// How far this node has read a directory's lists.
-    pub fn directory_cursor(&self, directory: &EndpointId) -> Result<u64> {
+    /// How far this node has read a directory's lists: 0 if only a reader
+    /// before `reader` got that far, as it passed over entries this one takes.
+    pub fn directory_cursor(&self, directory: &EndpointId, reader: u32) -> Result<u64> {
         let cursor: Option<i64> = self
             .conn()
             .query_row(
-                "SELECT cursor FROM directories_read WHERE directory = ?1",
-                params![directory.to_string()],
+                "SELECT cursor FROM directories_read WHERE directory = ?1 AND reader >= ?2",
+                params![directory.to_string(), reader],
                 |row| row.get(0),
             )
             .optional()?;
         Ok(cursor.unwrap_or(0) as u64)
     }
 
-    pub fn set_directory_cursor(&self, directory: &EndpointId, cursor: u64) -> Result<()> {
+    pub fn set_directory_cursor(
+        &self,
+        directory: &EndpointId,
+        cursor: u64,
+        reader: u32,
+    ) -> Result<()> {
         self.conn().execute(
-            "INSERT OR REPLACE INTO directories_read (directory, cursor) VALUES (?1, ?2)",
-            params![directory.to_string(), cursor as i64],
+            "INSERT OR REPLACE INTO directories_read (directory, cursor, reader)
+             VALUES (?1, ?2, ?3)",
+            params![directory.to_string(), cursor as i64, reader],
         )?;
         Ok(())
     }
@@ -4712,11 +4723,39 @@ mod tests {
         // Starting over drops what it gave, and how far it was read.
         found(&db, &one, 1, "cedar", 100);
         let stays = found(&db, &other, 2, "cedar again", 100);
-        db.set_directory_cursor(&one, 40).unwrap();
+        db.set_directory_cursor(&one, 40, 1).unwrap();
         db.forget_directory(&one).unwrap();
-        assert_eq!(db.directory_cursor(&one).unwrap(), 0);
+        assert_eq!(db.directory_cursor(&one, 1).unwrap(), 0);
         assert_eq!(found_posts(&db, "cedar"), ["cedar again"]);
         assert!(db.found_through(&stays).unwrap().is_some());
+    }
+
+    #[test]
+    fn a_later_reader_reads_a_directory_again_from_the_start() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("old.db");
+        let directory = SecretKey::from_bytes(&[8; 32]).public();
+        {
+            // A database from before migration 18, which got to 3.
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(SCHEMA).unwrap();
+            for sql in &MIGRATIONS[..17] {
+                conn.execute_batch(sql).unwrap();
+            }
+            conn.pragma_update(None, "user_version", 17).unwrap();
+            conn.execute(
+                "INSERT INTO directories_read (directory, cursor) VALUES (?1, 3)",
+                params![directory.to_string()],
+            )
+            .unwrap();
+        }
+        let db = Db::open(&path).unwrap();
+        assert_eq!(db.directory_cursor(&directory, 0).unwrap(), 3);
+        assert_eq!(db.directory_cursor(&directory, 1).unwrap(), 0);
+        db.set_directory_cursor(&directory, 3, 1).unwrap();
+        assert_eq!(db.directory_cursor(&directory, 1).unwrap(), 3);
+        // And the one after that starts over again.
+        assert_eq!(db.directory_cursor(&directory, 2).unwrap(), 0);
     }
 
     #[test]
