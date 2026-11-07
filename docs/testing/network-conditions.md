@@ -533,3 +533,28 @@ osp-sim --dir /path/on/disk/run --swarm --net --latecomers 10 --tor-delay \
 **Pass marks.** For each run, the home run's three [marks](#pass-marks). Recorded too: what the relay passed on, in copies of the video (all it passed on, the latecomers' and QUIC's own packets included, over the media's size); the share of packets it dropped at its limit; the times for the followers behind it and for the others; the creator's copies; and the latecomers' times.
 
 **What it decides.** Media's default, decided from these figures, not by a pass mark. They show whether relays at n0's limits carry the swarm within its marks, and how much they carry for a post with 300 followers at each share. Someone pays for every relayed byte: n0 for now, relays of our own later.
+
+**Results**, 2026-11-07, one run each with `d3e43b4`'s code, one after another, on the NVMe partition; other programs took at most 6% of the machine's CPUs. "Behind the relay" are the followers that allow nobody.
+
+| Followers behind the relay | Followers: 50% / 95% / all | Those behind the relay | The others | Creator's copies | The relay passed on | Dropped at its limit | Followers' requests refused as busy | Latecomers: half / all | Pass marks |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| None | 591 / 704 / 833 s | – | – | 28.8 | nothing | – | 2,024 | 40.7 / 55.9 s | met |
+| 20% | 426 / 640 / 665 s | 419 / 627 / 665 s | 434 / 641 / 663 s | 17.2 | 69.3 copies, 3.6 GB | 0.39% | 567 | 44.7 / 53.1 s | met |
+| 50% | 525 / 655 / 860 s | 549 / 667 / 860 s | 500 / 640 / 727 s | 19.2 | 167.3 copies, 8.7 GB | 0.32% | 1,433 | 53.3 / 60.9 s | met |
+| All | 1,104 / 1,535 / 2,139 s | – | – | 20.6 | 369.7 copies, 19.3 GB | 0.53% | 4,818 | 51.1 / 60.3 s | **95% and all missed** |
+
+- **With up to half the followers behind the relay, every mark held,** and the relay didn't slow the swarm: 95% held the video at 640 and 655 s, as in the gate's runs (638 and 640 s). At 50%, those behind the relay were 27 s later than the others to 95%, and the last of them 133 s later.
+- **The run with none started slow:** 12 followers held the video at 360 s, against 27 and 28 in the gate's runs and 69 in the 20% run, and it caught up by 660 s. Its creator sent 28.8 copies, the most of these runs, under the mark of 30. One run each can't tell this from the variation between runs.
+- **With every follower behind the relay, two marks were missed:** 95% held the video at 1,535 s, against 15 minutes, and the last at 2,139 s, against 30. No follower held it in the first 5 minutes. The relay lets each endpoint send 8 Mbit/s, so the creator and the followers at 10 and 20 Mbit/s all sent at 8.
+- **Behind a relay, a node serves more at once than suits it.** A node serves one transfer for each 1.5 Mbit/s it has measured itself sending ([above](#places-to-suit-the-upload)), and the relay's burst, refilled in quiet moments, made the nodes behind it read 10 to 12 Mbit/s. So the creator shared its 8 Mbit/s among up to 6 transfers, about 1.3 Mbit/s each, and a copy took about 5 minutes; 5 would suit 8 Mbit/s. That's a gap to fix on its own, and would help a little; it isn't what missed the marks, as the relay holds each endpoint to 8 Mbit/s however its transfers share it.
+- **Latecomers were held up little:** all ten had the video within 53 to 61 s with the relay, against 56 s without, each fetching from three followers at up to 8 Mbit/s each.
+- **The relay carried about one copy for each node behind it,** and a little more: 1.1 copies for each follower and latecomer behind it at 20 and 50%, 1.2 with all of them. It dropped under 0.6% of the packets sent through it at its limit, and no download failed in any run.
+
+**What each share costs,** for one post of a 52 MB video to 300 followers, with relays at n0's limits:
+
+- **No one behind the relay:** the relay carries nothing, and the swarm is at its fastest. Every node shows its address to each node it exchanges media with, strangers included once a directory lists it.
+- **A fifth or half behind it:** the swarm meets its marks, and those behind the relay are about as quick as the others. The relay carries 56 to 58 MB for each of them, 3.6 and 8.7 GB in all. The others show their address as above.
+- **Everyone behind it,** today's default (`direct = "nobody"`): no node shows its address to another. The relay carries 19.3 GB, and the swarm takes over twice as long, missing two marks. Nodes allowing `follows` or `approved` come close to this, as a direct connection needs both sides to allow it: between a creator and the followers it doesn't follow, and between followers that don't follow each other, media goes through the relay.
+- **Someone pays for every relayed byte:** n0 for now, whose public relays are meant for development and hobby use and whose limits aren't published; relays of our own later, which could set a higher limit for each endpoint. Other users sharing a relay aren't simulated, so n0's can only be slower than this.
+
+**What it shows.** Relays at n0's limits carry a swarm in which up to half the followers hide their address, at about one copy through the relay for each of them. With all of them behind it, every follower still gets the video, and latecomers within a minute, but the swarm takes over twice as long: the limit on each endpoint holds the creator and the faster followers to 8 Mbit/s. Media's default is chosen from these figures.
