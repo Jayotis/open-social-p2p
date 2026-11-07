@@ -5,11 +5,14 @@
 //! among machines run faster than real ones (`MeetingTimes::faster`), and Tor's
 //! delays don't, so a conversation takes as long as over Tor.
 //!
+//! Newcomers, honest nodes told only of the directory, may arrive later, to
+//! see whether the others meet them, keep them and pass them on.
+//!
 //! Each node's view comes from `Node::acquaintances`, the record that never
 //! leaves a real node. Circuits are an estimate (`SimTor` in `osp-node`).
 
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     fmt::Write as _,
     path::{Path, PathBuf},
     sync::{
@@ -37,6 +40,11 @@ use tracing::info;
 const STARTING_AT_ONCE: usize = 16;
 const DAY: Duration = Duration::from_secs(24 * 60 * 60);
 const HOUR: Duration = Duration::from_secs(60 * 60);
+/// Pass marks for newcomers: the established honest machines each meets
+/// within so many simulated hours, and the established nodes that meet each.
+const NEWCOMER_MEETS: usize = 3;
+const NEWCOMER_WITHIN_HOURS: f64 = 6.0;
+const NEWCOMER_MET_BY: usize = 10;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct MeetScenario {
@@ -55,6 +63,9 @@ pub struct MeetScenario {
     /// In real time, from the start.
     pub directory_off_after: Duration,
     pub hostile_after: Duration,
+    /// Honest nodes arriving later, told of the directory only.
+    pub newcomers: usize,
+    pub newcomers_after: Duration,
     pub run_for: Duration,
     pub sample: Duration,
     pub seed: u64,
@@ -79,6 +90,11 @@ pub struct View {
     pub hostile_kept_longest: usize,
     /// Fakes held: records of machines that never existed.
     pub fakes: usize,
+    /// Newcomers held, at any stage, and met.
+    pub newcomers_held: usize,
+    pub newcomers_met: usize,
+    /// Machines held, of any kind.
+    pub held: usize,
     pub circuits: u64,
 }
 
@@ -86,6 +102,22 @@ pub struct View {
 pub struct Snapshot {
     pub secs: f64,
     pub views: Vec<View>,
+    /// The newcomers' own views, once they've arrived.
+    pub newcomers: Vec<View>,
+}
+
+/// One newcomer, at the end.
+#[derive(Debug, Clone, Serialize)]
+pub struct Newcomer {
+    /// From its arrival to the first sample in which it had met
+    /// `NEWCOMER_MEETS` established honest machines.
+    pub met_three_after_secs: Option<f64>,
+    pub honest_met: usize,
+    /// Established nodes holding it, at any stage; those that met it; and those
+    /// that met it through another machine's record.
+    pub held_by: usize,
+    pub met_by: usize,
+    pub passed_on: usize,
 }
 
 #[derive(Debug, Serialize)]
@@ -104,30 +136,54 @@ pub struct MeetReport {
     pub circuits_last_day: Vec<u64>,
     /// How many times the operator's names were asked `Known`.
     pub hostile_asked_known: u64,
+    /// Machines each established node held when the newcomers arrived.
+    pub held_at_newcomers: Vec<usize>,
+    pub newcomers: Vec<Newcomer>,
+    /// For each established machine, at the end: the other established nodes
+    /// that met it, and that met it through another machine's record.
+    pub established_met_by: Vec<usize>,
+    pub established_passed_on: Vec<usize>,
     pub wall_secs: f64,
 }
 
+/// Which machines are which.
+#[derive(Default)]
+struct Kinds {
+    /// The established honest nodes.
+    honest: HashSet<EndpointId>,
+    hostile: HashSet<EndpointId>,
+    newcomers: HashSet<EndpointId>,
+}
+
 /// One node's machines, sorted by kind, at a moment.
-fn view(node: &Node, honest: &HashSet<EndpointId>, hostile: &HashSet<EndpointId>) -> View {
+fn view(node: &Node, kinds: &Kinds) -> View {
     let mut v = View {
         circuits: node.machine_circuits().unwrap_or(0),
         ..View::default()
     };
     for a in node.acquaintances() {
-        if honest.contains(&a.machine) {
+        v.held += 1;
+        if kinds.honest.contains(&a.machine) {
             match a.stage {
                 Stage::Heard => v.honest_heard += 1,
                 stage => {
                     v.honest_met += 1;
                     v.honest_known += (stage == Stage::Known) as usize;
                     match a.source {
-                        Some(from) if honest.contains(&from) => v.met_through_machines += 1,
+                        Some(from)
+                            if kinds.honest.contains(&from) || kinds.newcomers.contains(&from) =>
+                        {
+                            v.met_through_machines += 1
+                        }
                         Some(_) => v.met_through_directory += 1,
                         None => v.met_greeted += 1,
                     }
                 }
             }
-        } else if hostile.contains(&a.machine) {
+        } else if kinds.newcomers.contains(&a.machine) {
+            v.newcomers_held += 1;
+            v.newcomers_met += (a.stage != Stage::Heard) as usize;
+        } else if kinds.hostile.contains(&a.machine) {
             v.hostile += 1;
             v.hostile_kept_longest += a.kept_longest as usize;
         } else {
@@ -184,32 +240,23 @@ pub async fn run(s: &MeetScenario) -> Result<MeetReport> {
         node: directory.node_id(),
     };
     info!(honest = s.honest, "starting");
-    let nodes: Vec<Node> = stream::iter(0..s.honest)
-        .map(|i| {
-            let mut config = Config::local_test(&format!("Node {i}"));
-            config.directory.known = vec![known.clone()];
-            let home = s.dir.join(format!("node-{i}"));
-            let settings = settings();
-            async move { start(&home, config, settings).await }
-        })
-        .buffered_unordered(STARTING_AT_ONCE)
-        .collect::<Vec<_>>()
-        .await
-        .into_iter()
-        .collect::<Result<_>>()?;
-    let honest_list: Vec<EndpointId> = nodes
-        .iter()
-        .map(|n| n.machine_id().context("no machine name"))
-        .collect::<Result<_>>()?;
-    let honest: HashSet<EndpointId> = honest_list.iter().copied().collect();
+    let nodes = start_honest(s, 0..s.honest, &known, &settings).await?;
+    let honest_list = machine_ids(&nodes)?;
     let operator = Operator::new(s.hostile, s.seed);
-    let hostile: HashSet<EndpointId> = operator.names().collect();
+    let mut kinds = Kinds {
+        honest: honest_list.iter().copied().collect(),
+        hostile: operator.names().collect(),
+        newcomers: HashSet::new(),
+    };
 
     let begun = Instant::now();
     let mut snapshots = Vec::new();
     let mut met_at_off = None;
     let mut known_at_hostile: Option<Vec<HashSet<EndpointId>>> = None;
     let mut routers = Vec::new();
+    let mut newcomers: Vec<Node> = Vec::new();
+    let mut newcomers_arrived: Option<Duration> = None;
+    let mut held_at_newcomers = Vec::new();
     let mut next_sample = Duration::ZERO;
     while begun.elapsed() < s.run_for {
         let now = begun.elapsed();
@@ -217,43 +264,62 @@ pub async fn run(s: &MeetScenario) -> Result<MeetReport> {
             for id in directory.endpoint_ids() {
                 net.set_online(id, false);
             }
-            let met: Vec<usize> = nodes
-                .iter()
-                .map(|n| view(n, &honest, &hostile).honest_met)
-                .collect();
+            let met: Vec<usize> = nodes.iter().map(|n| view(n, &kinds).honest_met).collect();
             info!(median_met = median(&met), "the directory goes off");
             met_at_off = Some(met);
         }
         if known_at_hostile.is_none() && now >= s.hostile_after {
-            known_at_hostile = Some(nodes.iter().map(|n| known_honest(n, &honest)).collect());
+            known_at_hostile = Some(
+                nodes
+                    .iter()
+                    .map(|n| known_honest(n, &kinds.honest))
+                    .collect(),
+            );
             routers = operator
                 .arrive(&net, &honest_list, s.hostile_greets)
                 .await?;
             info!(names = s.hostile, "the operator arrives");
         }
+        if newcomers_arrived.is_none() && s.newcomers > 0 && now >= s.newcomers_after {
+            held_at_newcomers = nodes.iter().map(|n| view(n, &kinds).held).collect();
+            newcomers =
+                start_honest(s, s.honest..s.honest + s.newcomers, &known, &settings).await?;
+            kinds.newcomers = machine_ids(&newcomers)?.into_iter().collect();
+            newcomers_arrived = Some(begun.elapsed());
+            info!(
+                newcomers = s.newcomers,
+                median_held = median(&held_at_newcomers),
+                "the newcomers arrive"
+            );
+        }
         if now >= next_sample {
-            let views: Vec<View> = nodes.iter().map(|n| view(n, &honest, &hostile)).collect();
+            let views: Vec<View> = nodes.iter().map(|n| view(n, &kinds)).collect();
+            let newcomer_views: Vec<View> = newcomers.iter().map(|n| view(n, &kinds)).collect();
             let met: Vec<usize> = views.iter().map(|v| v.honest_met).collect();
             let fakes: Vec<usize> = views.iter().map(|v| v.hostile + v.fakes).collect();
+            let newcomers_met: Vec<usize> = views.iter().map(|v| v.newcomers_met).collect();
             info!(
                 mins = now.as_secs() / 60,
                 median_met = median(&met),
                 min_met = met.iter().min().copied().unwrap_or(0),
                 median_hostile = median(&fakes),
+                median_newcomers_met = median(&newcomers_met),
                 "sample"
             );
             snapshots.push(Snapshot {
-                secs: now.as_secs_f64(),
+                secs: begun.elapsed().as_secs_f64(),
                 views,
+                newcomers: newcomer_views,
             });
             next_sample += s.sample;
         }
         tokio::time::sleep(Duration::from_secs(1)).await;
     }
-    let last: Vec<View> = nodes.iter().map(|n| view(n, &honest, &hostile)).collect();
+    let last: Vec<View> = nodes.iter().map(|n| view(n, &kinds)).collect();
     snapshots.push(Snapshot {
         secs: begun.elapsed().as_secs_f64(),
         views: last.clone(),
+        newcomers: newcomers.iter().map(|n| view(n, &kinds)).collect(),
     });
     let met_at_off = met_at_off.unwrap_or_else(|| vec![0; nodes.len()]);
     let known_at_hostile = known_at_hostile.unwrap_or_else(|| vec![HashSet::new(); nodes.len()]);
@@ -278,6 +344,40 @@ pub async fn run(s: &MeetScenario) -> Result<MeetReport> {
             ((now.circuits - then.circuits) as f64 * day_secs / span) as u64
         })
         .collect();
+    // For each machine: the established nodes holding it, those that met it,
+    // and those that met it through another machine's record.
+    let mut met_by: HashMap<EndpointId, (usize, usize, usize)> = HashMap::new();
+    for node in &nodes {
+        for a in node.acquaintances() {
+            let counts = met_by.entry(a.machine).or_default();
+            counts.0 += 1;
+            if a.stage != Stage::Heard {
+                counts.1 += 1;
+                counts.2 += a.source.is_some_and(|from| from != known.machine) as usize;
+            }
+        }
+    }
+    let counts = |machine: &EndpointId| met_by.get(machine).copied().unwrap_or_default();
+    let arrived = newcomers_arrived.map_or(0.0, |at| at.as_secs_f64());
+    let newcomer_ids = machine_ids(&newcomers)?;
+    let newcomer_results = newcomer_ids
+        .iter()
+        .enumerate()
+        .map(|(i, id)| {
+            let (held_by, met_by, passed_on) = counts(id);
+            let met = |snap: &Snapshot| snap.newcomers.get(i).map_or(0, |v| v.honest_met);
+            Newcomer {
+                met_three_after_secs: snapshots
+                    .iter()
+                    .find(|snap| met(snap) >= NEWCOMER_MEETS)
+                    .map(|snap| snap.secs - arrived),
+                honest_met: snapshots.last().map_or(0, met),
+                held_by,
+                met_by,
+                passed_on,
+            }
+        })
+        .collect();
     let report = MeetReport {
         scenario: s.clone(),
         met_after_directory_off: last
@@ -290,16 +390,49 @@ pub async fn run(s: &MeetScenario) -> Result<MeetReport> {
         pushed_out,
         circuits_last_day,
         hostile_asked_known: operator.asked.load(Relaxed),
+        held_at_newcomers,
+        newcomers: newcomer_results,
+        established_met_by: honest_list.iter().map(|m| counts(m).1).collect(),
+        established_passed_on: honest_list.iter().map(|m| counts(m).2).collect(),
         snapshots,
         wall_secs: started.elapsed().as_secs_f64(),
     };
     for router in routers {
         let _ = router.shutdown().await;
     }
-    for node in nodes.into_iter().chain([directory]) {
+    for node in nodes.into_iter().chain(newcomers).chain([directory]) {
         node.shutdown().await?;
     }
     Ok(report)
+}
+
+/// Honest nodes, each told of the directory and nothing else.
+async fn start_honest(
+    s: &MeetScenario,
+    numbers: std::ops::Range<usize>,
+    known: &KnownDirectory,
+    settings: &impl Fn() -> SimSettings,
+) -> Result<Vec<Node>> {
+    stream::iter(numbers)
+        .map(|i| {
+            let mut config = Config::local_test(&format!("Node {i}"));
+            config.directory.known = vec![known.clone()];
+            let home = s.dir.join(format!("node-{i}"));
+            let settings = settings();
+            async move { start(&home, config, settings).await }
+        })
+        .buffered_unordered(STARTING_AT_ONCE)
+        .collect::<Vec<_>>()
+        .await
+        .into_iter()
+        .collect()
+}
+
+fn machine_ids(nodes: &[Node]) -> Result<Vec<EndpointId>> {
+    nodes
+        .iter()
+        .map(|n| n.machine_id().context("no machine name"))
+        .collect()
 }
 
 async fn start(home: &Path, config: Config, sim: SimSettings) -> Result<Node> {
@@ -494,7 +627,7 @@ impl MeetReport {
             .zip(&self.met_after_directory_off)
             .all(|(then, after)| *then >= others || *after > 0);
         let pushed_out: usize = self.pushed_out.iter().sum();
-        vec![
+        let mut marks = vec![
             (
                 "every node met another with no human act".into(),
                 everyone_met,
@@ -509,7 +642,38 @@ impl MeetReport {
                 ),
                 pushed_out == 0,
             ),
-        ]
+        ];
+        if !self.newcomers.is_empty() {
+            let within = HOUR
+                .mul_f64(NEWCOMER_WITHIN_HOURS)
+                .div_f64(self.scenario.speed)
+                .as_secs_f64();
+            let of = self.newcomers.len();
+            let count =
+                |f: &dyn Fn(&Newcomer) -> bool| self.newcomers.iter().filter(|n| f(n)).count();
+            let soon = count(&|n| n.met_three_after_secs.is_some_and(|t| t <= within));
+            let met_by = count(&|n| n.met_by >= NEWCOMER_MET_BY);
+            let passed_on = count(&|n| n.passed_on > 0);
+            marks.extend([
+                (
+                    format!(
+                        "each newcomer met {NEWCOMER_MEETS} established honest machines within {NEWCOMER_WITHIN_HOURS} simulated hours ({soon} of {of})"
+                    ),
+                    soon == of,
+                ),
+                (
+                    format!(
+                        "each newcomer was met by at least {NEWCOMER_MET_BY} established honest nodes ({met_by} of {of})"
+                    ),
+                    met_by == of,
+                ),
+                (
+                    format!("each newcomer was passed on by another machine ({passed_on} of {of})"),
+                    passed_on == of,
+                ),
+            ]);
+        }
+        marks
     }
 
     pub fn summary(&self) -> String {
@@ -572,6 +736,43 @@ impl MeetReport {
             range(&pick(|v| v.hostile_kept_longest)),
             range(&pick(|v| v.fakes))
         );
+        if !self.newcomers.is_empty() {
+            let newcomers = &self.newcomers;
+            let pick =
+                |f: fn(&Newcomer) -> usize| -> Vec<usize> { newcomers.iter().map(f).collect() };
+            let hours: Vec<usize> = newcomers
+                .iter()
+                .filter_map(|n| n.met_three_after_secs)
+                .map(|secs| (secs * s.speed / 3600.0).round() as usize)
+                .collect();
+            let _ = writeln!(
+                out,
+                "{} newcomers at {:.0} min; the established nodes' tables then held: {}",
+                newcomers.len(),
+                s.newcomers_after.as_secs_f64() / 60.0,
+                range(&self.held_at_newcomers)
+            );
+            let _ = writeln!(
+                out,
+                "  established honest machines each newcomer met: {}; hours to meet {NEWCOMER_MEETS}: {} ({} never did)",
+                range(&pick(|n| n.honest_met)),
+                range(&hours),
+                newcomers.len() - hours.len()
+            );
+            let _ = writeln!(
+                out,
+                "  established nodes holding each newcomer: {}; that met it: {}; through another machine: {}",
+                range(&pick(|n| n.held_by)),
+                range(&pick(|n| n.met_by)),
+                range(&pick(|n| n.passed_on))
+            );
+            let _ = writeln!(
+                out,
+                "  for an established machine, established nodes that met it: {}; through another machine: {}",
+                range(&self.established_met_by),
+                range(&self.established_passed_on)
+            );
+        }
         let circuits: Vec<usize> = self.circuits_last_day.iter().map(|c| *c as usize).collect();
         let _ = writeln!(
             out,

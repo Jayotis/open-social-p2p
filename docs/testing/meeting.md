@@ -64,3 +64,35 @@ The defaults above, on the code built for step 3, on 2026-11-06. Each line is ov
 What this run doesn't show is whether an honest machine that arrives after the operator still gets a place and a dial, in a network with more honest machines than a table holds. Neither is simulated (above).
 
 **Circuits:** about 400 a day for each node, about one every 4 minutes, by the estimate above. Over real Tor, add those an onion service keeps to its introduction points, and any rebuilt after a failure.
+
+## Newcomers
+
+Added on 2026-11-07, before this run. A node with no contacts and no history should still get a start: met by others, kept and passed on, not only able to meet them. The run above left out the hard case: an honest machine arriving after an operator, in a network with more honest machines than a table holds.
+
+**Why it may fail, from the code.** Every machine that greets a node unasked counts as one source, and one source fills at most 32 of the 128 places not kept for the machines known longest. Records from a directory's map count against the directory. Once a table is full and those shares are used up, a newcomer's greeting and its place on the map are both turned away (`SourceFull`). The newcomer can still meet others, but a node passes on only machines in its own table, so nobody may pass it on. A record from another source can take the place of one never met, but only from a source with at least two more places, and the operator spreads its fakes over many names, so each has few.
+
+**The run.** `osp-meet` as above, with:
+
+- **300 honest nodes,** told of one directory, so tables fill with honest machines.
+- **At 15 minutes** (15 simulated hours) one operator arrives with **100 names,** each greeting 20 honest machines and passing on others' names and fakes, as above.
+- **At 25 minutes, 50 newcomers** arrive, each told of the directory and nothing else.
+- **At 45 minutes** the directory goes off for good.
+- **75 minutes in all,** about three simulated days.
+
+```sh
+target/release/osp-meet --dir /path/on/disk/meet --out newcomers.json \
+  --honest 300 --hostile 100 --hostile-mins 15 --newcomers 50 --newcomers-mins 25 \
+  --directory-off-mins 45 --minutes 75 --label "$(git rev-parse --short HEAD)"
+```
+
+**Pass marks,** starting values set before the run, for the newcomers:
+
+4. Each met at least 3 of the established honest machines within 6 simulated hours of arriving.
+5. Each was met by at least 10 established honest nodes by the end.
+6. Each was passed on: at least one established node met it through another machine's record, not its greeting or the directory's map.
+
+The first three marks apply to the established nodes as before. Recorded too: how full the established nodes' tables were when the newcomers arrived; how many established nodes met each newcomer, and passed it on, against the same for an established machine; the honest machines each newcomer met; and the operator's names and fakes held.
+
+**What it decides.** Whether nodes need to keep a few places for machines that greet them, and whether that comes before the revision of ADRs 0016 to 0018. If a mark is missed, the cause is looked for in the code, fixed, and run once more.
+
+Not simulated: a newcomer that knows no working directory. A node can only start from a directory today; starting from a machine someone gives you is a feature of its own.

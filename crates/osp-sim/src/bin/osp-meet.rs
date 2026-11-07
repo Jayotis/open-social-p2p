@@ -35,6 +35,11 @@ struct Cli {
     directory_off_mins: u64,
     #[arg(long, default_value_t = 25)]
     hostile_mins: u64,
+    /// Honest nodes arriving later, told of the directory only.
+    #[arg(long, default_value_t = 0)]
+    newcomers: usize,
+    #[arg(long, default_value_t = 35)]
+    newcomers_mins: u64,
     #[arg(long, default_value_t = 60)]
     minutes: u64,
     #[arg(long, default_value_t = 1)]
@@ -72,6 +77,8 @@ async fn main() -> Result<()> {
         known_after_hours: cli.known_after_hours,
         directory_off_after: mins(cli.directory_off_mins),
         hostile_after: mins(cli.hostile_mins),
+        newcomers: cli.newcomers,
+        newcomers_after: mins(cli.newcomers_mins),
         run_for: mins(cli.minutes),
         sample: Duration::from_secs(60),
         seed: cli.seed,
