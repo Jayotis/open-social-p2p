@@ -83,8 +83,14 @@ pub(crate) const FIRST_READ_WAIT: Duration = Duration::from_secs(10 * 60);
 /// How often a node reads its directories. Discovery can wait, and each read
 /// costs Tor circuits.
 pub(crate) const READ_EVERY: Duration = Duration::from_secs(6 * 60 * 60);
-/// How soon it goes on after a read that failed or wasn't finished.
+/// How soon it goes on after a read that failed or wasn't finished. Also the
+/// soonest a node with no machine left to meet reads again (`soonest_after`).
 const READ_AGAIN: Duration = Duration::from_secs(10 * 60);
+/// The kinds of entry this reader takes from a directory's lists, as a number
+/// that rises whenever a kind is added: 1 first took machines (ADR 0015's step
+/// 3). A reader passes over kinds it doesn't know, and its cursor moves on past
+/// them, so a later one reads each directory again from the start.
+const READER: u32 = 1;
 /// Pages taken in one conversation. With the rest of a large directory for next
 /// time, one read stays a small thing over Tor.
 const MAX_PAGES_PER_READ: usize = 64;
@@ -295,12 +301,19 @@ impl Core {
     }
 }
 
+/// How a read of the directories went.
+pub(crate) struct Read {
+    /// It got to the end of them all.
+    pub finished: bool,
+    /// Entries it took in, of any kind.
+    pub entries: usize,
+}
+
 /// A node reading the directories it knows.
 impl Core {
-    /// Reads each directory this node knows, under its machine name. Returns
-    /// whether it got to the end of them all. One not answering doesn't stop the
-    /// others; if none could be read, says why.
-    pub(crate) async fn read_directories(&self) -> Result<bool> {
+    /// Reads each directory this node knows, under its machine name. One not
+    /// answering doesn't stop the others; if none could be read, says why.
+    pub(crate) async fn read_directories(&self) -> Result<Read> {
         let side = self.machine()?;
         if let Some(tor) = &self.tor {
             tor.check_ready()?;
@@ -314,9 +327,15 @@ impl Core {
                 dropped,
                 "the disk is nearly full, so dropped people found through directories"
             );
-            return Ok(true);
+            return Ok(Read {
+                finished: true,
+                entries: 0,
+            });
         }
-        let mut finished = true;
+        let mut read = Read {
+            finished: true,
+            entries: 0,
+        };
         let mut failed = None;
         let mut answered = false;
         for directory in &self.config.directory.known {
@@ -325,12 +344,13 @@ impl Core {
             }
             let short = directory.machine.fmt_short();
             match self.read_directory(side, directory.machine).await {
-                Ok(done) => {
+                Ok((done, entries)) => {
                     if failing.remove(&directory.machine) {
                         info!(directory = %short, "a directory answers again");
                     }
                     answered = true;
-                    finished &= done;
+                    read.finished &= done;
+                    read.entries += entries;
                 }
                 Err(e) => {
                     // Said once: one that's gone is tried every few minutes.
@@ -339,20 +359,25 @@ impl Core {
                     } else {
                         debug!(directory = %short, "reading a directory failed again: {e:#}");
                     }
-                    finished = false;
+                    read.finished = false;
                     failed = Some(e);
                 }
             }
         }
         match failed {
             Some(e) if !answered => Err(e),
-            _ => Ok(finished),
+            _ => Ok(read),
         }
     }
 
     /// One conversation with a directory: a greeting, then pages from where
-    /// this node got to. Returns whether it reached the end.
-    async fn read_directory(&self, side: &MachineSide, directory: EndpointId) -> Result<bool> {
+    /// this node got to. Returns whether it reached the end, and the entries
+    /// it took in.
+    async fn read_directory(
+        &self,
+        side: &MachineSide,
+        directory: EndpointId,
+    ) -> Result<(bool, usize)> {
         let conn = side.connect(directory).await?;
         let read = self.read_pages(side, &conn, directory).await;
         machine::close(&conn);
@@ -364,13 +389,14 @@ impl Core {
         side: &MachineSide,
         conn: &iroh::endpoint::Connection,
         directory: EndpointId,
-    ) -> Result<bool> {
+    ) -> Result<(bool, usize)> {
         let info = side.hello_on(conn, directory).await?;
         ensure!(
             info.offers.iter().any(|offer| offer == OFFERS_DIRECTORY),
             "that machine doesn't say it's a directory"
         );
-        let mut cursor = self.db.directory_cursor(&directory)?;
+        let mut cursor = self.db.directory_cursor(&directory, READER)?;
+        let mut taken = 0;
         for _ in 0..MAX_PAGES_PER_READ {
             let (entries, latest) = side
                 .listing(conn, directory, cursor, MAX_LISTING_PAGE)
@@ -388,15 +414,16 @@ impl Core {
                 entries.len()
             );
             let done = entries.is_empty();
+            taken += entries.len();
             cursor = self.take_page(side, directory, cursor, entries, latest)?;
-            self.db.set_directory_cursor(&directory, cursor)?;
+            self.db.set_directory_cursor(&directory, cursor, READER)?;
             self.db
                 .trim_found(self.sim.max_found_people, MAX_FOUND_BYTES)?;
             if done || cursor >= latest {
-                return Ok(true);
+                return Ok((true, taken));
             }
         }
-        Ok(false)
+        Ok((false, taken))
     }
 
     /// Takes in a page of a directory's lists. Numbers must rise, so each page
@@ -594,27 +621,64 @@ pub(crate) async fn ask_listing_loop(core: Arc<Core>) {
 /// A node reading its directories: at a time of its own after it starts, then
 /// now and then, and sooner if it didn't get to the end, or if the machines it
 /// met have all stopped answering (ADR 0016), though no sooner than
-/// `READ_AGAIN` after the last read.
+/// `Backoff` says after the last read.
 pub(crate) async fn read_loop(core: Arc<Core>) {
-    let again = READ_AGAIN.min(core.sim.read_every);
+    let every = core.sim.read_every;
+    let again = READ_AGAIN.min(every);
+    let mut backoff = Backoff {
+        again,
+        every,
+        empty: 0,
+    };
     tokio::time::sleep(core.sim.first_read_wait.mul_f64(random_fraction())).await;
+    // Whether this read is an early one, as no machine was left to meet.
+    let mut early = false;
     loop {
         // Messages wait for Tor, and go nowhere else (ADR 0014).
         if let Some(tor) = &core.tor {
             tor.ready().await;
         }
-        let finished = core.read_directories().await.unwrap_or(false);
-        let wait = match finished {
-            true => jitter(core.sim.read_every),
+        let read = core.read_directories().await.ok();
+        let wait = match read.as_ref().is_some_and(|read| read.finished) {
+            true => jitter(every),
             false => jitter(again),
         };
-        let soonest = tokio::time::Instant::now() + again;
-        tokio::select! {
-            _ = tokio::time::sleep(wait) => {}
+        let soonest = tokio::time::Instant::now() + backoff.after(early, read.as_ref());
+        early = tokio::select! {
+            _ = tokio::time::sleep(wait) => false,
             _ = core.read_directories_now.notified() => {
                 tokio::time::sleep_until(soonest).await;
+                true
             }
-        }
+        };
+    }
+}
+
+/// How soon a node with no machine left to meet reads again: `again` after a
+/// read, and twice as long after each early read in a row that got to the end
+/// and brought nothing new, up to `every`. So a node alone, or whose
+/// directories have nobody new, doesn't ask every few minutes for good. The
+/// usual reads don't count, so a node that met machines for months still reads
+/// soon once they all go quiet.
+struct Backoff {
+    again: Duration,
+    every: Duration,
+    /// Early reads in a row that brought nothing.
+    empty: u32,
+}
+
+impl Backoff {
+    /// Notes a read, early or not, and `None` if it failed. Returns how long
+    /// an early one waits after it.
+    fn after(&mut self, early: bool, read: Option<&Read>) -> Duration {
+        self.empty = match read {
+            Some(read) if early && read.finished && read.entries == 0 => {
+                self.empty.saturating_add(1)
+            }
+            _ => 0,
+        };
+        let doublings = self.empty.saturating_sub(1).min(16);
+        self.again.saturating_mul(1 << doublings).min(self.every)
     }
 }
 
@@ -626,6 +690,35 @@ mod tests {
     use super::*;
 
     const DATE: &str = "2026-11-01T00:00:00Z";
+
+    #[test]
+    fn a_node_with_nobody_to_meet_reads_less_often_while_reads_bring_nothing() {
+        let mut backoff = Backoff {
+            again: READ_AGAIN,
+            every: READ_EVERY,
+            empty: 0,
+        };
+        let nothing = Read {
+            finished: true,
+            entries: 0,
+        };
+        let mut minutes = |early, read| backoff.after(early, read).as_secs() / 60;
+        // The usual reads bringing nothing don't count.
+        for _ in 0..10 {
+            assert_eq!(minutes(false, Some(&nothing)), 10);
+        }
+        let waits: Vec<u64> = (0..9).map(|_| minutes(true, Some(&nothing))).collect();
+        assert_eq!(waits, [10, 20, 40, 80, 160, 320, 360, 360, 360]);
+        // One that brings something starts over, as does one that fails.
+        let something = Read {
+            finished: true,
+            entries: 1,
+        };
+        assert_eq!(minutes(true, Some(&something)), 10);
+        minutes(true, Some(&nothing));
+        assert_eq!(minutes(true, Some(&nothing)), 20);
+        assert_eq!(minutes(true, None), 10);
+    }
 
     fn key() -> SecretKey {
         SecretKey::from_bytes(&[3; 32])

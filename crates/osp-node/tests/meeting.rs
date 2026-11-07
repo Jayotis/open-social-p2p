@@ -432,6 +432,47 @@ async fn a_machine_meets_one_it_heard_of_only_from_another_with_the_directories_
     }
 }
 
+/// A node that read its directory to the end before it took machines from it,
+/// as one did before step 3, reads it again from the start and meets those on
+/// the map, instead of never hearing of them.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_node_reads_again_what_an_earlier_version_passed_over() {
+    let dir = tempfile::tempdir().unwrap();
+    let net = SimNet::new(7);
+    let carol = start_knowing(dir.path(), "Carol", &net, &[]).await;
+    let c = machine_of(&carol);
+    let (directory, _router) = fake(&net, Kind::Directory(vec![record_of(&net, c).await])).await;
+    let d = directory.key.public();
+
+    let home = dir.path().join("bob");
+    Node::init(&home, &config_knowing("Bob", &[d])).unwrap();
+    let db = rusqlite::Connection::open(home.join("osp.db")).unwrap();
+    db.execute(
+        "INSERT INTO directories_read (directory, cursor, reader) VALUES (?1, 1, 0)",
+        [d.to_string()],
+    )
+    .unwrap();
+    drop(db);
+    let bob = Node::spawn_sim(&home, sim(&net)).await.unwrap();
+    wait_until(Duration::from_secs(30), "Bob met Carol", || met(&bob, c)).await;
+    // Having read it as this version, he goes on from there next time.
+    wait_until(
+        Duration::from_secs(30),
+        "Bob read on from where he got",
+        || {
+            let asked = directory.asked.lock().unwrap();
+            asked
+                .iter()
+                .any(|request| request.contains("listing") && request.contains(r#""since":1"#))
+        },
+    )
+    .await;
+
+    for node in [bob, carol] {
+        node.shutdown().await.unwrap();
+    }
+}
+
 async fn found(node: &Node, words: &str) -> Vec<PersonInfo> {
     let req = ClientRequest::Search {
         words: words.into(),

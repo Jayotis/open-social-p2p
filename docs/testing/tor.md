@@ -102,7 +102,7 @@ osp follow IDENTITY      # the identity the search showed
 
 Following asks their own node first, and goes no further unless it speaks for them: a directory's copy can be out of date. Like any first contact, it [can take minutes](#a-first-contact-can-take-minutes). `osp following` shows if it failed.
 
-**How fresh it is.** A node reads its directories within 10 minutes of starting and then about every 6 hours, taking what changed since. A directory reads each listed node once an hour. So a new post can take hours to be found, which is fine for finding people: once followed, posts come directly.
+**How fresh it is.** A node reads its directories within 10 minutes of starting and then about every 6 hours, taking what changed since. After an update that takes a new kind of entry, it reads each from the start once. A directory reads each listed node once an hour. So a new post can take hours to be found, which is fine for finding people: once followed, posts come directly.
 
 **What a directory sees:** which machine name read its lists, and when, and which public ID asked to be listed. It sees no search words, and nothing ties the two names together except what any machine and public ID on one Tor can show ([ADR 0015](../decisions/0015-nodes-meet-first.md#consequences)).
 
@@ -125,7 +125,7 @@ A machine is **heard of** when a signed record of it arrives, **met** once it an
 - At most 256 machines. Half the places go to those known longest, so a crowd of new names can't push them out.
 - Records from one source fill at most a quarter of the rest, 32 places. A machine met still counts against whoever passed on its record, and all those that greet unasked count as one source, as names are free.
 - 6 new machines dialled an hour, 2 of them from the sources that supplied the fewest of the table's machines.
-- The directories in `config.toml` are never in the table, so a full one can't push them out. When none of the machines met answers and none is left to try, the node reads its directories again, no sooner than 10 minutes after the last time.
+- The directories in `config.toml` are never in the table, so a full one can't push them out. When none of the machines met answers and none is left to try, the node reads its directories again, no sooner than 10 minutes after the last time. Each time such a read brings nothing new, it waits twice as long, up to the usual 6 hours, so a node alone doesn't ask every 10 minutes for good.
 - Only a machine never met gives up its place to a newcomer. One heard of that doesn't answer three dials, 6 hours apart, is forgotten, and so is one met that hasn't answered for 30 days.
 
 `osp machine new` forgets them all with the name: the node starts again among machines as a stranger.
