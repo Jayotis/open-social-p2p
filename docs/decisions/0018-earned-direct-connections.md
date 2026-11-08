@@ -119,7 +119,7 @@ Offered once its tests pass, with yes recommended. Existing nodes keep their rul
 
 - **It doesn't stop a patient attacker.** It makes them pay. At a few hundred MB a month for each node, a rented server with a few terabytes could still reach thousands. Meanwhile it does real work. This is a price, not a wall.
 - A rate cap doesn't protect one node: one earned peer is enough to get its address.
-- **Aiming at one person is harder.** A peer earns a place only with a node that keeps fetching from it, and it can't make a node do that. It can try, by hosting what that person watches and serving it fast, so the price check tries that too. Carrying for that person counts as well, but only as a hop the person's node picked: at the host's end that takes standing first, and at the viewer's end a hop sees an address, not an account. If it does get there, it knows the address and the public ID, and only an alias keeps the name from it.
+- **Aiming at one person is harder.** A peer earns a place only with a node that keeps fetching from it, and it can't make a node do that. It can try, by hosting what that person watches and serving it fast, so the price check tries that too. Carrying for that person counts as well, but only as a hop the person's node picked, which takes carrying for it on several days first: a newcomer starts in the middle, seeing neither end. If it does get there, it knows the address and the public ID, and only an alias keeps the name from it.
 
 **Responsibility.** A follower's node shares copies of what its owner follows, and an earned peer can see its address doing so. Each owner answers for what their node sends, and setup says so. They can drop a file with [ADR 0019](0019-taking-posts-and-media-down.md)'s `osp block`.
 
