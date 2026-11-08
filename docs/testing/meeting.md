@@ -1,6 +1,6 @@
 # Machines meeting in the simulator
 
-**Status:** ADR 0015's step 3 gate, run once on 2026-11-06: all three marks passed ([results](#results)). The run and its pass marks below were fixed before it ran. [Newcomers](#newcomers), run on 2026-11-07: marks 5 and 6 missed, before and with a fix that let an operator in more easily; not merged.
+**Status:** ADR 0015's step 3 gate, run once on 2026-11-06: all three marks passed ([results](#results)). The run and its pass marks below were fixed before it ran. [Newcomers](#newcomers), run four times on 2026-11-07 and 08, the last two for ADR 0016's stage A2: marks 5 and 6 missed each time, by fewer newcomers as rules were added. In the last run, the operator's names not yet known were within 40 at the end, but not throughout.
 
 A node's machine name meets other machines on its own ([ADR 0015](../decisions/0015-nodes-meet-first.md), step 3), within the limits and the three rules of [ADR 0016](../decisions/0016-machine-acquaintances.md#keeping-discovery-open)'s stage A. How it works, and how to look at a real node's, is in [Tor](tor.md#machines-meeting). This run checks the gate's three claims on 100 nodes: a node left alone meets others, it keeps meeting them with the directory gone, and one operator's crowd of names can't push out the machines it knows.
 
@@ -97,32 +97,40 @@ The first three marks apply to the established nodes as before. Recorded too: ho
 
 Not simulated: a newcomer that knows no working directory. A node can only start from a directory today; starting from a machine someone gives you is a feature of its own.
 
-**Results**, 2026-11-07: `1f288a2`, the code before, and `933815a`, with a fix found from the first run's figures, one after the other on the NVMe partition. Each line is a median over the nodes, with the lowest and highest.
+**Results**, 2026-11-07 and 08, four runs one after the other on the NVMe partition: `1f288a2`, the code before; `933815a`, with turns for machines that greet, found from the first run's figures; then ADR 0016's stage A2, `999c9d9` adding the crowd limit and `aa5417a` a greeting first. Each line is a median over the nodes, with the lowest and highest.
 
-| At the end unless said | Before (`1f288a2`) | With the fix (`933815a`) |
-| --- | --- | --- |
-| Established honest machines each newcomer met | 139 (134 to 148) | 113 (101 to 124) |
-| Simulated hours for a newcomer to meet 3 | 3 (2 to 4) | 3 (2 to 4) |
-| Established nodes holding each newcomer | 8 (0 to 46) | 22 (6 to 84) |
-| … that met it | 2 (0 to 26) | 10 (3 to 62) |
-| … through another machine's record | 0 (0 to 0) | 1 (0 to 13) |
-| For comparison, established nodes that met an established machine | 184 (1 to 299) | 146 (17 to 299) |
-| … through another machine's record | 165 (0 to 297) | 124 (3 to 283) |
-| Machines in an established node's table when the newcomers arrived | 189 (157 to 217) | 258 (256 to 264) |
-| Honest machines each established node met | 191 (172 to 200) | 161 (94 to 178) |
-| The operator's names held, of 100 | 1 (0 to 9) | 47 (32 to 78) |
-| … in places kept longest | 0 (0 to 4) | 9 (2 to 30) |
-| Fakes held | 0 (0 to 1) | 0 (0 to 7) |
-| Times the operator was asked `Known` | 224 | 11,181 |
-| Tor circuits in the last simulated day, estimated | 483 (302 to 624) | 447 (331 to 622) |
-| Marks 1 to 4 | met | met |
-| 5. Each newcomer met by at least 10 established nodes | **missed: 14 of 50** | **missed: 29 of 50** |
-| 6. Each newcomer passed on | **missed: 0 of 50** | **missed: 30 of 50** |
+| At the end unless said | Before (`1f288a2`) | Turns (`933815a`) | And the crowd limit (`999c9d9`) | And a greeting first (`aa5417a`) |
+| --- | --- | --- | --- | --- |
+| Established honest machines each newcomer met | 139 (134 to 148) | 113 (101 to 124) | 116 (104 to 130) | 113 (103 to 123) |
+| Simulated hours for a newcomer to meet 3 | 3 (2 to 4) | 3 (2 to 4) | 3 (2 to 4) | 3 (2 to 4) |
+| Established nodes holding each newcomer | 8 (0 to 46) | 22 (6 to 84) | 19 (3 to 58) | 22 (6 to 48) |
+| … that met it | 2 (0 to 26) | 10 (3 to 62) | 10 (2 to 43) | 12 (4 to 25) |
+| … through another machine's record | 0 (0 to 0) | 1 (0 to 13) | 2 (0 to 20) | 3 (0 to 17) |
+| For comparison, established nodes that met an established machine | 184 (1 to 299) | 146 (17 to 299) | 152 (27 to 299) | 153 (20 to 299) |
+| … through another machine's record | 165 (0 to 297) | 124 (3 to 283) | 130 (2 to 289) | 127 (0 to 283) |
+| Machines in an established node's table when the newcomers arrived | 189 (157 to 217) | 258 (256 to 264) | 257 (238 to 264) | 256 (220 to 264) |
+| Honest machines each established node met | 191 (172 to 200) | 161 (94 to 178) | 164 (146 to 177) | 161 (136 to 175) |
+| The operator's names held, of 100 | 1 (0 to 9) | 47 (32 to 78) | 47 (35 to 65) | 50 (36 to 62) |
+| … known | not counted | not counted | not counted | 19 (10 to 30) |
+| … not yet known | not counted | not counted | not counted | 31 (23 to 40) |
+| … in places kept longest | 0 (0 to 4) | 9 (2 to 30) | 8 (2 to 15) | 9 (4 to 18) |
+| Fakes held | 0 (0 to 1) | 0 (0 to 7) | 0 (0 to 1) | 0 (0 to 1) |
+| Times the operator was asked `Known` | 224 | 11,181 | 11,308 | 12,093 |
+| Tor circuits in the last simulated day, estimated | 483 (302 to 624) | 447 (331 to 622) | 448 (332 to 606) | 441 (317 to 612) |
+| Marks 1 to 4 | met | met | met | met |
+| 5. Each newcomer met by at least 10 established nodes | **missed: 14 of 50** | **missed: 29 of 50** | **missed: 25 of 50** | **missed: 34 of 50** |
+| 6. Each newcomer passed on | **missed: 0 of 50** | **missed: 30 of 50** | **missed: 42 of 50** | **missed: 40 of 50** |
+| Stage A2's mark: the operator's names not yet known, within 40 on each node | – | – | not counted; of all its names, 276 of 300 nodes held over 40 | **met at the end, at most 40; missed during the run, up to 58** |
 
 - **Before, newcomers met others but were seldom met.** Nodes held them for a while, a median of 10 each at 38 minutes, then dropped them as their tables filled. A node dials what it heard of first, and a machine that greets is heard of last, so newcomers waited behind everything else; never met, they gave up their places.
-- **The fix:** 1 of the 6 dials an hour goes to a machine that greeted and hasn't been met, picked at random. When the 32 places of those who greet are full, or the table is, a machine that greets takes one of 8 places in turn, in place of the one that took a turn longest ago, met or not.
+- **Turns:** 1 of the 6 dials an hour goes to a machine that greeted and hasn't been met, picked at random. When the 32 places of those who greet are full, or the table is, a machine that greets takes one of 8 places in turn, in place of the one that took a turn longest ago, met or not.
 - **With it, newcomers were met by 10 nodes instead of 2, and 30 of 50 were passed on instead of none.** Marks 5 and 6 were still missed.
 - **The operator gained more.** 47 of its names were held instead of 1, 9 of them in places kept longest. The dial to those who greet gave its names a first meeting within hours: 31 were held at 20 minutes, before the newcomers came. After that its names passed on one another, each counted as a source of its own, as in the run above with 100 nodes, where it held all 30. A newcomer has no other names to pass on. With the operator's names taking places and dials, the honest machines a node met fell from 191 to 161.
-- **Before the fix, the operator was kept out by what kept newcomers out:** its names were never dialled.
+- **Before turns, the operator was kept out by what kept newcomers out:** its names were never dialled.
+- **Stage A2 added two rules** ([ADR 0016](../decisions/0016-machine-acquaintances.md#keeping-discovery-open)), one run each. `999c9d9`: what a machine first met through its greeting passes on counts against those who greet, until that machine is known. `aa5417a`, on top: when those places are full, a machine that greets takes the place of a record a greeter passed on before it takes a turn.
+- **Newcomers did a little better, and still missed.** With both rules, each was met by 12 established nodes, 34 of 50 by at least 10, and 40 were passed on. The 16 short of 10 were met by 4 to 9. Being met was still rising when the run ended: from a mean of 8 established nodes for each newcomer at 60 minutes to 12 at 75, while those holding one stayed near 23 from 60 minutes on. Newcomers kept their places and waited for a dial: the one an hour for machines that greeted is picked at random among all those waiting, established machines and the operator's names among them.
+- **The operator's names held didn't fall:** 50 of its 100, against 47. But 19 of them were known, and being known lets a name out of the places of those who greet, standing in for checked work until carrying is built. Each known name then passes on the others, with places of its own.
+- **So stage A2's mark counts the names not yet known.** That was settled after the `999c9d9` run, which didn't count them apart. The run's 12-hour clock lets the operator's first names be known at 27 minutes, 48 simulated hours before the end, so counting all its names would count those the rule lets out. On the real 30-day clock, none would be known by then. At the end of `aa5417a`, a node held a median of 31 not yet known, and at most 40.
+- **During the run, nodes held more.** From 28 minutes, as the operator's first names became known, the nodes holding over 40 not yet known rose to 135 of the 300 at 57 minutes, with at most 58 on one node at 39 minutes. They fell to none by the end, as more of the names held became known. Two things let these in, and the run doesn't record which did: names already known passing on the rest, as above; and honest machines passing on names they met by greeting, which count against that honest machine, since `Known` says nothing of how a machine was met. The second alone, before any name could be known, put at most 4 nodes over 40, with at most 46 names (both runs, up to 26 minutes).
 
-**What it shows.** A node can't tell a newcomer's greeting from an operator's, so a way in for one is a way in for the other. Once in, a crowd of names grows by passing on its own names; a newcomer can't. A crowd that came in through greetings should stay within the share of those who greet, however many of its names refer one another, until they've been known a while. So the fix isn't merged: nodes keep the code before it, which keeps out both, and it goes into the revision of ADR 0016 together with that limit, measured once there. Neither shows at the invited alpha's size, where tables don't fill.
+**What it shows.** A node can't tell a newcomer's greeting from an operator's, so a way in for one is a way in for the other. Once in, a crowd of names grows by passing on its own names; a newcomer can't. After the first two runs, ADR 0016's revision kept a crowd within the places of those who greet, and stage A2 built that, with being known standing in for checked work. It held what came in through greetings, but not what known names and honest machines passed on, so a node still held a median of 50 of the operator's names, a fifth of its table. Stage B lets a name out only for jobs it carried that the node checked, which answering under many names doesn't earn, and its run counts all the operator's names, known or not. Newcomers were met and passed on more than before A2, but slowly: they kept their places and waited for a dial. Stage A3's introductions put a machine introduced ahead of those that only greeted, in the same dial. So stage A2 is merged with its gate missed (2026-11-08): newcomers are met and passed on far more than with the code before it, stage B bounds what the operator gained, and stage A3 builds on A2's dial and is measured against it. Neither shows at the invited alpha's size, where tables don't fill.
