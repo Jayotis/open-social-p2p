@@ -85,8 +85,11 @@ pub struct View {
     pub met_through_machines: usize,
     pub met_through_directory: usize,
     pub met_greeted: usize,
-    /// The operator's names held, at any stage, and in places kept longest.
+    /// The operator's names held, at any stage; those of them known, whose
+    /// records count as sources of their own; and those in places kept
+    /// longest.
     pub hostile: usize,
+    pub hostile_known: usize,
     pub hostile_kept_longest: usize,
     /// Fakes held: records of machines that never existed.
     pub fakes: usize,
@@ -185,6 +188,7 @@ fn view(node: &Node, kinds: &Kinds) -> View {
             v.newcomers_met += (a.stage != Stage::Heard) as usize;
         } else if kinds.hostile.contains(&a.machine) {
             v.hostile += 1;
+            v.hostile_known += (a.stage == Stage::Known) as usize;
             v.hostile_kept_longest += a.kept_longest as usize;
         } else {
             v.fakes += 1;
@@ -731,8 +735,9 @@ impl MeetReport {
         );
         let _ = writeln!(
             out,
-            "The operator's names held: {}; in places kept longest: {}; fakes held: {}",
+            "The operator's names held: {}; known: {}; in places kept longest: {}; fakes held: {}",
             range(&pick(|v| v.hostile)),
+            range(&pick(|v| v.hostile_known)),
             range(&pick(|v| v.hostile_kept_longest)),
             range(&pick(|v| v.fakes))
         );

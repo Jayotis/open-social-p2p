@@ -484,9 +484,9 @@ impl Table {
         let shares = self.shares(&protected);
         let share = shares.get(&source.share()).copied().unwrap_or(0);
         if share >= PER_SOURCE {
-            // Only a machine that greeted takes a turn, not those it passes on.
+            // Only a machine that greeted gets in, not those it passes on.
             return Ok(match source {
-                Source::Greeted => self.take_turn(record, machine, published, &protected, now),
+                Source::Greeted => self.greeter_in(record, machine, published, &protected, now),
                 _ => Heard::SourceFull,
             });
         }
@@ -505,7 +505,7 @@ impl Table {
             match given_up {
                 Some(other) => self.remove(&other),
                 None if source == Source::Greeted => {
-                    return Ok(self.take_turn(record, machine, published, &protected, now));
+                    return Ok(self.greeter_in(record, machine, published, &protected, now));
                 }
                 None => return Ok(Heard::Full),
             }
@@ -515,7 +515,36 @@ impl Table {
     }
 
     /// A machine that greeted this one, with no place for it otherwise, takes
-    /// one of `GREETER_TURNS` places beyond the limits, in place of the greeter
+    /// the place of a record passed on through those who greet: one never met
+    /// first, then the one heard of longest ago. A greeting comes before what
+    /// greeters pass on, so a crowd passing on its own names gives way to a
+    /// newcomer, which has none to pass on. With none left, it takes a turn.
+    fn greeter_in(
+        &mut self,
+        record: &MachineRecord,
+        machine: EndpointId,
+        published: i64,
+        protected: &HashSet<EndpointId>,
+        now: i64,
+    ) -> Heard {
+        let passed_on = self
+            .entries
+            .values()
+            .filter(|e| matches!(e.source, Source::ThroughGreeter(_)))
+            .filter(|e| !protected.contains(&e.machine))
+            .min_by_key(|e| (e.met_ms.is_some(), e.heard_ms, e.machine))
+            .map(|e| e.machine);
+        let Some(other) = passed_on else {
+            return self.take_turn(record, machine, published, protected, now);
+        };
+        self.remove(&other);
+        self.insert(record, machine, published, Source::Greeted, now);
+        Heard::Added
+    }
+
+    /// A machine that greeted this one, with no place for it otherwise and
+    /// none passed on through greeters to give one up, takes one of
+    /// `GREETER_TURNS` places beyond the limits, in place of the greeter
     /// that took one longest ago. Met or not, each gives its place up in turn,
     /// so a crowd greeting under many names can't keep them. Those passed on
     /// through greeters count in the share, but never take a turn.
@@ -1391,9 +1420,45 @@ mod tests {
     }
 
     #[test]
+    fn a_machine_greeting_takes_the_place_of_one_passed_on_through_greeters() {
+        let now = start();
+        let mut t = table();
+        // One name greets and is met, and what it passes on fills the share.
+        let greeter = hear_many(&mut t, Source::Greeted, 1, now)[0];
+        meet(&mut t, &greeter, now);
+        let passed = hear_many(&mut t, Source::Machine(greeter), PER_SOURCE, now + 1);
+        assert_eq!(passed.len(), PER_SOURCE - 1);
+        meet(&mut t, &passed[0], now + 2);
+
+        // Machines greeting take their places, those never met first.
+        let greeting = hear_many(&mut t, Source::Greeted, PER_SOURCE - 2, now + 3);
+        assert_eq!(greeting.len(), PER_SOURCE - 2);
+        assert_eq!(passed.iter().filter(|m| t.get(m).is_some()).count(), 1);
+        assert!(t.get(&passed[0]).is_some());
+        // Then the one met; with none left, a machine greeting takes a turn.
+        assert_eq!(hear_many(&mut t, Source::Greeted, 1, now + 4).len(), 1);
+        assert!(t.get(&passed[0]).is_none());
+        let (_, record) = machine(now + 5);
+        assert_eq!(
+            t.hear(&record, Source::Greeted, now + 5).unwrap(),
+            Heard::Turn
+        );
+        // The name that greeted keeps its place: it greeted too.
+        assert!(t.get(&greeter).is_some());
+        assert_eq!(
+            shares_of(&t, now + 5).get(&Source::Greeted),
+            Some(&(PER_SOURCE + 1))
+        );
+    }
+
+    #[test]
     fn sources_read_back_as_written() {
         let m = machine(start()).0;
-        for source in [Source::Greeted, Source::Machine(m), Source::ThroughGreeter(m)] {
+        for source in [
+            Source::Greeted,
+            Source::Machine(m),
+            Source::ThroughGreeter(m),
+        ] {
             assert_eq!(Source::from_db(&source.to_db()).unwrap(), source);
         }
         assert!(Source::from_db("through:nonsense").is_err());
