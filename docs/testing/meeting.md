@@ -148,7 +148,7 @@ Added on 2026-11-08, before this run, for [ADR 0016](../decisions/0016-machine-a
 ```sh
 target/release/osp-meet --dir /path/on/disk/meet --out introductions.json \
   --honest 300 --hostile 100 --hostile-mins 15 --newcomers 50 --newcomers-mins 25 \
-  --directory-off-mins 45 --minutes 75 --hostile-introduces --compare-met-by 12 \
+  --directory-off-mins 45 --minutes 75 --introductions --hostile-introduces --compare-met-by 12 \
   --label "$(git rev-parse --short HEAD)"
 ```
 
@@ -161,3 +161,53 @@ target/release/osp-meet --dir /path/on/disk/meet --out introductions.json \
 Recorded as well: the operator's names counting against those who greet, held through an introduction, and the most on one node during the run; each side's requests passed on, refused, accepted and declined.
 
 **What it decides.** Whether stage A3 is merged. If a mark is missed, the cause is looked for in the code, fixed, and run once more.
+
+### Introductions results
+
+2026-11-08, two runs one after the other on the NVMe partition: `8f68479`, introductions as first built, then `0f0d40d`, with what its figures showed fixed (below). Against them, stage A2's last run, `aa5417a`, [above](#newcomers). Each line is a median, with the lowest and highest.
+
+| At the end unless said | Stage A2 (`aa5417a`) | Introductions (`8f68479`) | And the fixes (`0f0d40d`) |
+| --- | --- | --- | --- |
+| Established honest machines each newcomer met | 113 (103 to 123) | 90 (72 to 103) | 101 (87 to 113) |
+| Simulated hours for a newcomer to meet 3 | 3 (2 to 4) | 3 (2 to 4) | 3 (2 to 5) |
+| Established nodes holding each newcomer | 22 (6 to 48) | 20 (4 to 43) | 17 (1 to 60) |
+| … that met it | 12 (4 to 25) | 8 (3 to 28) | 8 (1 to 37) |
+| … through another machine's record | 3 (0 to 17) | 1 (0 to 6) | 2 (0 to 15) |
+| … through an introduction | – | 0 (0 to 2) | 1 (0 to 4) |
+| Requests each newcomer made to be introduced | – | 192 (175 to 206) | 197 (79 to 210) |
+| … passed on, by the word of the machine asked | – | 64 (47 to 84) | 72 (27 to 97) |
+| For comparison, established nodes that met an established machine | 153 (20 to 299) | 113 (16 to 299) | 145 (18 to 299) |
+| … through another machine's record | 127 (0 to 283) | 97 (0 to 286) | 125 (0 to 271) |
+| Machines in an established node's table when the newcomers arrived | 256 (220 to 264) | 244 (182 to 264) | 256 (231 to 264) |
+| Honest machines each established node met | 161 (136 to 175) | 131 (99 to 150) | 156 (127 to 176) |
+| The operator's names held, of 100 | 50 (36 to 62) | 66 (51 to 82) | 56 (41 to 73) |
+| … known | 19 (10 to 30) | 21 (10 to 32) | 21 (11 to 32) |
+| … not yet known | 31 (23 to 40) | 45 (32 to 56) | 35 (25 to 48) |
+| … counting against those who greet | not counted | 7 (0 to 15) | 4 (0 to 13) |
+| … through an introduction | – | 3 (0 to 10) | 1 (0 to 5) |
+| … in places kept longest | 9 (4 to 18) | 17 (8 to 28) | 11 (3 to 23) |
+| Most not yet known on one node during the run | 58, at 39 min | 66, at 53 min | 62, at 32 min |
+| Fakes held | 0 (0 to 1) | 0 (0 to 6) | 0 (0 to 1) |
+| Introductions held at the end, over all nodes: newcomers' and the operator's | – | 19 and 1,035 | 37 and 378 |
+| Requests the established nodes passed on, and refused at their limits | – | 10,760 and 57,699 | 10,602 and 22,749 |
+| … refused by each established node | – | 133 (25 to 811) | 51 (0 to 428) |
+| Introductions the established nodes accepted, and declined | – | 1,905 and 24,653 | 967 and 26,097 |
+| The established nodes' own requests, and passed on | not counted | not counted | 11,821 and 3,032 |
+| The operator's requests, and passed on; its introductions of its own names | – | 14,898 and 3,698; 18,986 | 14,897 and 6,278; 18,996 |
+| Times the operator was asked `Known` | 12,093 | 15,255 | 14,135 |
+| Tor circuits in the last simulated day, estimated | 441 (317 to 612) | 463 (341 to 670) | 520 (385 to 696) |
+| Marks 1 to 4 | met | met | met |
+| 5. Each newcomer met by at least 10 established nodes | **missed: 34 of 50** | **missed: 15 of 50** | **missed: 19 of 50** |
+| 6. Each newcomer passed on | **missed: 40 of 50** | **missed: 31 of 50** | **missed: 34 of 50** |
+| 7. The operator's names not yet known, within 40 on each node | met at the end, at most 40 | **missed: at most 56** | **missed: at most 48** |
+| 8. Newcomers met by more established nodes than with A2: a median above 12 | – | **missed: 8** | **missed: 8** |
+| 9. Each newcomer introduced, while the operator used up introducers' limits | – | **missed: 18 of 50**, all 300 introducers refusing some | **missed: 25 of 50**, 298 of 300 refusing some |
+
+- **The first run missed marks 5 to 9, for three reasons found in its figures.** Established machines kept asking: the bar was 32 greetings, counting only machines met before they greeted, and their requests used up introducers' 12 a day, so newcomers' were seldom passed on. Most of the 64 each newcomer counted as passed on were the operator's names saying yes and dropping them. Introducers passed requests on in the round's own dials, which held those dials up: established nodes met fewer honest machines from 10 minutes on, 131 at the end against 161. And the operator's names introduced one another: nodes held 670 of them through introductions at 24 minutes, before any of its names could be known.
+- **The fixes, in `0f0d40d`:** a machine asks while fewer than 10 machines it met have greeted it, met before or after they greeted; requests are passed on in conversations of their own, alongside the round's; and an introducer still among those who greet introduces no one ([ADR 0021](../decisions/0021-introduced-machines-count-among-those-who-greet.md)). Why an introduction is declined is counted from this run.
+- **With them, established nodes met as many machines as with A2,** 156 against 161, and refused fewer requests at their limits, 22,749 against 57,699, but 298 of 300 still refused some. They asked 11,821 times, about 40 each, against a median of 197 for each newcomer.
+- **Newcomers were still seldom introduced.** At the end, established nodes held newcomers through an introduction 37 times in all, and the operator's names 378 times, of 967 introductions accepted. Over half the declines, 14,537 of 26,097, were because the machine introduced to hadn't met the introducer 1.2 simulated hours before, or the introducer's records had failed. The rest: already met or held, 4,539; no place, 4,306; the introducer among those who greet, 2,321; the hour's one taken, 394. The counts aren't split by who asked.
+- **Newcomers were met by fewer established nodes than with A2 alone:** a median of 8 against 12, and 19 of 50 by at least 10, against 34. They were held by fewer, 17 against 22, and the run doesn't show why. Being met was still rising at the end, as with A2: from a mean of 5.9 established nodes for each newcomer at 60 minutes to 9.4 at 75, against A2's 8.1 to 11.9.
+- **The operator's names not yet known were fewer than in the first run, more than with A2:** a median of 35 at the end, at most 48 on one node, against A2's 31 and 40, and up to 62 during the run. A median of 4 counted against those who greet and 1 came through an introduction; the rest were held as records other machines passed on, as with A2.
+
+**What it shows.** Introductions, as built, help one operator more than newcomers, which is one of [ADR 0016](../decisions/0016-machine-acquaintances.md#validation)'s reasons to revisit them. Each of the operator's names asks every honest machine it greeted, and says yes to every request it's asked to pass on. From the code, an introducer passes a newcomer's request on to a machine it met, whether or not that machine met it; the machine accepts only from an introducer it met itself, 1.2 hours before. So most of newcomers' requests weren't passed on, and few of those passed on were accepted. And newcomers were met by fewer nodes than with A2 alone, for reasons the run doesn't show. Stage A3 missed its gate in both runs, and was merged on 2026-11-08 with introductions off by default, so a node behaves as with A2. This run turns them on with `--introductions`, and a node can turn each part on in `config.toml` ([how](tor.md#machines-meeting)). Neither effect shows at the invited alpha's size, where tables don't fill.

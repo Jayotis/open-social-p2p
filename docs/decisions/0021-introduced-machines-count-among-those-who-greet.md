@@ -1,6 +1,6 @@
 # ADR 0021: A machine introduced counts among those who greet
 
-**Status:** Accepted (2026-11-08), while building [ADR 0016](0016-machine-acquaintances.md)'s stage A3. It changes two rules of ADR 0016's introductions; the rest stand. Built with stage A3 (2026-11-08). The second rule, and a lower bar for asking, were added the same day after [stage A3's first run](../testing/meeting.md#introductions) missed its gate.
+**Status:** Accepted (2026-11-08), while building [ADR 0016](0016-machine-acquaintances.md)'s stage A3. It changes two rules of ADR 0016's introductions; the rest stand. Built with stage A3 (2026-11-08). The second rule, and a lower bar for asking, were added the same day after [stage A3's first run](../testing/meeting.md#introductions) missed its gate. The second run missed it too ([results](../testing/meeting.md#introductions-results)): at the end, nodes held newcomers through an introduction 37 times and one operator's names 378 times, and newcomers were met by fewer nodes than with stage A2 alone. So introductions are off by default (2026-11-08); these rules apply when a node turns them on.
 
 ## Context
 
