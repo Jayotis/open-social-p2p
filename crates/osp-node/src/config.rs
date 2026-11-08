@@ -156,8 +156,10 @@ impl Default for MachineConfig {
     }
 }
 
-/// Introductions between machines, under machine names only (ADR 0016).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// Introductions between machines, under machine names only (ADR 0016). Off
+/// by default: in stage A3's run they helped one operator's names more than
+/// newcomers (docs/testing/meeting.md, "Introductions results").
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct IntroductionsConfig {
     /// While few machines have met this one, ask machines it meets to
@@ -169,14 +171,13 @@ pub struct IntroductionsConfig {
     pub accept: bool,
 }
 
-impl Default for IntroductionsConfig {
-    fn default() -> Self {
-        Self {
-            ask: true,
-            pass_on: true,
-            accept: true,
-        }
-    }
+impl IntroductionsConfig {
+    /// Every part on, as in stage A3's tests and runs.
+    pub const ON: Self = Self {
+        ask: true,
+        pass_on: true,
+        accept: true,
+    };
 }
 
 /// Directories (ADR 0015), being built.

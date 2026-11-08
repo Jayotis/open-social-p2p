@@ -18,7 +18,8 @@ use iroh::{
     protocol::{AcceptError, ProtocolHandler, Router},
 };
 use osp_node::{
-    Acquaintance, Config, KnownDirectory, MeetingTimes, Node, SimSettings, Stage,
+    Acquaintance, Config, IntroductionsConfig, KnownDirectory, MeetingTimes, Node, SimSettings,
+    Stage,
     simnet::{self, Link, SimNet},
 };
 use osp_proto::{
@@ -102,6 +103,22 @@ async fn start_sim(root: &Path, name: &str, config: Config, settings: SimSetting
 /// A node knowing these directories.
 async fn start_knowing(root: &Path, name: &str, net: &SimNet, directories: &[EndpointId]) -> Node {
     start_sim(root, name, config_knowing(name, directories), sim(net)).await
+}
+
+/// The same, with introductions on, as they're off by default.
+async fn start_introducing(
+    root: &Path,
+    name: &str,
+    net: &SimNet,
+    directories: &[EndpointId],
+) -> Node {
+    start_sim(root, name, introducing(name, directories), sim(net)).await
+}
+
+fn introducing(name: &str, directories: &[EndpointId]) -> Config {
+    let mut config = config_knowing(name, directories);
+    config.machine.introductions = IntroductionsConfig::ON;
+    config
 }
 
 fn config_knowing(name: &str, directories: &[EndpointId]) -> Config {
@@ -362,7 +379,7 @@ async fn fake(net: &SimNet, kind: Kind) -> (FakeMachine, Router) {
 /// Kim and Alice, each having met the other long enough ago for Alice's
 /// introductions to count with Kim.
 async fn kim_and_alice(root: &Path, net: &SimNet) -> (Node, Node, Vec<Router>) {
-    let alice = start_knowing(root, "Alice", net, &[]).await;
+    let alice = start_introducing(root, "Alice", net, &[]).await;
     let a = machine_of(&alice);
     // Alice's record, from a machine that stays to answer when she greets it
     // back, as one gone would hold up her rounds.
@@ -373,7 +390,7 @@ async fn kim_and_alice(root: &Path, net: &SimNet) -> (Node, Node, Vec<Router>) {
     // count among those who greet Kim and may introduce; Alice, greeted,
     // meets Kim back.
     let (kims, router) = fake(net, Kind::Directory(vec![record])).await;
-    let kim = start_knowing(root, "Kim", net, &[kims.key.public()]).await;
+    let kim = start_introducing(root, "Kim", net, &[kims.key.public()]).await;
     let k = machine_of(&kim);
     wait_until(Duration::from_secs(30), "Kim and Alice met", || {
         met(&alice, k) && met(&kim, a)
@@ -466,7 +483,7 @@ async fn nodes_ask_to_be_introduced_on_their_own_and_each_part_can_be_turned_off
     let a = machine_of(&alice);
     let (jimmys, _jimmys_router) =
         fake(&net, Kind::Directory(vec![record_of(&net, a).await])).await;
-    let jimmy = start_knowing(dir.path(), "Jimmy", &net, &[jimmys.key.public()]).await;
+    let jimmy = start_introducing(dir.path(), "Jimmy", &net, &[jimmys.key.public()]).await;
     wait_until(
         Duration::from_secs(30),
         "Jimmy asked and Alice passed it on",
@@ -478,7 +495,7 @@ async fn nodes_ask_to_be_introduced_on_their_own_and_each_part_can_be_turned_off
     .await;
 
     // Lee won't ask.
-    let mut config = config_knowing("Lee", &[jimmys.key.public()]);
+    let mut config = introducing("Lee", &[jimmys.key.public()]);
     config.machine.introductions.ask = false;
     let lee = start_sim(dir.path(), "Lee", config, sim(&net)).await;
     wait_until(Duration::from_secs(30), "Lee met Alice", || met(&lee, a)).await;
@@ -486,7 +503,7 @@ async fn nodes_ask_to_be_introduced_on_their_own_and_each_part_can_be_turned_off
     assert_eq!(lee.introductions().asked, 0);
 
     // A machine that won't pass them on says so to every request.
-    let mut config = config_knowing("Max", &[]);
+    let mut config = introducing("Max", &[]);
     config.machine.introductions.pass_on = false;
     let max = start_sim(dir.path(), "Max", config, sim(&net)).await;
     let (endpoint, key) = stranger(&net).await;

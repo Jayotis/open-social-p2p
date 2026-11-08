@@ -35,9 +35,13 @@ struct Cli {
     directory_off_mins: u64,
     #[arg(long, default_value_t = 25)]
     hostile_mins: u64,
-    /// The operator's names ask honest machines to introduce them, and
-    /// introduce one another (ADR 0016's stage A3).
+    /// Honest nodes and newcomers ask, pass on and accept introductions (ADR
+    /// 0016's stage A3), off by default on a real node.
     #[arg(long)]
+    introductions: bool,
+    /// The operator's names ask honest machines to introduce them, and
+    /// introduce one another.
+    #[arg(long, requires = "introductions")]
     hostile_introduces: bool,
     /// Hours, in the simulation, before a machine's introductions count. By
     /// default a tenth of `--known-after-hours`, as 3 days are of 30.
@@ -87,6 +91,7 @@ async fn main() -> Result<()> {
         hostile_greets: cli.hostile_greets,
         speed: cli.speed,
         known_after_hours: cli.known_after_hours,
+        introductions: cli.introductions,
         hostile_introduces: cli.hostile_introduces,
         introducer_after_hours: cli
             .introducer_after_hours
