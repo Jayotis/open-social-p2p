@@ -25,7 +25,7 @@ use std::{
 use anyhow::{Context, Result};
 use n0_future::{BufferedStreamExt, StreamExt, stream};
 use osp_node::{
-    Config, KnownDirectory, MeetingTimes, Node, SimSettings, Stage,
+    Config, IntroductionsConfig, KnownDirectory, MeetingTimes, Node, SimSettings, Stage,
     simnet::{self, Link, SimNet, TorDelay},
 };
 use osp_proto::{
@@ -73,6 +73,9 @@ pub struct MeetScenario {
     /// In real time, from the start.
     pub directory_off_after: Duration,
     pub hostile_after: Duration,
+    /// Whether honest nodes and newcomers ask, pass on and accept
+    /// introductions (ADR 0016's stage A3), off by default on a real node.
+    pub introductions: bool,
     /// Whether the operator's names ask honest machines to introduce them, as
     /// often as those pass on for one machine, and introduce one another to
     /// honest machines that met them (ADR 0016's stage A3).
@@ -527,6 +530,9 @@ async fn start_honest(
         .map(|i| {
             let mut config = Config::local_test(&format!("Node {i}"));
             config.directory.known = vec![known.clone()];
+            if s.introductions {
+                config.machine.introductions = IntroductionsConfig::ON;
+            }
             let home = s.dir.join(format!("node-{i}"));
             let settings = settings();
             async move { start(&home, config, settings).await }
@@ -1097,52 +1103,54 @@ impl MeetReport {
                 range(&self.established_met_by),
                 range(&self.established_passed_on)
             );
-            let pick64 = |f: fn(&Newcomer) -> u64| -> Vec<usize> {
-                newcomers.iter().map(|n| f(n) as usize).collect()
-            };
-            let _ = writeln!(
-                out,
-                "  established nodes holding each newcomer through an introduction: {}; that met it so: {}",
-                range(&pick(|n| n.introduced_by)),
-                range(&pick(|n| n.met_through_introduction))
-            );
-            let _ = writeln!(
-                out,
-                "  requests each newcomer made to be introduced: {}; passed on: {}",
-                range(&pick64(|n| n.asked)),
-                range(&pick64(|n| n.asked_passed_on))
-            );
-            let i = &self.introductions;
-            let refused: Vec<usize> = i.refused_by_each.iter().map(|r| *r as usize).collect();
-            let _ = writeln!(
-                out,
-                "Introductions: the established nodes passed on {} and refused {} at their limits (each: {}), accepted {} and declined {}",
-                i.passed_on,
-                i.refused_at_limit,
-                range(&refused),
-                i.accepted,
-                i.declined
-            );
-            let _ = writeln!(
-                out,
-                "  declined: introducer not met long enough or its records failed {}, among those who greet {}; the hour's one taken {}; already met or held {}; no place {}",
-                i.declined_untrusted,
-                i.declined_greeter,
-                i.declined_at_limit,
-                i.declined_held,
-                i.declined_no_place
-            );
-            let _ = writeln!(
-                out,
-                "  the established nodes asked {} times, {} passed on by the word of the machine asked",
-                i.asked, i.asked_passed_on
-            );
-            if s.hostile_introduces {
+            if s.introductions {
+                let pick64 = |f: fn(&Newcomer) -> u64| -> Vec<usize> {
+                    newcomers.iter().map(|n| f(n) as usize).collect()
+                };
                 let _ = writeln!(
                     out,
-                    "  the operator asked {} times, {} passed on, and passed on {} introductions of its own names",
-                    i.hostile_asked, i.hostile_asked_passed_on, i.hostile_introduced
+                    "  established nodes holding each newcomer through an introduction: {}; that met it so: {}",
+                    range(&pick(|n| n.introduced_by)),
+                    range(&pick(|n| n.met_through_introduction))
                 );
+                let _ = writeln!(
+                    out,
+                    "  requests each newcomer made to be introduced: {}; passed on: {}",
+                    range(&pick64(|n| n.asked)),
+                    range(&pick64(|n| n.asked_passed_on))
+                );
+                let i = &self.introductions;
+                let refused: Vec<usize> = i.refused_by_each.iter().map(|r| *r as usize).collect();
+                let _ = writeln!(
+                    out,
+                    "Introductions: the established nodes passed on {} and refused {} at their limits (each: {}), accepted {} and declined {}",
+                    i.passed_on,
+                    i.refused_at_limit,
+                    range(&refused),
+                    i.accepted,
+                    i.declined
+                );
+                let _ = writeln!(
+                    out,
+                    "  declined: introducer not met long enough or its records failed {}, among those who greet {}; the hour's one taken {}; already met or held {}; no place {}",
+                    i.declined_untrusted,
+                    i.declined_greeter,
+                    i.declined_at_limit,
+                    i.declined_held,
+                    i.declined_no_place
+                );
+                let _ = writeln!(
+                    out,
+                    "  the established nodes asked {} times, {} passed on by the word of the machine asked",
+                    i.asked, i.asked_passed_on
+                );
+                if s.hostile_introduces {
+                    let _ = writeln!(
+                        out,
+                        "  the operator asked {} times, {} passed on, and passed on {} introductions of its own names",
+                        i.hostile_asked, i.hostile_asked_passed_on, i.hostile_introduced
+                    );
+                }
             }
         }
         let circuits: Vec<usize> = self.circuits_last_day.iter().map(|c| *c as usize).collect();
