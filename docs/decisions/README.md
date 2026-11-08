@@ -23,7 +23,7 @@ Each record captures one significant decision: the problem, the options consider
 | [0017](0017-one-hop-forwarding.md) | Two hops for pairs without a direct link | Proposed; revised 2026-11-07 |
 | [0018](0018-earned-direct-connections.md) | Earned direct connections | Proposed; revised 2026-11-07 |
 | [0019](0019-taking-posts-and-media-down.md) | Taking posts and media down | Accepted |
-| [0020](0020-sharing-media-you-open.md) | Sharing media you open, with peers that worked for you | Proposed |
+| [0020](0020-sharing-media-you-open.md) | Sharing media you open, with peers that worked for you | Accepted 2026-11-08; not built |
 
 Proposals under review that may become ADRs: [peer reciprocity and recognition](../12-peer-reciprocity-and-recognition.md) (its first phase, measuring, is ADR 0011) and [hosting roles and the follower swarm](../13-hosting-roles-and-follower-swarm.md) (its first phase is accepted, and whether to share copies is asked at setup, ADR 0012). See the [critical review](../reviews/2026-10-21-review-of-docs-12-and-13.md) for what blocks them.
 

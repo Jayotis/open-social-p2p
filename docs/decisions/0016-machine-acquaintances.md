@@ -54,7 +54,7 @@ Three things are kept apart:
 | A machine's standing with a node | Machines that did work that node checked itself | Jobs finished as a hop, checked; a reference gives a start | Picked as a hop, answered first when busy, and part of what earns a direct link ([ADR 0018](0018-earned-direct-connections.md)) |
 | Trusted followers ([ADR 0013](0013-trusted-followers.md)) | People the owner chose | A person's act | Hosting today, and the only gate on any private posts later |
 
-Standing never entitles anyone to private posts, and having none never shuts anyone out of public ones. So a node that can't carry traffic, on a metered link or a small upload, is still a full member of the network, and no content is worth buying standing for. [ADR 0020](0020-sharing-media-you-open.md), proposed, would tell peers with standing which public posts a node holds copies of: a lead to public posts, not access to anything, and sent between nodes' public sides, not from machine names.
+Standing never entitles anyone to private posts, and having none never shuts anyone out of public ones. So a node that can't carry traffic, on a metered link or a small upload, is still a full member of the network, and no content is worth buying standing for. [ADR 0020](0020-sharing-media-you-open.md) tells peers with standing which public posts a node holds copies of, where its owner turned that on: a lead to public posts, not access to anything, and sent between nodes' public sides, not from machine names.
 
 ### Taking part isn't earned
 
