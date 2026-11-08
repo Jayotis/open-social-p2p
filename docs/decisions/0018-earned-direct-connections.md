@@ -2,7 +2,7 @@
 
 **Status:** Proposed (2026-11-04). Not built. Would change [ADR 0014](0014-finding-people-and-private-messages.md)'s "Who may connect directly". Until accepted and built, ADR 0014's rules stand, and the layers and values below are a first draft to think over.
 
-Revised 2026-11-07, still proposed. Work now counts whether a node served the bytes itself or its machine carried them as a hop ([ADR 0017](0017-one-hop-forwarding.md)), once the node shows the granting peer which machine is its own; a reference ([ADR 0016](0016-machine-acquaintances.md#references)) lowers the marks but never replaces first-hand work; and a peer that offers a link meets "both ways". Direct links are meant to become the main path between nodes that work together, taking bytes off hops and relays. Each changed rule says what it replaced and why.
+Revised 2026-11-07, still proposed. Work now counts whether a node served the bytes itself or its machine carried them as a hop ([ADR 0017](0017-one-hop-forwarding.md)), once the node shows the granting peer which machine is its own; a reference ([ADR 0016](0016-machine-acquaintances.md#references)) lowers the marks but never replaces first-hand work; and a peer that offers a link meets "both ways". Its question at setup is also the yes for using hops ([ADR 0017](0017-one-hop-forwarding.md#who-picks)), as the hop next to a node sees its address as a direct link does, and a machine's carrying counts as jobs finished, not bytes. Direct links are meant to become the main path between nodes that work together, taking bytes off hops and relays. Each changed rule says what it replaced and why.
 
 ## Context
 
@@ -32,7 +32,7 @@ Questions to settle:
 
 ## Options considered
 
-- **Machines earning it, through machine names** (an earlier draft of this record). Most of the evidence would be answering greetings and passing on valid records, which a rented server can do all day for almost nothing, and [ADR 0013](0013-trusted-followers.md) rejected automatic trust for that reason. It also needs media served under machine names: a new proof, new endpoints, and a follower telling each creator its machine key, which undoes [ADR 0015](0015-nodes-meet-first.md)'s separation. Rejected. The revision counts something else from the machine layer: bytes a machine carried as a hop, which cost real upload and which the granting node checked itself. That needs no media served under machine names, and a node shows its machine only to a peer it asks for a link ("What counts as work").
+- **Machines earning it, through machine names** (an earlier draft of this record). Most of the evidence would be answering greetings and passing on valid records, which a rented server can do all day for almost nothing, and [ADR 0013](0013-trusted-followers.md) rejected automatic trust for that reason. It also needs media served under machine names: a new proof, new endpoints, and a follower telling each creator its machine key, which undoes [ADR 0015](0015-nodes-meet-first.md)'s separation. Rejected. The revision counts something else from the machine layer: jobs a machine finished as a hop, which cost real upload and which the granting node checked itself. That needs no media served under machine names, and a node shows its machine only to a peer it asks for a link ("What counts as work").
 - **Approving each peer by hand.** Exists as `approved`, and stays. Too slow to matter at scale.
 - **`follows`.** Exists, and stays. A follow is one-way, and says nothing of work.
 - **Removing public IDs from `WhoHosts` first,** naming followers by a bare media endpoint. It would improve on [ADR 0012](0012-sharing-prefetched-copies.md)'s disclosure, but this record needs those IDs: a peer's record, and the request for its endpoints, both go by public ID. Not now. It could come later, with the handover moved onto the media endpoint and an unbound direct endpoint of its own. An alias covers the name meanwhile.
@@ -42,21 +42,21 @@ Questions to settle:
 
 ### A fifth rule
 
-`direct = "earned"` allows contacts approved by hand and nodes that have earned it. As in ADR 0014, a connection is direct only when **both** sides' rules allow it, and otherwise media goes through relays.
+`direct = "earned"` allows contacts approved by hand and nodes that have earned it. It also lets the node use hops ([ADR 0017](0017-one-hop-forwarding.md#who-picks)): as a host, only its direct peers; as a viewer, also machines that finished jobs for it. As in ADR 0014, a connection is direct only when **both** sides' rules allow it, and otherwise media goes through relays.
 
 ### What counts as work
 
 **Work is something this node asked for, received and checked.**
 
 - **It counts:** a download from that node that completed, whole or its part of one, each chunk checked against the hash.
-- **It counts too:** bytes this node received through that node's machine as a hop ([ADR 0017](0017-one-hop-forwarding.md)), each chunk checked, once that node has shown the machine is its own (below).
+- **It counts too:** transfers that came to this node through that node's machine as a hop ([ADR 0017](0017-one-hop-forwarding.md#credit)) and completed, each chunk checked, once that node has shown the machine is its own (below).
 - **A peer can't push work at a node.** A node asks only for what it wants, doesn't ask for a file it holds, and picks its own hop.
 - **Fakes crediting each other gets nowhere** ([the review's A4](../reviews/2026-10-21-review-of-docs-12-and-13.md)). Each node counts only what it received itself, and nothing is shared.
 - **Size counts too.** Three tiny files, or one file asked for in many small pieces, isn't real work. So layer 4 also needs a minimum of checked bytes, set in the simulator, and a piece fetched twice counts once.
 - **The other direction** is media this node served to that peer. It's needed for "both ways", as it shows the pair actually trade, but it isn't work on its own, as a peer can ask for anything.
 - **It doesn't count:** `Hello`, machine records, a reference, anything a node says of itself, uptime, or bytes that failed the check.
 
-**A machine's work counts once it's shown.** The first draft counted nothing from the machine layer, as using it would tie a machine name to a public ID. Carried bytes are real work, so the tie is now offered, to one peer at a time. A node that carries asks a peer for a link once it fetches regularly from that peer (layer 2), and shows it which machine is its own; the peer then adds what that machine carried for it. Only that peer learns it. If the link is granted, the peer sees the node's address anyway. If it isn't, the peer still knows, and setup says so. It's shown live, leaving the peer nothing it can show to others, and the way of proving it is chosen from reviewed designs when it's built, as ADR 0015 says of introductions.
+**A machine's work counts once it's shown.** The first draft counted nothing from the machine layer, as using it would tie a machine name to a public ID. Carrying is real work, so the tie is now offered, to one peer at a time. A node that carries asks a peer for a link once it fetches regularly from that peer (layer 2), and shows it which machine is its own; the peer then adds what that machine carried for it. Only that peer learns it. If the link is granted, the peer sees the node's address anyway. If it isn't, the peer still knows, and setup says so. It's shown live, leaving the peer nothing it can show to others, and the way of proving it is chosen from reviewed designs when it's built, as ADR 0015 says of introductions.
 
 **A reference lowers the marks, never replaces the work.** A reference this node counts ([ADR 0016](0016-machine-acquaintances.md#references)), for a machine that has been shown, halves layer 4's days and checked bytes. Layers 1 to 3 are always reached first-hand, with the node granting the link.
 
@@ -67,7 +67,7 @@ Each layer is reached by working through the one before. Values are starting val
 | Layer | How it's reached | What it gives |
 | --- | --- | --- |
 | 0. Stranger | First contact | Media through relays; the stranger share when busy ([doc 12](../12-peer-reciprocity-and-recognition.md)) |
-| 1. Has worked for us | One completed download from it, or bytes its machine carried for us, once shown | On record, nothing more |
+| 1. Has worked for us | One completed download from it, or a transfer its machine carried for us, once shown | On record, nothing more |
 | 2. Regular source | Work on 3 different days, no bad data | Tried sooner when fetching, or picked sooner as a hop |
 | 3. Both ways | Layer 2, and this node has served it on 3 different days, or it has offered this node a link | Ahead of strangers when busy |
 | 4. Earned | Layer 3 held, at least 30 days since first contact, enough checked bytes, and room under the caps. With a reference, 15 days and half the bytes | A direct connection, if both sides' rules allow it |
@@ -103,9 +103,9 @@ No new endpoint or protocol is needed. New: the rule, the check behind it, the r
 
 ### Asked at setup
 
-Offered once its tests pass, with yes recommended. Existing nodes keep their rule until the owner changes it. ADR 0014 left the default to measuring, and [the same measurement](#building-it) applies here.
+Offered once its tests pass, with yes recommended. It's one question for direct links and for using hops, as both show the node's address to machines that worked for it ([ADR 0017](0017-one-hop-forwarding.md#asked-at-setup)). Existing nodes keep their rule until the owner changes it. ADR 0014 left the default to measuring, and [the same measurement](#building-it) applies here.
 
-> Nodes that have worked well with yours for a while can connect to it directly, which makes video cheaper and faster for everyone. They'll see your internet address, and can keep it or pass it on. Turning this off later can't take it back. Nobody else gets it this way. If your node carries video for others, the nodes it asks for a link learn which machine name is yours. You answer for what your node shares. For more privacy, use an alias or a VPN, or run your node away from home.
+> Nodes that have worked well with yours for a while can connect to it directly, or carry its video as the machine next to it, which makes video cheaper and faster for everyone. They'll see your internet address, and can keep it or pass it on. Turning this off later can't take it back. Nobody else gets it this way, and machines new to yours never do. If your node carries video for others, the nodes it asks for a link learn which machine name is yours. You answer for what your node shares. For more privacy, use an alias or a VPN, or run your node away from home.
 
 ## Consequences
 
@@ -119,7 +119,7 @@ Offered once its tests pass, with yes recommended. Existing nodes keep their rul
 
 - **It doesn't stop a patient attacker.** It makes them pay. At a few hundred MB a month for each node, a rented server with a few terabytes could still reach thousands. Meanwhile it does real work. This is a price, not a wall.
 - A rate cap doesn't protect one node: one earned peer is enough to get its address.
-- **Aiming at one person is harder.** A peer earns a place only with a node that keeps fetching from it, and it can't make a node do that. It can try, by hosting what that person watches and serving it fast, so the price check tries that too. Carrying for that person counts as well, but only as a hop the person's node picked, which takes carrying for it on several days first: a newcomer starts in the middle, seeing neither end. If it does get there, it knows the address and the public ID, and only an alias keeps the name from it.
+- **Aiming at one person is harder.** A peer earns a place only with a node that keeps fetching from it, and it can't make a node do that. It can try, by hosting what that person watches and serving it fast, so the price check tries that too. Carrying for that person counts as well, but at a host's end only an earned peer is picked, and at a viewer's end it takes jobs finished for that node on several days, starting in the middle, where it sees neither end. If it does get there, it knows the address and the public ID, and only an alias keeps the name from it.
 
 **Responsibility.** A follower's node shares copies of what its owner follows, and an earned peer can see its address doing so. Each owner answers for what their node sends, and setup says so. They can drop a file with [ADR 0019](0019-taking-posts-and-media-down.md)'s `osp block`.
 
@@ -130,7 +130,7 @@ Offered once its tests pass, with yes recommended. Existing nodes keep their rul
 - ADR 0014: "Following someone, or knowing them a long time, never grants it on its own." With the owner's yes, work over time now can. "An address once given can't be taken back" stays true.
 - ADR 0014: its list of rules gains `earned`.
 - ADR 0011: its record starts changing behaviour, as doc 12's later phases planned.
-- ADR 0015: a machine's carried bytes count, once its node shows the machine is its own, as [ADR 0016](0016-machine-acquaintances.md#the-local-record) says. Being known still grants nothing.
+- ADR 0015: jobs a machine finished as a hop count, once its node shows the machine is its own, as [ADR 0016](0016-machine-acquaintances.md#the-local-record) says. Being known still grants nothing.
 - ADR 0013 doesn't change: being trusted grants nothing on its own, and standing never opens private posts.
 
 **Licensing.** No new dependency.
