@@ -131,13 +131,13 @@ A machine is **heard of** when a signed record of it arrives, **met** once it an
 
 `osp machine new` forgets them all with the name: the node starts again among machines as a stranger.
 
-**Introductions** ([ADR 0016](../decisions/0016-machine-acquaintances.md#introductions), stage A3). While fewer than 10 machines it has met have greeted it in the last week, a machine asks one it's talking to, right after `Known`, to introduce it to one of the machines just passed on. The machine asked passes on at most 3 requests a day for one machine asking and 12 in all, to machines it met lately, and says only whether it did. The machine introduced to accepts at most one an hour, from a machine it first met 3 days ago or more whose records checked out and that it doesn't count among those who greet. It dials the machine introduced first in the hour's turn for those who greet, and counts it among them ([ADR 0021](../decisions/0021-introduced-machines-count-among-those-who-greet.md)). Its answer is the same whatever it decides. Each part can be turned off:
+**Introductions** ([ADR 0016](../decisions/0016-machine-acquaintances.md#introductions), stage A3). While fewer than 10 machines it has met have greeted it in the last week, a machine asks one it's talking to, right after `Known`, to introduce it to one of the machines just passed on. The machine asked passes on at most 3 requests a day for one machine asking and 12 in all, to machines it met lately, and says only whether it did. The machine introduced to accepts at most one an hour, from a machine it first met 3 days ago or more whose records checked out and that it doesn't count among those who greet. It dials the machine introduced first in the hour's turn for those who greet, and counts it among them ([ADR 0021](../decisions/0021-introduced-machines-count-among-those-who-greet.md)). Its answer is the same whatever it decides. Introductions are off by default, as in [their run](meeting.md#introductions-results) they helped one operator's names more than newcomers. Each part can be turned on:
 
 ```toml
 [machine.introductions]
-ask = false       # don't ask to be introduced
-pass_on = false   # don't pass on others' requests
-accept = false    # don't dial a machine introduced any sooner
+ask = true       # ask to be introduced
+pass_on = true   # pass on others' requests
+accept = true    # dial a machine introduced sooner
 ```
 
 **What it costs:** each conversation over Tor builds about three circuits, two at the machine asking and one at the machine asked. [The simulator](meeting.md#results) estimates about 400 a day for each of 100 nodes.

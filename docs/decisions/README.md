@@ -19,12 +19,12 @@ Each record captures one significant decision: the problem, the options consider
 | [0013](0013-trusted-followers.md) | Trusted followers, asked for and allowed on the phone | Accepted |
 | [0014](0014-finding-people-and-private-messages.md) | Finding people and content, with messages between nodes over Tor | Accepted; how directories are used and step 4 changed by 0015, and who may connect directly by 0018 once built |
 | [0015](0015-nodes-meet-first.md) | Nodes meet first: machine names, and what they may say | Accepted; detail added and limits changed by 0016 to 0018 |
-| [0016](0016-machine-acquaintances.md) | Machine acquaintances, reciprocity and referrals | Accepted 2026-11-08; stages A and A2 built, A2's gate missed and merged all the same; where a machine introduced counts, and who may introduce, changed by 0021 |
+| [0016](0016-machine-acquaintances.md) | Machine acquaintances, reciprocity and referrals | Accepted 2026-11-08; stages A, A2 and A3 built, A2's gate missed and merged all the same, A3's missed and merged with introductions off by default; where a machine introduced counts, and who may introduce, changed by 0021 |
 | [0017](0017-one-hop-forwarding.md) | Two hops for pairs without a direct link | Accepted 2026-11-08; not built |
 | [0018](0018-earned-direct-connections.md) | Earned direct connections | Accepted 2026-11-08; not built |
 | [0019](0019-taking-posts-and-media-down.md) | Taking posts and media down | Accepted |
 | [0020](0020-sharing-media-you-open.md) | Sharing media you open, with peers that worked for you | Accepted 2026-11-08; not built |
-| [0021](0021-introduced-machines-count-among-those-who-greet.md) | A machine introduced counts among those who greet | Accepted 2026-11-08; built with 0016's stage A3 |
+| [0021](0021-introduced-machines-count-among-those-who-greet.md) | A machine introduced counts among those who greet | Accepted 2026-11-08; built with 0016's stage A3, whose gate was missed; introductions off by default |
 
 Proposals under review that may become ADRs: [peer reciprocity and recognition](../12-peer-reciprocity-and-recognition.md) (its first phase, measuring, is ADR 0011) and [hosting roles and the follower swarm](../13-hosting-roles-and-follower-swarm.md) (its first phase is accepted, and whether to share copies is asked at setup, ADR 0012). See the [critical review](../reviews/2026-10-21-review-of-docs-12-and-13.md) for what blocks them.
 
