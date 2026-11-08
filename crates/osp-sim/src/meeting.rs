@@ -31,7 +31,10 @@ use osp_node::{
 use osp_proto::{
     EndpointId, MACHINE_ALPN,
     framing::{read_frame_max, write_frame},
-    machine::{MAX_KNOWN, MAX_REQUEST_LEN, MachineRecord, MachineRequest, MachineResponse},
+    machine::{
+        IntroduceRequest, MAX_KNOWN, MAX_REQUEST_LEN, MachineRecord, MachineRequest,
+        MachineResponse,
+    },
 };
 use serde::Serialize;
 use tracing::info;
@@ -45,6 +48,13 @@ const HOUR: Duration = Duration::from_secs(60 * 60);
 const NEWCOMER_MEETS: usize = 3;
 const NEWCOMER_WITHIN_HOURS: f64 = 6.0;
 const NEWCOMER_MET_BY: usize = 10;
+/// The places of those who greet: 32, and 8 taken in turn (`osp-node`'s
+/// `meet`). Stage A2's mark holds the operator's names not yet known within
+/// these (ADR 0016).
+const GREETERS_PLACES: usize = 40;
+/// Honest machines each hostile name introduces another of its names to, in a
+/// simulated hour, of those that met it.
+const HOSTILE_INTRODUCES_PER_HOUR: usize = 4;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct MeetScenario {
@@ -63,9 +73,19 @@ pub struct MeetScenario {
     /// In real time, from the start.
     pub directory_off_after: Duration,
     pub hostile_after: Duration,
+    /// Whether the operator's names ask honest machines to introduce them, as
+    /// often as those pass on for one machine, and introduce one another to
+    /// honest machines that met them (ADR 0016's stage A3).
+    pub hostile_introduces: bool,
+    /// How long, in the simulation's hours, before a machine's introductions
+    /// count. A real node waits 3 days.
+    pub introducer_after_hours: f64,
     /// Honest nodes arriving later, told of the directory only.
     pub newcomers: usize,
     pub newcomers_after: Duration,
+    /// The median of established nodes that met each newcomer in an earlier
+    /// run, for stage A3's mark: newcomers met by more.
+    pub compare_met_by: Option<usize>,
     pub run_for: Duration,
     pub sample: Duration,
     pub seed: u64,
@@ -91,11 +111,17 @@ pub struct View {
     pub hostile: usize,
     pub hostile_known: usize,
     pub hostile_kept_longest: usize,
+    /// The operator's names counting against those who greet, and those of
+    /// them held through an introduction.
+    pub hostile_greeters_share: usize,
+    pub hostile_introduced: usize,
     /// Fakes held: records of machines that never existed.
     pub fakes: usize,
-    /// Newcomers held, at any stage, and met.
+    /// Newcomers held, at any stage, and met; and those held through an
+    /// introduction.
     pub newcomers_held: usize,
     pub newcomers_met: usize,
+    pub newcomers_introduced: usize,
     /// Machines held, of any kind.
     pub held: usize,
     pub circuits: u64,
@@ -121,6 +147,32 @@ pub struct Newcomer {
     pub held_by: usize,
     pub met_by: usize,
     pub passed_on: usize,
+    /// Established nodes holding it through an introduction, and those of
+    /// them that met it.
+    pub introduced_by: usize,
+    pub met_through_introduction: usize,
+    /// Its requests to be introduced, and those passed on, by the word of the
+    /// machine asked.
+    pub asked: u64,
+    pub asked_passed_on: u64,
+}
+
+/// Introductions over the run, from each side.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct IntroductionTotals {
+    /// Requests the established nodes passed on, and refused as over their
+    /// limits; and for each, how many it refused.
+    pub passed_on: u64,
+    pub refused_at_limit: u64,
+    pub refused_by_each: Vec<u64>,
+    /// Introductions the established nodes accepted, and declined.
+    pub accepted: u64,
+    pub declined: u64,
+    /// Requests the operator's names made, those passed on, and the
+    /// introductions they passed on themselves.
+    pub hostile_asked: u64,
+    pub hostile_asked_passed_on: u64,
+    pub hostile_introduced: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -146,6 +198,7 @@ pub struct MeetReport {
     /// that met it, and that met it through another machine's record.
     pub established_met_by: Vec<usize>,
     pub established_passed_on: Vec<usize>,
+    pub introductions: IntroductionTotals,
     pub wall_secs: f64,
 }
 
@@ -186,10 +239,13 @@ fn view(node: &Node, kinds: &Kinds) -> View {
         } else if kinds.newcomers.contains(&a.machine) {
             v.newcomers_held += 1;
             v.newcomers_met += (a.stage != Stage::Heard) as usize;
+            v.newcomers_introduced += a.introduced as usize;
         } else if kinds.hostile.contains(&a.machine) {
             v.hostile += 1;
             v.hostile_known += (a.stage == Stage::Known) as usize;
             v.hostile_kept_longest += a.kept_longest as usize;
+            v.hostile_greeters_share += a.greeters_share as usize;
+            v.hostile_introduced += a.introduced as usize;
         } else {
             v.fakes += 1;
         }
@@ -219,6 +275,7 @@ pub async fn run(s: &MeetScenario) -> Result<MeetReport> {
     let net = SimNet::new(s.seed);
     let times = MeetingTimes {
         known_after: HOUR.mul_f64(s.known_after_hours).div_f64(s.speed),
+        introducer_after: HOUR.mul_f64(s.introducer_after_hours).div_f64(s.speed),
         ..MeetingTimes::default().faster(s.speed)
     };
     let settings = || SimSettings {
@@ -279,9 +336,7 @@ pub async fn run(s: &MeetScenario) -> Result<MeetReport> {
                     .map(|n| known_honest(n, &kinds.honest))
                     .collect(),
             );
-            routers = operator
-                .arrive(&net, &honest_list, s.hostile_greets)
-                .await?;
+            routers = operator.arrive(&net, &honest_list, s).await?;
             info!(names = s.hostile, "the operator arrives");
         }
         if newcomers_arrived.is_none() && s.newcomers > 0 && now >= s.newcomers_after {
@@ -349,15 +404,20 @@ pub async fn run(s: &MeetScenario) -> Result<MeetReport> {
         })
         .collect();
     // For each machine: the established nodes holding it, those that met it,
-    // and those that met it through another machine's record.
-    let mut met_by: HashMap<EndpointId, (usize, usize, usize)> = HashMap::new();
+    // and those that met it through another machine's record, not an
+    // introduction; and those holding it through an introduction, and that met
+    // it so.
+    let mut met_by: HashMap<EndpointId, HeldBy> = HashMap::new();
     for node in &nodes {
         for a in node.acquaintances() {
             let counts = met_by.entry(a.machine).or_default();
-            counts.0 += 1;
+            counts.held += 1;
+            counts.introduced += a.introduced as usize;
             if a.stage != Stage::Heard {
-                counts.1 += 1;
-                counts.2 += a.source.is_some_and(|from| from != known.machine) as usize;
+                counts.met += 1;
+                counts.met_introduced += a.introduced as usize;
+                counts.passed_on +=
+                    (!a.introduced && a.source.is_some_and(|from| from != known.machine)) as usize;
             }
         }
     }
@@ -366,9 +426,11 @@ pub async fn run(s: &MeetScenario) -> Result<MeetReport> {
     let newcomer_ids = machine_ids(&newcomers)?;
     let newcomer_results = newcomer_ids
         .iter()
+        .zip(&newcomers)
         .enumerate()
-        .map(|(i, id)| {
-            let (held_by, met_by, passed_on) = counts(id);
+        .map(|(i, (id, node))| {
+            let c = counts(id);
+            let asked = node.introductions();
             let met = |snap: &Snapshot| snap.newcomers.get(i).map_or(0, |v| v.honest_met);
             Newcomer {
                 met_three_after_secs: snapshots
@@ -376,12 +438,28 @@ pub async fn run(s: &MeetScenario) -> Result<MeetReport> {
                     .find(|snap| met(snap) >= NEWCOMER_MEETS)
                     .map(|snap| snap.secs - arrived),
                 honest_met: snapshots.last().map_or(0, met),
-                held_by,
-                met_by,
-                passed_on,
+                held_by: c.held,
+                met_by: c.met,
+                passed_on: c.passed_on,
+                introduced_by: c.introduced,
+                met_through_introduction: c.met_introduced,
+                asked: asked.asked,
+                asked_passed_on: asked.asked_passed_on,
             }
         })
         .collect();
+    let mut introductions = IntroductionTotals::default();
+    for node in &nodes {
+        let c = node.introductions();
+        introductions.passed_on += c.passed_on;
+        introductions.refused_at_limit += c.refused_at_limit;
+        introductions.refused_by_each.push(c.refused_at_limit);
+        introductions.accepted += c.accepted;
+        introductions.declined += c.declined;
+    }
+    introductions.hostile_asked = operator.introduce_asked.load(Relaxed);
+    introductions.hostile_asked_passed_on = operator.introduce_passed_on.load(Relaxed);
+    introductions.hostile_introduced = operator.introduced.load(Relaxed);
     let report = MeetReport {
         scenario: s.clone(),
         met_after_directory_off: last
@@ -396,8 +474,9 @@ pub async fn run(s: &MeetScenario) -> Result<MeetReport> {
         hostile_asked_known: operator.asked.load(Relaxed),
         held_at_newcomers,
         newcomers: newcomer_results,
-        established_met_by: honest_list.iter().map(|m| counts(m).1).collect(),
-        established_passed_on: honest_list.iter().map(|m| counts(m).2).collect(),
+        established_met_by: honest_list.iter().map(|m| counts(m).met).collect(),
+        established_passed_on: honest_list.iter().map(|m| counts(m).passed_on).collect(),
+        introductions,
         snapshots,
         wall_secs: started.elapsed().as_secs_f64(),
     };
@@ -408,6 +487,16 @@ pub async fn run(s: &MeetScenario) -> Result<MeetReport> {
         node.shutdown().await?;
     }
     Ok(report)
+}
+
+/// How the established nodes hold one machine.
+#[derive(Debug, Clone, Copy, Default)]
+struct HeldBy {
+    held: usize,
+    met: usize,
+    passed_on: usize,
+    introduced: usize,
+    met_introduced: usize,
 }
 
 /// Honest nodes, each told of the directory and nothing else.
@@ -444,6 +533,10 @@ async fn start(home: &Path, config: Config, sim: SimSettings) -> Result<Node> {
     Node::spawn_sim(home, sim).await
 }
 
+fn not_yet_known(v: &View) -> usize {
+    v.hostile - v.hostile_known
+}
+
 fn median(values: &[usize]) -> usize {
     let mut sorted = values.to_vec();
     sorted.sort_unstable();
@@ -452,9 +545,15 @@ fn median(values: &[usize]) -> usize {
 
 /// One operator's names: each answers a greeting, and `Known` with some of the
 /// others and fakes, freshly signed, as the operator holds all their keys.
+/// With `MeetScenario::hostile_introduces`, each also asks the honest machines
+/// it greeted to introduce it, as often as they'd pass on for one machine, and
+/// introduces the others to honest machines that met it.
 struct Operator {
     keys: Arc<Vec<iroh::SecretKey>>,
     asked: Arc<AtomicU64>,
+    introduce_asked: Arc<AtomicU64>,
+    introduce_passed_on: Arc<AtomicU64>,
+    introduced: Arc<AtomicU64>,
     seed: u64,
 }
 
@@ -463,6 +562,9 @@ impl Operator {
         Self {
             keys: Arc::new((0..names).map(|_| iroh::SecretKey::generate()).collect()),
             asked: Arc::default(),
+            introduce_asked: Arc::default(),
+            introduce_passed_on: Arc::default(),
+            introduced: Arc::default(),
             seed,
         }
     }
@@ -477,8 +579,12 @@ impl Operator {
         &self,
         net: &SimNet,
         honest: &[EndpointId],
-        greets: usize,
+        s: &MeetScenario,
     ) -> Result<Vec<iroh::protocol::Router>> {
+        let greets = s.hostile_greets;
+        // As often as a machine passes on for one asker: 3 a simulated day.
+        let ask_every = DAY.div_f64(3.0 * s.speed);
+        let hour = HOUR.div_f64(s.speed);
         let mut routers = Vec::new();
         let mut rng = Rng(self.seed);
         for (i, key) in self.keys.iter().enumerate() {
@@ -495,15 +601,45 @@ impl Operator {
                 keys: self.keys.clone(),
                 asked: self.asked.clone(),
                 rng: Arc::new(std::sync::Mutex::new(Rng(self.seed ^ i as u64))),
+                met_by: Arc::default(),
             };
             let targets: Vec<EndpointId> = (0..greets.min(honest.len()))
                 .map(|_| honest[rng.below(honest.len())])
                 .collect();
             let greeter = endpoint.clone();
             let key = key.clone();
+            let introduces = s.hostile_introduces.then(|| {
+                (
+                    name.clone(),
+                    self.introduce_asked.clone(),
+                    self.introduce_passed_on.clone(),
+                    self.introduced.clone(),
+                )
+            });
             tokio::spawn(async move {
-                for machine in targets {
-                    let _ = greet(&greeter, &key, machine).await;
+                for machine in &targets {
+                    let _ = greet(&greeter, &key, *machine).await;
+                }
+                let Some((name, asked, passed_on, introduced)) = introduces else {
+                    return;
+                };
+                let mut last_introduced = Instant::now();
+                while !greeter.is_closed() {
+                    for machine in &targets {
+                        tokio::time::sleep(ask_every.div_f64(targets.len() as f64)).await;
+                        asked.fetch_add(1, Relaxed);
+                        if ask_introduce(&greeter, &key, *machine, &name.keys)
+                            .await
+                            .unwrap_or(false)
+                        {
+                            passed_on.fetch_add(1, Relaxed);
+                        }
+                        if last_introduced.elapsed() >= hour {
+                            last_introduced = Instant::now();
+                            let n = name.introduce_others(&greeter).await;
+                            introduced.fetch_add(n, Relaxed);
+                        }
+                    }
                 }
             });
             routers.push(
@@ -521,18 +657,81 @@ async fn greet(
     key: &iroh::SecretKey,
     machine: EndpointId,
 ) -> Result<()> {
+    let conn = connect(endpoint, machine).await?;
+    let record = MachineRecord::new(key, vec![], osp_proto::now_rfc3339())?;
+    let asked = ask(&conn, &MachineRequest::Hello { record }).await;
+    conn.close(0u32.into(), b"done");
+    asked.map(|_| ())
+}
+
+async fn connect(
+    endpoint: &iroh::Endpoint,
+    machine: EndpointId,
+) -> Result<iroh::endpoint::Connection> {
     let addr = iroh::EndpointAddr::from_parts(
         machine,
         [iroh::TransportAddr::Custom(simnet::addr(machine))],
     );
-    let conn = endpoint.connect(addr, MACHINE_ALPN).await?;
+    Ok(endpoint.connect(addr, MACHINE_ALPN).await?)
+}
+
+async fn ask(
+    conn: &iroh::endpoint::Connection,
+    request: &MachineRequest,
+) -> Result<MachineResponse> {
     let (mut send, mut recv) = conn.open_bi().await?;
-    let record = MachineRecord::new(key, vec![], osp_proto::now_rfc3339())?;
-    write_frame(&mut send, &MachineRequest::Hello { record }).await?;
+    write_frame(&mut send, request).await?;
     send.finish()?;
-    let _: MachineResponse = read_frame_max(&mut recv, 128 * 1024).await?;
+    read_frame_max(&mut recv, 128 * 1024).await
+}
+
+/// A request to be introduced, signed by `asker`, through `via` to `target`.
+fn introduce_request(
+    asker: &iroh::SecretKey,
+    via: EndpointId,
+    target: EndpointId,
+) -> Result<IntroduceRequest> {
+    let mut id = [0; 16];
+    id.copy_from_slice(&iroh::SecretKey::generate().to_bytes()[..16]);
+    let expires =
+        humantime::format_rfc3339_seconds(std::time::SystemTime::now() + Duration::from_secs(1800));
+    let record = MachineRecord::new(asker, vec![], osp_proto::now_rfc3339())?;
+    IntroduceRequest::new(asker, id, via, target, expires.to_string(), record)
+}
+
+/// Greets `machine` as `key`, asks it `Known`, and asks it to introduce `key`
+/// to one of the honest machines named. Returns whether it said it would.
+async fn ask_introduce(
+    endpoint: &iroh::Endpoint,
+    key: &iroh::SecretKey,
+    machine: EndpointId,
+    own: &[iroh::SecretKey],
+) -> Result<bool> {
+    let conn = connect(endpoint, machine).await?;
+    let asked = async {
+        let record = MachineRecord::new(key, vec![], osp_proto::now_rfc3339())?;
+        ask(&conn, &MachineRequest::Hello { record }).await?;
+        let MachineResponse::Known { records } = ask(&conn, &MachineRequest::Known).await? else {
+            return Ok(false);
+        };
+        let own: HashSet<EndpointId> = own.iter().map(|k| k.public()).collect();
+        let Some(target) = records
+            .iter()
+            .filter_map(|r| r.verify().ok())
+            .map(|info| info.machine)
+            .find(|m| !own.contains(m))
+        else {
+            return Ok(false);
+        };
+        let request = introduce_request(key, machine, target)?;
+        Ok(matches!(
+            ask(&conn, &MachineRequest::Introduce { request }).await?,
+            MachineResponse::Introduce { passed_on: true }
+        ))
+    }
+    .await;
     conn.close(0u32.into(), b"done");
-    Ok(())
+    asked
 }
 
 #[derive(Clone)]
@@ -541,6 +740,8 @@ struct HostileName {
     keys: Arc<Vec<iroh::SecretKey>>,
     asked: Arc<AtomicU64>,
     rng: Arc<std::sync::Mutex<Rng>>,
+    /// Machines that greeted it, so have met it, and when last.
+    met_by: Arc<std::sync::Mutex<HashMap<EndpointId, Instant>>>,
 }
 
 impl std::fmt::Debug for HostileName {
@@ -550,12 +751,57 @@ impl std::fmt::Debug for HostileName {
 }
 
 impl HostileName {
-    fn answer(&self, request: MachineRequest) -> Result<MachineResponse> {
+    /// Introduces another of the operator's names, picked at random, to each of
+    /// up to `HOSTILE_INTRODUCES_PER_HOUR` honest machines that met this one
+    /// lately, those that greeted it last. Returns how many it passed on.
+    async fn introduce_others(&self, endpoint: &iroh::Endpoint) -> u64 {
+        let mut targets: Vec<(EndpointId, Instant)> = {
+            let met_by = self.met_by.lock().unwrap_or_else(|e| e.into_inner());
+            met_by.iter().map(|(m, at)| (*m, *at)).collect()
+        };
+        targets.sort_by_key(|(_, at)| std::cmp::Reverse(*at));
+        let me = self.keys[self.me].public();
+        let mut passed = 0;
+        for (target, _) in targets.into_iter().take(HOSTILE_INTRODUCES_PER_HOUR) {
+            let other = {
+                let mut rng = self.rng.lock().unwrap_or_else(|e| e.into_inner());
+                rng.below(self.keys.len())
+            };
+            if other == self.me {
+                continue;
+            }
+            let Ok(request) = introduce_request(&self.keys[other], me, target) else {
+                continue;
+            };
+            let Ok(conn) = connect(endpoint, target).await else {
+                continue;
+            };
+            if ask(&conn, &MachineRequest::Introduction { request })
+                .await
+                .is_ok()
+            {
+                passed += 1;
+            }
+            conn.close(0u32.into(), b"done");
+        }
+        passed
+    }
+
+    fn answer(&self, from: EndpointId, request: MachineRequest) -> Result<MachineResponse> {
         let now = osp_proto::now_rfc3339();
         Ok(match request {
-            MachineRequest::Hello { .. } => MachineResponse::Hello {
-                record: MachineRecord::new(&self.keys[self.me], vec![], now)?,
-            },
+            MachineRequest::Hello { .. } => {
+                if !self.keys.iter().any(|k| k.public() == from) {
+                    let mut met_by = self.met_by.lock().unwrap_or_else(|e| e.into_inner());
+                    met_by.insert(from, Instant::now());
+                }
+                MachineResponse::Hello {
+                    record: MachineRecord::new(&self.keys[self.me], vec![], now)?,
+                }
+            }
+            // It says it passes them on, and drops them.
+            MachineRequest::Introduce { .. } => MachineResponse::Introduce { passed_on: true },
+            MachineRequest::Introduction { .. } => MachineResponse::Introduction,
             MachineRequest::Known => {
                 self.asked.fetch_add(1, Relaxed);
                 let mut rng = self.rng.lock().unwrap_or_else(|e| e.into_inner());
@@ -585,11 +831,12 @@ impl iroh::protocol::ProtocolHandler for HostileName {
         &self,
         conn: iroh::endpoint::Connection,
     ) -> Result<(), iroh::protocol::AcceptError> {
+        let from = conn.remote_id();
         while let Ok((mut send, mut recv)) = conn.accept_bi().await {
             let Ok(request) = read_frame_max(&mut recv, MAX_REQUEST_LEN).await else {
                 break;
             };
-            let Ok(reply) = self.answer(request) else {
+            let Ok(reply) = self.answer(from, request) else {
                 break;
             };
             if write_frame(&mut send, &reply).await.is_err() || send.finish().is_err() {
@@ -676,6 +923,39 @@ impl MeetReport {
                     passed_on == of,
                 ),
             ]);
+            if self.scenario.hostile > 0 {
+                let most = last.iter().map(not_yet_known).max().unwrap_or(0);
+                marks.push((
+                    format!(
+                        "the operator's names not yet known, on each node, within the {GREETERS_PLACES} places of those who greet (at most {most})"
+                    ),
+                    most <= GREETERS_PLACES,
+                ));
+            }
+            if let Some(before) = self.scenario.compare_met_by {
+                let now = median(&self.newcomers.iter().map(|n| n.met_by).collect::<Vec<_>>());
+                marks.push((
+                    format!(
+                        "newcomers met by more established nodes than before: a median of {now}, against {before}"
+                    ),
+                    now > before,
+                ));
+            }
+            if self.scenario.hostile_introduces {
+                let introduced = count(&|n| n.introduced_by > 0);
+                let at_limit = self
+                    .introductions
+                    .refused_by_each
+                    .iter()
+                    .filter(|r| **r > 0)
+                    .count();
+                marks.push((
+                    format!(
+                        "each newcomer was introduced, while the operator used up introducers' limits ({introduced} of {of}; {at_limit} of {n} introducers refused some at their limit)"
+                    ),
+                    introduced == of,
+                ));
+            }
         }
         marks
     }
@@ -741,6 +1021,29 @@ impl MeetReport {
             range(&pick(|v| v.hostile_kept_longest)),
             range(&pick(|v| v.fakes))
         );
+        let _ = writeln!(
+            out,
+            "  not yet known: {}; against those who greet: {}; through an introduction: {}",
+            range(&pick(not_yet_known)),
+            range(&pick(|v| v.hostile_greeters_share)),
+            range(&pick(|v| v.hostile_introduced))
+        );
+        // The most on any node at any sample, and when.
+        let most = |f: fn(&View) -> usize| {
+            self.snapshots
+                .iter()
+                .map(|snap| (snap.views.iter().map(f).max().unwrap_or(0), snap.secs))
+                .max_by(|a, b| a.0.cmp(&b.0).then(b.1.total_cmp(&a.1)))
+                .unwrap_or_default()
+        };
+        let (nyk, nyk_at) = most(not_yet_known);
+        let (gs, gs_at) = most(|v| v.hostile_greeters_share);
+        let _ = writeln!(
+            out,
+            "  the most on one node during the run: not yet known {nyk} (at {:.0} min); against those who greet {gs} (at {:.0} min)",
+            nyk_at / 60.0,
+            gs_at / 60.0
+        );
         if !self.newcomers.is_empty() {
             let newcomers = &self.newcomers;
             let pick =
@@ -777,6 +1080,39 @@ impl MeetReport {
                 range(&self.established_met_by),
                 range(&self.established_passed_on)
             );
+            let pick64 = |f: fn(&Newcomer) -> u64| -> Vec<usize> {
+                newcomers.iter().map(|n| f(n) as usize).collect()
+            };
+            let _ = writeln!(
+                out,
+                "  established nodes holding each newcomer through an introduction: {}; that met it so: {}",
+                range(&pick(|n| n.introduced_by)),
+                range(&pick(|n| n.met_through_introduction))
+            );
+            let _ = writeln!(
+                out,
+                "  requests each newcomer made to be introduced: {}; passed on: {}",
+                range(&pick64(|n| n.asked)),
+                range(&pick64(|n| n.asked_passed_on))
+            );
+            let i = &self.introductions;
+            let refused: Vec<usize> = i.refused_by_each.iter().map(|r| *r as usize).collect();
+            let _ = writeln!(
+                out,
+                "Introductions: the established nodes passed on {} and refused {} at their limits (each: {}), accepted {} and declined {}",
+                i.passed_on,
+                i.refused_at_limit,
+                range(&refused),
+                i.accepted,
+                i.declined
+            );
+            if s.hostile_introduces {
+                let _ = writeln!(
+                    out,
+                    "  the operator asked {} times, {} passed on, and passed on {} introductions of its own names",
+                    i.hostile_asked, i.hostile_asked_passed_on, i.hostile_introduced
+                );
+            }
         }
         let circuits: Vec<usize> = self.circuits_last_day.iter().map(|c| *c as usize).collect();
         let _ = writeln!(

@@ -12,6 +12,7 @@ publish = false
 osp-proto.workspace = true
 osp-node = { workspace = true, features = ["sim"] }
 anyhow.workspace = true
+humantime.workspace = true
 clap.workspace = true
 iroh.workspace = true
 n0-future.workspace = true

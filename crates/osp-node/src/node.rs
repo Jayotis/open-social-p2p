@@ -47,7 +47,7 @@ use crate::{
     keys::{self, NewKey, Signer},
     machine::MachineSide,
     media,
-    meet::{self, Acquaintance, MeetingTimes},
+    meet::{self, Acquaintance, IntroductionCounts, MeetingTimes},
     network::{self, ConnTracker},
     relays::{self, Checked, RelayPolicy},
     social::{self, Heard, PerHour, SocialProtocol},
@@ -714,6 +714,16 @@ impl Node {
             .machine
             .as_ref()
             .map(|machine| machine.acquaintances.acquaintances())
+            .unwrap_or_default()
+    }
+
+    /// How its machine name's introductions went (ADR 0016). For tests and
+    /// the simulator.
+    pub fn introductions(&self) -> IntroductionCounts {
+        self.core
+            .machine
+            .as_ref()
+            .map(|machine| machine.acquaintances.introduction_counts())
             .unwrap_or_default()
     }
 

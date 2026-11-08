@@ -905,6 +905,8 @@ impl FakeDirectory {
                 }
             }
             MachineRequest::Known => MachineResponse::Known { records: vec![] },
+            MachineRequest::Introduce { .. } => MachineResponse::Introduce { passed_on: false },
+            MachineRequest::Introduction { .. } => MachineResponse::Introduction,
             MachineRequest::Unknown => panic!("a request it doesn't know"),
         }
     }
