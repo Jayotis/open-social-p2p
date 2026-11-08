@@ -143,11 +143,39 @@ impl Default for TorConfig {
 #[serde(default)]
 pub struct MachineConfig {
     pub enabled: bool,
+    /// Introductions between machines (ADR 0016), each part on its own.
+    pub introductions: IntroductionsConfig,
 }
 
 impl Default for MachineConfig {
     fn default() -> Self {
-        Self { enabled: true }
+        Self {
+            enabled: true,
+            introductions: IntroductionsConfig::default(),
+        }
+    }
+}
+
+/// Introductions between machines, under machine names only (ADR 0016).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct IntroductionsConfig {
+    /// While few machines have met this one, ask machines it meets to
+    /// introduce it to machines they passed on.
+    pub ask: bool,
+    /// Pass on other machines' requests to be introduced, within limits.
+    pub pass_on: bool,
+    /// Dial a machine introduced by one known for a few days sooner.
+    pub accept: bool,
+}
+
+impl Default for IntroductionsConfig {
+    fn default() -> Self {
+        Self {
+            ask: true,
+            pass_on: true,
+            accept: true,
+        }
     }
 }
 

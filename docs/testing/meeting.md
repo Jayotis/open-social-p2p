@@ -134,3 +134,30 @@ Not simulated: a newcomer that knows no working directory. A node can only start
 - **During the run, nodes held more.** From 28 minutes, as the operator's first names became known, the nodes holding over 40 not yet known rose to 135 of the 300 at 57 minutes, with at most 58 on one node at 39 minutes. They fell to none by the end, as more of the names held became known. Two things let these in, and the run doesn't record which did: names already known passing on the rest, as above; and honest machines passing on names they met by greeting, which count against that honest machine, since `Known` says nothing of how a machine was met. The second alone, before any name could be known, put at most 4 nodes over 40, with at most 46 names (both runs, up to 26 minutes).
 
 **What it shows.** A node can't tell a newcomer's greeting from an operator's, so a way in for one is a way in for the other. Once in, a crowd of names grows by passing on its own names; a newcomer can't. After the first two runs, ADR 0016's revision kept a crowd within the places of those who greet, and stage A2 built that, with being known standing in for checked work. It held what came in through greetings, but not what known names and honest machines passed on, so a node still held a median of 50 of the operator's names, a fifth of its table. Stage B lets a name out only for jobs it carried that the node checked, which answering under many names doesn't earn, and its run counts all the operator's names, known or not. Newcomers were met and passed on more than before A2, but slowly: they kept their places and waited for a dial. Stage A3's introductions put a machine introduced ahead of those that only greeted, in the same dial. So stage A2 is merged with its gate missed (2026-11-08): newcomers are met and passed on far more than with the code before it, stage B bounds what the operator gained, and stage A3 builds on A2's dial and is measured against it. Neither shows at the invited alpha's size, where tables don't fill.
+
+## Introductions
+
+Added on 2026-11-08, before this run, for [ADR 0016](../decisions/0016-machine-acquaintances.md#introductions)'s stage A3. A machine asks one it has met to introduce it to a machine that one passed on. The machine introduced to dials it first in the hour's turn for those who greet, and counts it there ([ADR 0021](../decisions/0021-introduced-machines-count-among-those-who-greet.md)). Stage A2 left newcomers held by a median of 23 established nodes but met by 12, waiting for that dial. This run checks whether introductions get them met sooner, and what one operator can do with them.
+
+**The run.** [The newcomer run](#newcomers), with:
+
+- **Machines asking on their own:** each asks while fewer than 32 machines it has met have greeted it in the last week, so newcomers ask and established nodes soon stop.
+- **An operator that introduces.** Each of its 100 names asks each of the 20 honest machines it greeted, 3 times a simulated day, to introduce it to an honest machine that one passed on. 3 a day is the most a machine passes on for one machine asking, so about 7 names asking each honest machine use up its 12 a day. Once an hour, each name also introduces another of the operator's names to up to 4 honest machines that met it. Asked to introduce an honest machine, it says yes and drops the request.
+- **Introductions count after 1.2 simulated hours** of knowing the introducer: a tenth of the run's 12 hours to be known, as 3 days are of 30.
+
+```sh
+target/release/osp-meet --dir /path/on/disk/meet --out introductions.json \
+  --honest 300 --hostile 100 --hostile-mins 15 --newcomers 50 --newcomers-mins 25 \
+  --directory-off-mins 45 --minutes 75 --hostile-introduces --compare-met-by 12 \
+  --label "$(git rev-parse --short HEAD)"
+```
+
+**Pass marks,** set before the run: stage A3's gate, and marks 1 to 6 as before.
+
+7. The operator's names not yet known, on each node at the end, within the 40 places of those who greet: A2's mark.
+8. Newcomers met by more established nodes than with A2 alone: a median above 12.
+9. Each newcomer introduced, while the operator uses up introducers' limits: at the end, at least one established node holds it through an introduction. Recorded too: how many introducers refused requests at their limits.
+
+Recorded as well: the operator's names counting against those who greet, held through an introduction, and the most on one node during the run; each side's requests passed on, refused, accepted and declined.
+
+**What it decides.** Whether stage A3 is merged. If a mark is missed, the cause is looked for in the code, fixed, and run once more.

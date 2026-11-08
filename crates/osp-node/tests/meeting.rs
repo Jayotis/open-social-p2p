@@ -9,7 +9,7 @@ use std::{
     io::Write,
     path::Path,
     sync::{Arc, Mutex, OnceLock},
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime},
 };
 
 use iroh::{
@@ -25,7 +25,8 @@ use osp_proto::{
     MACHINE_ALPN,
     framing::{read_frame, write_frame},
     machine::{
-        ListingEntry, ListingItem, MAX_KNOWN, MachineRecord, MachineRequest, MachineResponse,
+        IntroduceRequest, ListingEntry, ListingItem, MAX_KNOWN, MachineRecord, MachineRequest,
+        MachineResponse,
     },
     rpc::{ClientRequest, ClientResponse, PersonInfo},
 };
@@ -77,6 +78,7 @@ fn quick() -> MeetingTimes {
         forget_silent: Duration::from_secs(120),
         known_after: Duration::from_secs(2),
         half_life: Duration::from_secs(60),
+        introducer_after: Duration::from_secs(1),
     }
 }
 
@@ -347,6 +349,146 @@ async fn fake(net: &SimNet, kind: Kind) -> (FakeMachine, Router) {
         .accept(MACHINE_ALPN, machine.clone())
         .spawn();
     (machine, router)
+}
+
+/// Kim and Alice, each having met the other long enough ago for Alice's
+/// introductions to count with Kim.
+async fn kim_and_alice(root: &Path, net: &SimNet) -> (Node, Node, Vec<Router>) {
+    let kim = start_knowing(root, "Kim", net, &[]).await;
+    let k = machine_of(&kim);
+    // Kim's record, from a machine that stays to answer when she greets it
+    // back, as one gone would hold up her rounds.
+    let (helper, helpers_router) = fake(net, Kind::Old).await;
+    let (conn, record) = greet_as(helpers_router.endpoint(), &helper.key, k).await;
+    conn.close(0u32.into(), b"done");
+    // Alice hears of Kim from her directory and meets her; Kim, greeted,
+    // meets Alice back.
+    let (alices, router) = fake(net, Kind::Directory(vec![record])).await;
+    let alice = start_knowing(root, "Alice", net, &[alices.key.public()]).await;
+    let a = machine_of(&alice);
+    wait_until(Duration::from_secs(30), "Kim and Alice met", || {
+        met(&alice, k) && met(&kim, a)
+    })
+    .await;
+    tokio::time::sleep(quick().introducer_after * 2).await;
+    (kim, alice, vec![helpers_router, router])
+}
+
+fn request_from(asker: &SecretKey, via: EndpointId, target: EndpointId) -> IntroduceRequest {
+    let expires = humantime::format_rfc3339_seconds(SystemTime::now() + Duration::from_secs(600));
+    let record = MachineRecord::new(asker, vec![], osp_proto::now_rfc3339()).unwrap();
+    let mut id = [0; 16];
+    id[..8].copy_from_slice(&rand_u64().to_le_bytes());
+    IntroduceRequest::new(asker, id, via, target, expires.to_string(), record).unwrap()
+}
+
+fn rand_u64() -> u64 {
+    u64::from_le_bytes(SecretKey::generate().to_bytes()[..8].try_into().unwrap())
+}
+
+/// ADR 0016's introductions: Jimmy, which met Alice, asks her to introduce
+/// it to Kim, whose record she passed on. She passes it on, and Kim, who has
+/// known Alice a while, dials Jimmy in the turn for those who greet, counting
+/// it there. Jimmy never greeted Kim, and the log names no machine.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_machine_introduced_is_dialled_by_the_one_it_was_introduced_to() {
+    capture_logs();
+    let dir = tempfile::tempdir().unwrap();
+    let net = SimNet::new(5);
+    let (kim, alice, _router) = kim_and_alice(dir.path(), &net).await;
+    let (k, a) = (machine_of(&kim), machine_of(&alice));
+
+    // Jimmy, in the test's hands, answers a greeting and nothing more.
+    let (jimmy, jimmys_router) = fake(&net, Kind::Old).await;
+    let j = jimmy.key.public();
+    let (conn, _) = greet_as(jimmys_router.endpoint(), &jimmy.key, a).await;
+    let MachineResponse::Known { records } = ask_on(&conn, &MachineRequest::Known).await else {
+        panic!("no Known");
+    };
+    assert!(records.iter().any(|r| r.verify().unwrap().machine == k));
+    let introduce = |request| MachineRequest::Introduce { request };
+    // Not Jimmy's own request, or naming another machine to pass it on.
+    let other = SecretKey::generate();
+    for request in [request_from(&other, a, k), request_from(&jimmy.key, k, k)] {
+        let reply = ask_on(&conn, &introduce(request)).await;
+        assert!(matches!(
+            reply,
+            MachineResponse::Introduce { passed_on: false }
+        ));
+    }
+    let reply = ask_on(&conn, &introduce(request_from(&jimmy.key, a, k))).await;
+    assert!(matches!(
+        reply,
+        MachineResponse::Introduce { passed_on: true }
+    ));
+    conn.close(0u32.into(), b"done");
+
+    wait_until(Duration::from_secs(30), "Kim met Jimmy", || met(&kim, j)).await;
+    let jimmy_to_kim = kim
+        .acquaintances()
+        .into_iter()
+        .find(|a| a.machine == j)
+        .unwrap();
+    assert!(jimmy_to_kim.introduced && jimmy_to_kim.greeters_share);
+    assert_eq!(jimmy_to_kim.source, Some(a), "Alice introduced it");
+    assert_eq!(kim.introductions().accepted, 1);
+    assert!(alice.introductions().passed_on >= 1);
+    assert!(
+        jimmy.asked("known") > 0,
+        "Kim dialled Jimmy as she would any machine"
+    );
+    for machine in [j, k, a] {
+        assert_logs_dont_name(&machine);
+    }
+    for node in [kim, alice] {
+        node.shutdown().await.unwrap();
+    }
+}
+
+/// A node asks on its own while few have met it, and each part can be
+/// turned off: asked by a node that won't pass it on, nothing is.
+#[tokio::test(flavor = "multi_thread")]
+async fn nodes_ask_to_be_introduced_on_their_own_and_each_part_can_be_turned_off() {
+    let dir = tempfile::tempdir().unwrap();
+    let net = SimNet::new(6);
+    let (kim, alice, _router) = kim_and_alice(dir.path(), &net).await;
+    let a = machine_of(&alice);
+    let (jimmys, _jimmys_router) =
+        fake(&net, Kind::Directory(vec![record_of(&net, a).await])).await;
+    let jimmy = start_knowing(dir.path(), "Jimmy", &net, &[jimmys.key.public()]).await;
+    wait_until(
+        Duration::from_secs(30),
+        "Jimmy asked and Alice passed it on",
+        || {
+            let asked = jimmy.introductions();
+            asked.asked > 0 && asked.asked_passed_on > 0 && alice.introductions().passed_on > 0
+        },
+    )
+    .await;
+
+    // Lee won't ask.
+    let mut config = config_knowing("Lee", &[jimmys.key.public()]);
+    config.machine.introductions.ask = false;
+    let lee = start_sim(dir.path(), "Lee", config, sim(&net)).await;
+    wait_until(Duration::from_secs(30), "Lee met Alice", || met(&lee, a)).await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert_eq!(lee.introductions().asked, 0);
+
+    // A machine that won't pass them on says so to every request.
+    let mut config = config_knowing("Max", &[]);
+    config.machine.introductions.pass_on = false;
+    let max = start_sim(dir.path(), "Max", config, sim(&net)).await;
+    let (endpoint, key) = stranger(&net).await;
+    let m = machine_of(&max);
+    let request = request_from(&key, m, a);
+    let reply = ask_as(&endpoint, &key, m, &MachineRequest::Introduce { request }).await;
+    assert!(matches!(
+        reply,
+        MachineResponse::Introduce { passed_on: false }
+    ));
+    for node in [kim, alice, jimmy, lee, max] {
+        node.shutdown().await.unwrap();
+    }
 }
 
 /// The gate's first half: nodes that know only a directory meet one another,

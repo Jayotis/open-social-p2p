@@ -131,6 +131,15 @@ A machine is **heard of** when a signed record of it arrives, **met** once it an
 
 `osp machine new` forgets them all with the name: the node starts again among machines as a stranger.
 
+**Introductions** ([ADR 0016](../decisions/0016-machine-acquaintances.md#introductions), stage A3). While fewer than 32 machines it has met have greeted it in the last week, a machine asks one it's talking to, right after `Known`, to introduce it to one of the machines just passed on. The machine asked passes on at most 3 requests a day for one machine asking and 12 in all, to machines it met lately, and says only whether it did. The machine introduced to accepts at most one an hour, from a machine it first met 3 days ago or more whose records checked out. It dials the machine introduced first in the hour's turn for those who greet, and counts it among them ([ADR 0021](../decisions/0021-introduced-machines-count-among-those-who-greet.md)). Its answer is the same whatever it decides. Each part can be turned off:
+
+```toml
+[machine.introductions]
+ask = false       # don't ask to be introduced
+pass_on = false   # don't pass on others' requests
+accept = false    # don't dial a machine introduced any sooner
+```
+
 **What it costs:** each conversation over Tor builds about three circuits, two at the machine asking and one at the machine asked. [The simulator](meeting.md#results) estimates about 400 a day for each of 100 nodes.
 
 Over real Tor, one of three test nodes, meeting the other two, built **55 circuits a day for its machine name,** counted from its Tor's own circuit events for a day from 2 minutes after it started (2026-11-07): 21 to reach other machine names, and 34 for its own, 27 of them to keep its introduction points. 13 came in the first hour, while it met the others. That's a floor: with two machines to meet it has a few conversations a day, so most of it is what an onion service costs standing still. A node in a larger network, dialling 6 new machines an hour, builds more, as the simulator estimates. Tor's own circuits on that node, about 2,100 a day (publishing descriptors, vanguards, timing tests), aren't named for a service, so what the machine name adds to them isn't known.

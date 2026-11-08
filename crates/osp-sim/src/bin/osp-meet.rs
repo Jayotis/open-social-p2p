@@ -35,11 +35,23 @@ struct Cli {
     directory_off_mins: u64,
     #[arg(long, default_value_t = 25)]
     hostile_mins: u64,
+    /// The operator's names ask honest machines to introduce them, and
+    /// introduce one another (ADR 0016's stage A3).
+    #[arg(long)]
+    hostile_introduces: bool,
+    /// Hours, in the simulation, before a machine's introductions count. By
+    /// default a tenth of `--known-after-hours`, as 3 days are of 30.
+    #[arg(long)]
+    introducer_after_hours: Option<f64>,
     /// Honest nodes arriving later, told of the directory only.
     #[arg(long, default_value_t = 0)]
     newcomers: usize,
     #[arg(long, default_value_t = 35)]
     newcomers_mins: u64,
+    /// The median of established nodes that met each newcomer in an earlier
+    /// run: a mark that newcomers are met by more.
+    #[arg(long)]
+    compare_met_by: Option<usize>,
     #[arg(long, default_value_t = 60)]
     minutes: u64,
     #[arg(long, default_value_t = 1)]
@@ -75,6 +87,11 @@ async fn main() -> Result<()> {
         hostile_greets: cli.hostile_greets,
         speed: cli.speed,
         known_after_hours: cli.known_after_hours,
+        hostile_introduces: cli.hostile_introduces,
+        introducer_after_hours: cli
+            .introducer_after_hours
+            .unwrap_or(cli.known_after_hours / 10.0),
+        compare_met_by: cli.compare_met_by,
         directory_off_after: mins(cli.directory_off_mins),
         hostile_after: mins(cli.hostile_mins),
         newcomers: cli.newcomers,

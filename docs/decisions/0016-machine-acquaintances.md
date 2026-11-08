@@ -87,6 +87,8 @@ Six degrees isn't a guarantee, and being close isn't being trusted.
 
 ### Introductions
 
+[ADR 0021](0021-introduced-machines-count-among-those-who-greet.md) changes one rule here (2026-11-08): a machine introduced counts against those who greet, not against its introducer's source, and is dialled first among them.
+
 Jimmy's machine has met Alice's, and Alice's knows Kim's. Jimmy asks Alice to introduce it to Kim, Alice passes the request on, and Kim decides. Six degrees is this, repeated: once Jimmy has met Kim, it can ask Kim the same way. Nothing here is earned: it takes no standing, and no history beyond having met the machine asked.
 
 - **Jimmy names only a machine whose record Alice gave it** in `Known`, picked by the machine's own rules, at random or from sources heard from less, never from its owner's follows, feed or searches. So Alice learns which of her own records Jimmy picked, and nothing about its owner, and ADR 0015's "a machine says what it has, not what it wants" holds: no request carries an owner's interest.

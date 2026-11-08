@@ -27,8 +27,9 @@ use osp_proto::{
     MACHINE_ALPN,
     framing::{read_frame_max, write_frame},
     machine::{
-        ListingEntry, MAX_KNOWN, MAX_LISTING_PAGE, MAX_REPLY_LEN, MAX_REQUEST_LEN, MachineInfo,
-        MachineRecord, MachineRequest, MachineResponse, OFFERS_DIRECTORY,
+        IntroduceRequest, ListingEntry, MAX_INTRODUCE_LIFETIME_SECS, MAX_KNOWN, MAX_LISTING_PAGE,
+        MAX_REPLY_LEN, MAX_REQUEST_LEN, MachineInfo, MachineRecord, MachineRequest,
+        MachineResponse, OFFERS_DIRECTORY,
     },
     rpc::ClientResponse,
 };
@@ -37,7 +38,7 @@ use tokio::sync::Semaphore;
 use tracing::{debug, info};
 
 use crate::{
-    config::Config,
+    config::{Config, IntroductionsConfig},
     db::Db,
     directory::DirectoryLists,
     home::Home,
@@ -70,6 +71,8 @@ pub(crate) struct MachineSide {
     key: SecretKey,
     /// What its record says it offers other machines.
     offers: Vec<String>,
+    /// Which parts of introductions it takes part in.
+    introductions: IntroductionsConfig,
     pub endpoint: Endpoint,
     /// The machines it knows, and its record of each.
     pub acquaintances: Arc<Acquaintances>,
@@ -148,6 +151,7 @@ impl MachineSide {
         Ok(Some(Self {
             key,
             offers,
+            introductions: config.machine.introductions,
             endpoint,
             acquaintances: Arc::new(acquaintances),
             _transport: transport,
@@ -165,6 +169,7 @@ impl MachineSide {
         MachineProtocol {
             key: self.key.clone(),
             offers: self.offers.clone(),
+            introductions: self.introductions,
             connections: Arc::new(Semaphore::new(MAX_CONNECTIONS)),
             lists,
             acquaintances: self.acquaintances.clone(),
@@ -183,6 +188,8 @@ impl MachineSide {
 
     /// A conversation with a machine to meet it or check in: a greeting, then
     /// `Known`. A machine that doesn't know `Known` yet has still answered.
+    /// While few machines have met this one, it asks in the same conversation
+    /// to be introduced to one of the machines just passed on (ADR 0016).
     pub async fn talk(&self, machine: EndpointId) -> Result<Talk> {
         let conn = self.connect(machine).await?;
         let talked = async {
@@ -196,6 +203,12 @@ impl MachineSide {
                 }
                 _ => (Vec::new(), false),
             };
+            if self.introductions.ask
+                && let Some(target) = self.acquaintances.target_to_ask(&machine, &known)
+            {
+                let passed_on = self.ask_introduce(&conn, machine, target).await;
+                self.acquaintances.asked(passed_on.unwrap_or(false));
+            }
             Ok(Talk {
                 record,
                 known,
@@ -279,6 +292,49 @@ impl MachineSide {
             tokio::time::sleep(sim.delay.request(&self.id(), &machine, bytes)).await;
         }
         Ok(reply)
+    }
+
+    /// Asks `via` to introduce this machine to `target`. Returns whether it
+    /// says it passed the request on.
+    async fn ask_introduce(
+        &self,
+        conn: &Connection,
+        via: EndpointId,
+        target: EndpointId,
+    ) -> Result<bool> {
+        let mut id = [0; 16];
+        getrandom::fill(&mut id).map_err(|e| anyhow::anyhow!("no random numbers: {e}"))?;
+        let expires = humantime::format_rfc3339_seconds(
+            std::time::SystemTime::now() + Duration::from_secs(MAX_INTRODUCE_LIFETIME_SECS),
+        )
+        .to_string();
+        let request = IntroduceRequest::new(
+            &self.key,
+            id,
+            via,
+            target,
+            expires,
+            own_record(&self.key, &self.offers)?,
+        )?;
+        match self
+            .ask(conn, via, &MachineRequest::Introduce { request })
+            .await?
+        {
+            MachineResponse::Introduce { passed_on } => Ok(passed_on),
+            _ => Ok(false),
+        }
+    }
+
+    /// Passes on a request to be introduced to the machine it names, and
+    /// closes the conversation. The answer is the same whatever that machine
+    /// decides.
+    pub async fn pass_on_to(&self, target: EndpointId, request: IntroduceRequest) -> Result<()> {
+        let conn = self.connect(target).await?;
+        let asked = self
+            .ask(&conn, target, &MachineRequest::Introduction { request })
+            .await;
+        close(&conn);
+        asked.map(|_| ())
     }
 
     async fn ask_hello(&self, conn: &Connection, machine: EndpointId) -> Result<MachineRecord> {
@@ -368,6 +424,7 @@ fn checked(record: &MachineRecord, from: EndpointId) -> Result<MachineInfo> {
 pub(crate) struct MachineProtocol {
     key: SecretKey,
     offers: Vec<String>,
+    introductions: IntroductionsConfig,
     connections: Arc<Semaphore>,
     /// A directory's lists, on a machine that is one.
     lists: Option<DirectoryLists>,
@@ -426,7 +483,7 @@ impl MachineProtocol {
                     if let Some(lists) = &self.lists {
                         lists.greeted(remote);
                     }
-                    self.acquaintances.greeted(&record);
+                    self.acquaintances.greeted(&remote, &record);
                     MachineResponse::Hello {
                         record: own_record(&self.key, &self.offers)?,
                     }
@@ -448,6 +505,22 @@ impl MachineProtocol {
             MachineRequest::Known => MachineResponse::Known {
                 records: self.acquaintances.known_reply(&remote),
             },
+            // Only whether it will be passed on, with no reason.
+            MachineRequest::Introduce { request } => MachineResponse::Introduce {
+                passed_on: self.introductions.pass_on
+                    && self
+                        .acquaintances
+                        .pass_on(&remote, &self.key.public(), request),
+            },
+            // The same answer whatever is decided, so the machine passing it on
+            // doesn't learn.
+            MachineRequest::Introduction { request } => {
+                if self.introductions.accept {
+                    self.acquaintances
+                        .introduced(&remote, &self.key.public(), &request);
+                }
+                MachineResponse::Introduction
+            }
             MachineRequest::Unknown => MachineResponse::Error {
                 message: "this machine doesn't know that request".to_string(),
             },

@@ -12,9 +12,15 @@ use serde::{Deserialize, Serialize};
 use crate::object::{SignedObject, base64url};
 
 const RECORD_DOMAIN: &[u8] = b"osp-machine-record-v0:";
+const INTRODUCE_DOMAIN: &[u8] = b"osp-machine-introduce-v0:";
 
 /// Longest signed part of a machine record, in bytes.
 pub const MAX_RECORD_BYTES: usize = 1024;
+/// Longest signed part of a request to be introduced, in bytes.
+pub const MAX_INTRODUCE_BYTES: usize = 512;
+/// Longest a request to be introduced may run before it expires, so a machine
+/// remembers the requests it has seen for no longer than this.
+pub const MAX_INTRODUCE_LIFETIME_SECS: u64 = 60 * 60;
 /// Most things a record can say its machine offers.
 pub const MAX_OFFERS: usize = 8;
 /// Largest request frame a machine reads. A request carries one record at most.
@@ -114,6 +120,103 @@ fn signing_input(payload: &[u8]) -> Vec<u8> {
     [RECORD_DOMAIN, payload].concat()
 }
 
+/// What a machine asking to be introduced says (ADR 0016): introduce me,
+/// `asker`, through you, `via`, to `target`, a machine whose record you passed
+/// on to me. It names machines only, nothing of either owner.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IntroduceInfo {
+    /// Random, so the machine introduced to can drop one it has seen.
+    pub id: String,
+    pub asker: EndpointId,
+    pub via: EndpointId,
+    pub target: EndpointId,
+    /// RFC 3339.
+    pub expires: String,
+}
+
+/// A request to be introduced, signed by the machine asking, with its own
+/// record. The machine asked passes it on as it is, so the machine introduced
+/// to checks both itself, and can't be told of a request the asker didn't make.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IntroduceRequest {
+    #[serde(with = "base64url")]
+    payload: Vec<u8>,
+    asker: EndpointId,
+    #[serde(with = "base64url")]
+    sig: Vec<u8>,
+    /// The asker's own record.
+    pub record: MachineRecord,
+}
+
+impl IntroduceRequest {
+    pub fn new(
+        key: &SecretKey,
+        id: [u8; 16],
+        via: EndpointId,
+        target: EndpointId,
+        expires: String,
+        record: MachineRecord,
+    ) -> Result<Self> {
+        let info = IntroduceInfo {
+            id: data_encoding::HEXLOWER.encode(&id),
+            asker: key.public(),
+            via,
+            target,
+            expires,
+        };
+        let payload = serde_json::to_vec(&info)?;
+        ensure!(
+            payload.len() <= MAX_INTRODUCE_BYTES,
+            "a request to be introduced is larger than {MAX_INTRODUCE_BYTES} bytes"
+        );
+        let sig = key.sign(&introduce_input(&payload)).to_bytes().to_vec();
+        Ok(Self {
+            payload,
+            asker: key.public(),
+            sig,
+            record,
+        })
+    }
+
+    /// Checks the size, the asker's signature, and that the record is the
+    /// asker's own. Whether it has expired, and who it names, is for the
+    /// caller to check.
+    pub fn verify(&self) -> Result<IntroduceInfo> {
+        ensure!(
+            self.payload.len() <= MAX_INTRODUCE_BYTES,
+            "a request to be introduced is larger than {MAX_INTRODUCE_BYTES} bytes"
+        );
+        let sig: [u8; Signature::LENGTH] = self
+            .sig
+            .as_slice()
+            .try_into()
+            .context("signature must be 64 bytes")?;
+        self.asker
+            .verify(
+                &introduce_input(&self.payload),
+                &Signature::from_bytes(&sig),
+            )
+            .map_err(|_| anyhow::anyhow!("invalid signature on a request to be introduced"))?;
+        let info: IntroduceInfo =
+            serde_json::from_slice(&self.payload).context("not a request to be introduced")?;
+        ensure!(
+            info.asker == self.asker,
+            "this request speaks of another machine"
+        );
+        ensure!(info.id.len() == 32, "a request's ID is 16 bytes");
+        let record = self.record.verify()?;
+        ensure!(
+            record.machine == info.asker,
+            "the record with a request isn't the asker's"
+        );
+        Ok(info)
+    }
+}
+
+fn introduce_input(payload: &[u8]) -> Vec<u8> {
+    [INTRODUCE_DOMAIN, payload].concat()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum MachineRequest {
@@ -128,6 +231,14 @@ pub enum MachineRequest {
     /// they signed them, picked at random. It carries nothing of what the
     /// asker wants, and the reply says nothing of how or when they met.
     Known,
+    /// Introduce me to a machine whose record you passed on to me (ADR 0016).
+    /// It must be the asker's own request, naming the machine asked as `via`.
+    /// The reply says only whether it was passed on.
+    Introduce { request: IntroduceRequest },
+    /// A machine you passed on to me asks to be introduced to you, as it
+    /// signed it. The reply is the same whatever the machine introduced to
+    /// decides, so the one passing it on never learns.
+    Introduction { request: IntroduceRequest },
     /// A request from a later version. It gets an error rather than a closed
     /// connection, so requests can be added.
     #[serde(other)]
@@ -148,6 +259,10 @@ pub enum MachineResponse {
     Known {
         records: Vec<MachineRecord>,
     },
+    Introduce {
+        passed_on: bool,
+    },
+    Introduction,
     Error {
         message: String,
     },
@@ -352,6 +467,94 @@ mod tests {
         let later = r#"{"seq":3,"item":{"kind":"something_later","with":1}}"#;
         let entry: ListingEntry = serde_json::from_str(later).unwrap();
         assert_eq!(entry.item, ListingItem::Unknown);
+    }
+
+    fn introduce(asker: &SecretKey, record: MachineRecord) -> IntroduceRequest {
+        IntroduceRequest::new(
+            asker,
+            [9; 16],
+            key(2).public(),
+            key(3).public(),
+            DATE.into(),
+            record,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn a_request_to_be_introduced_checks_out_after_travelling() {
+        let request = introduce(&key(1), record());
+        let json = serde_json::to_string(&MachineRequest::Introduce {
+            request: request.clone(),
+        })
+        .unwrap();
+        let MachineRequest::Introduce { request: back } = serde_json::from_str(&json).unwrap()
+        else {
+            panic!("another request");
+        };
+        assert_eq!(back, request);
+        let info = back.verify().unwrap();
+        assert_eq!(info.asker, key(1).public());
+        assert_eq!(info.via, key(2).public());
+        assert_eq!(info.target, key(3).public());
+        assert_eq!(info.id, "09".repeat(16));
+    }
+
+    #[test]
+    fn a_request_to_be_introduced_is_the_askers_alone() {
+        let request = introduce(&key(1), record());
+        let other = introduce(&key(4), record_of(&key(4)));
+        let changed = [
+            // Another asker's name on it.
+            IntroduceRequest {
+                asker: key(4).public(),
+                ..request.clone()
+            },
+            // Another payload under this signature.
+            IntroduceRequest {
+                payload: other.payload.clone(),
+                ..request.clone()
+            },
+            IntroduceRequest {
+                sig: vec![0; 64],
+                ..request.clone()
+            },
+            // Another machine's record with it.
+            IntroduceRequest {
+                record: record_of(&key(4)),
+                ..request.clone()
+            },
+        ];
+        for request in changed {
+            request.verify().unwrap_err();
+        }
+        // A record signed for a record isn't a request to be introduced.
+        let as_record = IntroduceRequest {
+            sig: key(1)
+                .sign(&signing_input(&request.payload))
+                .to_bytes()
+                .to_vec(),
+            ..request
+        };
+        as_record.verify().unwrap_err();
+    }
+
+    fn record_of(key: &SecretKey) -> MachineRecord {
+        MachineRecord::new(key, vec![], DATE.into()).unwrap()
+    }
+
+    #[test]
+    fn the_largest_request_to_be_introduced_fits_a_request() {
+        let request = IntroduceRequest {
+            payload: vec![0xff; MAX_INTRODUCE_BYTES],
+            asker: key(1).public(),
+            sig: vec![0xff; Signature::LENGTH],
+            record: signed_payload(&key(1), vec![0xff; MAX_RECORD_BYTES]),
+        };
+        let len = serde_json::to_vec(&MachineRequest::Introduction { request })
+            .unwrap()
+            .len();
+        assert!(len <= MAX_REQUEST_LEN as usize, "{len} bytes");
     }
 
     #[test]

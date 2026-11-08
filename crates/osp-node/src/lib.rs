@@ -31,11 +31,11 @@ mod tor;
 mod trust;
 mod uploads;
 
-pub use config::{Config, DirectRule, KnownDirectory, RelayChoice};
+pub use config::{Config, DirectRule, IntroductionsConfig, KnownDirectory, RelayChoice};
 pub use db::BlobClass;
 pub use endpoints::PeerEndpoints;
 pub use home::Home;
-pub use meet::{Acquaintance, MeetingTimes, Stage};
+pub use meet::{Acquaintance, IntroductionCounts, MeetingTimes, Stage};
 #[cfg(feature = "sim")]
 pub use node::SimSettings;
 pub use node::{Node, Restored};
