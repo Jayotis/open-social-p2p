@@ -2,7 +2,7 @@
 
 **Status:** Proposed (2026-11-04). Not built. Would change [ADR 0014](0014-finding-people-and-private-messages.md)'s "Who may connect directly". Until accepted and built, ADR 0014's rules stand, and the layers and values below are a first draft to think over.
 
-Revised 2026-11-07, still proposed. Work now counts whether a node served the bytes itself or its machine carried them as a hop ([ADR 0017](0017-one-hop-forwarding.md)), once the node shows the granting peer which machine is its own; a reference ([ADR 0016](0016-machine-acquaintances.md#references)) lowers the marks but never replaces first-hand work; and a peer that offers a link meets "both ways". Its question at setup is also the yes for using hops ([ADR 0017](0017-one-hop-forwarding.md#who-picks)), as the hop next to a node sees its address as a direct link does, and a machine's carrying counts as jobs finished, not bytes. Direct links are meant to become the main path between nodes that work together, taking bytes off hops and relays. Each changed rule says what it replaced and why.
+Revised 2026-11-07, still proposed. Work now counts whether a node served the bytes itself or its machine carried them as a hop ([ADR 0017](0017-one-hop-forwarding.md)), once the node shows the granting peer which machine is its own; a reference ([ADR 0016](0016-machine-acquaintances.md#references)) lowers the marks but never replaces first-hand work; and a peer that offers a link meets "both ways". A creator's spot checks of its followers' copies count too, so a creator and the followers who host its posts can earn links, though the creator never fetches from them to watch anything. Its question at setup is also the yes for using hops ([ADR 0017](0017-one-hop-forwarding.md#who-picks)), as the hop next to a node sees its address as a direct link does, and a machine's carrying counts as jobs finished, not bytes. Direct links are meant to become the main path between nodes that work together, taking bytes off hops and relays. Each changed rule says what it replaced and why.
 
 ## Context
 
@@ -37,6 +37,7 @@ Questions to settle:
 - **`follows`.** Exists, and stays. A follow is one-way, and says nothing of work.
 - **Removing public IDs from `WhoHosts` first,** naming followers by a bare media endpoint. It would improve on [ADR 0012](0012-sharing-prefetched-copies.md)'s disclosure, but this record needs those IDs: a peer's record, and the request for its endpoints, both go by public ID. Not now. It could come later, with the handover moved onto the media endpoint and an unbound direct endpoint of its own. An alias covers the name meanwhile.
 - **Verified media exchange.** Chosen. It costs real upload for each peer, and it helps the network even if that peer later turns out badly. The pairs that earn it are the ones holding the same files, which would otherwise fill the relays. [ADR 0011](0011-measuring-peers.md) already counts most of it.
+- **Downloaders' receipts telling a creator which follower served them.** They'd tell the creator who fetched what from whom, and fakes can sign them for one another ([the review](../reviews/2026-10-21-review-of-docs-12-and-13.md)'s A1 and A4). Rejected: the creator checks for itself, with spot checks ("What counts as work").
 
 ## Decision
 
@@ -50,7 +51,8 @@ Questions to settle:
 
 - **It counts:** a download from that node that completed, whole or its part of one, each chunk checked against the hash.
 - **It counts too:** transfers that came to this node through that node's machine as a hop ([ADR 0017](0017-one-hop-forwarding.md#credit)) and completed, each chunk checked, once that node has shown the machine is its own (below).
-- **A peer can't push work at a node.** A node asks only for what it wants, doesn't ask for a file it holds, and picks its own hop.
+- **It counts too, for the node whose posts they are: spot checks of a follower's copies.** A creator never fetches from its followers to watch anything, yet a follower that keeps its posts and serves them does it real work: each copy it serves is one the creator didn't upload. Today the creator checks one 1 KiB chunk when a follower says it holds a copy, and a fake can pass that while stalling everyone else. So the creator's node also fetches a piece of its own posts from the followers it names in `WhoHosts`, at random times, under a key used only for that, which a follower can't tell from any downloader's. Each piece received and checked is work it asked for, and a busy refusal counts neither way. A bounded number a day, set in the simulator. A follower that fails them stops being named.
+- **A peer can't push work at a node.** A node asks only for what it wants, doesn't ask for a file it holds, except in its own spot checks, which it times and bounds itself, and picks its own hop.
 - **Fakes crediting each other gets nowhere** ([the review's A4](../reviews/2026-10-21-review-of-docs-12-and-13.md)). Each node counts only what it received itself, and nothing is shared.
 - **Size counts too.** Three tiny files, or one file asked for in many small pieces, isn't real work. So layer 4 also needs a minimum of checked bytes, set in the simulator, and a piece fetched twice counts once.
 - **The other direction** is media this node served to that peer. It's needed for "both ways", as it shows the pair actually trade, but it isn't work on its own, as a peer can ask for anything.
@@ -67,12 +69,12 @@ Each layer is reached by working through the one before. Values are starting val
 | Layer | How it's reached | What it gives |
 | --- | --- | --- |
 | 0. Stranger | First contact | Media through relays; the stranger share when busy ([doc 12](../12-peer-reciprocity-and-recognition.md)) |
-| 1. Has worked for us | One completed download from it, or a transfer its machine carried for us, once shown | On record, nothing more |
+| 1. Has worked for us | One completed download from it, a transfer its machine carried for us, once shown, or a spot check of its copy of our posts that passed | On record, nothing more |
 | 2. Regular source | Work on 3 different days, no bad data | Tried sooner when fetching, or picked sooner as a hop |
 | 3. Both ways | Layer 2, and this node has served it on 3 different days, or it has offered this node a link | Ahead of strangers when busy |
 | 4. Earned | Layer 3 held, at least 30 days since first contact, enough checked bytes, and room under the caps. With a reference, 15 days and half the bytes | A direct connection, if both sides' rules allow it |
 
-- **An offer meets "both ways".** In the first draft, a creator and its followers never got there, as a creator doesn't fetch from its followers, however much a follower's machine carried for it. A peer that offers a link has counted this node's work. That's no easier for an attacker than before, as a peer could always meet "both ways" by asking for anything ("The other direction", above).
+- **A creator and its followers can get there.** A creator never fetches from its followers to watch anything, so in the first draft neither could reach layer 3 with the other. Now the creator's spot checks put a follower that hosts its posts on its record. On the follower's side, which can't tell the checks from strangers, the creator's offer of a link meets "both ways": a peer that offers has counted this node's work. That's no easier for an attacker than before, as a peer could always meet "both ways" by asking for anything ("The other direction", above).
 - **Layers 2 and 3 change who gets served first,** so each needs its own B8 run, and layer 3 needs the review's evidence on newcomers (A3). They can start as labels with no effect.
 - **Counting days** takes one new counter per peer, in each direction, counting each day once, across restarts too. ADR 0011's rule holds: faded totals, not which files or when.
 - **It's per node,** as ADR 0011's rows are. Grouping a person's nodes can come later.
@@ -120,6 +122,7 @@ Offered once its tests pass, with yes recommended. It's one question for direct 
 - **It doesn't stop a patient attacker.** It makes them pay. At a few hundred MB a month for each node, a rented server with a few terabytes could still reach thousands. Meanwhile it does real work. This is a price, not a wall.
 - A rate cap doesn't protect one node: one earned peer is enough to get its address.
 - **Aiming at one person is harder.** A peer earns a place only with a node that keeps fetching from it, and it can't make a node do that. It can try, by hosting what that person watches and serving it fast, so the price check tries that too. Carrying for that person counts as well, but at a host's end only an earned peer is picked, and at a viewer's end it takes jobs finished for that node on several days, starting in the middle, where it sees neither end. If it does get there, it knows the address and the public ID, and only an alias keeps the name from it.
+- **Following a creator and hosting its posts for a month can get the creator's address,** if the creator said yes. A targeted flood is the likeliest harm, and it falls mostly on creators. It isn't cheap: the checks look like any downloader, so the follower has to keep the posts and serve the creator's other followers well for 30 days, real work for the creator's audience. A creator who'd rather not can say no at setup, or use a VPN. The price check tries it.
 
 **Responsibility.** A follower's node shares copies of what its owner follows, and an earned peer can see its address doing so. Each owner answers for what their node sends, and setup says so. They can drop a file with [ADR 0019](0019-taking-posts-and-media-down.md)'s `osp block`.
 
@@ -141,14 +144,14 @@ Offered once its tests pass, with yes recommended. It's one question for direct 
 | --- | --- | --- |
 | 1 | A relay in `osp-sim`, and ADR 0014's "measuring media's default" | Relay bytes counted with 0, 20 and 50% of followers fetching through relays |
 | 2 | Day counters and layers, shown in `osp peers`, changing nothing. A shortened clock in `osp-sim`, as this takes a month | A B8 run with several posts shows **how often pairs meet again**, and, with ADR 0017's stage A, how many weeks a node that carries takes to reach each layer, with and without a reference |
-| 3 | The rule, the handover, showing a machine, `deny`, `reset`, asking at setup | **At least a quarter of relayed bytes move to direct links** (a starting value). Refused nodes arriving through a relay learn no address, in a packet capture |
+| 3 | The rule, the handover, showing a machine, spot checks of followers' copies, `deny`, `reset`, asking at setup | **At least a quarter of relayed bytes move to direct links** (a starting value). Refused nodes arriving through a relay learn no address, in a packet capture |
 | 4 | Effects of layers 2 and 3, one at a time | B8's marks, and the review's A3 |
 
 Not before the invited alpha: a handful of nodes won't reach layer 4 and have too little to exchange.
 
 ## Validation
 
-- **A price check.** An attacker holding 10 and 25% of nodes, serving real media and carrying traffic for three simulated months, its names signing references for one another: what share of honest addresses does it hold, and how many bytes did it serve or carry to get there? It also tries tiny files, split requests, and a fast host aimed at one node. The result is reported, and decides whether setup recommends yes.
+- **A price check.** An attacker holding 10 and 25% of nodes, serving real media and carrying traffic for three simulated months, its names signing references for one another: what share of honest addresses does it hold, and how many bytes did it serve or carry to get there? It also tries tiny files, split requests, a fast host aimed at one node, and a follower hosting one creator's posts to reach it. The result is reported, and decides whether setup recommends yes.
 - **Admission.** A stranger, or a node with only machine evidence such as greetings and records, only references, or self-reported bytes, never gets an address. A peer that sent bad data loses its place. After `reset`, nothing connects directly, including peers approved by hand.
 - **Leak test,** as in ADR 0014 and ADR 0015. Nothing public gains an address, and nothing ties a machine name to a public ID.
 
