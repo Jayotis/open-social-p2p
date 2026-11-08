@@ -66,10 +66,13 @@ pub(crate) const PASSED_ON_PER_DAY: usize = 12;
 /// Introductions accepted in an hour, at most.
 pub(crate) const ACCEPTED_PER_HOUR: usize = 1;
 /// A machine asks to be introduced while fewer than this many machines it
-/// has met have come back and greeted it lately: while it's new, or few have
-/// met it. Only those it met count, so strangers greeting it can't stop it.
-pub(crate) const ASK_WHILE_GREETED_BY_FEWER: usize = 32;
-/// Requests to be introduced remembered as seen, at most.
+/// has met have greeted it lately: while it's new, or few have met it. Only
+/// those it met count, before or after they greeted, so strangers greeting it
+/// can't stop it. 10, as a newcomer met by 10 established nodes has a start
+/// (the newcomer run's mark 5); at 32, established machines kept asking for
+/// days and used up the introducers' limits (stage A3's first run).
+pub(crate) const ASK_WHILE_GREETED_BY_FEWER: usize = 10;
+/// Requests to be introduced remembered as seen, at most, and greetings.
 const MAX_SEEN: usize = 4096;
 /// A record dated longer ago than this isn't current: it isn't kept, and
 /// whoever passed it on passed on something stale. Machines date their record
@@ -359,8 +362,8 @@ pub(crate) struct Table {
 /// What a machine keeps of introductions.
 #[derive(Default)]
 struct Introductions {
-    /// Machines it met that greeted it lately, and when: whether others have
-    /// met it, so whether to ask to be introduced.
+    /// Machines held that greeted it lately, and when: those it has met say
+    /// whether others have met it, so whether to ask to be introduced.
     greeted_by: HashMap<EndpointId, i64>,
     /// Machines it asked to be introduced to lately, and when, so it asks of
     /// each once.
@@ -388,6 +391,26 @@ pub struct IntroductionCounts {
     /// Introductions to this machine accepted, and declined.
     pub accepted: u64,
     pub declined: u64,
+    /// Those declined, by why: the introducer not met long enough, not
+    /// answering, or its records failed; the introducer among those who
+    /// greet; the hour's one taken; the machine introduced already met or
+    /// held otherwise; no place for it. The rest were invalid or seen before.
+    pub declined_untrusted: u64,
+    pub declined_greeter: u64,
+    pub declined_at_limit: u64,
+    pub declined_held: u64,
+    pub declined_no_place: u64,
+}
+
+/// Why an introduction was declined.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Decline {
+    Invalid,
+    Untrusted,
+    Greeter,
+    AtLimit,
+    Held,
+    NoPlace,
 }
 
 impl Table {
@@ -496,18 +519,19 @@ impl Table {
         shares
     }
 
+    /// Whether a machine counts among those who greet: it came in by greeting,
+    /// by an introduction or through one that did, and isn't known yet (being
+    /// known stands in for checked work until stage B).
+    fn among_greeters(&self, entry: &Entry, now: i64) -> bool {
+        entry.source.share() == Source::Greeted && self.stage(entry, now) != Stage::Known
+    }
+
     /// The source records `from` passes on count as: against those who greet,
-    /// while `from` came in by greeting, or through one that did, and isn't
-    /// known yet.
+    /// while `from` counts among them.
     fn counted_as(&self, source: Source, now: i64) -> Source {
         match source {
             Source::Machine(from) => match self.entries.get(&from) {
-                Some(e)
-                    if e.source.share() == Source::Greeted
-                        && self.stage(e, now) != Stage::Known =>
-                {
-                    Source::ThroughGreeter(from)
-                }
+                Some(e) if self.among_greeters(e, now) => Source::ThroughGreeter(from),
                 _ => source,
             },
             other => other,
@@ -912,24 +936,33 @@ impl Table {
             .collect()
     }
 
-    /// A machine greeted this one. If it's one this machine met, it has met
-    /// this one too, which is what says whether to ask to be introduced.
+    /// A machine greeted this one, so has met it. Noted if it's held, met or
+    /// not: met before or after, it says whether to ask to be introduced.
     pub fn greeted_by(&mut self, machine: &EndpointId, now: i64) {
-        if self
-            .entries
-            .get(machine)
-            .is_some_and(|e| e.met_ms.is_some())
+        if !self.entries.contains_key(machine) {
+            return;
+        }
+        let greeted = &mut self.intro.greeted_by;
+        greeted.insert(*machine, now);
+        if greeted.len() > MAX_SEEN
+            && let Some(oldest) = greeted.iter().min_by_key(|(_, at)| **at).map(|(m, _)| *m)
         {
-            self.intro.greeted_by.insert(*machine, now);
+            greeted.remove(&oldest);
         }
     }
 
     /// Whether to ask to be introduced: while fewer than
-    /// `ASK_WHILE_GREETED_BY_FEWER` machines it met have greeted it lately.
+    /// `ASK_WHILE_GREETED_BY_FEWER` machines it has met greeted it lately.
     pub fn should_ask(&mut self, now: i64) -> bool {
         let since = now - ms(self.times.met_lately);
         self.intro.greeted_by.retain(|_, at| *at >= since);
-        self.intro.greeted_by.len() < ASK_WHILE_GREETED_BY_FEWER
+        let met = self
+            .intro
+            .greeted_by
+            .keys()
+            .filter(|m| self.entries.get(*m).is_some_and(|e| e.met_ms.is_some()))
+            .count();
+        met < ASK_WHILE_GREETED_BY_FEWER
     }
 
     /// A machine to ask `via` to introduce this one to, from the records `via`
@@ -1022,12 +1055,23 @@ impl Table {
         request: &IntroduceRequest,
         now: i64,
     ) -> bool {
-        let accepted = self.accept(via, me, request, now);
-        match accepted {
-            true => self.intro.counts.accepted += 1,
-            false => self.intro.counts.declined += 1,
+        let decided = self.accept(via, me, request, now);
+        let c = &mut self.intro.counts;
+        match decided {
+            Ok(()) => c.accepted += 1,
+            Err(why) => {
+                c.declined += 1;
+                match why {
+                    Decline::Invalid => {}
+                    Decline::Untrusted => c.declined_untrusted += 1,
+                    Decline::Greeter => c.declined_greeter += 1,
+                    Decline::AtLimit => c.declined_at_limit += 1,
+                    Decline::Held => c.declined_held += 1,
+                    Decline::NoPlace => c.declined_no_place += 1,
+                }
+            }
         }
-        accepted
+        decided.is_ok()
     }
 
     fn accept(
@@ -1036,37 +1080,39 @@ impl Table {
         me: &EndpointId,
         request: &IntroduceRequest,
         now: i64,
-    ) -> bool {
-        let Ok(info) = request.verify() else {
-            return false;
-        };
-        let Some(expires) = current(&info.expires, now) else {
-            return false;
-        };
+    ) -> Result<(), Decline> {
+        let info = request.verify().map_err(|_| Decline::Invalid)?;
+        let expires = current(&info.expires, now).ok_or(Decline::Invalid)?;
         if info.via != *via || info.target != *me || info.asker == *via {
-            return false;
+            return Err(Decline::Invalid);
         }
         // Each request once, however many times it's passed on.
         self.intro.seen.retain(|_, until| *until > now);
         if self.intro.seen.len() >= MAX_SEEN || self.intro.seen.contains_key(&info.id) {
-            return false;
+            return Err(Decline::Invalid);
         }
         self.intro.seen.insert(info.id, expires);
         // An introducer first met a few days ago, still answering, whose
         // records checked out.
-        let trusted = self.entries.get(via).is_some_and(|e| {
+        let introducer = self.entries.get(via).filter(|e| {
             e.met_ms
                 .is_some_and(|met| met <= now - ms(self.times.introducer_after))
                 && self.answering(e, now)
                 && checked_out(&e.counts)
         });
-        if !trusted {
-            return false;
+        let Some(introducer) = introducer else {
+            return Err(Decline::Untrusted);
+        };
+        // An introduction is the introducer's word, and a machine still among
+        // those who greet has no word here yet (ADR 0021), or a crowd's names
+        // would introduce one another.
+        if self.among_greeters(introducer, now) {
+            return Err(Decline::Greeter);
         }
         let hour_ago = now - ms(self.times.hour);
         self.intro.accepted.retain(|at| *at > hour_ago);
         if self.intro.accepted.len() >= ACCEPTED_PER_HOUR {
-            return false;
+            return Err(Decline::AtLimit);
         }
         // A machine is introduced once: one met, or held otherwise, gains
         // nothing, and one waiting after a greeting is dialled sooner.
@@ -1075,14 +1121,14 @@ impl Table {
                 e.source = Source::Introduced(*via);
                 self.changed.insert(info.asker);
             }
-            Some(_) => return false,
+            Some(_) => return Err(Decline::Held),
             None => match self.hear(&request.record, Source::Introduced(*via), now) {
                 Ok(Heard::Added | Heard::Turn) => {}
-                _ => return false,
+                _ => return Err(Decline::NoPlace),
             },
         }
         self.intro.accepted.push(now);
-        true
+        Ok(())
     }
 
     pub fn introduction_counts(&self) -> IntroductionCounts {
@@ -1225,8 +1271,9 @@ impl Acquaintances {
     pub fn greeted(&self, machine: &EndpointId, record: &MachineRecord) {
         let now = now_ms();
         if let Err(e) = self.with(|t| {
+            let heard = t.hear(record, Source::Greeted, now);
             t.greeted_by(machine, now);
-            t.hear(record, Source::Greeted, now)
+            heard
         }) {
             debug!("not keeping a greeting's record: {e:#}");
         }
@@ -1342,22 +1389,22 @@ impl Core {
         let acquaintances = &side.acquaintances;
         let plan = acquaintances.plan(now_ms());
         let talks = plan.dials.into_iter().chain(plan.check_ins);
-        let _: Vec<bool> = stream::iter(talks)
+        let talks = stream::iter(talks)
             .map(|machine| async move { acquaintances.after(machine, side.talk(machine).await) })
             .buffered_unordered(AT_ONCE)
-            .collect()
-            .await;
-        // Requests to be introduced, passed on as they came. Whether the
+            .collect::<Vec<bool>>();
+        // Requests to be introduced, passed on as they came, alongside the
+        // round's conversations so they don't hold up its dials. Whether the
         // machine introduced to accepts isn't told.
-        let _: Vec<()> = stream::iter(acquaintances.take_to_pass_on())
+        let pass_ons = stream::iter(acquaintances.take_to_pass_on())
             .map(|(target, request)| async move {
                 if side.pass_on_to(target, request).await.is_err() {
                     debug!("couldn't pass on a request to be introduced");
                 }
             })
             .buffered_unordered(AT_ONCE)
-            .collect()
-            .await;
+            .collect::<Vec<()>>();
+        tokio::join!(talks, pass_ons);
         if !self.config.directory.known.is_empty() && acquaintances.stuck(now_ms()) {
             self.read_directories_now.notify_one();
         }
@@ -1957,7 +2004,32 @@ mod tests {
         }
         let last = again + HOUR_MS + 1;
         assert!(!t.introduced(&alice, &me, &request(&asker(), alice, me, last), last));
-        assert_eq!(t.introduction_counts().accepted, 4);
+        let c = t.introduction_counts();
+        assert_eq!(c.accepted, 4);
+        assert_eq!(
+            (c.declined_untrusted, c.declined_at_limit, c.declined_held),
+            (2, 1, 1)
+        );
+    }
+
+    #[test]
+    fn a_machine_among_those_who_greet_introduces_no_one_until_known() {
+        let now = start();
+        let me = machine(now).0;
+        let mut t = table();
+        // Both came in by greeting and still answer: one met four days ago,
+        // the other long enough ago to be known.
+        let recent = hear_many(&mut t, Source::Greeted, 1, now - 4 * DAY_MS)[0];
+        keep_answering(&mut t, &[recent], now - 4 * DAY_MS, now);
+        let known = hear_many(&mut t, Source::Greeted, 1, now - 31 * DAY_MS)[0];
+        keep_answering(&mut t, &[known], now - 31 * DAY_MS, now);
+        assert_eq!(stage_of(&t, &known, now), Some(Stage::Known));
+
+        let jimmy = SecretKey::generate();
+        assert!(!t.introduced(&recent, &me, &request(&jimmy, recent, me, now), now));
+        assert_eq!(t.introduction_counts().declined_greeter, 1);
+        assert!(t.get(&jimmy.public()).is_none());
+        assert!(t.introduced(&known, &me, &request(&jimmy, known, me, now), now));
     }
 
     #[test]
@@ -1998,17 +2070,18 @@ mod tests {
         let mut t = table();
         assert!(t.should_ask(now));
         // Strangers greeting don't count, nor do machines only heard of.
-        let heard = hear_many(&mut t, Source::Machine(machine(now).0), 32, now);
+        t.greeted_by(&machine(now).0, now);
+        let heard = hear_many(&mut t, Source::Greeted, ASK_WHILE_GREETED_BY_FEWER, now);
         for m in &heard {
             t.greeted_by(m, now);
         }
         assert!(t.should_ask(now));
-        let met = hear_many(&mut t, Source::Machine(machine(now).0), 32, now);
-        for (i, m) in met.iter().enumerate() {
+        // Met after they greeted, they count.
+        for m in &heard[1..] {
             meet(&mut t, m, now);
-            assert!(t.should_ask(now), "{i}");
-            t.greeted_by(m, now);
         }
+        assert!(t.should_ask(now));
+        meet(&mut t, &heard[0], now);
         assert!(!t.should_ask(now));
         // A week on, without their greetings, it asks again.
         assert!(t.should_ask(now + 8 * DAY_MS));

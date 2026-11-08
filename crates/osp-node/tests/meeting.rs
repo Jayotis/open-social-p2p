@@ -239,6 +239,8 @@ enum Kind {
     Directory(Vec<MachineRecord>),
     /// A machine from before `Known`.
     Old,
+    /// One that answers only this machine.
+    OldFor(EndpointId),
     /// A machine whose every `Known` reply passes on 20 new names that serve
     /// nothing.
     Hostile,
@@ -327,6 +329,12 @@ impl FakeMachine {
 
 impl ProtocolHandler for FakeMachine {
     async fn accept(&self, conn: Connection) -> Result<(), AcceptError> {
+        if let Kind::OldFor(only) = &self.kind
+            && conn.remote_id() != *only
+        {
+            conn.close(1u32.into(), b"not you");
+            return Ok(());
+        }
         while let Ok((mut send, mut recv)) = conn.accept_bi().await {
             let request: serde_json::Value = read_frame(&mut recv).await.unwrap();
             let reply = self.answer(request);
@@ -354,18 +362,19 @@ async fn fake(net: &SimNet, kind: Kind) -> (FakeMachine, Router) {
 /// Kim and Alice, each having met the other long enough ago for Alice's
 /// introductions to count with Kim.
 async fn kim_and_alice(root: &Path, net: &SimNet) -> (Node, Node, Vec<Router>) {
-    let kim = start_knowing(root, "Kim", net, &[]).await;
-    let k = machine_of(&kim);
-    // Kim's record, from a machine that stays to answer when she greets it
+    let alice = start_knowing(root, "Alice", net, &[]).await;
+    let a = machine_of(&alice);
+    // Alice's record, from a machine that stays to answer when she greets it
     // back, as one gone would hold up her rounds.
     let (helper, helpers_router) = fake(net, Kind::Old).await;
-    let (conn, record) = greet_as(helpers_router.endpoint(), &helper.key, k).await;
+    let (conn, record) = greet_as(helpers_router.endpoint(), &helper.key, a).await;
     conn.close(0u32.into(), b"done");
-    // Alice hears of Kim from her directory and meets her; Kim, greeted,
-    // meets Alice back.
-    let (alices, router) = fake(net, Kind::Directory(vec![record])).await;
-    let alice = start_knowing(root, "Alice", net, &[alices.key.public()]).await;
-    let a = machine_of(&alice);
+    // Kim hears of Alice from her directory and meets her, so Alice doesn't
+    // count among those who greet Kim and may introduce; Alice, greeted,
+    // meets Kim back.
+    let (kims, router) = fake(net, Kind::Directory(vec![record])).await;
+    let kim = start_knowing(root, "Kim", net, &[kims.key.public()]).await;
+    let k = machine_of(&kim);
     wait_until(Duration::from_secs(30), "Kim and Alice met", || {
         met(&alice, k) && met(&kim, a)
     })
@@ -398,8 +407,10 @@ async fn a_machine_introduced_is_dialled_by_the_one_it_was_introduced_to() {
     let (kim, alice, _router) = kim_and_alice(dir.path(), &net).await;
     let (k, a) = (machine_of(&kim), machine_of(&alice));
 
-    // Jimmy, in the test's hands, answers a greeting and nothing more.
-    let (jimmy, jimmys_router) = fake(&net, Kind::Old).await;
+    // Jimmy, in the test's hands, answers Kim's greeting and nothing more.
+    // Alice can't meet it, so can't pass it on to Kim before the introduction
+    // arrives.
+    let (jimmy, jimmys_router) = fake(&net, Kind::OldFor(k)).await;
     let j = jimmy.key.public();
     let (conn, _) = greet_as(jimmys_router.endpoint(), &jimmy.key, a).await;
     let MachineResponse::Known { records } = ask_on(&conn, &MachineRequest::Known).await else {
