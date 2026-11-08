@@ -17,11 +17,11 @@ Each record captures one significant decision: the problem, the options consider
 | [0011](0011-measuring-peers.md) | Measuring peers | Accepted |
 | [0012](0012-sharing-prefetched-copies.md) | Sharing prefetched copies is asked at setup | Accepted |
 | [0013](0013-trusted-followers.md) | Trusted followers, asked for and allowed on the phone | Accepted |
-| [0014](0014-finding-people-and-private-messages.md) | Finding people and content, with messages between nodes over Tor | Accepted; how directories are used and step 4 changed by 0015 |
-| [0015](0015-nodes-meet-first.md) | Nodes meet first: machine names, and what they may say | Accepted; changes proposed by 0016 to 0018 |
-| [0016](0016-machine-acquaintances.md) | Machine acquaintances, reciprocity and referrals | Proposed; stage A decided, with ADR 0015's step 3; revised 2026-11-07 |
-| [0017](0017-one-hop-forwarding.md) | Two hops for pairs without a direct link | Proposed; revised 2026-11-07 |
-| [0018](0018-earned-direct-connections.md) | Earned direct connections | Proposed; revised 2026-11-07 |
+| [0014](0014-finding-people-and-private-messages.md) | Finding people and content, with messages between nodes over Tor | Accepted; how directories are used and step 4 changed by 0015, and who may connect directly by 0018 once built |
+| [0015](0015-nodes-meet-first.md) | Nodes meet first: machine names, and what they may say | Accepted; detail added and limits changed by 0016 to 0018 |
+| [0016](0016-machine-acquaintances.md) | Machine acquaintances, reciprocity and referrals | Accepted 2026-11-08; stages A and A2 built |
+| [0017](0017-one-hop-forwarding.md) | Two hops for pairs without a direct link | Accepted 2026-11-08; not built |
+| [0018](0018-earned-direct-connections.md) | Earned direct connections | Accepted 2026-11-08; not built |
 | [0019](0019-taking-posts-and-media-down.md) | Taking posts and media down | Accepted |
 | [0020](0020-sharing-media-you-open.md) | Sharing media you open, with peers that worked for you | Accepted 2026-11-08; not built |
 
