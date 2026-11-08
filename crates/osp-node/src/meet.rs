@@ -144,6 +144,11 @@ pub(crate) enum Source {
     /// Its record came from this machine: in a `Known` reply, or on the map
     /// of a directory.
     Machine(EndpointId),
+    /// Its record came from this machine, which came in by greeting, or
+    /// through one that did, and wasn't known yet. It counts against those who
+    /// greet (ADR 0016), so a crowd greeting under many names, and passing on
+    /// one another, can't make each name a source with places of its own.
+    ThroughGreeter(EndpointId),
 }
 
 impl Source {
@@ -151,14 +156,35 @@ impl Source {
         match self {
             Source::Greeted => "greeted".to_string(),
             Source::Machine(machine) => machine.to_string(),
+            Source::ThroughGreeter(machine) => format!("through:{machine}"),
         }
     }
 
     pub fn from_db(s: &str) -> Result<Self> {
+        let machine = |m: &str| m.parse().context("corrupt machine source");
         Ok(match s {
             "greeted" => Source::Greeted,
-            machine => Source::Machine(machine.parse().context("corrupt machine source")?),
+            s => match s.strip_prefix("through:") {
+                Some(m) => Source::ThroughGreeter(machine(m)?),
+                None => Source::Machine(machine(s)?),
+            },
         })
+    }
+
+    /// The share of places it counts against.
+    fn share(self) -> Source {
+        match self {
+            Source::ThroughGreeter(_) => Source::Greeted,
+            other => other,
+        }
+    }
+
+    /// The machine that passed its record on, if one did.
+    fn passer(self) -> Option<EndpointId> {
+        match self {
+            Source::Greeted => None,
+            Source::Machine(from) | Source::ThroughGreeter(from) => Some(from),
+        }
     }
 }
 
@@ -388,10 +414,33 @@ impl Table {
         let mut shares = HashMap::new();
         for entry in self.entries.values() {
             if !protected.contains(&entry.machine) {
-                *shares.entry(entry.source).or_default() += 1;
+                *shares.entry(entry.source.share()).or_default() += 1;
             }
         }
         shares
+    }
+
+    /// The source records `from` passes on count as: against those who greet,
+    /// while `from` came in by greeting, or through one that did, and isn't
+    /// known yet.
+    fn counted_as(&self, source: Source, now: i64) -> Source {
+        match source {
+            Source::Machine(from) => match self.entries.get(&from) {
+                Some(e)
+                    if e.source.share() == Source::Greeted
+                        && self.stage(e, now) != Stage::Known =>
+                {
+                    Source::ThroughGreeter(from)
+                }
+                _ => source,
+            },
+            other => other,
+        }
+    }
+
+    /// Whether the table holds `machine`.
+    pub fn holds(&self, machine: &EndpointId) -> bool {
+        self.entries.contains_key(machine)
     }
 
     /// A signed record of a machine arrived from `source`. An invalid or
@@ -420,19 +469,25 @@ impl Table {
             }
             return Ok(Heard::Already);
         }
+        let source = self.counted_as(source, now);
         // Mostly there's room, and the source is nowhere near its share.
-        let from_source = self.entries.values().filter(|e| e.source == source).count();
+        let from_source = self
+            .entries
+            .values()
+            .filter(|e| e.source.share() == source.share())
+            .count();
         if from_source < PER_SOURCE && self.entries.len() < MAX_MACHINES {
             self.insert(record, machine, published, source, now);
             return Ok(Heard::Added);
         }
         let protected = self.protected(now);
         let shares = self.shares(&protected);
-        let share = shares.get(&source).copied().unwrap_or(0);
+        let share = shares.get(&source.share()).copied().unwrap_or(0);
         if share >= PER_SOURCE {
+            // Only a machine that greeted takes a turn, not those it passes on.
             return Ok(match source {
                 Source::Greeted => self.take_turn(record, machine, published, &protected, now),
-                Source::Machine(_) => Heard::SourceFull,
+                _ => Heard::SourceFull,
             });
         }
         if self.entries.len() >= MAX_MACHINES {
@@ -444,8 +499,8 @@ impl Table {
                 .entries
                 .values()
                 .filter(|e| e.met_ms.is_none())
-                .filter(|e| shares.get(&e.source).copied().unwrap_or(0) > share + 1)
-                .max_by_key(|e| (shares.get(&e.source).copied(), Reverse(e.heard_ms)))
+                .filter(|e| shares.get(&e.source.share()).copied().unwrap_or(0) > share + 1)
+                .max_by_key(|e| (shares.get(&e.source.share()).copied(), Reverse(e.heard_ms)))
                 .map(|e| e.machine);
             match given_up {
                 Some(other) => self.remove(&other),
@@ -462,7 +517,8 @@ impl Table {
     /// A machine that greeted this one, with no place for it otherwise, takes
     /// one of `GREETER_TURNS` places beyond the limits, in place of the greeter
     /// that took one longest ago. Met or not, each gives its place up in turn,
-    /// so a crowd greeting under many names can't keep them.
+    /// so a crowd greeting under many names can't keep them. Those passed on
+    /// through greeters count in the share, but never take a turn.
     fn take_turn(
         &mut self,
         record: &MachineRecord,
@@ -474,7 +530,7 @@ impl Table {
         let mut greeters: Vec<&Entry> = self
             .entries
             .values()
-            .filter(|e| e.source == Source::Greeted && !protected.contains(&e.machine))
+            .filter(|e| e.source.share() == Source::Greeted && !protected.contains(&e.machine))
             .collect();
         greeters.sort_by_key(|e| (e.heard_ms, e.machine));
         // Those heard of last, as many as are over the share or the table's size.
@@ -578,7 +634,9 @@ impl Table {
 
     /// The next machine heard of to dial: the one heard of longest ago, or
     /// with `less_heard`, one from the source that supplied the fewest of the
-    /// table's machines.
+    /// table's machines. Those who greet, and those passed on through them,
+    /// are one source here too, so a crowd's many names aren't many sources
+    /// heard from less.
     fn next_dial(&self, now: i64, less_heard: bool) -> Option<EndpointId> {
         let candidates = self.candidates(now);
         let pick = match less_heard {
@@ -586,9 +644,15 @@ impl Table {
             true => {
                 let mut supplied: HashMap<Source, usize> = HashMap::new();
                 for entry in self.entries.values() {
-                    *supplied.entry(entry.source).or_default() += 1;
+                    *supplied.entry(entry.source.share()).or_default() += 1;
                 }
-                candidates.min_by_key(|e| (supplied.get(&e.source).copied(), e.heard_ms, e.machine))
+                candidates.min_by_key(|e| {
+                    (
+                        supplied.get(&e.source.share()).copied(),
+                        e.heard_ms,
+                        e.machine,
+                    )
+                })
             }
         };
         pick.map(|e| e.machine)
@@ -664,7 +728,7 @@ impl Table {
         entry.met_ms.get_or_insert(now);
         let source = entry.source;
         self.changed.insert(*machine);
-        if first && let Source::Machine(from) = source {
+        if first && let Some(from) = source.passer() {
             self.passed_on(&from, true, now);
         }
     }
@@ -684,7 +748,7 @@ impl Table {
         if entry.met_ms.is_none() && entry.tries >= MAX_TRIES {
             let source = entry.source;
             self.remove(machine);
-            if let Source::Machine(from) = source {
+            if let Some(from) = source.passer() {
                 self.passed_on(&from, false, now);
             }
         }
@@ -775,10 +839,7 @@ impl Table {
             .map(|e| Acquaintance {
                 machine: e.machine,
                 stage: self.stage(e, now),
-                source: match e.source {
-                    Source::Greeted => None,
-                    Source::Machine(from) => Some(from),
-                },
+                source: e.source.passer(),
                 kept_longest: protected.contains(&e.machine),
             })
             .collect()
@@ -866,6 +927,10 @@ impl Acquaintances {
     pub fn after(&self, machine: EndpointId, talk: Result<Talk>) -> bool {
         let now = now_ms();
         self.with(|t| match talk {
+            // A machine that gave up its place while it was being dialled, as
+            // one taking a turn may, passes on nothing: what it passed on can't
+            // be told from a source of its own.
+            Ok(_) if !t.holds(&machine) => true,
             Ok(talk) => {
                 t.answered(&machine, &talk.record, now);
                 if talk.too_many {
@@ -1272,12 +1337,90 @@ mod tests {
                 meet(&mut t, m, now);
             }
         }
-        assert!(t.len() == MAX_MACHINES, "the fakes filled the rest");
         let protected = t.protected(now);
         assert!(old.iter().all(|m| protected.contains(m)));
-        assert!(t.len() <= MAX_MACHINES);
-        // No one source fills more than its share of the rest.
+        // Passed on by names that came in by greeting, they all count against
+        // those who greet, so the crowd holds that share and leaves the rest.
+        let crowd = t.entries.keys().filter(|m| !old.contains(m)).count();
+        assert!(crowd <= PER_SOURCE + GREETER_TURNS, "{crowd}");
         assert!(shares_of(&t, now).values().all(|n| *n <= PER_SOURCE));
+    }
+
+    #[test]
+    fn a_crowd_that_came_in_by_greeting_stays_in_its_share_until_known() {
+        let now = start();
+        let mut t = table();
+        let greeter = hear_many(&mut t, Source::Greeted, 1, now)[0];
+        meet(&mut t, &greeter, now);
+        // What it passes on counts against those who greet: 31 more, not 32
+        // of its own.
+        let passed = hear_many(&mut t, Source::Machine(greeter), 50, now);
+        assert_eq!(passed.len(), PER_SOURCE - 1);
+        let (_, record) = machine(now);
+        assert_eq!(
+            t.hear(&record, Source::Machine(greeter), now).unwrap(),
+            Heard::SourceFull
+        );
+        // So does what those pass on, once met, and they never take a turn.
+        meet(&mut t, &passed[0], now);
+        let (_, record) = machine(now);
+        assert_eq!(
+            t.hear(&record, Source::Machine(passed[0]), now).unwrap(),
+            Heard::SourceFull
+        );
+        // Their passer still answers for them.
+        meet(&mut t, &passed[1], now);
+        assert_eq!(t.get(&greeter).unwrap().counts.good, 2.0);
+        // Another source is unaffected.
+        assert_eq!(
+            hear_many(&mut t, Source::Machine(machine(now).0), 3, now).len(),
+            3
+        );
+        assert_eq!(shares_of(&t, now).get(&Source::Greeted), Some(&PER_SOURCE));
+
+        // Once known, it's a source of its own.
+        let later = now + 31 * DAY_MS;
+        keep_answering(&mut t, &[greeter], now, later);
+        assert_eq!(stage_of(&t, &greeter, later), Some(Stage::Known));
+        let (id, record) = machine(later);
+        assert_eq!(
+            t.hear(&record, Source::Machine(greeter), later).unwrap(),
+            Heard::Added
+        );
+        assert_eq!(t.get(&id).unwrap().source, Source::Machine(greeter));
+    }
+
+    #[test]
+    fn sources_read_back_as_written() {
+        let m = machine(start()).0;
+        for source in [Source::Greeted, Source::Machine(m), Source::ThroughGreeter(m)] {
+            assert_eq!(Source::from_db(&source.to_db()).unwrap(), source);
+        }
+        assert!(Source::from_db("through:nonsense").is_err());
+    }
+
+    #[test]
+    fn a_crowds_names_passed_on_are_no_source_heard_from_less_and_no_greeters() {
+        let now = start();
+        let mut t = table();
+        // Four names greet, are met, and pass on five each.
+        for greeter in hear_many(&mut t, Source::Greeted, 4, now) {
+            meet(&mut t, &greeter, now);
+            hear_many(&mut t, Source::Machine(greeter), 5, now);
+        }
+        // A source with more than any one of those names, heard of later.
+        let few = hear_many(&mut t, Source::Machine(machine(now).0), 6, now + 1);
+
+        let mut dialled = Vec::new();
+        for minute in 0..20 {
+            dialled.extend(t.plan(now + minute * 60_000).dials);
+        }
+        assert_eq!(dialled.len(), DIALS_PER_HOUR);
+        // The crowd's 24 are one source, so the dials for sources heard from
+        // less go to the six.
+        assert!(few.contains(&dialled[0]) && few.contains(&dialled[3]));
+        // And names passed on aren't dialled as machines that greeted.
+        assert!(t.dials.iter().all(|d| !d.greeted_back));
     }
 
     #[test]
