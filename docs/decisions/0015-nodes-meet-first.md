@@ -144,7 +144,7 @@ None of this is built by this record. The rules are here so the steps above don'
 
 **Operational.**
 
-- One more onion service, and some background traffic. How many Tor circuits it adds is measured in step 3.
+- One more onion service, and some background traffic. Over real Tor, a node meeting two others built 55 circuits a day for its machine name, most of them to keep its own onion service up; `osp-sim` estimates about 400 a day for a node in a network of 100 ([counts](../testing/tor.md#machines-meeting)).
 - A node holds some strangers' public posts, within a cap.
 - With a handful of nodes all reading one directory, meeting adds little: the alpha shows that it works and what it costs, not what it finds. It's worth more as the network grows.
 
