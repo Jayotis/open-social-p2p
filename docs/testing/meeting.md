@@ -141,7 +141,7 @@ Added on 2026-11-08, before this run, for [ADR 0016](../decisions/0016-machine-a
 
 **The run.** [The newcomer run](#newcomers), with:
 
-- **Machines asking on their own:** each asks while fewer than 32 machines it has met have greeted it in the last week, so newcomers ask and established nodes soon stop.
+- **Machines asking on their own:** each asks while fewer than 10 machines it has met have greeted it in the last week, so newcomers ask and established nodes soon stop (32 in the first run, [below](#introductions-results)).
 - **An operator that introduces.** Each of its 100 names asks each of the 20 honest machines it greeted, 3 times a simulated day, to introduce it to an honest machine that one passed on. 3 a day is the most a machine passes on for one machine asking, so about 7 names asking each honest machine use up its 12 a day. Once an hour, each name also introduces another of the operator's names to up to 4 honest machines that met it. Asked to introduce an honest machine, it says yes and drops the request.
 - **Introductions count after 1.2 simulated hours** of knowing the introducer: a tenth of the run's 12 hours to be known, as 3 days are of 30.
 

@@ -165,9 +165,19 @@ pub struct IntroductionTotals {
     pub passed_on: u64,
     pub refused_at_limit: u64,
     pub refused_by_each: Vec<u64>,
-    /// Introductions the established nodes accepted, and declined.
+    /// Introductions the established nodes accepted, and declined, and those
+    /// declined by why (`IntroductionCounts`).
     pub accepted: u64,
     pub declined: u64,
+    pub declined_untrusted: u64,
+    pub declined_greeter: u64,
+    pub declined_at_limit: u64,
+    pub declined_held: u64,
+    pub declined_no_place: u64,
+    /// Requests the established nodes made to be introduced, and those passed
+    /// on, by the word of the machine asked.
+    pub asked: u64,
+    pub asked_passed_on: u64,
     /// Requests the operator's names made, those passed on, and the
     /// introductions they passed on themselves.
     pub hostile_asked: u64,
@@ -456,6 +466,13 @@ pub async fn run(s: &MeetScenario) -> Result<MeetReport> {
         introductions.refused_by_each.push(c.refused_at_limit);
         introductions.accepted += c.accepted;
         introductions.declined += c.declined;
+        introductions.declined_untrusted += c.declined_untrusted;
+        introductions.declined_greeter += c.declined_greeter;
+        introductions.declined_at_limit += c.declined_at_limit;
+        introductions.declined_held += c.declined_held;
+        introductions.declined_no_place += c.declined_no_place;
+        introductions.asked += c.asked;
+        introductions.asked_passed_on += c.asked_passed_on;
     }
     introductions.hostile_asked = operator.introduce_asked.load(Relaxed);
     introductions.hostile_asked_passed_on = operator.introduce_passed_on.load(Relaxed);
@@ -1105,6 +1122,20 @@ impl MeetReport {
                 range(&refused),
                 i.accepted,
                 i.declined
+            );
+            let _ = writeln!(
+                out,
+                "  declined: introducer not met long enough or its records failed {}, among those who greet {}; the hour's one taken {}; already met or held {}; no place {}",
+                i.declined_untrusted,
+                i.declined_greeter,
+                i.declined_at_limit,
+                i.declined_held,
+                i.declined_no_place
+            );
+            let _ = writeln!(
+                out,
+                "  the established nodes asked {} times, {} passed on by the word of the machine asked",
+                i.asked, i.asked_passed_on
             );
             if s.hostile_introduces {
                 let _ = writeln!(
