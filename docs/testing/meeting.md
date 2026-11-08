@@ -1,6 +1,6 @@
 # Machines meeting in the simulator
 
-**Status:** ADR 0015's step 3 gate, run once on 2026-11-06: all three marks passed ([results](#results)). The run and its pass marks below were fixed before it ran.
+**Status:** ADR 0015's step 3 gate, run once on 2026-11-06: all three marks passed ([results](#results)). The run and its pass marks below were fixed before it ran. [Newcomers](#newcomers), run on 2026-11-07: marks 5 and 6 missed, before and with a fix that let an operator in more easily; not merged.
 
 A node's machine name meets other machines on its own ([ADR 0015](../decisions/0015-nodes-meet-first.md), step 3), within the limits and the three rules of [ADR 0016](../decisions/0016-machine-acquaintances.md#keeping-discovery-open)'s stage A. How it works, and how to look at a real node's, is in [Tor](tor.md#machines-meeting). This run checks the gate's three claims on 100 nodes: a node left alone meets others, it keeps meeting them with the directory gone, and one operator's crowd of names can't push out the machines it knows.
 
@@ -96,3 +96,33 @@ The first three marks apply to the established nodes as before. Recorded too: ho
 **What it decides.** Whether nodes need to keep a few places for machines that greet them, and whether that comes before the revision of ADRs 0016 to 0018. If a mark is missed, the cause is looked for in the code, fixed, and run once more.
 
 Not simulated: a newcomer that knows no working directory. A node can only start from a directory today; starting from a machine someone gives you is a feature of its own.
+
+**Results**, 2026-11-07: `1f288a2`, the code before, and `933815a`, with a fix found from the first run's figures, one after the other on the NVMe partition. Each line is a median over the nodes, with the lowest and highest.
+
+| At the end unless said | Before (`1f288a2`) | With the fix (`933815a`) |
+| --- | --- | --- |
+| Established honest machines each newcomer met | 139 (134 to 148) | 113 (101 to 124) |
+| Simulated hours for a newcomer to meet 3 | 3 (2 to 4) | 3 (2 to 4) |
+| Established nodes holding each newcomer | 8 (0 to 46) | 22 (6 to 84) |
+| … that met it | 2 (0 to 26) | 10 (3 to 62) |
+| … through another machine's record | 0 (0 to 0) | 1 (0 to 13) |
+| For comparison, established nodes that met an established machine | 184 (1 to 299) | 146 (17 to 299) |
+| … through another machine's record | 165 (0 to 297) | 124 (3 to 283) |
+| Machines in an established node's table when the newcomers arrived | 189 (157 to 217) | 258 (256 to 264) |
+| Honest machines each established node met | 191 (172 to 200) | 161 (94 to 178) |
+| The operator's names held, of 100 | 1 (0 to 9) | 47 (32 to 78) |
+| … in places kept longest | 0 (0 to 4) | 9 (2 to 30) |
+| Fakes held | 0 (0 to 1) | 0 (0 to 7) |
+| Times the operator was asked `Known` | 224 | 11,181 |
+| Tor circuits in the last simulated day, estimated | 483 (302 to 624) | 447 (331 to 622) |
+| Marks 1 to 4 | met | met |
+| 5. Each newcomer met by at least 10 established nodes | **missed: 14 of 50** | **missed: 29 of 50** |
+| 6. Each newcomer passed on | **missed: 0 of 50** | **missed: 30 of 50** |
+
+- **Before, newcomers met others but were seldom met.** Nodes held them for a while, a median of 10 each at 38 minutes, then dropped them as their tables filled. A node dials what it heard of first, and a machine that greets is heard of last, so newcomers waited behind everything else; never met, they gave up their places.
+- **The fix:** 1 of the 6 dials an hour goes to a machine that greeted and hasn't been met, picked at random. When the 32 places of those who greet are full, or the table is, a machine that greets takes one of 8 places in turn, in place of the one that took a turn longest ago, met or not.
+- **With it, newcomers were met by 10 nodes instead of 2, and 30 of 50 were passed on instead of none.** Marks 5 and 6 were still missed.
+- **The operator gained more.** 47 of its names were held instead of 1, 9 of them in places kept longest. The dial to those who greet gave its names a first meeting within hours: 31 were held at 20 minutes, before the newcomers came. After that its names passed on one another, each counted as a source of its own, as in the run above with 100 nodes, where it held all 30. A newcomer has no other names to pass on. With the operator's names taking places and dials, the honest machines a node met fell from 191 to 161.
+- **Before the fix, the operator was kept out by what kept newcomers out:** its names were never dialled.
+
+**What it shows.** A node can't tell a newcomer's greeting from an operator's, so a way in for one is a way in for the other. Once in, a crowd of names grows by passing on its own names; a newcomer can't. A crowd that came in through greetings should stay within the share of those who greet, however many of its names refer one another, until they've been known a while. So the fix isn't merged: nodes keep the code before it, which keeps out both, and it goes into the revision of ADR 0016 together with that limit, measured once there. Neither shows at the invited alpha's size, where tables don't fill.
