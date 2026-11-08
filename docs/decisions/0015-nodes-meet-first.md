@@ -59,7 +59,7 @@ Questions to settle:
 
 **Being known grants nothing:** no access, no preference for media, no say over anyone, as with trusted followers in ADR 0013. A machine is never assumed to belong to anyone the owner trusts.
 
-A revision of [ADR 0016](0016-machine-acquaintances.md#the-local-record), proposed on 2026-11-07 and not decided, keeps this for being known, and would let bytes a machine carried for a node, which that node checked itself, earn service from it, never access to content. A machine that carries would then show its address to the nodes next to it ([ADR 0017](0017-one-hop-forwarding.md)). The same revision lets a machine ask one it has met to introduce it to another machine that one passed on, which keeps "a machine says what it has, not what it wants" ([ADR 0016](0016-machine-acquaintances.md#introductions)).
+A revision of [ADR 0016](0016-machine-acquaintances.md#the-local-record), proposed on 2026-11-07 and not decided, keeps this for being known, and would let jobs a machine finished as a hop for a node, which that node checked itself, earn service from it, never access to content. A machine that carries would then show its address to the nodes next to it ([ADR 0017](0017-one-hop-forwarding.md)). The same revision lets a machine ask one it has met to introduce it to another machine that one passed on, which keeps "a machine says what it has, not what it wants" ([ADR 0016](0016-machine-acquaintances.md#introductions)).
 
 ### Messages
 

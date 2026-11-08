@@ -24,7 +24,7 @@ Questions to settle:
 ## Options considered
 
 - **A shared directory of machines, with a shared score.** Easy lookups, but heavy to copy, a public map of relationships, and a target for fake machines. Rejected.
-- **Counting `Hello`, messages, votes or raw bytes as credit.** Simple, and simple to fake with a script. Rejected. Bytes a node received through a machine and checked itself are another matter ("The local record").
+- **Counting `Hello`, messages, votes or raw bytes as credit.** Simple, and simple to fake with a script. Rejected. Jobs a machine finished as a hop for a node, which that node checked itself, are another matter ("The local record").
 - **Ranked lists of creators passed between machines.** This mixes machines with people's tastes. It belongs above this layer, in a decision of its own. Rejected here.
 - **Machines serving media under their machine names, and earning direct connections that way.** Considered at length. A machine hosts what its owner follows, so it would say what [ADR 0015](0015-nodes-meet-first.md) says a machine never says. A follower would also have to tell each creator its machine key, which ties the two names together. And the evidence a machine can show is cheap. Rejected: see [ADR 0018](0018-earned-direct-connections.md).
 - **Machines carrying encrypted media for others, credited by the node that received it.** Unlike hosting, a machine can't see what it carries, so it says nothing of its owner's tastes, and each byte costs real upload that the receiving node checked. Chosen in the revision, as [ADR 0017](0017-one-hop-forwarding.md)'s two hops.
@@ -51,7 +51,7 @@ Three things are kept apart:
 | | Who gets it | How | What it gives |
 | --- | --- | --- | --- |
 | Public posts and media | Anyone, a brand-new node included | Never earned | Finding and fetching them, through hops or relays when there's no direct link |
-| A machine's standing with a node | Machines that did work that node checked itself | Bytes carried and checked; a reference gives a start | Picked as a hop, answered first when busy, and part of what earns a direct link ([ADR 0018](0018-earned-direct-connections.md)) |
+| A machine's standing with a node | Machines that did work that node checked itself | Jobs finished as a hop, checked; a reference gives a start | Picked as a hop, answered first when busy, and part of what earns a direct link ([ADR 0018](0018-earned-direct-connections.md)) |
 | Trusted followers ([ADR 0013](0013-trusted-followers.md)) | People the owner chose | A person's act | Hosting today, and the only gate on any private posts later |
 
 Standing never entitles anyone to private posts, and having none never shuts anyone out of public ones. So a node that can't carry traffic, on a metered link or a small upload, is still a full member of the network, and no content is worth buying standing for.
@@ -73,7 +73,7 @@ What's earned is service: being picked by hosts, priority when busy, direct link
 - **What a record offers is a claim,** not proof of service, skill or independence.
 - **A greeting proves the machine answered, once.** It earns at most a small note that it was there.
 - **Conversations have a purpose,** a limit and an end. There's no regular chatter and no open gossip network. Being busy, offline, or without a record isn't bad behaviour.
-- A machine says only what ADR 0015 lets it say. It never says what comes from its owner's follows, feed, media, searches or peers, except a reference's rough count of bytes another machine carried for it ("References").
+- A machine says only what ADR 0015 lets it say. It never says what comes from its owner's follows, feed, media, searches or peers, except a reference's rough count of jobs another machine finished for it ("References").
 
 ### Meeting more machines
 
@@ -94,7 +94,8 @@ Jimmy's machine has met Alice's, and Alice's knows Kim's. Jimmy asks Alice to in
 - **Kim decides with no human act,** from her own record of Alice: she accepts if she has known Alice for at least 3 days (a starting value) and nothing Alice passed on has failed her checks. To accept, Kim greets Jimmy; to decline, she does nothing. Alice never learns the answer, and Jimmy can't tell a decline from Kim being busy or offline.
 - **Accepted introductions come out of the 6 dials an hour,** taking the newcomer turn ("Keeping discovery open") ahead of machines that only greeted. They add no circuits, and Kim's own discovery isn't crowded out.
 - **A machine met through an introduction counts against its introducer's source,** as a record Alice passed on would, so one introducer fills at most its quarter of Kim's table. An introducer first met through its own greeting counts against those who greet, as below.
-- **What it gets Jimmy:** a place in Kim's table, as a machine Kim met. No standing, no priority, no address. If Jimmy then passes Kim bad records, Kim relies less on Alice's introductions ("Referral accuracy", below).
+- **What it gets Jimmy:** Jimmy has Kim's record, so it could greet Kim anyway, and the newcomer run showed what that gets a stranger: seldom being met back. An introduction gets Kim to dial Jimmy in her newcomer turn, ahead of machines that only greeted, and to count it under Alice's share of her table instead of the crowded places of those who greet. No standing, no priority, no address. If Jimmy then passes Kim bad records, Kim relies less on Alice's introductions ("Referral accuracy", below), and that fades as the record does, so one bad day doesn't shut Alice out for good.
+- **Each request carries an ID, an expiry and Jimmy's signature,** and Alice passes on Jimmy's own signed record. Kim checks that record herself, drops a request she has seen before, and counts an introduction of Jimmy once, however many machines pass it on, so asking through several introducers doesn't get round her limit.
 - **Each owner can turn it off,** asking, passing on or accepting, in `config.toml`.
 - These link two machines, under machine names only. [ADR 0015](0015-nodes-meet-first.md)'s introductions, which link a machine to a person with both owners' yes, are another thing and don't change.
 
@@ -132,18 +133,19 @@ Each node keeps, for each machine it knows, these things apart:
 | Usefulness | New, correct records it needed; introductions that worked | Whom to check in with, and keep when full |
 | Reciprocity | Help received and help given, kept apart | Who is answered first when busy |
 | Referral accuracy | Whether what it said held up, introductions and references included | How much to rely on it next time |
-| Carrying | Bytes it received through the machine as a hop ([ADR 0017](0017-one-hop-forwarding.md)), checked against the hash | Whom to pick as a hop; who is answered first when busy; part of what earns a direct link, once its owner shows the machine is theirs ([ADR 0018](0018-earned-direct-connections.md)) |
+| Carrying | Transfers it carried as a hop for this node ([ADR 0017](0017-one-hop-forwarding.md#credit)) that completed and passed the hash check, each above a minimum size, on different days; and those it dropped | Whom to pick as a hop; who is answered first when busy; part of what earns a direct link, once its owner shows the machine is theirs ([ADR 0018](0018-earned-direct-connections.md)) |
 
 - **It stays on the node** and fades, as in ADR 0015. Two nodes can think differently of one machine.
 - **There's no score, no tokens and no transferable credit.** Honesty and usefulness aren't interchangeable, and a slow link isn't malice.
-- **These earn nothing:** a `Hello`, a duplicate, chatter, claimed uptime, a chain of references, bytes nobody checked. Hearing the same thing again is worth little or nothing.
-- **Records and introductions that held up** decide whom to ask first and whom to keep, as before. **Only carried bytes earn service,** as each costs real upload. A reference (below) gives a start, not standing.
+- **A closed group convinces only itself.** Machines crediting one another gain nothing with a node that hasn't worked with them, as each node counts only its own experience. That protects standing, not places in a table: a crowd needs nobody's trust to fill tables and take newcomers' turns ("Keeping discovery open").
+- **These earn nothing:** a `Hello`, a duplicate, chatter, claimed uptime, a chain of references, jobs nobody checked. Hearing the same thing again is worth little or nothing.
+- **Records and introductions that held up** decide whom to ask first and whom to keep, as before. **Only jobs carried earn service,** as each costs real upload. A reference (below) gives a start, not standing.
 - **When not busy, a machine answers normally.** When busy it favours those with standing, and always keeps the stranger share for newcomers ([doc 12](../12-peer-reciprocity-and-recognition.md)).
 - **Local states:** `reliable`, `unknown`, `questionable`, `quarantined`. Only abuse a node verified itself can quarantine. Marks are set from tests.
 
 **What this decides:** whom to ask first, whom to keep, whom to answer first when busy, whom to pick as a hop, and, with ADR 0018, part of what earns a direct link. **What it never decides:** whether anyone can find or fetch a public post, who sees private posts (only [ADR 0013](0013-trusted-followers.md)'s trusted followers, a person's act), or anyone's address on its own.
 
-This changes ADR 0015's "being known grants nothing", which was the whole rule until now. It kept fakes from gaining anything by answering greetings and passing on records, which cost nothing, and being known still grants nothing. Carried bytes aren't free: each costs the carrier real upload, and the node crediting it checked every chunk. Doc 12 removed creator and scout standing buying priority, as priority is zero-sum and would reward virality with bandwidth. Here a node gives priority only for work done for itself, as doc 12's own generous tit-for-tat does, and the stranger share stays. A fake that carries real bytes for honest nodes is doing real work; what it can get for that is priced in [ADR 0018's check](0018-earned-direct-connections.md#validation).
+This changes ADR 0015's "being known grants nothing", which was the whole rule until now. It kept fakes from gaining anything by answering greetings and passing on records, which cost nothing, and being known still grants nothing. Carrying isn't free: each job costs the carrier real upload, and the node crediting it checked every chunk. Doc 12 removed creator and scout standing buying priority, as priority is zero-sum and would reward virality with bandwidth. Here a node gives priority only for work done for itself, as doc 12's own generous tit-for-tat does, and the stranger share stays. A fake that carries real bytes for honest nodes is doing real work; what it can get for that is priced in [ADR 0018's check](0018-earned-direct-connections.md#validation).
 
 ### Statements
 
@@ -159,7 +161,7 @@ As ADR 0015 set out, with these details:
 
 A machine that has worked with another can sign a short reference for it. It gives the machines it's shown to a reason to try the one it names, and that one a chance to show it's reliable. It passes on no trust and no access. It's for standing, not for meeting, which is what introductions do. The first draft kept this for later, until it had a job: this is the job.
 
-- **What it says:** both machine names, how many days the signer has known the other, the bytes its node received through it as a hop and checked, in rough bands, a date, and an expiry 14 days later. Nothing about either owner, and nothing about what was fetched or from whom. It's the one thing a machine says that comes from its owner's media, as the carrying was the other machine's own work.
+- **What it says:** both machine names, how many days the signer has known the other, the jobs it finished as a hop for the signer's node, checked there, in rough bands, a date, and an expiry 14 days later. Nothing about either owner, and nothing about what was fetched or from whom. It's the one thing a machine says that comes from its owner's media, as the carrying was the other machine's own work.
 - **The machine named asks for it,** and shows up to 3 when it greets or is greeted. The signer doesn't learn where it's shown.
 - **A node counts a reference only from a machine with carrying standing in its own record,** weighted by that record. One from a machine it knows only through another reference counts for nothing: references don't chain. Nodes reach six degrees through introductions and dials ("Introductions"); trust doesn't travel with them.
 - **What it gets the machine named, from that node:** a turn in the middle of its transfers sooner ([ADR 0017](0017-one-hop-forwarding.md#who-picks)), answered sooner when busy, and less first-hand work before a direct link ([ADR 0018](0018-earned-direct-connections.md#what-counts-as-work)). Never a place next to it as a hop, never a direct link outright, and never access to anything.
@@ -187,11 +189,11 @@ Before any of these is built: signing domains, expiry, replay handling, frame li
 
 **Privacy.** A machine's records, its times and who it has met can link machines, and two names sharing one Tor can be matched over time, as ADR 0015 says. A statement, a reference or an introduction shows that one machine dealt with another, and an introduction shows the machine asked which of its records the asker picked. A machine that carries shows its address to the nodes next to it ([ADR 0017](0017-one-hop-forwarding.md)). Requests carry no searches or follows.
 
-**Abuse.** Anyone can make machine keys, and an old name isn't an independent operator. Standing now gives service, so it's worth more to fakes than before. It comes only from work honest nodes checked themselves, and gives no access to content, so a fake gains priority and hop picks only by carrying real bytes. A crowd of names gets more newcomers' turns in the middle of transfers, which show it carriers' addresses and no end's, and can introduce its own names, each within its introducer's place; ADR 0018's price check and stage A3 measure these.
+**Abuse.** Anyone can make machine keys, and an old name isn't an independent operator. Standing now gives service, so it's worth more to fakes than before. It comes only from work honest nodes checked themselves, and gives no access to content, so a fake gains priority and hop picks only by finishing real jobs. A crowd of names gets more newcomers' turns in the middle of transfers, which show it carriers' addresses and no end's, and can introduce its own names, each within its introducer's place; ADR 0018's price check and stage A3 measure these.
 
 **Operational.** Peers, referrals and evidence all stay bounded. Discovery keeps working when a directory goes away. How many Tor circuits this costs is measured in stage A, and each later stage adds to it.
 
-**Changes to accepted records.** "Keeping discovery open" adds three rules to ADR 0015's limits. They're built with its step 3, and named in ADR 0015 then. The revision adds two more, and changes ADR 0015's "being known grants nothing" as "The local record" says: being known still grants nothing, and carried bytes earn service. It answers doc 12's removal of vouched credit and of standing buying priority, above. Introductions keep ADR 0015's "a machine says what it has, not what it wants", as above, and replace this record's own "a machine doesn't ask for a machine by name". ADR 0013 doesn't change. The rest adds detail to ADR 0015.
+**Changes to accepted records.** "Keeping discovery open" adds three rules to ADR 0015's limits. They're built with its step 3, and named in ADR 0015 then. The revision adds two more, and changes ADR 0015's "being known grants nothing" as "The local record" says: being known still grants nothing, and jobs carried earn service. It answers doc 12's removal of vouched credit and of standing buying priority, above. Introductions keep ADR 0015's "a machine says what it has, not what it wants", as above, and replace this record's own "a machine doesn't ask for a machine by name". ADR 0013 doesn't change. The rest adds detail to ADR 0015.
 
 **Licensing.** No new dependency.
 
@@ -202,7 +204,7 @@ Before any of these is built: signing domains, expiry, replay handling, frame li
 | A | ADR 0015 step 3: `Known`, stages, local record, limits, and the three rules in "Keeping discovery open" | ADR 0015's: nodes meet others with no human act, including with the directory off; one hostile node can't fill a table; circuits measured. Also: fake names under several keys, referring one another, can't push out the machines known longest |
 | A2 | Newcomers' turns and the crowd limit ("Keeping discovery open") | [The newcomer run](../testing/meeting.md#newcomers), once: its marks 4 to 6 met, and one operator's names held within the 40 places of those who greet |
 | A3 | Introductions, after A2, without waiting for hops | The newcomer run, once, with newcomers asking machines they met: newcomers met by more established nodes than with A2 alone; one operator's names, introducing one another, held within A2's mark; honest newcomers still introduced while the operator uses up introducers' limits |
-| B | The record's separate measures, fading, with carrying | Valid referrals earn a place; greeting spam and claims earn nothing; carried bytes count only when the receiving node checked them |
+| B | The record's separate measures, fading, with carrying | Valid referrals earn a place; greeting spam and claims earn nothing; jobs carried count only when the receiving node checked them, and dropped ones count against |
 | C | Using it when busy | Newcomers still get answers and the stranger share; measured against fake machines |
 | D | Statements, corrections and two-report checks | False reports and outages don't mark down innocent machines without a check |
 | E | References | Signers can't be spoofed; references from machines without carrying standing, or through another reference, change nothing; ADR 0018's price check |
