@@ -128,7 +128,7 @@ If the same hosts each hold every segment, availability equals the whole-file co
 
 ## Data and protocol changes
 
-Deleting a post isn't built yet. [ADR 0019](decisions/0019-taking-posts-and-media-down.md), proposed, covers it: passing a delete on through reshares, keeping tombstones, and stopping fetches and serving, while another post naming the same file keeps it. Copies expiring as demand fades isn't a way to delete. Until it's built, nothing may claim the swarm honours deletes.
+[ADR 0019](decisions/0019-taking-posts-and-media-down.md), accepted, covers deleting a post: passing a delete on through reshares, keeping tombstones, and stopping fetches and serving, while another post naming the same file keeps it. Its step 1 is built and met its gate in `osp-sim` ([results](testing/deleting.md)). Copies expiring as demand fades isn't a way to delete.
 
 - **Blob classes:** add `prefetch` and `preserve`; prefetches move out of `cache`.
 - **Creator's node, and a hosting resharer's:** records which followers say they hold a copy of each blob it hosts (`Hosting`) and sent a piece of it when asked, to answer `WhoHosts`, and whether each follower shares (`Subscribe`).

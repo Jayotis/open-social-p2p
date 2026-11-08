@@ -120,11 +120,12 @@ osp machine show    # its name, then "It knows 0 machines, has met 2 more and he
 
 A machine is **heard of** when a signed record of it arrives, **met** once it answers, and **known** after a month of answering with the records it passed on checking out. Being known grants nothing: known machines are checked in with first, and keep their places when the table is full.
 
-**Its limits,** from ADR 0015 and the three rules ADR 0016 adds:
+**Its limits,** from ADR 0015 and the rules ADR 0016 adds:
 
 - At most 256 machines. Half the places go to those known longest, so a crowd of new names can't push them out.
 - Records from one source fill at most a quarter of the rest, 32 places. A machine met still counts against whoever passed on its record, and all those that greet unasked count as one source, as names are free.
-- 6 new machines dialled an hour, 2 of them from the sources that supplied the fewest of the table's machines.
+- 6 new machines dialled an hour, 2 of them from the sources that supplied the fewest of the table's machines, and 1 to a machine that greeted unasked.
+- Machines that greet unasked share their 32 places with what they pass on, until they're known, and a machine greeting takes the place of a record they passed on. With none left, it takes one of 8 more places in turn, so a table holds at most 264.
 - The directories in `config.toml` are never in the table, so a full one can't push them out. When none of the machines met answers and none is left to try, the node reads its directories again, no sooner than 10 minutes after the last time. Each time such a read brings nothing new, it waits twice as long, up to the usual 6 hours, so a node alone doesn't ask every 10 minutes for good.
 - Only a machine never met gives up its place to a newcomer. One heard of that doesn't answer three dials, 6 hours apart, is forgotten, and so is one met that hasn't answered for 30 days.
 
