@@ -27,6 +27,8 @@ Each record captures one significant decision: the problem, the options consider
 | [0021](0021-introduced-machines-count-among-those-who-greet.md) | A machine introduced counts among those who greet | Accepted 2026-11-08; built with 0016's stage A3, whose gate was missed; introductions off by default; replaced by 0022 |
 | [0022](0022-lists-and-introductions-are-earned.md) | Lists and introductions are earned | Accepted 2026-11-08; changes 0015's `Known`, makes 0016's introductions and references one feature, replaces 0021; built after carrying |
 | [0023](0023-followers-keep-working-together.md) | Followers keep working together | Proposed 2026-11-08; adds to 0018's layer 1 and 0017's middle turns; measured first in 0017's stage A model |
+| [0024](0024-watching-found-posts-without-your-identity.md) | Watching a found post without showing who you are | Proposed 2026-11-09; settles 0015's open question on found posts' media |
+| [0025](0025-shared-posts-are-found-and-hosted.md) | Shared posts are found, and hosted for whoever finds them | Proposed 2026-11-09; builds on 0024; adds to 0015's directories and doc 13's resharers' swarms |
 
 Proposals under review that may become ADRs: [peer reciprocity and recognition](../12-peer-reciprocity-and-recognition.md) (its first phase, measuring, is ADR 0011) and [hosting roles and the follower swarm](../13-hosting-roles-and-follower-swarm.md) (its first phase is accepted, and whether to share copies is asked at setup, ADR 0012). See the [critical review](../reviews/2026-10-21-review-of-docs-12-and-13.md) for what blocks them.
 
