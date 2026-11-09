@@ -9,7 +9,7 @@
 use serde::Serialize;
 
 use super::calibrate::{ASK_DELAY, DOWN, SPREAD_SECS, TELL_DELAY, UP, time_for};
-use super::records::Records;
+use super::records::{DayRule, Records};
 use super::rng::Rng;
 use super::spread::{
     Fetch, Leg, Load, Part, Peer, Rules, SWARM_SAMPLE, Sources, Spread, Swarm, VIDEO_BYTES,
@@ -327,8 +327,22 @@ pub struct Months {
     pub start: Start,
     pub way: Way,
     pub rule_set: RuleSet,
+    pub days: DayRule,
     pub seed: u64,
     pub posts: Vec<Post>,
+    pub newcomers: Vec<Newcomer>,
+}
+
+/// One newcomer's progress, in days after it arrived, as seen at each post.
+#[derive(Debug, Serialize)]
+pub struct Newcomer {
+    pub node: usize,
+    pub kind: Kind,
+    /// Some node other than Kim holds it at layer 2 or more: work on 3 days
+    /// for that node.
+    pub regular: Option<f64>,
+    /// It has a direct link with someone.
+    pub linked: Option<f64>,
 }
 
 /// Kim's spot checks a day, each of a 1 KiB piece (a starting value).
@@ -337,7 +351,7 @@ const SPOT_CHECK_BYTES: f64 = 1024.0;
 /// Honest nodes saying yes to earned links (a starting value).
 const YES_TO_EARNED: f64 = 0.75;
 
-pub fn run(start: Start, way: Way, rule_set: RuleSet, seed: u64) -> Months {
+pub fn run(start: Start, way: Way, rule_set: RuleSet, days: DayRule, seed: u64) -> Months {
     // What's the same in every way: who's there, who says yes, when each
     // post goes out and when each follower wakes for it.
     let mut plan = Rng::new(seed);
@@ -375,9 +389,23 @@ pub fn run(start: Start, way: Way, rule_set: RuleSet, seed: u64) -> Months {
         from_operator: 0.0,
         operator: members.iter().map(|m| m.kind == Kind::Operator).collect(),
         post_at: 0.0,
-        records: Records::new(yes.clone()),
+        records: Records::new(yes.clone(), days),
     };
     let mut hosts = vec![false; peers.len()];
+    let mut newcomers: Vec<Newcomer> = (0..members.len())
+        .filter(|&i| {
+            matches!(
+                members[i].kind,
+                Kind::NewcomerDirectory | Kind::NewcomerGiven
+            )
+        })
+        .map(|node| Newcomer {
+            node,
+            kind: members[node].kind,
+            regular: None,
+            linked: None,
+        })
+        .collect();
     let mut checked_to = 0.0;
     let mut posts = Vec::new();
     for (index, (at, fetches)) in schedule.into_iter().enumerate() {
@@ -396,6 +424,20 @@ pub fn run(start: Start, way: Way, rule_set: RuleSet, seed: u64) -> Months {
             checked_to += DAY;
         }
         rules.records.sweep(at);
+        let standing = rules.records.standing(peers.len(), creator);
+        for nc in &mut newcomers {
+            let arrived = members[nc.node].arrives;
+            if arrived > at {
+                continue;
+            }
+            let since = (at - arrived) / DAY;
+            if nc.regular.is_none() && standing[nc.node] >= 2 {
+                nc.regular = Some(since);
+            }
+            if nc.linked.is_none() && !rules.records.direct_peers(nc.node).is_empty() {
+                nc.linked = Some(since);
+            }
+        }
         rules.post_at = at;
         rules.from_partners = 0.0;
         rules.from_operator = 0.0;
@@ -475,8 +517,10 @@ pub fn run(start: Start, way: Way, rule_set: RuleSet, seed: u64) -> Months {
         start,
         way,
         rule_set,
+        days,
         seed,
         posts,
+        newcomers,
     }
 }
 

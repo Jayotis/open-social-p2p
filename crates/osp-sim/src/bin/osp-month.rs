@@ -38,6 +38,9 @@ enum Command {
         way: months::Way,
         #[arg(long, value_enum, default_value = "accepted")]
         rules: months::RuleSet,
+        /// How days of work are counted to reach a layer.
+        #[arg(long, value_enum, default_value = "window")]
+        days: osp_sim::month::records::DayRule,
         #[arg(long, default_value_t = 1)]
         seed: u64,
         /// Also write each post's figures here, as JSON.
@@ -117,10 +120,11 @@ fn main() -> Result<()> {
             start,
             way,
             rules,
+            days,
             seed,
             out,
         } => {
-            let m = months::run(start, way, rules, seed);
+            let m = months::run(start, way, rules, days, seed);
             print_months(&m);
             if let Some(path) = out {
                 std::fs::write(path, serde_json::to_string_pretty(&m)?)?;
@@ -159,6 +163,7 @@ fn print_months(m: &months::Months) {
             100.0 * p.from_operator,
         );
     }
+    let mut summary = Vec::new();
     // Weeks 5 to 8 and 10 to 13, as marks 1 to 3 compare them.
     for (name, first, last) in [("weeks 5-8", 5, 8), ("weeks 10-13", 10, 13)] {
         let ps: Vec<_> = m
@@ -173,6 +178,11 @@ fn print_months(m: &months::Months) {
         let delivered: f64 = ps.iter().map(|p| p.delivered).sum();
         let off: f64 = ps.iter().map(|p| p.delivered_off_relay).sum();
         let met = ps.iter().filter(|p| p.marks).count();
+        summary.push(format!(
+            "{name} relayed {:.1} GB, {:.1}% off",
+            relayed / 1e9,
+            100.0 * off / delivered.max(1.0)
+        ));
         println!(
             "{name}: {} posts, B8 met on {met}; relayed {:.1} GB; {:.0}% delivered off the relay",
             ps.len(),
@@ -180,4 +190,31 @@ fn print_months(m: &months::Months) {
             100.0 * off / delivered.max(1.0),
         );
     }
+    // Mark 4 looks at day 60: the last post before it.
+    let day60 = m.posts.iter().rfind(|p| p.at <= 60.0 * DAY);
+    let last = m.posts.last();
+    summary.push(format!(
+        "day-60 linked {:.0}%, direct pairs at day 60 {} and at the end {}",
+        day60.map_or(0.0, |p| 100.0 * p.day0_linked),
+        day60.map_or(0, |p| p.direct_pairs),
+        last.map_or(0, |p| p.direct_pairs),
+    ));
+    for (name, kind) in [
+        ("directory newcomers", months::Kind::NewcomerDirectory),
+        ("given newcomers", months::Kind::NewcomerGiven),
+    ] {
+        let group: Vec<_> = m.newcomers.iter().filter(|n| n.kind == kind).collect();
+        if group.is_empty() {
+            continue;
+        }
+        let within = |d: Option<f64>, days: f64| d.is_some_and(|d| d <= days);
+        let regular21 = group.iter().filter(|n| within(n.regular, 21.0)).count();
+        let regular = group.iter().filter(|n| n.regular.is_some()).count();
+        let linked = group.iter().filter(|n| n.linked.is_some()).count();
+        summary.push(format!(
+            "{name}: layer 2 with someone within 21 days {regular21}/{}, by the end {regular}, linked {linked}",
+            group.len()
+        ));
+    }
+    println!("summary: {}", summary.join("; "));
 }
