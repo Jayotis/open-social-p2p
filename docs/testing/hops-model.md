@@ -96,6 +96,8 @@ Fixed on 2026-11-08, before the model is built.
 
 **0. The model matches the measured runs.** This is checked first, and nothing else is judged until it holds. With one post, 300 followers, 10 latecomers and the relay, as in [media through relays](network-conditions.md#media-through-relays), the model runs with no followers, half of them, and all of them behind the relay. Its time for 95% of followers must be within a fifth of the 704, 655 and 1,535 s measured, the relay's copies within a tenth of the 0, 167 and 370 measured, and Kim's copies between 15 and 30.
 
+*Note, 2026-11-09:* the all-relay run's 1,535 s and 370 copies came from a node that fetched some bytes twice (a waiting prefetch lost what had arrived; [the note on the relay runs](network-conditions.md#media-through-relays)). Measured again with the fix: 1,376 s and 325 copies, which replace them here. The model was built to the node's code, which never had that bug, so it's checked against the corrected run. The 50% run's 3% excess stays inside this mark's tenth, so its figures stand.
+
 **ADR 0017's gate,** for each start and each set of rules:
 
 1. **Hops take at least a quarter of what way 2 still relays off the relay,** in weeks 10 to 13: way 3's relayed bytes are at most three quarters of way 2's.
