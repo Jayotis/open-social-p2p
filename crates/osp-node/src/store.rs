@@ -27,6 +27,7 @@ use iroh::{Endpoint, EndpointId};
 use iroh_blobs::{
     BlobsProtocol, Hash,
     api::{
+        TempTag,
         blobs::BlobStatus,
         proto::{Bitfield, ExportRangesItem},
         remote::GetProgressItem,
@@ -371,6 +372,16 @@ impl ContentStore {
             .context("downloaded blob is incomplete")?;
         self.keep(h, class, size).await?;
         Ok(size)
+    }
+
+    /// Keeps the collector off what has arrived of `hash`, as a download in
+    /// progress does, until the returned guard is dropped: for a fetch that
+    /// failed and will be tried again. The collector runs every
+    /// `GC_INTERVAL`, and without this it deletes what arrived while the
+    /// fetch waits, so the next try fetches all of it again.
+    pub async fn keep_partial(&self, hash: &BlobHash) -> Result<KeptPartial> {
+        let tag = self.store.tags().temp_tag(to_hash(hash)).await?;
+        Ok(KeptPartial(tag))
     }
 
     /// Checks that `source` serves a blob we hold, as it says it does (doc
@@ -989,6 +1000,16 @@ impl Sources {
 
 /// Space promised to one download or upload. Given back when dropped, by
 /// which time the bytes are on the disk, or abandoned.
+/// What has arrived of a blob, kept from the collector while a fetch of it
+/// waits to be tried again (`ContentStore::keep_partial`).
+pub(crate) struct KeptPartial(#[allow(dead_code)] TempTag);
+
+impl fmt::Debug for KeptPartial {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("KeptPartial")
+    }
+}
+
 pub struct Reservation<'a> {
     store: &'a ContentStore,
     class: BlobClass,
@@ -2709,6 +2730,48 @@ mod tests {
         assert!(counts.received_bytes.round() >= other.len() as f64);
         assert_eq!(counts.tries.round(), 1.0, "{counts:?}");
         assert_eq!(f.record(busy.id()).tries.round(), 1.0);
+    }
+
+    #[tokio::test]
+    async fn what_arrived_is_kept_while_a_fetch_waits_to_be_tried_again() {
+        let f = Fixture::new().await;
+        let store = f.open_with_quotas(64).await;
+        let deadline = Instant::now() + Duration::from_secs(30);
+        // A fetch that got the first half of a file and failed, then waits
+        // while the collector runs, before it's tried again.
+        let got_half_then_waited = |keep: bool| {
+            let (f, store) = (&f, &store);
+            async move {
+                let data = noise(if keep { 4 } else { 3 });
+                let size = data.len() as u64;
+                let (first, hash) = f.provider(&data, None).await;
+                let blob = to_blob_hash(hash);
+                let kept = match keep {
+                    true => Some(store.keep_partial(&blob).await.unwrap()),
+                    false => None,
+                };
+                let half = Arc::new(Part::new(0..size / 2));
+                let (_, attempt) = store
+                    .fetch_part(hash, Source::from(first.id()), half, deadline)
+                    .await;
+                assert_eq!(attempt.outcome, Outcome::Completed);
+                tokio::time::sleep(GC_SOON * 10).await;
+                let (second, _) = f.provider(&data, None).await;
+                let sources = plain_sources(vec![second.id()], Vec::new());
+                store
+                    .download(&blob, sources, BlobClass::Cache, size)
+                    .await
+                    .unwrap();
+                drop(kept);
+                f.record(second.id()).received_bytes / size as f64
+            }
+        };
+        // Not kept, the collector deleted the half, and it came again.
+        let again = got_half_then_waited(false).await;
+        assert!(again > 0.9, "{again}");
+        // Kept, only the half still missing came.
+        let again = got_half_then_waited(true).await;
+        assert!(again < 0.6, "{again}");
     }
 
     #[tokio::test]
