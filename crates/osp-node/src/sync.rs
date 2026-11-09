@@ -692,6 +692,7 @@ impl Core {
                     due: Instant::now() + wait,
                     failures: 0,
                     telling_again: false,
+                    kept: None,
                 });
             } else if let Some(later) = self.fetch_ahead(wanted, 0, false).await {
                 self.fetch_later(later);
@@ -736,6 +737,9 @@ impl Core {
         telling_again: bool,
     ) -> Option<Later> {
         let blob = wanted.blob.fmt_short();
+        // Taken before the fetch, so nothing that arrives is collected
+        // between a failure and the wait for the next try.
+        let kept = self.store.keep_partial(&wanted.blob).await.ok();
         let fetched = if self.joins_swarm(&wanted) {
             self.fetch_from_swarm(&wanted).await
         } else {
@@ -766,6 +770,7 @@ impl Core {
                     due: Instant::now() + wait,
                     failures: failures + 1,
                     telling_again,
+                    kept,
                 })
             }
             Err(e) => {
@@ -1179,6 +1184,10 @@ pub(crate) struct Later {
     /// The file was fetched before, and its trackers, those that couldn't
     /// be told this node holds a copy, are told again, and not after that.
     telling_again: bool,
+    /// What arrived before it failed, kept from the collector until it's
+    /// tried again, so that try fetches only the rest. Only held.
+    #[allow(dead_code)]
+    kept: Option<store::KeptPartial>,
 }
 
 /// Fetches, one at a time, the files `prefetch` puts off until later.
@@ -1264,6 +1273,7 @@ fn tell_again(
         due: Instant::now() + jitter(wait),
         failures: 0,
         telling_again: true,
+        kept: None,
     })
 }
 
@@ -1547,6 +1557,7 @@ mod tests {
             due,
             failures: 0,
             telling_again: false,
+            kept: None,
         };
         let mut waiting = HashMap::new();
         assert_eq!(
