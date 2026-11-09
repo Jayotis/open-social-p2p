@@ -321,6 +321,18 @@ impl Records {
         out
     }
 
+    /// The nodes `holder` holds at `layer` or more.
+    pub fn known_to(&self, holder: usize, layer: u8) -> Vec<usize> {
+        let mut v: Vec<usize> = self
+            .rows
+            .iter()
+            .filter(|&(&(h, _), r)| h == holder && r.layer >= layer)
+            .map(|(&(_, a), _)| a)
+            .collect();
+        v.sort_unstable();
+        v
+    }
+
     /// Every pair with a record either way.
     pub fn pairs(&self) -> Vec<(usize, usize)> {
         let mut v: Vec<(usize, usize)> = self

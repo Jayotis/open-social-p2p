@@ -13,6 +13,7 @@ use super::records::{Block, BytesRule, DayRule, Records};
 use super::rng::Rng;
 use super::spread::{
     Fetch, Leg, Load, Part, Peer, Rules, SWARM_SAMPLE, Sources, Spread, Swarm, VIDEO_BYTES,
+    transfer_places,
 };
 
 use super::records::DAY;
@@ -43,6 +44,9 @@ pub enum Way {
     /// 2: directly between two nodes that each earned it (ADR 0018),
     /// otherwise through the relay.
     Earned,
+    /// 3: as 2; otherwise through hops where an end has one (ADR 0017),
+    /// any leg without one through the relay.
+    Hops,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -189,6 +193,177 @@ struct Media {
     from_partners: f64,
     from_operator: f64,
     operator: Vec<bool>,
+    /// Way 3: who says yes to carrying, and is there now.
+    carries: Vec<bool>,
+    present: Vec<bool>,
+    /// Jobs each machine finished for each viewer as a hop, on which days:
+    /// layer 2 here is jobs on 3 days in the last 30, ADR 0017's bar for a
+    /// viewer's hop.
+    carried: Records,
+    hop_rng: Rng,
+    /// When each machine first got a middle turn.
+    first_middle: Vec<Option<f64>>,
+    hops: HopCounts,
+}
+
+/// Transfers through hops, for mark 9: how often the operator's nodes held
+/// the hop next to both ends.
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct HopCounts {
+    /// Transfers with a hop at either end, and at both (a single hop that
+    /// both ends picked counts as both).
+    pub with_hops: usize,
+    pub both_ends: usize,
+    /// Hops next to an end, and of those, the operator's.
+    pub end_hops: usize,
+    pub end_hops_operator: usize,
+    /// Transfers with a hop at both ends, all of them the operator's.
+    pub operator_both_ends: usize,
+    pub middle_turns: usize,
+}
+
+/// ADR 0017's starting value: a middle turn on 1 transfer in 10 through hops.
+const MIDDLE_EVERY: f64 = 0.1;
+/// ADR 0023: half the middle turns go to machines that finished one before.
+const MIDDLE_RETURNING: f64 = 0.5;
+/// Honest nodes saying yes to carrying (a starting value).
+const YES_TO_CARRYING: f64 = 0.75;
+/// A node carries within this share of its upload.
+const CARRY_SHARE: f64 = 0.5;
+
+impl Media {
+    /// Whether `m` can carry for others now.
+    fn can_hop(&self, m: usize, load: &Load) -> bool {
+        self.carries[m] && self.present[m] && load.can_carry(m)
+    }
+
+    /// The hops the viewer `v` may pick next to it: its direct peers, and
+    /// machines that finished jobs for it on 3 days, with room, if it said
+    /// yes.
+    fn viewer_hops(&self, v: usize, not: usize, load: &Load) -> Vec<usize> {
+        if !self.records.yes[v] {
+            return Vec::new();
+        }
+        let mut c = self.records.direct_peers(v);
+        c.extend(self.carried.known_to(v, 2));
+        c.sort_unstable();
+        c.dedup();
+        c.retain(|&m| m != not && m != v && self.can_hop(m, load));
+        c
+    }
+
+    /// The hops the host `h` may name: its direct peers, with room.
+    fn host_hops(&self, h: usize, not: usize, load: &Load) -> Vec<usize> {
+        if !self.records.yes[h] {
+            return Vec::new();
+        }
+        let mut c = self.records.direct_peers(h);
+        c.retain(|&m| m != not && m != h && self.can_hop(m, load));
+        c
+    }
+
+    /// A machine with no standing with `v`, for the middle. Every machine
+    /// carrying is taken to be in `v`'s table until meeting is modelled.
+    fn middle(&mut self, v: usize, taken: &[usize], load: &Load) -> Option<usize> {
+        let pool: Vec<usize> = (0..self.carries.len())
+            .filter(|&m| {
+                !taken.contains(&m)
+                    && self.can_hop(m, load)
+                    && self.carried.get(v, m).is_none_or(|r| r.layer < 2)
+                    && !self.records.direct(v, m)
+            })
+            .collect();
+        if pool.is_empty() {
+            return None;
+        }
+        if self.rule_set == RuleSet::Partners && self.hop_rng.chance(MIDDLE_RETURNING) {
+            // Those that finished one for `v` before, most jobs first.
+            let jobs = |m: usize| self.carried.get(v, m).map_or(0.0, |r| r.work_days);
+            let mut back: Vec<usize> = pool.iter().copied().filter(|&m| jobs(m) > 0.0).collect();
+            if !back.is_empty() {
+                self.hop_rng.shuffle(&mut back);
+                back.sort_by(|&a, &b| jobs(b).total_cmp(&jobs(a)));
+                return Some(back[0]);
+            }
+        }
+        let fresh: Vec<usize> = match self.rule_set {
+            RuleSet::Accepted => pool,
+            RuleSet::Partners => {
+                let f: Vec<usize> = pool
+                    .iter()
+                    .copied()
+                    .filter(|&m| self.carried.get(v, m).is_none())
+                    .collect();
+                if f.is_empty() { pool } else { f }
+            }
+        };
+        Some(fresh[self.hop_rng.below(fresh.len())])
+    }
+
+    /// Way 3's path from host `h` to viewer `v`: H → Q → (M) → P → V.
+    fn hop_path(&mut self, h: usize, v: usize, load: &Load) -> Vec<Leg> {
+        let t = self.post_at;
+        let ps = self.viewer_hops(v, h, load);
+        let qs = self.host_hops(h, v, load);
+        let pick = |rng: &mut Rng, c: &[usize]| (!c.is_empty()).then(|| c[rng.below(c.len())]);
+        let mut q = pick(&mut self.hop_rng, &qs);
+        // If V would pick Q itself, the transfer takes that one hop.
+        let single = q.is_some_and(|q| ps.contains(&q));
+        let p = if single {
+            q
+        } else {
+            pick(&mut self.hop_rng, &ps)
+        };
+        if single {
+            q = None;
+        }
+        if p.is_none() && q.is_none() {
+            return vec![Leg {
+                from: h,
+                relayed: true,
+                carried: false,
+            }];
+        }
+        let mut taken = vec![h, v];
+        taken.extend(p);
+        taken.extend(q);
+        let m = if self.hop_rng.chance(MIDDLE_EVERY) {
+            self.middle(v, &taken, load)
+        } else {
+            None
+        };
+        if let Some(m) = m {
+            self.hops.middle_turns += 1;
+            self.first_middle[m].get_or_insert(t);
+        }
+        // Counts for mark 9.
+        let ends: Vec<usize> = p.iter().chain(q.iter()).copied().collect();
+        self.hops.with_hops += 1;
+        self.hops.end_hops += ends.len();
+        self.hops.end_hops_operator += ends.iter().filter(|&&e| self.operator[e]).count();
+        if single || (p.is_some() && q.is_some()) {
+            self.hops.both_ends += 1;
+            if ends.iter().all(|&e| self.operator[e]) {
+                self.hops.operator_both_ends += 1;
+            }
+        }
+        // An end with no hop of its own reaches the next through the relay;
+        // hops reach one another, and the ends they serve, directly.
+        let mut chain = vec![h];
+        chain.extend(q);
+        chain.extend(m);
+        chain.extend(p);
+        let last = chain.len() - 1;
+        chain
+            .iter()
+            .enumerate()
+            .map(|(k, &from)| Leg {
+                from,
+                relayed: (k == 0 && q.is_none() && !single) || (k == last && p.is_none()),
+                carried: k > 0,
+            })
+            .collect()
+    }
 }
 
 impl Media {
@@ -253,16 +428,16 @@ impl Rules for Media {
         }
     }
 
-    fn path(&mut self, source: usize, to: usize, _load: &Load, _rng: &mut Rng) -> Vec<Leg> {
-        let relayed = match self.way {
-            Way::Relays => true,
-            Way::Earned => !self.records.direct(source, to),
-        };
-        vec![Leg {
-            from: source,
-            relayed,
-            carried: false,
-        }]
+    fn path(&mut self, source: usize, to: usize, load: &Load, _rng: &mut Rng) -> Vec<Leg> {
+        let direct = self.records.direct(source, to);
+        match self.way {
+            Way::Hops if !direct => self.hop_path(source, to, load),
+            _ => vec![Leg {
+                from: source,
+                relayed: self.way == Way::Relays || !direct,
+                carried: false,
+            }],
+        }
     }
 
     fn part_done(&mut self, part: &Part, now: f64) {
@@ -279,6 +454,16 @@ impl Rules for Media {
             if part.source != self.creator && part.to != self.creator {
                 self.partners[part.to].swapped(part.source, part.bytes, t);
                 self.partners[part.source].swapped(part.to, part.bytes, t);
+            }
+            // The viewer credits every hop for a job finished. Its node's
+            // record counts what the machine carried once the node has shown
+            // the machine, which it does at layer 2 with the viewer.
+            for leg in part.legs.iter().filter(|l| l.carried) {
+                let m = leg.from;
+                self.carried.work(part.to, m, part.bytes, t);
+                if self.records.get(m, part.to).is_some_and(|r| r.layer >= 2) {
+                    self.records.work(part.to, m, part.bytes, t);
+                }
             }
         }
     }
@@ -337,6 +522,8 @@ pub struct Months {
     pub pairs_end: PairReport,
     /// Kim's spot checks, apart: they can't reach layer 4's bytes.
     pub spot_checks: SpotChecks,
+    /// Way 3's transfers through hops, for mark 9.
+    pub hops: HopCounts,
 }
 
 /// Follower pairs, Kim left out, that have dealt with each other, and why
@@ -478,6 +665,11 @@ pub struct Newcomer {
     pub regular: Option<f64>,
     /// It has a direct link with someone.
     pub linked: Option<f64>,
+    /// Way 3, for mark 7: it said yes to carrying; its first middle turn;
+    /// some node holds it at jobs on 3 days.
+    pub carries: bool,
+    pub middle: Option<f64>,
+    pub carry_standing: Option<f64>,
 }
 
 /// Kim's spot checks a day, each of a 1 KiB piece (a starting value).
@@ -503,6 +695,25 @@ pub fn run(
         .iter()
         .map(|m| m.kind == Kind::Operator || plan.chance(YES_TO_EARNED))
         .collect();
+    // Who says yes to carrying, picked apart from the rest, so ways 1 and 2
+    // are unchanged by it. Only way 3 uses hops; Kim's node doesn't carry.
+    let mut carry_plan = Rng::new(seed.wrapping_add(3));
+    let carries: Vec<bool> = members
+        .iter()
+        .map(|m| match m.kind {
+            Kind::Creator => false,
+            Kind::Operator => true,
+            _ => carry_plan.chance(YES_TO_CARRYING),
+        })
+        .collect();
+    if way == Way::Hops {
+        for (i, p) in peers.iter_mut().enumerate() {
+            if carries[i] {
+                p.carry_share = CARRY_SHARE;
+                p.carry_places = transfer_places(p.up * 8.0 / 1e6 * CARRY_SHARE);
+            }
+        }
+    }
     let schedule: Vec<(f64, Vec<Fetch>)> = (0..POSTS)
         .map(|index| {
             let at = (index as f64 * POST_EVERY_DAYS) * DAY + plan.range(0.0, DAY);
@@ -532,6 +743,12 @@ pub fn run(
         operator: members.iter().map(|m| m.kind == Kind::Operator).collect(),
         post_at: 0.0,
         records: Records::new(yes.clone(), days, bytes_rule),
+        carries: carries.clone(),
+        present: vec![false; peers.len()],
+        carried: Records::new(vec![true; peers.len()], days, bytes_rule),
+        hop_rng: Rng::new(seed.wrapping_add(4)),
+        first_middle: vec![None; peers.len()],
+        hops: HopCounts::default(),
     };
     let mut hosts = vec![false; peers.len()];
     let mut newcomers: Vec<Newcomer> = (0..members.len())
@@ -546,6 +763,9 @@ pub fn run(
             kind: members[node].kind,
             regular: None,
             linked: None,
+            carries: carries[node],
+            middle: None,
+            carry_standing: None,
         })
         .collect();
     let mut checked_to = 0.0;
@@ -572,6 +792,8 @@ pub fn run(
         }
         rules.records.sweep(at);
         let standing = rules.records.standing(peers.len(), creator);
+        rules.carried.sweep(at);
+        let carry_standing = rules.carried.standing(peers.len(), creator);
         for nc in &mut newcomers {
             let arrived = members[nc.node].arrives;
             if arrived > at {
@@ -584,11 +806,20 @@ pub fn run(
             if nc.linked.is_none() && !rules.records.direct_peers(nc.node).is_empty() {
                 nc.linked = Some(since);
             }
+            if nc.carry_standing.is_none() && carry_standing[nc.node] >= 2 {
+                nc.carry_standing = Some(since);
+            }
+            nc.middle = rules.first_middle[nc.node].map(|m| (m - arrived) / DAY);
         }
         rules.post_at = at;
         rules.from_partners = 0.0;
         rules.from_operator = 0.0;
         let present: Vec<usize> = fetches.iter().map(|f| f.node).collect();
+        rules.present = vec![false; peers.len()];
+        for &i in &present {
+            rules.present[i] = true;
+        }
+        rules.carried.sweep(at);
         // Kim's node notes each copy anew for each post; who has followed
         // longest is the order they followed. It names first those it
         // reaches directly.
@@ -676,6 +907,7 @@ pub fn run(
         pairs_day60,
         pairs_end,
         spot_checks,
+        hops: rules.hops.clone(),
     }
 }
 

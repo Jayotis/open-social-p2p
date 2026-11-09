@@ -220,6 +220,40 @@ fn print_months(m: &months::Months) {
             group.len()
         ));
     }
+    if m.way == months::Way::Hops {
+        let h = &m.hops;
+        let share = h.end_hops_operator as f64 / h.end_hops.max(1) as f64;
+        println!(
+            "hops: {} transfers through hops, {} with a hop at both ends; {} middle turns; the operator held {:.1}% of end hops (squared {:.2}%), and both ends of {} transfers ({:.2}% of those with both)",
+            h.with_hops,
+            h.both_ends,
+            h.middle_turns,
+            100.0 * share,
+            100.0 * share * share,
+            h.operator_both_ends,
+            100.0 * h.operator_both_ends as f64 / h.both_ends.max(1) as f64,
+        );
+        for (name, kind) in [
+            ("directory newcomers", months::Kind::NewcomerDirectory),
+            ("given newcomers", months::Kind::NewcomerGiven),
+        ] {
+            let g: Vec<_> = m
+                .newcomers
+                .iter()
+                .filter(|n| n.kind == kind && n.carries)
+                .collect();
+            if g.is_empty() {
+                continue;
+            }
+            let within = |d: Option<f64>, days: f64| d.is_some_and(|d| d <= days);
+            println!(
+                "mark 7, {name} that carry ({}): a middle turn within 7 days {}, standing with a node (jobs on 3 days) within 21 days {}",
+                g.len(),
+                g.iter().filter(|n| within(n.middle, 7.0)).count(),
+                g.iter().filter(|n| within(n.carry_standing, 21.0)).count(),
+            );
+        }
+    }
     println!("summary: {}", summary.join("; "));
     let names = [
         "consent",
