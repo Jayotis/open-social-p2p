@@ -134,14 +134,18 @@ struct Conditions {
 }
 
 /// Reaching a layer counts actual days (or, under `Faded`, faded ones) and,
-/// for layer 4, bytes; keeping one it holds needs half the mark, faded.
+/// for layer 4, bytes; keeping one it holds needs half the mark, faded. An
+/// introduction the holder counts halves layer 4's days and bytes (the plan,
+/// as ADR 0018 does for a reference).
 fn conditions(
     r: &Record,
     rule: DayRule,
     bytes_rule: BytesRule,
     t: f64,
     room_now: bool,
+    introduced: bool,
 ) -> Conditions {
+    let cut = if introduced { 0.5 } else { 1.0 };
     let was = r.layer;
     let (work_q, served_q) = match rule {
         DayRule::Window => (r.work_day_list.len() as f64, r.served_day_list.len() as f64),
@@ -158,8 +162,8 @@ fn conditions(
         layer1: ok(1, work_q, r.work_days, 1.0),
         work_days: ok(2, work_q, r.work_days, DAYS_FOR_REGULAR),
         both_ways: r.offered || ok(3, served_q, r.served_days, DAYS_FOR_BOTH_WAYS),
-        bytes: ok(4, bytes_q, r.bytes, EARNED_BYTES),
-        age: t - r.first >= EARNED_AFTER,
+        bytes: ok(4, bytes_q, r.bytes, cut * EARNED_BYTES),
+        age: t - r.first >= cut * EARNED_AFTER,
         room: was >= 4 || room_now,
     }
 }
@@ -180,6 +184,12 @@ pub struct Records {
     earned: Vec<Vec<(usize, f64)>>,
     /// When each node granted layer 4, for the weekly cap.
     granted_at: Vec<Vec<f64>>,
+    /// Peers each node approved by hand: direct from the start, outside the
+    /// caps (ADR 0018's fifth rule).
+    approved: Vec<Vec<usize>>,
+    /// (holder, about): an introduction of `about` that `holder` counts,
+    /// until then.
+    introduced: HashMap<(usize, usize), f64>,
 }
 
 impl Records {
@@ -192,7 +202,27 @@ impl Records {
             bytes_rule,
             earned: vec![Vec::new(); n],
             granted_at: vec![Vec::new(); n],
+            approved: vec![Vec::new(); n],
+            introduced: HashMap::new(),
         }
+    }
+
+    /// `a` and `b` approved each other by hand.
+    pub fn approve(&mut self, a: usize, b: usize) {
+        self.approved[a].push(b);
+        self.approved[b].push(a);
+    }
+
+    /// `holder` counts an introduction of `about` until `until`.
+    pub fn introduce(&mut self, holder: usize, about: usize, until: f64) {
+        let u = self.introduced.entry((holder, about)).or_insert(until);
+        *u = u.max(until);
+    }
+
+    fn is_introduced(&self, holder: usize, about: usize, t: f64) -> bool {
+        self.introduced
+            .get(&(holder, about))
+            .is_some_and(|&u| t < u)
     }
 
     fn row(&mut self, holder: usize, about: usize, t: f64) -> &mut Record {
@@ -253,9 +283,10 @@ impl Records {
         let new_this_week = self.granted_at[holder].len();
         let (rule, bytes_rule) = (self.rule, self.bytes_rule);
         let room_now = earned_now < MAX_EARNED && new_this_week < NEW_EARNED_A_WEEK;
+        let introduced = self.is_introduced(holder, about, t);
         let r = self.row(holder, about, t);
         let was = r.layer;
-        let c = conditions(r, rule, bytes_rule, t, room_now);
+        let c = conditions(r, rule, bytes_rule, t, room_now, introduced);
         let mut layer = 0;
         if c.layer1 {
             layer = 1;
@@ -301,7 +332,8 @@ impl Records {
             .filter(|&&g| t - g < 7.0 * DAY)
             .count();
         let room_now = self.earned[holder].len() < MAX_EARNED && recent < NEW_EARNED_A_WEEK;
-        let c = conditions(&r, self.rule, self.bytes_rule, t, room_now);
+        let introduced = self.is_introduced(holder, about, t);
+        let c = conditions(&r, self.rule, self.bytes_rule, t, room_now, introduced);
         let mut out = Vec::new();
         if !c.work_days {
             out.push(Block::WorkDays);
@@ -359,19 +391,35 @@ impl Records {
     /// A connection is direct only when both sides allow it: each says yes
     /// to earned links and holds the other at layer 4.
     pub fn direct(&self, a: usize, b: usize) -> bool {
-        self.yes[a]
-            && self.yes[b]
-            && self.get(a, b).is_some_and(|r| r.layer == 4)
-            && self.get(b, a).is_some_and(|r| r.layer == 4)
+        self.approved[a].contains(&b)
+            || (self.yes[a]
+                && self.yes[b]
+                && self.get(a, b).is_some_and(|r| r.layer == 4)
+                && self.get(b, a).is_some_and(|r| r.layer == 4))
     }
 
-    /// The peers `node` has a direct link with now.
+    /// The peers `node` has a direct link with now, approved or earned.
     pub fn direct_peers(&self, node: usize) -> Vec<usize> {
-        self.earned[node]
+        let mut v = self.approved[node].clone();
+        v.extend(
+            self.earned[node]
+                .iter()
+                .map(|&(p, _)| p)
+                .filter(|&p| self.direct(node, p) && !self.approved[node].contains(&p)),
+        );
+        v
+    }
+
+    /// Every (holder, about) whose record is at `layer` or more.
+    pub fn at_least(&self, layer: u8) -> Vec<(usize, usize)> {
+        let mut v: Vec<(usize, usize)> = self
+            .rows
             .iter()
-            .map(|&(p, _)| p)
-            .filter(|&p| self.direct(node, p))
-            .collect()
+            .filter(|(_, r)| r.layer >= layer)
+            .map(|(&k, _)| k)
+            .collect();
+        v.sort_unstable();
+        v
     }
 
     /// For each node, the highest layer any node but `without` holds it at.

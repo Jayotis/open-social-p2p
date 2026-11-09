@@ -1,14 +1,17 @@
 //! Three months of Kim's posts ([plan]): who's in each start, when each
 //! post goes out, and what each post cost and took.
 //!
-//! Built a step at a time. So far: ways 1 (relays alone) and 2 (earned
-//! links) under the rules as accepted.
+//! All three ways, under both sets of rules, with meeting, lists and
+//! introductions earned (`meeting`).
 //!
 //! [plan]: ../../../docs/testing/hops-model.md
+
+use std::collections::HashMap;
 
 use serde::Serialize;
 
 use super::calibrate::{ASK_DELAY, DOWN, SPREAD_SECS, TELL_DELAY, UP, time_for};
+use super::meeting::{MeetCounts, Meeting, Standing, Who};
 use super::records::{Block, BytesRule, DayRule, Records};
 use super::rng::Rng;
 use super::spread::{
@@ -204,6 +207,15 @@ struct Media {
     /// When each machine first got a middle turn.
     first_middle: Vec<Option<f64>>,
     hops: HopCounts,
+    /// Machines meeting machines: each viewer picks its middle machine from
+    /// its own table.
+    meeting: Meeting,
+    /// When each node first served a copy.
+    first_served: Vec<Option<f64>>,
+    /// (a, b) with a < b: bytes a served b, and b served a, over the run.
+    swapped: HashMap<(usize, usize), [f64; 2]>,
+    /// Bytes of the file the operator's nodes received.
+    operator_down: f64,
 }
 
 /// Transfers through hops, for mark 9: how often the operator's nodes held
@@ -220,6 +232,11 @@ pub struct HopCounts {
     /// Transfers with a hop at both ends, all of them the operator's.
     pub operator_both_ends: usize,
     pub middle_turns: usize,
+    /// Way 3's transfers not over a direct link, by which ends had a hop
+    /// they could pick: both, the host's only, the viewer's only, neither.
+    /// Also those from Kim's node, apart.
+    pub available: [usize; 4],
+    pub available_from_creator: [usize; 4],
 }
 
 /// ADR 0017's starting value: a middle turn on 1 transfer in 10 through hops.
@@ -262,10 +279,12 @@ impl Media {
         c
     }
 
-    /// A machine with no standing with `v`, for the middle. Every machine
-    /// carrying is taken to be in `v`'s table until meeting is modelled.
+    /// A machine with no standing with `v`, for the middle, from `v`'s
+    /// table. One whose introduction `v` counts goes first (ADR 0022).
     fn middle(&mut self, v: usize, taken: &[usize], load: &Load) -> Option<usize> {
-        let pool: Vec<usize> = (0..self.carries.len())
+        let pool: Vec<usize> = self
+            .meeting
+            .table(v)
             .filter(|&m| {
                 !taken.contains(&m)
                     && self.can_hop(m, load)
@@ -275,6 +294,15 @@ impl Media {
             .collect();
         if pool.is_empty() {
             return None;
+        }
+        let t = self.post_at;
+        let introduced: Vec<usize> = pool
+            .iter()
+            .copied()
+            .filter(|&m| self.meeting.introduced(v, m, t))
+            .collect();
+        if !introduced.is_empty() {
+            return Some(introduced[self.hop_rng.below(introduced.len())]);
         }
         if self.rule_set == RuleSet::Partners && self.hop_rng.chance(MIDDLE_RETURNING) {
             // Those that finished one for `v` before, most jobs first.
@@ -305,6 +333,16 @@ impl Media {
         let t = self.post_at;
         let ps = self.viewer_hops(v, h, load);
         let qs = self.host_hops(h, v, load);
+        let k = match (qs.is_empty(), ps.is_empty()) {
+            (false, false) => 0,
+            (false, true) => 1,
+            (true, false) => 2,
+            (true, true) => 3,
+        };
+        self.hops.available[k] += 1;
+        if h == self.creator {
+            self.hops.available_from_creator[k] += 1;
+        }
         let pick = |rng: &mut Rng, c: &[usize]| (!c.is_empty()).then(|| c[rng.below(c.len())]);
         let mut q = pick(&mut self.hop_rng, &qs);
         // If V would pick Q itself, the transfer takes that one hop.
@@ -445,6 +483,12 @@ impl Rules for Media {
         if part.bytes > 0.0 {
             self.records.work(part.to, part.source, part.bytes, t);
             self.records.served(part.source, part.to, t);
+            self.first_served[part.source].get_or_insert(t);
+            if self.operator[part.to] {
+                self.operator_down += part.bytes;
+            }
+            let (a, b) = (part.source.min(part.to), part.source.max(part.to));
+            self.swapped.entry((a, b)).or_default()[(part.source != a) as usize] += part.bytes;
             if self.partners[part.to].has(part.source) {
                 self.from_partners += part.bytes;
             }
@@ -525,6 +569,42 @@ pub struct Months {
     pub spot_checks: SpotChecks,
     /// Way 3's transfers through hops, for mark 9.
     pub hops: HopCounts,
+    /// Partners at the end: how evenly each pair swapped, honest pairs and
+    /// pairs with an operator's node apart.
+    pub reciprocity_honest: Reciprocity,
+    pub reciprocity_operator: Reciprocity,
+    /// Mark 6: on the last day, followers present (Kim not counted), and
+    /// the largest group of them linked by partners.
+    pub present_end: usize,
+    pub largest_partner_group: usize,
+    /// Meeting, lists and introductions.
+    pub meet: MeetCounts,
+    /// Mark 8: established honest nodes (there from day 0) that carry, and
+    /// of those, how many heard of a machine not in their table through a
+    /// list or an introduction after the directory went off. Also the
+    /// directory newcomers that carry, as context.
+    pub established_carrying: usize,
+    pub established_heard_new: usize,
+    pub directory_newcomers_carrying: usize,
+    pub directory_newcomers_heard_new: usize,
+    /// The operator's figures (ADR 0022's price): honest peers with a direct
+    /// link to one of its nodes at the end; bytes of the file its nodes
+    /// received; bytes on the wire they sent, serving and carrying.
+    pub operator_direct_honest: usize,
+    pub operator_down: f64,
+    pub operator_up: f64,
+}
+
+/// Bytes each side of a partner pair served the other over the run.
+#[derive(Debug, Default, Serialize)]
+pub struct Reciprocity {
+    pub pairs: usize,
+    /// The median share of the pair's bytes that the side serving less
+    /// served (0.5 is even).
+    pub median_lesser_share: f64,
+    /// Pairs where the side serving less served under a tenth, and none.
+    pub under_a_tenth: usize,
+    pub one_way_only: usize,
 }
 
 /// Follower pairs, Kim left out, that have dealt with each other, and why
@@ -535,6 +615,9 @@ pub struct PairReport {
     pub all: Blocked,
     /// Of those, pairs where one is the other's partner for Kim's posts.
     pub partners: Blocked,
+    /// The partner pairs again: both honest, and with an operator's node.
+    pub partners_honest: Blocked,
+    pub partners_operator: Blocked,
 }
 
 #[derive(Debug, Default, Serialize)]
@@ -635,6 +718,12 @@ fn pair_report(rules: &Media, creator: usize, t: f64) -> PairReport {
         rep.all.add(direct, consent, operator, &ab, &ba);
         if rules.partners[a].has(b) || rules.partners[b].has(a) {
             rep.partners.add(direct, consent, operator, &ab, &ba);
+            if operator {
+                rep.partners_operator
+                    .add(direct, consent, operator, &ab, &ba);
+            } else {
+                rep.partners_honest.add(direct, consent, operator, &ab, &ba);
+            }
         }
     }
     rep
@@ -656,6 +745,32 @@ fn spot_checks(rules: &Media, creator: usize, n: usize) -> SpotChecks {
     s
 }
 
+/// Runs meeting up to `t`, each day's standing worked out from the records
+/// (ADR 0022's work first), and has each node's records count the
+/// introductions it accepted.
+fn meet_until(rules: &mut Media, t: f64) {
+    let Media {
+        meeting,
+        records,
+        carried,
+        ..
+    } = rules;
+    meeting.advance(t, &mut |_| {
+        let mut s: Standing = carried.at_least(2).into_iter().collect();
+        for (h, a) in records.at_least(2) {
+            // Downloads count once the other's node has shown its machine,
+            // which it does at layer 2.
+            if records.get(a, h).is_some_and(|r| r.layer >= 2) {
+                s.insert((h, a));
+            }
+        }
+        s
+    });
+    for (kim, jimmy, until) in std::mem::take(&mut meeting.to_count) {
+        records.introduce(kim, jimmy, until);
+    }
+}
+
 /// One newcomer's progress, in days after it arrived, as seen at each post.
 #[derive(Debug, Serialize)]
 pub struct Newcomer {
@@ -671,6 +786,60 @@ pub struct Newcomer {
     pub carries: bool,
     pub middle: Option<f64>,
     pub carry_standing: Option<f64>,
+    /// Mark 7's last part: a list from a node it worked for, and an
+    /// introduction sent of it. Mark 6's: its first copy served.
+    pub list: Option<f64>,
+    pub introduced: Option<f64>,
+    pub first_served: Option<f64>,
+}
+
+fn reciprocity(rules: &Media, creator: usize, operator: bool) -> Reciprocity {
+    let mut shares = Vec::new();
+    let mut r = Reciprocity::default();
+    for (&(a, b), &[ab, ba]) in &rules.swapped {
+        if a == creator || b == creator || (rules.operator[a] || rules.operator[b]) != operator {
+            continue;
+        }
+        if !(rules.partners[a].has(b) || rules.partners[b].has(a)) {
+            continue;
+        }
+        let lesser = ab.min(ba) / (ab + ba).max(1.0);
+        r.pairs += 1;
+        r.under_a_tenth += (lesser < 0.1) as usize;
+        r.one_way_only += (ab.min(ba) == 0.0) as usize;
+        shares.push(lesser);
+    }
+    shares.sort_by(f64::total_cmp);
+    r.median_lesser_share = shares.get(shares.len() / 2).copied().unwrap_or(0.0);
+    r
+}
+
+/// The largest group of `nodes` linked by partners, either way.
+fn largest_group(rules: &Media, nodes: &[usize]) -> usize {
+    let n = rules.partners.len();
+    let mut root: Vec<usize> = (0..n).collect();
+    fn find(root: &mut [usize], x: usize) -> usize {
+        let mut x = x;
+        while root[x] != x {
+            root[x] = root[root[x]];
+            x = root[x];
+        }
+        x
+    }
+    let inside: Vec<bool> = (0..n).map(|i| nodes.contains(&i)).collect();
+    for &a in nodes {
+        for &(b, _, _) in &rules.partners[a].0 {
+            if inside[b] {
+                let (ra, rb) = (find(&mut root, a), find(&mut root, b));
+                root[ra] = rb;
+            }
+        }
+    }
+    let mut size: HashMap<usize, usize> = HashMap::new();
+    for &a in nodes {
+        *size.entry(find(&mut root, a)).or_default() += 1;
+    }
+    size.into_values().max().unwrap_or(0)
 }
 
 /// Kim's spot checks a day, each of a 1 KiB piece (a starting value).
@@ -734,7 +903,29 @@ pub fn run(
         .collect();
     let mut rng = Rng::new(seed.wrapping_add(1));
     let mut checks = Rng::new(seed.wrapping_add(2));
+    // Each newcomer started from one machine is given one honest follower's,
+    // picked at random, as a friend would pass it on.
+    let mut friends = Rng::new(seed.wrapping_add(5));
+    let established: Vec<usize> = (0..members.len())
+        .filter(|&i| members[i].kind == Kind::Follower)
+        .collect();
+    let who = Who {
+        arrives: members.iter().map(|m| m.arrives).collect(),
+        leaves: members.iter().map(|m| m.leaves).collect(),
+        operator: members.iter().map(|m| m.kind == Kind::Operator).collect(),
+        given: members
+            .iter()
+            .map(|m| {
+                (m.kind == Kind::NewcomerGiven)
+                    .then(|| established[friends.below(established.len())])
+            })
+            .collect(),
+    };
     let mut rules = Media {
+        meeting: Meeting::new(who, seed.wrapping_add(6)),
+        first_served: vec![None; peers.len()],
+        swapped: HashMap::new(),
+        operator_down: 0.0,
         way,
         rule_set,
         creator,
@@ -751,6 +942,15 @@ pub fn run(
         first_middle: vec![None; peers.len()],
         hops: HopCounts::default(),
     };
+    // S: the 10 approved by hand to one another are direct peers.
+    let approved: Vec<usize> = (0..members.len())
+        .filter(|&i| members[i].kind == Kind::Approved)
+        .collect();
+    for (k, &a) in approved.iter().enumerate() {
+        for &b in &approved[k + 1..] {
+            rules.records.approve(a, b);
+        }
+    }
     let mut hosts = vec![false; peers.len()];
     let mut newcomers: Vec<Newcomer> = (0..members.len())
         .filter(|&i| {
@@ -767,9 +967,13 @@ pub fn run(
             carries: carries[node],
             middle: None,
             carry_standing: None,
+            list: None,
+            introduced: None,
+            first_served: None,
         })
         .collect();
     let mut checked_to = 0.0;
+    let mut operator_up = 0.0;
     let mut posts = Vec::new();
     let mut pairs_day60 = None;
     for (index, (at, fetches)) in schedule.into_iter().enumerate() {
@@ -787,6 +991,7 @@ pub fn run(
             }
             checked_to += DAY;
         }
+        meet_until(&mut rules, at);
         if pairs_day60.is_none() && at > 60.0 * DAY {
             rules.records.sweep(60.0 * DAY);
             pairs_day60 = Some(pair_report(&rules, creator, 60.0 * DAY));
@@ -828,13 +1033,14 @@ pub fn run(
         for &i in &present {
             swarm.direct[i] = rules.records.direct(creator, i);
         }
-        let direct_pairs = (0..peers.len())
-            .map(|i| {
+        let direct_pairs = present
+            .iter()
+            .map(|&i| {
                 rules
                     .records
                     .direct_peers(i)
                     .into_iter()
-                    .filter(|&p| p > i)
+                    .filter(|&p| p > i && rules.present[p])
                     .count()
             })
             .sum();
@@ -860,6 +1066,9 @@ pub fn run(
         .run(&mut swarm, &fetches, &[]);
         for &i in &present {
             hosts[i] |= out.held[i].is_some();
+            if rules.operator[i] {
+                operator_up += out.sent[i];
+            }
         }
         let held: Vec<Option<f64>> = present.iter().map(|&i| out.held[i]).collect();
         let p95 = time_for(&held, 0.95);
@@ -895,9 +1104,60 @@ pub fn run(
     }
     let end = posts.last().map_or(0.0, |p| p.at) + POST_UNTIL;
     rules.records.sweep(end);
+    // Meeting runs on to day 91, for mark 8.
+    meet_until(&mut rules, 91.0 * DAY);
+    // The model's own check: no table over ADR 0015's and 0016's limits.
+    assert!((0..peers.len()).all(|v| rules.meeting.sources_ok(v)));
+    for nc in &mut newcomers {
+        let arrived = members[nc.node].arrives;
+        let since = |t: Option<f64>| t.map(|t| (t - arrived) / DAY);
+        nc.middle = since(rules.first_middle[nc.node]);
+        nc.list = since(rules.meeting.first_list[nc.node]);
+        nc.introduced = since(rules.meeting.first_introduced[nc.node]);
+        nc.first_served = since(rules.first_served[nc.node]);
+    }
     let pairs_end = pair_report(&rules, creator, end);
     let spot_checks = spot_checks(&rules, creator, peers.len());
+    let at_end: Vec<usize> = (1..members.len())
+        .filter(|&i| members[i].present(end))
+        .collect();
+    for i in 0..peers.len() {
+        rules.partners[i].fade_to(end);
+    }
+    let carrying = |kind: Kind| -> Vec<usize> {
+        (0..members.len())
+            .filter(|&i| members[i].kind == kind && carries[i])
+            .collect()
+    };
+    let heard = |v: &[usize]| {
+        v.iter()
+            .filter(|&&i| rules.meeting.heard_new_late[i])
+            .count()
+    };
+    let (est, dirn) = (carrying(Kind::Follower), carrying(Kind::NewcomerDirectory));
+    let operator_direct_honest = (0..members.len())
+        .filter(|&i| !rules.operator[i])
+        .filter(|&i| {
+            rules
+                .records
+                .direct_peers(i)
+                .iter()
+                .any(|&p| rules.operator[p])
+        })
+        .count();
     Months {
+        reciprocity_honest: reciprocity(&rules, creator, false),
+        reciprocity_operator: reciprocity(&rules, creator, true),
+        present_end: at_end.len(),
+        largest_partner_group: largest_group(&rules, &at_end),
+        meet: rules.meeting.counts.clone(),
+        established_carrying: est.len(),
+        established_heard_new: heard(&est),
+        directory_newcomers_carrying: dirn.len(),
+        directory_newcomers_heard_new: heard(&dirn),
+        operator_direct_honest,
+        operator_down: rules.operator_down,
+        operator_up,
         start,
         way,
         rule_set,

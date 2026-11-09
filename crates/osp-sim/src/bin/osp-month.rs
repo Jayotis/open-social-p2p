@@ -289,6 +289,44 @@ fn print_months(m: &months::Months) {
         show("all that dealt with each other", &r.all);
         show("partners", &r.partners);
     }
+    if m.way == months::Way::Hops {
+        let a = &m.hops.available;
+        let c = &m.hops.available_from_creator;
+        println!(
+            "transfers not direct, by the hops their ends could pick: both {}, host's only {}, viewer's only {}, neither {} (of those from Kim: {}, {}, {}, {})",
+            a[0], a[1], a[2], a[3], c[0], c[1], c[2], c[3]
+        );
+    }
+    for (name, r) in [
+        ("honest", &m.reciprocity_honest),
+        ("with an operator's node", &m.reciprocity_operator),
+    ] {
+        println!(
+            "partner pairs at the end, {name}: {}; the side serving less served a median {:.0}% of the pair's bytes; under a tenth {}, none {}",
+            r.pairs,
+            100.0 * r.median_lesser_share,
+            r.under_a_tenth,
+            r.one_way_only
+        );
+    }
+    let g = &m.meet;
+    println!(
+        "meeting: largest partner group {} of {} present; lists asked {}, refused {}, given {} ({} to the operator, which asked {}); introductions sent {}, counted {}, of the operator's nodes {}; established that carry hearing of new machines after day 56: {} of {} (directory newcomers {} of {})",
+        m.largest_partner_group,
+        m.present_end,
+        g.lists_asked,
+        g.lists_refused,
+        g.lists_given,
+        g.operator_lists,
+        g.operator_lists_asked,
+        g.introductions_sent,
+        g.introductions_counted,
+        g.operator_introduced,
+        m.established_heard_new,
+        m.established_carrying,
+        m.directory_newcomers_heard_new,
+        m.directory_newcomers_carrying,
+    );
     let k = &m.spot_checks;
     println!(
         "Kim's spot checks (1 KiB each): {} followers at layer 2, {} at layer 3; most checked from one follower {:.1} KiB in 30 days ({:.1} KiB faded) against 100 MB; Kim's links {}",
