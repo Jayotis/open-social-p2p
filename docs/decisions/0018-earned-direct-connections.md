@@ -72,11 +72,11 @@ Each layer is reached by working through the one before. Values are starting val
 | 1. Has worked for us | One completed download from it, a transfer its machine carried for us, once shown, or a spot check of its copy of our posts that passed | On record, nothing more |
 | 2. Regular source | Work on 3 different days in the last 30, no bad data | Tried sooner when fetching, or picked sooner as a hop |
 | 3. Both ways | Layer 2, and this node has served it on 3 different days in the last 30, or it has offered this node a link | Ahead of strangers when busy |
-| 4. Earned | Layer 3 held, at least 30 days since first contact, enough checked bytes, and room under the caps. With a reference, 15 days and half the bytes | A direct connection, if both sides' rules allow it |
+| 4. Earned | Layer 3 held, at least 30 days since first contact, 100 MB of checked bytes received in the last 30 days, and room under the caps. With a reference, 15 days and half the bytes | A direct connection, if both sides' rules allow it |
 
 - **A creator and its followers can get there.** A creator never fetches from its followers to watch anything, so in the first draft neither could reach layer 3 with the other. Now the creator's spot checks put a follower that hosts its posts on its record. On the follower's side, which can't tell the checks from strangers, the creator's offer of a link meets "both ways": a peer that offers has counted this node's work. That's no easier for an attacker than before, as a peer could always meet "both ways" by asking for anything ("The other direction", above).
 - **Layers 2 and 3 change who gets served first,** so each needs its own B8 run, and layer 3 needs the review's evidence on newcomers (A3). They can start as labels with no effect.
-- **Counting days** keeps, for each peer and each direction, the days in the last 30 on which there was work, each day once, across restarts too, beside ADR 0011's faded totals ([below](#reaching-a-layer-and-keeping-it)). That's which days, never which files, and nothing older than 30 days.
+- **Counting days** keeps, for each peer and each direction, the days in the last 30 on which there was work, each day once, and the checked bytes received on each of those days as one total, across restarts too, beside ADR 0011's faded totals ([below](#reaching-a-layer-and-keeping-it)). That's which days and how much, never which files, and nothing older than 30 days.
 - **It's per node,** as ADR 0011's rows are. Grouping a person's nodes can come later.
 
 ### Reaching a layer and keeping it
@@ -86,7 +86,8 @@ Clarified by the maintainer on 2026-11-09. A first reading counted the days towa
 - **Reaching a layer counts actual days.** A day counts when the peer did work this node asked for, received and checked ("What counts as work", above) on it. Each day counts once for each peer and direction, and only days in the last 30 count. Three such days reach layer 2. Layer 3 still needs its own both-ways part: this node served the peer on 3 different days in the last 30, counted the same way, or the peer offered a link.
 - **Keeping a layer uses the faded standing.** Once reached, a layer is kept while the faded totals, halving every 14 days as in ADR 0011, stay at half the layer's mark or more: 1.5 faded days for layer 2 and for layer 3's served days, and half the checked bytes for layer 4. Below that, the peer loses the layer. A peer that qualifies for a layer is never dropped from it in the same step.
 - **What doesn't count is unchanged:** failed transfers, `Hello`, uptime, and anything unchecked or claimed. Bad data still sends a peer back to layer 0 for 30 days ("Limits", below).
-- **Layer 4 is unchanged:** layer 3, 30 days since first contact, the checked bytes, the caps, and both sides allowing it. A reference halves its days and bytes, and never replaces first-hand work.
+- **Layer 4's bytes count the same way** (the maintainer's decision, 2026-11-09): 100 MB of bytes received from the peer and checked against their hashes in the last 30 days reach it, from daily totals, with no file named. Once reached, it's kept while the faded checked bytes stay at 50 MB or more, alongside the other layers' rules for keeping. Bytes this node didn't receive and check itself never count.
+- **The rest of layer 4 is unchanged:** layer 3, 30 days since first contact, the caps, and both sides allowing it. A reference halves its 30 days and its 100 MB, and never replaces first-hand work.
 
 ### Limits
 
