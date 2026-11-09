@@ -256,6 +256,7 @@ The second run's way to get a list still needs work both ways when it's earned b
 - **Marks 4 and 6 missed:** ADR 0023 isn't accepted as it stands.
 - **Marks 7 and 8 missed:** ADR 0022's starting values don't go into its build as they stand. Its gate rests on carrying, which rests on hops.
 - **Kim's links:** none, as the plan's arithmetic said (most checked from one follower 15 KiB in 30 days, against 100 MB). Whether creators need direct links with their followers is the maintainer's decision.
+- **Next:** [experiments A to C](hops-experiments.md) change one of these at a time, against the second run.
 
 ## Not modelled
 
