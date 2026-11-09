@@ -1,6 +1,6 @@
 # ADR 0018: Earned direct connections
 
-**Status:** Accepted (2026-11-08), proposed 2026-11-04. Not built. Changes [ADR 0014](0014-finding-people-and-private-messages.md)'s "Who may connect directly" once built; until then ADR 0014's rules stand. The layers and values below are starting values, which the stages' runs set.
+**Status:** Accepted (2026-11-08), proposed 2026-11-04. Not built. Changes [ADR 0014](0014-finding-people-and-private-messages.md)'s "Who may connect directly" once built; until then ADR 0014's rules stand. The layers and values below are starting values, which the stages' runs set. Clarified 2026-11-09: reaching a layer and keeping it are counted apart ([below](#reaching-a-layer-and-keeping-it)).
 
 Revised 2026-11-07. Work now counts whether a node served the bytes itself or its machine carried them as a hop ([ADR 0017](0017-one-hop-forwarding.md)), once the node shows the granting peer which machine is its own; a reference ([ADR 0016](0016-machine-acquaintances.md#references)) lowers the marks but never replaces first-hand work; and a peer that offers a link meets "both ways". A creator's spot checks of its followers' copies count too, so a creator and the followers who host its posts can earn links, though the creator never fetches from them to watch anything. Its question at setup is also the yes for using hops ([ADR 0017](0017-one-hop-forwarding.md#who-picks)), as the hop next to a node sees its address as a direct link does, and a machine's carrying counts as jobs finished, not bytes. Direct links are meant to become the main path between nodes that work together, taking bytes off hops and relays. Each changed rule says what it replaced and why.
 
@@ -70,19 +70,28 @@ Each layer is reached by working through the one before. Values are starting val
 | --- | --- | --- |
 | 0. Stranger | First contact | Media through relays; the stranger share when busy ([doc 12](../12-peer-reciprocity-and-recognition.md)) |
 | 1. Has worked for us | One completed download from it, a transfer its machine carried for us, once shown, or a spot check of its copy of our posts that passed | On record, nothing more |
-| 2. Regular source | Work on 3 different days, no bad data | Tried sooner when fetching, or picked sooner as a hop |
-| 3. Both ways | Layer 2, and this node has served it on 3 different days, or it has offered this node a link | Ahead of strangers when busy |
+| 2. Regular source | Work on 3 different days in the last 30, no bad data | Tried sooner when fetching, or picked sooner as a hop |
+| 3. Both ways | Layer 2, and this node has served it on 3 different days in the last 30, or it has offered this node a link | Ahead of strangers when busy |
 | 4. Earned | Layer 3 held, at least 30 days since first contact, enough checked bytes, and room under the caps. With a reference, 15 days and half the bytes | A direct connection, if both sides' rules allow it |
 
 - **A creator and its followers can get there.** A creator never fetches from its followers to watch anything, so in the first draft neither could reach layer 3 with the other. Now the creator's spot checks put a follower that hosts its posts on its record. On the follower's side, which can't tell the checks from strangers, the creator's offer of a link meets "both ways": a peer that offers has counted this node's work. That's no easier for an attacker than before, as a peer could always meet "both ways" by asking for anything ("The other direction", above).
 - **Layers 2 and 3 change who gets served first,** so each needs its own B8 run, and layer 3 needs the review's evidence on newcomers (A3). They can start as labels with no effect.
-- **Counting days** takes one new counter per peer, in each direction, counting each day once, across restarts too. ADR 0011's rule holds: faded totals, not which files or when.
+- **Counting days** keeps, for each peer and each direction, the days in the last 30 on which there was work, each day once, across restarts too, beside ADR 0011's faded totals ([below](#reaching-a-layer-and-keeping-it)). That's which days, never which files, and nothing older than 30 days.
 - **It's per node,** as ADR 0011's rows are. Grouping a person's nodes can come later.
+
+### Reaching a layer and keeping it
+
+Clarified by the maintainer on 2026-11-09. A first reading counted the days toward a layer as a faded total too, so "3 days" meant 3 faded points, which takes work about every 8 days to reach. A layer means three actual days of verified work.
+
+- **Reaching a layer counts actual days.** A day counts when the peer did work this node asked for, received and checked ("What counts as work", above) on it. Each day counts once for each peer and direction, and only days in the last 30 count. Three such days reach layer 2. Layer 3 still needs its own both-ways part: this node served the peer on 3 different days in the last 30, counted the same way, or the peer offered a link.
+- **Keeping a layer uses the faded standing.** Once reached, a layer is kept while the faded totals, halving every 14 days as in ADR 0011, stay at half the layer's mark or more: 1.5 faded days for layer 2 and for layer 3's served days, and half the checked bytes for layer 4. Below that, the peer loses the layer. A peer that qualifies for a layer is never dropped from it in the same step.
+- **What doesn't count is unchanged:** failed transfers, `Hello`, uptime, and anything unchecked or claimed. Bad data still sends a peer back to layer 0 for 30 days ("Limits", below).
+- **Layer 4 is unchanged:** layer 3, 30 days since first contact, the checked bytes, the caps, and both sides allowing it. A reference halves its days and bytes, and never replaces first-hand work.
 
 ### Limits
 
 - **At most 32 earned peers at once, and 2 new ones a week.** Fewer means less exposure; more means more bytes off relays. The simulator sets these.
-- **Standing fades,** by half every 14 days as in ADR 0011. A peer below half of a layer's mark drops back, so keeping a link takes continued work. What it has already learned, it keeps.
+- **Standing fades,** by half every 14 days as in ADR 0011. A peer whose faded standing is below half of a layer's mark drops back ([above](#reaching-a-layer-and-keeping-it)), so keeping a link takes continued work. What it has already learned, it keeps.
 - **Bad data sends a peer back to layer 0,** and it can't rise again for 30 days. It's no judgement of anyone: a failing disk looks the same.
 
 ### Both sides, and the handover

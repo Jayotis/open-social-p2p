@@ -29,7 +29,7 @@ Access to contacts and introductions are two separate rules, below.
 
 Both rules rest on **work Alice's node checked itself,** as [ADR 0018](0018-earned-direct-connections.md#what-counts-as-work) defines it. That means transfers Jimmy's machine carried for her as a hop, each chunk checked, and, once Jimmy's node has shown Alice which machine is its own, downloads from it. Greetings, records, uptime, anything a machine says of itself, and another machine's word don't count.
 
-**Each rule's bar starts at work on 3 different days, with no bad data:** ADR 0018's layer 2, and the bar a viewer already uses to pick the hop next to it (ADR 0017). They're starting values for the simulator, set apart so that each can change on its own. Standing fades, as in ADR 0018, so a machine that stops working drops back below it.
+**Each rule's bar starts at work on 3 different days, with no bad data:** ADR 0018's layer 2, and the bar a viewer already uses to pick the hop next to it (ADR 0017). They're starting values for the simulator, set apart so that each can change on its own. The 3 days are actual days of checked work in the last 30, and once a machine reaches the bar, it keeps it while its faded standing stays at half the bar or more, as ADR 0018 counts a layer ([reaching a layer and keeping it](0018-earned-direct-connections.md#reaching-a-layer-and-keeping-it)). So a machine that stops working drops back below it.
 
 ### A newcomer that knows nobody
 
@@ -58,7 +58,7 @@ ADR 0016 had two features: introductions, for meeting, which needed no standing,
 
 **Three days of checked work lets Alice recommend Jimmy.** Once Jimmy has done work for her on 3 different days with no bad data, Alice may introduce him. Jimmy can ask her to, and she decides from her own record, with no human act. He names nobody.
 
-**Only to a machine that has an introduction relationship with Alice.** Kim sets it up herself. Once Alice has done work for Kim on 3 different days, Kim's machine tells Alice, in a conversation they're having anyway, that it accepts introductions from her. Kim takes that back if Alice's introductions fail her (below), or if Alice's standing with her fades below the bar. A node can turn accepting off in `config.toml`. Alice sends introductions only to machines that told her so: at most 3 for one machine introduced, and 12 a day in all (starting values).
+**Only to a machine that has an introduction relationship with Alice.** Kim sets it up herself. Once Alice has done work for Kim on 3 different days, Kim's machine tells Alice, in a conversation they're having anyway, that it accepts introductions from her. Kim takes that back if Alice's introductions fail her (below), or if Alice's faded standing with her falls below half the bar. A node can turn accepting off in `config.toml`. Alice sends introductions only to machines that told her so: at most 3 for one machine introduced, and 12 a day in all (starting values).
 
 **What Alice sends.** She signs it. It names both machines and says how long she has known Jimmy and the jobs he finished for her, in rough bands. It has a date and an expiry 14 days later, and carries Jimmy's own signed record. It says nothing about either owner, or what was carried, or for whom. This is ADR 0016's reference, unchanged. She tells Jimmy only whether she sent it.
 

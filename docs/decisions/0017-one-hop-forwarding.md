@@ -72,7 +72,7 @@ A viewer V fetches from a host H, a follower or the creator, and the two have no
 Each end picks the hop next to it only with its owner's yes to earned links ("Asked at setup"). That hop learns the end's address, so it's picked as carefully as a direct link:
 
 - **At a host's end, only its direct peers,** earned ([ADR 0018](0018-earned-direct-connections.md)) or approved by hand, which see its address already. The hop learns whose node it is too, the targeted flood in ADR 0018's table of harms, so it costs what a direct link costs.
-- **At a viewer's end, also machines that finished jobs for it** ([ADR 0016](0016-machine-acquaintances.md#the-local-record)): transfers they carried for it that completed, on at least 3 different days (a starting value). This hop learns an address that's fetching, not an account, so the bar is lower.
+- **At a viewer's end, also machines that finished jobs for it** ([ADR 0016](0016-machine-acquaintances.md#the-local-record)): transfers they carried for it that completed, on at least 3 different days in the last 30 (a starting value), counted and kept as ADR 0018 counts a layer ([reaching a layer and keeping it](0018-earned-direct-connections.md#reaching-a-layer-and-keeping-it)). This hop learns an address that's fetching, not an account, so the bar is lower.
 - **Never a machine with no standing.** A home address isn't given for nothing.
 
 Nobody picks anything by hand. Approving a friend's node only adds one more peer.
