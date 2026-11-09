@@ -34,11 +34,12 @@ Doc 13 left this open: "The downloading node then picks sources using its peer a
 
 Once Jimmy's node has swapped a creator's media with one of her followers, in either direction, it keeps that follower as a partner for her posts, and tries it first next time.
 
-1. Kim posts again. Jimmy's node asks Kim's node who holds a copy, as now, and asks its partners for Kim's posts whether they hold this one.
-2. It fetches from partners that hold it in 2 of its 3 places at once. The third goes to a follower Kim's node named that Jimmy hasn't worked with, if there is one, so the swarm keeps mixing and new followers get picked. Kim's node is still last.
-3. If a partner is busy or doesn't hold the post yet, the followers Kim named take its place.
+1. Kim posts again. Jimmy's node waits its random moment, as now: that spreads the first fetches, so Kim sends 25 copies, not 300.
+2. It asks its partners for Kim's posts whether they hold this one, and Kim's node who holds a copy, all at once and with a short timeout, so asking doesn't hold the download up.
+3. It fetches from partners that hold it, in 2 of its 3 places at once. The third goes to a follower Kim's node named that Jimmy hasn't worked with, if there is one, so the swarm keeps mixing and new followers get picked.
+4. If a partner is busy or doesn't hold the post yet, the followers Kim named take its place. If nobody holds it yet, Jimmy fetches from Kim within her upload limits, or tries again as copies spread, as now.
 
-- **A partner** is a follower with a completed download, every chunk checked, from it or to it. That's ADR 0018's work, and its other direction. Either way counts, so whoever has the post first serves the other. The order changes with each post, so the work goes both ways.
+- **A partner** is a follower with a completed download, every chunk checked, from it or to it. When Jimmy serves Alice, Alice checks every chunk and credits Jimmy in her own record; when Alice serves Jimmy, Jimmy credits Alice in his. Neither tells the other, as no receipt leaves a node, and a direct link opens only when both records allow it (ADR 0018). Either direction makes a partner, so whoever has the post first serves the other. The order changes with each post, so the work goes both ways.
 - **At most 4 partners for each creator** (a starting value), keeping those with the most work done. One that sends bad data stops being a partner, as in ADR 0018.
 - **Partners fade** with ADR 0011's record, so one that stops serving drops out.
 - **Kim's node names followers as it does now.** That's her introduction: she names only followers whose copy she checked. Once she spot-checks followers' copies (ADR 0018), she names first those that passed on the most days, in half of the 6 places, and the rest at random, so new followers are still named. Her naming changes no layer.
@@ -68,7 +69,7 @@ A node should prefer machines that worked for it over strangers (the maintainer,
 ## Consequences
 
 - **More pairs earn direct links,** among the followers of one creator, which is where the swarm's bytes go. A follower with earned links has hops of its own as a host and as a viewer, so ADR 0017's hops can start.
-- **A fast host is picked once and kept.** An operator following Kim with fast servers is named at random, as anyone is. It then becomes a partner of each follower it served, or that served it. After a month of serving each of them well, it can earn their direct links, and with them their addresses if they said yes ([ADR 0018](0018-earned-direct-connections.md#consequences)). Before, it had to be picked at random on 3 different days. The price is still real work: hosting Kim's posts, and serving each follower well for 30 days. Each follower's caps (4 partners for a creator, 2 new earned peers a week, 32 at once) bound how many places it gets. ADR 0018's price check tries this.
+- **A fast host is picked once and kept,** which is what it's for: a fast server that keeps serving well is a benefit to Kim's followers, not a threat in itself, and nothing here holds it back. What it can gain is measured. Named at random as anyone is, it becomes a partner of each follower it served, or that served it, and after a month of serving each of them well it can earn their direct links, and with them their addresses if they said yes ([ADR 0018](0018-earned-direct-connections.md#consequences)). An operator would pay for that with real upload to Kim's whole audience for a month, and get addresses that may be a VPN's, good mostly for a flood, which a new address from the ISP ends. Each follower's caps (4 partners for a creator, 2 new earned peers a week, 32 at once) bound how many places one operator gets. The model reports what it got for its upload, as ADR 0018's price check asks.
 - **Load.** Partners share the work they'd share anyway. A busy one refuses as now, and Kim's names fill in. The third place, for a follower not yet worked with, keeps newcomers getting picked, and keeps the swarm from splitting into groups. The model measures both.
 - **Privacy.** Jimmy asking a partner whether it holds a post tells it he wants that post now, which it could guess, as a follower of the same creator. As partners are kept for each creator, he never asks a node that doesn't follow her. Jimmy's node holds which of Kim's followers he worked with, as faded totals. Someone who copies its disk learns that, and the list of whom he follows is there already.
 - **Changes to accepted records:** ADR 0018's layer 1, ADR 0011's record and doc 13, as above. ADR 0017 gains the middle rule. ADR 0022 doesn't change: its newcomer reaches 3 days of work sooner.
@@ -79,7 +80,7 @@ A node should prefer machines that worked for it over strangers (the maintainer,
 
 | Step | Work | Gate |
 | --- | --- | --- |
-| 1 | In ADR 0017's stage A model, beside the rules as accepted | The run plan's marks, set before it runs: follower pairs reaching each layer, B8's marks, the load on partners, and whether the swarm splits into groups |
+| 1 | In ADR 0017's stage A model, beside the rules as accepted | [The plan](../testing/hops-model.md)'s marks 4 to 6, set before it runs: follower pairs earning links, the load on partners, and whether the swarm splits into groups; and its marks for ADR 0017, under both sets of rules |
 | 2 | Partners first, in the node: the record, asking partners, the places | B8's swarm run with several posts on the simulated network: its marks, and pairs swapping again about as often as the model said |
 | 3 | Middle turns, with ADR 0017's stage B | ADR 0017's |
 
