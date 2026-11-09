@@ -404,8 +404,9 @@ impl<R: Rules> Spread<'_, R> {
                                 dl.state = State::Failed;
                                 out.failed += 1;
                             } else {
-                                let wait = (FIRST_RETRY_WAIT * f64::from(1u32 << dl.failures.min(16)))
-                                    .min(MAX_RETRY_WAIT);
+                                let wait = (FIRST_RETRY_WAIT
+                                    * f64::from(1u32 << dl.failures.min(16)))
+                                .min(MAX_RETRY_WAIT);
                                 dl.failures += 1;
                                 dl.state = State::Later(t + self.rng.jitter(wait));
                             }
@@ -495,9 +496,9 @@ impl<R: Rules> Spread<'_, R> {
             t += dt;
             second += 1;
             // What each node measures itself sending, over 5 s.
-            for i in 0..n {
-                live.window[i][second % MEASURE_OVER] = sent_now[i];
-                if sent_now[i] > 0.0 {
+            for (i, &sent) in sent_now.iter().enumerate() {
+                live.window[i][second % MEASURE_OVER] = sent;
+                if sent > 0.0 {
                     live.sending_for[i] += 1;
                 } else {
                     live.sending_for[i] = 0;
@@ -511,7 +512,9 @@ impl<R: Rules> Spread<'_, R> {
             // A source that sent its part takes the next, or the end of the
             // slowest, or stops.
             for s in part_ends {
-                let Some(st) = live.streams[s].as_ref() else { continue };
+                let Some(st) = live.streams[s].as_ref() else {
+                    continue;
+                };
                 let d = st.download;
                 let (own_rate, source) = (st.rate, st.source);
                 if let Some(part) = downloads[d].todo.pop() {
@@ -541,7 +544,9 @@ impl<R: Rules> Spread<'_, R> {
                     }
                     let of = downloads[d].streams.clone();
                     match split_slowest(&mut live.streams, &of, usize::MAX, rate) {
-                        Some(take) => self.start_stream(d, source, take, &mut downloads, &mut live, t),
+                        Some(take) => {
+                            self.start_stream(d, source, take, &mut downloads, &mut live, t)
+                        }
                         None => keep.push((source, rate)),
                     }
                 }
@@ -556,7 +561,11 @@ impl<R: Rules> Spread<'_, R> {
                     + downloads[d]
                         .streams
                         .iter()
-                        .map(|&s| live.streams[s].as_ref().map_or(0.0, |st| st.part_left.max(0.0)))
+                        .map(|&s| {
+                            live.streams[s]
+                                .as_ref()
+                                .map_or(0.0, |st| st.part_left.max(0.0))
+                        })
                         .sum::<f64>();
                 if left > 1e-6 {
                     if downloads[d].streams.is_empty() && downloads[d].idle.is_empty() {
@@ -584,7 +593,9 @@ impl<R: Rules> Spread<'_, R> {
     }
 
     fn end_stream(&mut self, s: usize, downloads: &mut [Download], live: &mut Live, now: f64) {
-        let Some(st) = live.streams[s].take() else { return };
+        let Some(st) = live.streams[s].take() else {
+            return;
+        };
         downloads[st.download].streams.retain(|&x| x != s);
         live.serving[st.source] -= 1;
         for leg in &st.legs {
@@ -655,7 +666,14 @@ impl<R: Rules> Spread<'_, R> {
     /// Starts parts for download `d` from those asked now that have a place.
     /// Those without one are refused as busy, and their parts wait for the
     /// others.
-    fn admit(&mut self, d: usize, downloads: &mut [Download], live: &mut Live, t: f64, busy: &mut usize) {
+    fn admit(
+        &mut self,
+        d: usize,
+        downloads: &mut [Download],
+        live: &mut Live,
+        t: f64,
+        busy: &mut usize,
+    ) {
         let node = downloads[d].node;
         let picked: Vec<usize> = downloads[d]
             .group
@@ -669,7 +687,9 @@ impl<R: Rules> Spread<'_, R> {
         *busy += downloads[d].group.len() - picked.len();
         downloads[d].group.clear();
         for source in picked {
-            let Some(part) = downloads[d].todo.pop() else { break };
+            let Some(part) = downloads[d].todo.pop() else {
+                break;
+            };
             self.start_stream(d, source, part, downloads, live, t);
         }
         downloads[d].state = State::Active;
@@ -735,7 +755,10 @@ impl<R: Rules> Spread<'_, R> {
                     .resources
                     .iter()
                     .filter(|&&r| held_here[r] > 0)
-                    .map(|&r| ((cap[r] - fixed[r]).max(0.0) / held_here[r] as f64).max(cap[r] / users[r] as f64))
+                    .map(|&r| {
+                        ((cap[r] - fixed[r]).max(0.0) / held_here[r] as f64)
+                            .max(cap[r] / users[r] as f64)
+                    })
                     .fold(f64::INFINITY, f64::min);
                 rate[k] = if r.is_finite() { r } else { equal(st, cap) };
             }
@@ -752,7 +775,13 @@ impl<R: Rules> Spread<'_, R> {
             let factor = st
                 .resources
                 .iter()
-                .map(|&r| if used[r] > cap[r] { cap[r] / used[r] } else { 1.0 })
+                .map(|&r| {
+                    if used[r] > cap[r] {
+                        cap[r] / used[r]
+                    } else {
+                        1.0
+                    }
+                })
                 .fold(1.0f64, f64::min);
             st.rate = rate[k] * factor;
         }
@@ -764,7 +793,12 @@ impl<R: Rules> Spread<'_, R> {
 /// together, if that ends it at least `SPLIT_GAIN` sooner (`split_slowest`
 /// in `osp-node`). What the slower one had sent past the new end, up to
 /// QUIC's stream window, it sends for nothing. Returns the bytes taken.
-fn split_slowest(streams: &mut [Option<Stream>], of: &[usize], taker: usize, rate: f64) -> Option<f64> {
+fn split_slowest(
+    streams: &mut [Option<Stream>],
+    of: &[usize],
+    taker: usize,
+    rate: f64,
+) -> Option<f64> {
     if rate <= 0.0 {
         return None;
     }
@@ -775,18 +809,32 @@ fn split_slowest(streams: &mut [Option<Stream>], of: &[usize], taker: usize, rat
         .filter_map(|s| streams[s].as_ref().map(|st| (s, st)))
         .filter(|(_, st)| st.part_left > 1e-6)
         .max_by(|(_, a), (_, b)| {
-            let secs = |st: &Stream| if st.rate > 0.0 { st.part_left / st.rate } else { f64::INFINITY };
+            let secs = |st: &Stream| {
+                if st.rate > 0.0 {
+                    st.part_left / st.rate
+                } else {
+                    f64::INFINITY
+                }
+            };
             secs(a).total_cmp(&secs(b))
         })
         .map(|(s, _)| s)?;
     let st = streams[slowest].as_mut().unwrap();
     let left = st.part_left;
     let own = st.rate;
-    let gain = if own > 0.0 { left / own - left / (own + rate) } else { f64::INFINITY };
+    let gain = if own > 0.0 {
+        left / own - left / (own + rate)
+    } else {
+        f64::INFINITY
+    };
     if gain < SPLIT_GAIN {
         return None;
     }
-    let keep = if own > 0.0 { left * own / (own + rate) } else { 0.0 };
+    let keep = if own > 0.0 {
+        left * own / (own + rate)
+    } else {
+        0.0
+    };
     st.part_left = keep;
     st.junk += (left.min(SEND_AHEAD) - keep).max(0.0);
     Some(left - keep)

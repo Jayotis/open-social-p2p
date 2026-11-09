@@ -194,7 +194,8 @@ pub fn run(percent: usize, seed: u64) -> Run {
         let p95_ok = run
             .p95
             .is_some_and(|p| (p - m.p95).abs() <= P95_WITHIN * m.p95);
-        let relay_ok = (run.relay_copies - m.relay_copies).abs() <= RELAY_WITHIN * m.relay_copies.max(1.0);
+        let relay_ok =
+            (run.relay_copies - m.relay_copies).abs() <= RELAY_WITHIN * m.relay_copies.max(1.0);
         let creator_ok = (CREATOR_COPIES.0..=CREATOR_COPIES.1).contains(&run.creator_copies);
         run.mark = Some(p95_ok && relay_ok && creator_ok);
     }

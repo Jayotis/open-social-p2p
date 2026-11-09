@@ -34,7 +34,9 @@ fn main() -> Result<()> {
                 .into_iter()
                 .map(|percent| calibrate::run(percent, seed))
                 .collect();
-            println!("behind relay | 50% / 95% / all (s) | creator copies | relay copies | extra received | busy | failed | latecomers half/all (s) | mark 0");
+            println!(
+                "behind relay | 50% / 95% / all (s) | creator copies | relay copies | extra received | busy | failed | latecomers half/all (s) | mark 0"
+            );
             for r in &runs {
                 let s = |t: Option<f64>| t.map_or("-".into(), |t| format!("{t:.0}"));
                 let mut late = r.latecomers.clone();
