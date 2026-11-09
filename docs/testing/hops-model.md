@@ -1,6 +1,6 @@
 # Hops and earned links over three months, in a model
 
-**Status:** Plan, fixed on 2026-11-08 before any code or run. It covers [ADR 0017](../decisions/0017-one-hop-forwarding.md)'s stage A, with [ADR 0018](../decisions/0018-earned-direct-connections.md)'s layers on a shortened clock (its step 2's question). [ADR 0023](../decisions/0023-followers-keep-working-together.md)'s partners run beside the rules as accepted, and [ADR 0022](../decisions/0022-lists-and-introductions-are-earned.md)'s earned lists get a first read. Changing a pass mark later needs a dated note here saying what changed and why.
+**Status:** Run on 2026-11-09, all marks judged ([results](#results)): mark 0 met, marks 5 and 9 met, mark 3 met in Z under ADR 0023's rules; marks 1, 2, 4, 6, 7 and 8 missed. The plan below was fixed on 2026-11-08 before any code or run, and no pass mark has changed since. It covers [ADR 0017](../decisions/0017-one-hop-forwarding.md)'s stage A, with [ADR 0018](../decisions/0018-earned-direct-connections.md)'s layers on a shortened clock (its step 2's question). [ADR 0023](../decisions/0023-followers-keep-working-together.md)'s partners run beside the rules as accepted, and [ADR 0022](../decisions/0022-lists-and-introductions-are-earned.md)'s earned lists get a first read. Changing a pass mark later needs a dated note here saying what changed and why.
 
 Stage A asks two things. Would two hops of volunteer nodes take enough media off relays to be worth building? And do pairs of nodes deal with each other often enough to earn direct links? None of this is built, so the run measures the rules, not the code.
 
@@ -160,6 +160,84 @@ If marks 0 to 3 are met under one set of rules, one real run checks B8's marks w
 - **Marks 7 and 8** decide whether ADR 0022's starting values go into its build.
 - **Kim's links:** if she earns none, as the arithmetic above says, whether creators need direct links with their followers, and which rule would change (the size or number of spot checks, or the bytes layer 4 asks of them), is the maintainer's decision, made from the figures.
 - **If a mark is missed,** the cause is looked for in the rules and in the model before anything changes, and the model is run once more.
+
+## Results
+
+`osp-month` in `osp-sim`, 2026-11-09. Each mark is judged on seed 1; the brackets give how many of seeds 1 to 5 meet it, as context. Mark 0 is judged on medians over 5 seeds. A run takes about 5 s and repeats exactly for its seed.
+
+### How the model reads the rules
+
+Where the plan left a choice, the model took these readings:
+
+- **Standing, for lists and introductions:** ADR 0022's work first. Alice holds Jimmy at standing when his machine finished jobs for her on 3 different days in the last 30, or when he served her downloads on 3 days and his node has shown her its machine (his node holds hers at layer 2).
+- **Asking for lists:** every machine asks each one in its table once a day, at a check-in, and the operator's do the same. Alice answers with up to 20 machines from her table, or an empty list.
+- **Introductions:** every machine with standing asks to be introduced; Alice picks whom to, among machines that accept hers. A machine Kim counts an introduction for goes first among her middle machines, and halves layer 4's 30 days and 100 MB for it. "Answered sooner when busy" isn't modelled.
+- **Tables:** 256 places: 40 for those who greet (an introduction counts among them), turns when they're full, a greeting first, and 64 for one source, the directory's map included. A machine that did work for the node leaves the greeters' places. A middle machine is drawn from the viewer's own table.
+- **Mark 7's "that node's list":** a list from any node that holds the newcomer at standing. **Mark 8's established nodes:** the honest followers there from day 0 that carry.
+- **Fixed in the model before these results:** S's 10 were never made direct peers. They are now, as ADR 0018 says for contacts approved by hand, until they leave on day 45.
+
+Not modelled: Tor's timing, so a dial is answered at once; ADR 0015's 2 dials an hour for sources heard from less; forgetting machines that stop answering, except those that left.
+
+### Every mark
+
+| Mark | Case | Result | Seed 1 |
+| --- | --- | --- | --- |
+| 0 | the model against measured runs | met | 95% at 609, 653 and 1,296 s; relay 0, 163 and 326 copies; Kim 18 to 25 copies |
+| 1 | Z, accepted | missed [0/5] | way 3 relayed 100% of way 2's (needs at most 75%) |
+| 1 | Z, partners | missed [0/5] | 90% |
+| 1 | S, accepted | missed [0/5] | 100% |
+| 1 | S, partners | missed [0/5] | 99% |
+| 2 | Z, accepted | missed [0/5] | B8 met on 0 of 13 posts; no later than way 1 on 45 of 45 |
+| 2 | Z, partners | missed [0/5] | 0 of 13; 43 of 45, worst 1.03x |
+| 2 | S, accepted | missed [0/5] | 0 of 13; 23 of 45, worst 1.18x |
+| 2 | S, partners | missed [0/5] | 0 of 13; 19 of 45, worst 1.34x |
+| 3 | Z, accepted | missed [0/5] | direct share 0% in both periods |
+| 3 | Z, partners | met [4/5] | way 2 4.5% → 5.1%, way 3 5.4% → 5.8% |
+| 3 | S, accepted | missed [0/5] | way 2 0.8% → 0.0%, way 3 0.2% → 0.0% |
+| 3 | S, partners | missed [1/5] | way 2 0.8% → 0.2%, way 3 1.0% → 0.8% |
+| 4 | Z, partners | missed [0/5] | 44% of day-0 followers linked by day 60 (needs 50%) |
+| 5 | Z, partners against accepted | met [5/5] | worst week 1.18x the busy refusals (needs at most 1.5x) |
+| 6 | Z, partners against accepted | missed [0/5] | largest partner group 430 of 430, met; newcomers' first copy served after a median 15.3 days, against 3.2 |
+| 7 | Z, directory newcomers | missed [0/5] | of 39 that carry: middle turn within 7 days 2, standing within 21 days 0, a list and an introduction within 28 days 1 (needs 35 each) |
+| 7 | Z, given newcomers | missed [0/5] | of 36: 0, 0, 1 (needs 32 each) |
+| 8 | Z, partners | missed [0/5] | 165 of 206 established nodes heard of a new machine after day 56 (needs all) |
+| 9 | Z, accepted | not judged | no transfer went through hops: no direct links, so no hops |
+| 9 | Z, partners | met [5/5] | the operator held 24.5% of end hops, and both ends of 10.7% of transfers with both (needs at most 12.0%) |
+
+In S, both of the 10's links lift weeks 5 to 8 and then leave with them on day 45, so mark 3 compares a period with them against one without.
+
+### Where it falls short
+
+**Hops rarely have an end to start from.** In Z, under ADR 0023's rules, of 17,299 transfers in way 3 that weren't over a direct link (seeds 1 to 5 in brackets):
+
+| Hops the ends could pick | Transfers | From Kim's node |
+| --- | --- | --- |
+| both the host's and the viewer's | 868 (821–1,261) | 0 |
+| the host's only | 1,737 (1,737–2,173) | 0 |
+| the viewer's only | 2,441 (2,286–2,616) | 208 |
+| neither | 12,253 (11,260–12,253) | 630 |
+
+A host's hop is one of its direct peers, so on 85% of these transfers the host had none to pick. Kim's node has none at all, as her spot checks can't reach layer 4. Under the accepted rules no follower pair earns a link in Z, so every transfer is "neither".
+
+**Partners mostly work one way.** ADR 0023 makes a partner from a download in either direction, expecting the order to change from post to post. In Z, way 3, at the end:
+
+| Partner pairs | Pairs | Never served back | Direct | Not direct, both said yes: too few days either way / one way only |
+| --- | --- | --- | --- | --- |
+| both honest | 858 | 552 (64%) | 46 | 301 / 114 |
+| with an operator's node | 378 | 287 (76%) | 24 | 122 / 131 |
+
+The operator's nodes fetch at once, so they nearly always hold a post first, and their pairs are mostly one way. Honest pairs are too: whoever is faster or wakes earlier keeps serving. Bytes or age is the first thing missing for 3 pairs at most, so the work going one way, and on too few days, is what keeps pairs apart.
+
+**Newcomers meet, but rarely carry.** A middle turn comes on 1 transfer in 10 through hops, so 489 in the whole run, about 5 a day for some 400 machines that carry. Directory newcomers greeted their way into tables, but only 15 of the 39 that carry got a middle turn at any time, and of all 50, 9 got a list and 4 an introduction; of newcomers given one machine, none got a middle turn, 4 a list and 1 an introduction. With no standing, lists stay shut, as ADR 0022 intends: 99.6% of 4.6 million asks were refused. Under ADR 0023's rules newcomers also serve later (mark 6), as Kim's node names first the followers her checks passed on the most days, and they aren't anyone's partner yet.
+
+**What the operator got,** under ADR 0023's rules: direct links with 22 honest nodes; 3,923 of the 19,922 lists given (20%, with 7% of the machines) and 173 of 643 introductions; for 71 GB received and 0.36 TB sent serving and carrying. Every list came from work the honest node checked: mostly downloads the operator's nodes served.
+
+### What the plan says follows
+
+- **Marks 1 to 3 missed** under both sets of rules: nothing from ADR 0017 is built, ADR 0014's rules stand, and the invited alpha goes ahead on relays. The figures go to the maintainer, for the rules to be rethought.
+- **Marks 4 and 6 missed:** ADR 0023 isn't accepted as it stands.
+- **Marks 7 and 8 missed:** ADR 0022's starting values don't go into its build as they stand. Its gate rests on carrying, which rests on hops.
+- **Kim's links:** none, as the plan's arithmetic said (most checked from one follower 15 KiB in 30 days, against 100 MB). Whether creators need direct links with their followers is the maintainer's decision.
 
 ## Not modelled
 
