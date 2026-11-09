@@ -159,7 +159,7 @@ Where the plan left a choice:
 - **A's requests** are transfers the host served, on different days. Requests refused as busy aren't counted. A side that allows a link keeps it, as now, at half the marks, faded: 3 days and 50 MB for contribution, 1.5 days for a client. An introduction halves the days since first contact and the bytes, as for layer 4.
 - **A's binding** counts downloads everywhere work counted only once shown: for lists, introductions and a viewer's hop picks, and so also as standing, which keeps a machine out of the middle.
 - **B's failures** stop a job at a point drawn between 10% and 90% of its part. What the source had sent to the stopped machine and that didn't arrive, up to QUIC's stream window, crosses the relay for nothing. A job picked to fail can finish first.
-- **Medians** are taken figure by figure, as mark 0's note sets. For mark 3, where a mark compares two figures, the median of each seed's change would read differently. It would make A and C meet mark 3 for Z under ADR 0023's rules on the median, as on seed 1, and A would then pass the plan's rule.
+- **Medians** are taken figure by figure, as mark 0's note sets. For mark 3, where a mark compares two figures, the median of each seed's change would read differently. It would make A and C meet mark 3 for Z under ADR 0023's rules on the median, as on seed 1, and A would then pass the plan's rule. *Decided 2026-11-09 (the maintainer):* the figure-by-figure median stands for these official results, and the pass decision doesn't change. The median of each seed's change is kept as supplementary analysis only.
 - **Links** are counted by whether both sides held each other at layer 4, by today's rules, when the link was first seen.
 - **Addresses** are learned on each leg not through the relay, by the machines at its two ends.
 - **Kim's picks** go to the followers with the most faded days of passed spot checks, as ADR 0023's naming orders them.
@@ -169,7 +169,7 @@ Where the plan left a choice:
 ### What follows, by the plan
 
 - **ABC5, ABC10 and ABC20 meet the plan's rule,** as do B5, B10, B20 and B10-f5, on mark 9 alone. None meets ADR 0017's gate (marks 1 to 3 in every case), so nothing from ADR 0017 is built on these figures.
-- **A is where the gains come from:** marks 1 (Z, ADR 0023's rules), 3 (S), 4 and 9. It misses the plan's rule only on mark 3's median for Z under ADR 0023's rules, which depends on how that median is read (above). Whether that reading stands is the maintainer's decision.
+- **A is where the gains come from:** marks 1 (Z, ADR 0023's rules), 3 (S), 4 and 9. It misses the plan's rule only on mark 3's median for Z under ADR 0023's rules. On the median of each seed's change, kept as supplementary analysis, it would meet it; the official reading is figure by figure (above), so A doesn't pass.
 - **B doesn't get newcomers going.** Too few jobs reach newcomers, and those that do are spread over too many viewers to make standing. Mark 7 is missed in every configuration.
 - **What A costs** is mostly addresses and lists going to whoever serves most: here, the operator. That's the price [ADR 0022](../decisions/0022-lists-and-introductions-are-earned.md) accepts for real work, but it's larger under A.
 
