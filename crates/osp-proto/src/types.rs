@@ -8,7 +8,10 @@ use anyhow::{Result, ensure};
 use iroh_base::{EndpointId, PublicKey};
 use serde::{Deserialize, Serialize};
 
-use crate::object::ObjectId;
+use crate::{
+    binding::{EndpointBinding, EndpointKind},
+    object::ObjectId,
+};
 
 /// Defines a 32-byte identifier that is written as lowercase hex.
 macro_rules! hex_id {
@@ -144,6 +147,10 @@ impl Payload {
                     p.nodes.len() <= MAX_PROFILE_NODES,
                     "profile lists more than {MAX_PROFILE_NODES} nodes"
                 );
+                ensure!(
+                    p.media_endpoints.len() <= MAX_PROFILE_NODES,
+                    "profile lists more than {MAX_PROFILE_NODES} media endpoints"
+                );
             }
             Payload::Note(n) => {
                 ensure!(
@@ -202,7 +209,37 @@ pub struct Person {
     pub discoverable: bool,
     /// Endpoint IDs of this identity's home nodes. An extension to AS2.
     pub nodes: Vec<EndpointId>,
+    /// The bindings of those nodes' media endpoints (ADR 0024), so a node
+    /// that follows nobody here can fetch a public post's media from one.
+    /// A media endpoint is relay-only and found by its ID, so this shows only
+    /// which relay it uses. Never a direct endpoint's. An extension to AS2.
+    #[serde(
+        rename = "mediaEndpoints",
+        default,
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub media_endpoints: Vec<EndpointBinding>,
     pub published: String,
+}
+
+impl Person {
+    /// The media endpoint of `node`, one of this profile's nodes, if the
+    /// profile gives a binding for it that checks out: both keys signed it,
+    /// it's for a media endpoint, and the node is one this profile lists. Any
+    /// other binding is ignored, not the profile. Of two for one node, the
+    /// later holds.
+    pub fn media_endpoint(&self, node: &EndpointId) -> Option<&EndpointBinding> {
+        self.media_endpoints()
+            .filter(|b| b.public == *node)
+            .max_by_key(|b| b.since_ms)
+    }
+
+    /// Every binding in `media_endpoints` that checks out, as above.
+    pub fn media_endpoints(&self) -> impl Iterator<Item = &EndpointBinding> + '_ {
+        self.media_endpoints.iter().filter(|b| {
+            b.kind == EndpointKind::Media && self.nodes.contains(&b.public) && b.verify().is_ok()
+        })
+    }
 }
 
 /// A post.
@@ -383,6 +420,7 @@ mod tests {
             summary: None,
             discoverable,
             nodes: vec![],
+            media_endpoints: vec![],
             published: "2026-11-01T00:00:00Z".into(),
         }
     }
@@ -398,5 +436,78 @@ mod tests {
         let json = serde_json::to_string(&person(true)).unwrap();
         assert!(json.contains(r#""discoverable":true"#), "{json}");
         assert!(serde_json::from_str::<Person>(&json).unwrap().discoverable);
+    }
+
+    fn key(byte: u8) -> SecretKey {
+        SecretKey::from_bytes(&[byte; 32])
+    }
+
+    /// Alice's profile, listing node 2, with these bindings.
+    fn with_bindings(bindings: Vec<EndpointBinding>) -> Person {
+        Person {
+            nodes: vec![key(2).public()],
+            media_endpoints: bindings,
+            ..person(true)
+        }
+    }
+
+    fn media(node: u8, endpoint: u8, since_ms: u64) -> EndpointBinding {
+        EndpointBinding::new(&key(node), &key(endpoint), EndpointKind::Media, since_ms)
+    }
+
+    #[test]
+    fn a_profiles_media_endpoint_checks_out_after_travelling() {
+        let alice = with_bindings(vec![media(2, 3, 1_000)]);
+        let json = serde_json::to_string(&alice).unwrap();
+        assert!(json.contains(r#""mediaEndpoints":["#), "{json}");
+        let back: Person = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, alice);
+        let found = back.media_endpoint(&key(2).public()).unwrap();
+        assert_eq!(found.endpoint, key(3).public());
+        // A profile without one says nothing of it, as before.
+        let json = serde_json::to_string(&person(true)).unwrap();
+        assert!(!json.contains("mediaEndpoints"), "{json}");
+    }
+
+    #[test]
+    fn a_forged_binding_in_a_profile_is_ignored() {
+        let json = serde_json::to_string(&media(2, 3, 1_000)).unwrap();
+        let forged: EndpointBinding = serde_json::from_str(&json.replace("1000", "1001")).unwrap();
+        let person = with_bindings(vec![forged]);
+        assert!(person.media_endpoint(&key(2).public()).is_none());
+        // The binding is ignored, not the profile.
+        Payload::Person(person).check_limits().unwrap();
+    }
+
+    #[test]
+    fn a_binding_for_a_node_the_profile_doesnt_list_is_ignored() {
+        // Node 4 binds its own media endpoint, validly, but Alice's profile
+        // lists only node 2.
+        let person = with_bindings(vec![media(4, 3, 1_000)]);
+        assert!(person.media_endpoint(&key(4).public()).is_none());
+        assert!(person.media_endpoint(&key(2).public()).is_none());
+        assert_eq!(person.media_endpoints().count(), 0);
+    }
+
+    #[test]
+    fn a_direct_binding_in_a_profile_is_ignored() {
+        let direct = EndpointBinding::new(&key(2), &key(3), EndpointKind::Direct, 1_000);
+        let person = with_bindings(vec![direct]);
+        assert!(person.media_endpoint(&key(2).public()).is_none());
+    }
+
+    #[test]
+    fn of_two_bindings_for_one_node_the_later_holds() {
+        let person = with_bindings(vec![media(2, 5, 2_000), media(2, 3, 1_000)]);
+        let found = person.media_endpoint(&key(2).public()).unwrap();
+        assert_eq!(found.endpoint, key(5).public());
+    }
+
+    #[test]
+    fn a_profile_with_too_many_bindings_is_refused() {
+        let many = (0..=MAX_PROFILE_NODES as u8)
+            .map(|i| media(2, 10 + i, 1_000))
+            .collect();
+        assert!(Payload::Person(with_bindings(many)).check_limits().is_err());
     }
 }

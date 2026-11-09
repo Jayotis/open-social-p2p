@@ -30,6 +30,7 @@ mod sync;
 mod tor;
 mod trust;
 mod uploads;
+mod viewing;
 
 pub use config::{Config, DirectRule, IntroductionsConfig, KnownDirectory, RelayChoice};
 pub use db::BlobClass;

@@ -437,6 +437,12 @@ mod tests {
             summary: Some("\u{1}".repeat(crate::types::MAX_SUMMARY_BYTES)),
             discoverable: true,
             nodes: vec![key.public(); crate::types::MAX_PROFILE_NODES],
+            media_endpoints: (0..crate::types::MAX_PROFILE_NODES as u8)
+                .map(|i| {
+                    let media = self::key(100 + i);
+                    crate::EndpointBinding::new(&key, &media, crate::EndpointKind::Media, u64::MAX)
+                })
+                .collect(),
             published: DATE.into(),
         };
         let profile = SignedObject::sign(&key, &crate::Payload::Person(person)).unwrap();

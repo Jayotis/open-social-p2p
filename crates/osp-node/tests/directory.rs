@@ -497,6 +497,7 @@ async fn nobody_can_list_or_drop_someone_else() {
     let mut forged = serde_json::to_value(signed_profile_of(&alice, &net).await).unwrap();
     let person = Person {
         nodes: vec![key.public()],
+        media_endpoints: vec![],
         ..profile_of(&alice, &net).await
     };
     let bytes = serde_json::to_vec(&Payload::Person(person)).unwrap();
@@ -516,6 +517,7 @@ async fn nobody_can_list_or_drop_someone_else() {
     let person = Person {
         discoverable: false,
         nodes: vec![key.public()],
+        media_endpoints: vec![],
         ..profile_of(&alice, &net).await
     };
     let bytes = serde_json::to_vec(&Payload::Person(person)).unwrap();
@@ -820,6 +822,7 @@ fn signed_person(key: &SecretKey, name: &str, summary: &str, discoverable: bool)
         summary: Some(summary.into()),
         discoverable,
         nodes: vec![SecretKey::generate().public()],
+        media_endpoints: vec![],
         published: at(-60),
     };
     SignedObject::sign(key, &Payload::Person(person)).unwrap()
@@ -1154,6 +1157,7 @@ async fn a_hostile_directory_costs_only_its_own_entries() {
         summary: None,
         discoverable: true,
         nodes: vec![],
+        media_endpoints: vec![],
         published: at(30 * 24 * 60 * 60),
     };
     let ahead = SignedObject::sign(&dated_ahead, &Payload::Person(ahead)).unwrap();
@@ -1393,6 +1397,7 @@ async fn a_post_signed_by_a_key_since_revoked_drops_out_and_stays_out() {
         summary: None,
         discoverable: true,
         nodes: vec![],
+        media_endpoints: vec![],
         published: at(-120),
     };
     let profile = |key: &CertifiedKey| {
@@ -1735,6 +1740,7 @@ async fn following_someone_found_asks_their_own_node_first() {
         summary: None,
         discoverable: true,
         nodes: vec![bob.node_id()],
+        media_endpoints: vec![],
         published: at(-60),
     };
     let profile = SignedObject::sign(&key, &Payload::Person(person)).unwrap();
@@ -1996,6 +2002,7 @@ fn profile_naming(key: &SecretKey, node: EndpointId, discoverable: bool) -> Sign
         summary: None,
         discoverable,
         nodes: vec![node],
+        media_endpoints: vec![],
         published: at(-60),
     };
     SignedObject::sign(key, &Payload::Person(person)).unwrap()

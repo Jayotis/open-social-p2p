@@ -15,11 +15,11 @@
 
 use std::{
     cmp::Ordering,
-    collections::{BinaryHeap, HashMap, VecDeque},
+    collections::{BinaryHeap, HashMap, HashSet, VecDeque},
     io,
     sync::{
         Arc, Mutex, MutexGuard, RwLock,
-        atomic::{AtomicU64, Ordering::Relaxed},
+        atomic::{AtomicBool, AtomicU64, Ordering::Relaxed},
     },
     task::{Context, Poll},
     time::Duration,
@@ -121,6 +121,10 @@ struct Net {
     /// Orders packets that reach a node at the same moment.
     next_seq: AtomicU64,
     stats: Counters,
+    /// Whether to note who sends to whom (`SimNet::record_senders`).
+    recording: AtomicBool,
+    /// Each sender and receiver of a packet, while recording.
+    sent: Mutex<HashSet<(EndpointId, EndpointId)>>,
 }
 
 #[derive(Debug, Default)]
@@ -310,6 +314,8 @@ impl SimNet {
                 relay,
                 next_seq: AtomicU64::new(0),
                 stats: Counters::default(),
+                recording: AtomicBool::new(false),
+                sent: Mutex::default(),
             }),
         }
     }
@@ -339,6 +345,19 @@ impl SimNet {
             }
             None => false,
         }
+    }
+
+    /// From now on, notes each endpoint that sends a packet, and to which,
+    /// until `senders` is read. Off by default, as it costs a lock a packet.
+    pub fn record_senders(&self) {
+        lock(&self.net.sent).clear();
+        self.net.recording.store(true, Relaxed);
+    }
+
+    /// Who sent packets to whom since `record_senders`, as (from, to).
+    /// Through the relay too: these are the endpoints at either end.
+    pub fn senders(&self) -> HashSet<(EndpointId, EndpointId)> {
+        lock(&self.net.sent).clone()
     }
 
     /// What the network has done with packets so far.
@@ -505,6 +524,9 @@ impl Net {
         let c = &self.stats;
         c.packets.fetch_add(1, Relaxed);
         c.bytes.fetch_add(data.len() as u64, Relaxed);
+        if self.recording.load(Relaxed) {
+            lock(&self.sent).insert((from.id, to));
+        }
         let port = self.port(&to);
         let relay = self
             .relay

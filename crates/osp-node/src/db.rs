@@ -12,8 +12,8 @@ use std::{
 use anyhow::{Context, Result, ensure};
 use iroh::{EndpointAddr, EndpointId, PublicKey};
 use osp_proto::{
-    BlobHash, BoundEndpoint, Delete, EarlierKeys, EndpointKind, Key, Note, ObjectId, Payload,
-    Person, SignedObject,
+    BlobHash, BoundEndpoint, Delete, EarlierKeys, EndpointBinding, EndpointKind, Key, Note,
+    ObjectId, Payload, Person, SignedObject,
     machine::{ListingEntry, ListingItem, MAX_LISTING_PAGE_BYTES, MachineRecord},
     rpc::{FollowInfo, PeerCounts, StorageInfo, Upload, UploadId},
 };
@@ -286,6 +286,17 @@ const MIGRATIONS: &[&str] = &[
     // 19: whether each of the last hour's dials went to a machine that greeted
     // this one unasked (ADR 0016).
     "ALTER TABLE machine_dials ADD COLUMN greeted_back INTEGER NOT NULL DEFAULT 0;",
+    // 20: the media each post a directory brought includes, and the size it
+    // declares, so it can be watched through a viewing endpoint (ADR 0024).
+    // Its rows come and go with `found_posts`. A post kept for another reason
+    // moves to `declared_sizes`. Filled in as directories are read again.
+    "CREATE TABLE found_blobs (
+        blob TEXT NOT NULL,
+        post TEXT NOT NULL,
+        size INTEGER NOT NULL,
+        PRIMARY KEY (blob, post)
+    );
+    CREATE INDEX found_blobs_by_post ON found_blobs(post);",
 ];
 
 /// The search index (ADR 0014): a number for each post, by its object ID, and
@@ -758,6 +769,7 @@ impl Db {
                 tx.execute("DELETE FROM objects WHERE id = ?1", params![id])?;
                 tx.execute("DELETE FROM outbox WHERE id = ?1", params![id])?;
                 tx.execute("DELETE FROM found_posts WHERE id = ?1", params![id])?;
+                tx.execute("DELETE FROM found_blobs WHERE post = ?1", params![id])?;
                 tx.execute("DELETE FROM refetch WHERE id = ?1", params![id])?;
                 remove_from_search(&tx, id)?;
             }
@@ -1286,6 +1298,7 @@ impl Db {
         for (id, received) in &dropped {
             tx.execute("DELETE FROM objects WHERE id = ?1", params![id])?;
             tx.execute("DELETE FROM found_posts WHERE id = ?1", params![id])?;
+            tx.execute("DELETE FROM found_blobs WHERE post = ?1", params![id])?;
             remove_from_search(&tx, id)?;
             if refetch {
                 tx.execute(
@@ -1391,6 +1404,18 @@ impl Db {
             .optional()?;
         json.map(|j| serde_json::from_str(&j).context("corrupt stored profile"))
             .transpose()
+    }
+
+    /// The media endpoints the newest profile held for `actor` gives, those
+    /// that check out (ADR 0024). An older profile's never replaces it, so
+    /// neither do its bindings.
+    pub fn media_endpoints_of(&self, actor: &PublicKey) -> Result<Vec<EndpointBinding>> {
+        Ok(match self.profile(actor)?.map(|obj| obj.verify()) {
+            Some(Ok(Payload::Person(person))) if person.actor == *actor => {
+                person.media_endpoints().cloned().collect()
+            }
+            _ => vec![],
+        })
     }
 
     pub fn profile_name(&self, actor: &PublicKey) -> Result<Option<String>> {
@@ -1841,11 +1866,27 @@ impl Db {
         let mut bytes = serde_json::to_vec(profile)?.len();
         for (obj, payload) in posts {
             bytes += serde_json::to_vec(obj)?.len();
+            let id = obj.id().to_string();
             if insert_object(&tx, obj, payload, now, None)? {
                 tx.execute(
                     "INSERT INTO found_posts (id, actor) VALUES (?1, ?2)",
-                    params![obj.id().to_string(), actor],
+                    params![id, actor],
                 )?;
+            }
+            let found: Option<i64> = tx
+                .query_row(
+                    "SELECT 1 FROM found_posts WHERE id = ?1",
+                    params![id],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            if let (Some(_), Payload::Note(note)) = (found, payload) {
+                for (blob, size) in note.sized_blobs() {
+                    tx.execute(
+                        "INSERT OR IGNORE INTO found_blobs (blob, post, size) VALUES (?1, ?2, ?3)",
+                        params![blob.to_string(), id, size as i64],
+                    )?;
+                }
             }
         }
         if profile_is_newer(&tx, person)? {
@@ -1916,6 +1957,44 @@ impl Db {
         )?;
         tx.commit()?;
         Ok(())
+    }
+
+    /// The found post `blob` belongs to, when that's all it belongs to here:
+    /// its author's, found through a directory, not followed, and not shared
+    /// by this node's owner, which takes it off the found posts (ADR 0024).
+    /// Its media is fetched only through viewing endpoints. None for any
+    /// other blob, which is fetched the usual way.
+    pub fn found_only_post(&self, blob: &BlobHash) -> Result<Option<Note>> {
+        // A post kept here for good says so: it's fetched the usual way.
+        let kept: Option<i64> = self
+            .conn()
+            .query_row(
+                "SELECT 1 FROM declared_sizes WHERE blob = ?1",
+                params![blob.to_string()],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if kept.is_some() {
+            return Ok(None);
+        }
+        let posts: Vec<String> = {
+            let conn = self.conn();
+            let mut stmt = conn.prepare("SELECT post FROM found_blobs WHERE blob = ?1")?;
+            let rows = stmt.query_map(params![blob.to_string()], |row| row.get(0))?;
+            rows.collect::<rusqlite::Result<_>>()?
+        };
+        for id in posts {
+            let Some(obj) = self.get_object(&id.parse()?)? else {
+                continue;
+            };
+            if let Ok(Payload::Note(note)) = obj.verify()
+                && note.blobs().any(|b| b == *blob)
+                && !self.is_following(&note.actor)?
+            {
+                return Ok(Some(note));
+            }
+        }
+        Ok(None)
     }
 
     /// The owner keeps a post that came from a directory, as by resharing it.
@@ -2165,15 +2244,25 @@ impl Db {
     /// The largest size any stored post declares for a blob. The blob's
     /// real size is fixed by its hash, so a smaller claim elsewhere is
     /// simply wrong, and it mustn't stop the honest post's media loading.
+    /// The size the posts here declare for `blob`: those kept, or else those
+    /// a directory brought, which may be watched (ADR 0024).
     pub fn declared_size(&self, blob: &BlobHash) -> Result<Option<u64>> {
-        let size: Option<i64> = self
-            .conn()
+        let conn = self.conn();
+        let size: Option<i64> = conn
             .query_row(
                 "SELECT size FROM declared_sizes WHERE blob = ?1",
                 params![blob.to_string()],
                 |row| row.get(0),
             )
             .optional()?;
+        let size = match size {
+            Some(size) => Some(size),
+            None => conn.query_row(
+                "SELECT MAX(size) FROM found_blobs WHERE blob = ?1",
+                params![blob.to_string()],
+                |row| row.get(0),
+            )?,
+        };
         Ok(size.map(|s| s as u64))
     }
 
@@ -3116,6 +3205,7 @@ fn backfill_refs(conn: &Connection) -> Result<()> {
 /// before, and these come and go.
 fn found_post_is_kept(conn: &Connection, id: &str) -> Result<()> {
     let n = conn.execute("DELETE FROM found_posts WHERE id = ?1", params![id])?;
+    conn.execute("DELETE FROM found_blobs WHERE post = ?1", params![id])?;
     if n > 0 {
         let signed: String = conn.query_row(
             "SELECT signed FROM objects WHERE id = ?1",
@@ -3133,6 +3223,7 @@ fn found_post_is_kept(conn: &Connection, id: &str) -> Result<()> {
 /// Removes a post that came from a directory and has no other reason to be here.
 fn drop_found_post(conn: &Connection, id: &str) -> Result<()> {
     conn.execute("DELETE FROM found_posts WHERE id = ?1", params![id])?;
+    conn.execute("DELETE FROM found_blobs WHERE post = ?1", params![id])?;
     conn.execute("DELETE FROM objects WHERE id = ?1", params![id])?;
     remove_from_search(conn, id)
 }
@@ -4417,6 +4508,7 @@ mod tests {
             summary: summary.map(String::from),
             discoverable: false,
             nodes: vec![],
+            media_endpoints: vec![],
             published: osp_proto::now_rfc3339(),
         };
         let obj = SignedObject::sign(key, &Payload::Person(person.clone())).unwrap();
@@ -4678,7 +4770,11 @@ mod tests {
             100,
         )
         .unwrap();
-        assert_eq!(db.declared_size(&blob).unwrap(), None);
+        // Its media can be watched through a viewing endpoint (ADR 0024), so
+        // its size is known, but only as a found post's.
+        assert_eq!(db.declared_size(&blob).unwrap(), Some(500));
+        assert_eq!(db.blob_author(&blob).unwrap(), None);
+        assert!(db.found_only_post(&blob).unwrap().is_some());
         assert_eq!(
             db.post_found_through(&signed.id()).unwrap(),
             Some(directory)
@@ -4687,6 +4783,8 @@ mod tests {
             .unwrap();
         db.found_person_is_followed(&key.public()).unwrap();
         assert_eq!(db.declared_size(&blob).unwrap(), Some(500));
+        assert_eq!(db.blob_author(&blob).unwrap(), Some(key.public()));
+        assert!(db.found_only_post(&blob).unwrap().is_none());
         assert_eq!(db.post_found_through(&signed.id()).unwrap(), None);
         db.trim_found(0, 0).unwrap();
         assert_eq!(found_posts(&db, "elm").len(), 1);
@@ -4776,6 +4874,7 @@ mod tests {
                 summary: None,
                 discoverable: true,
                 nodes: vec![],
+                media_endpoints: vec![],
                 published: published.into(),
             };
             let signed = SignedObject::sign(&key, &Payload::Person(person.clone())).unwrap();
@@ -4793,6 +4892,48 @@ mod tests {
         db.keep_found(&directory, &newest, &newest_signed, &[], 300)
             .unwrap();
         assert_eq!(found_people(&db, "newest"), ["Newest"]);
+    }
+
+    #[test]
+    fn a_media_endpoint_from_an_older_profile_is_ignored() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(&dir.path().join("t.db")).unwrap();
+        let directory = SecretKey::from_bytes(&[9; 32]).public();
+        let key = SecretKey::from_bytes(&[1; 32]);
+        let node = SecretKey::from_bytes(&[2; 32]);
+        let dated = |media: u8, published: &str| {
+            let media = SecretKey::from_bytes(&[media; 32]);
+            let person = Person {
+                actor: key.public(),
+                name: "Kim".into(),
+                summary: None,
+                discoverable: true,
+                nodes: vec![node.public()],
+                media_endpoints: vec![EndpointBinding::new(
+                    &node,
+                    &media,
+                    EndpointKind::Media,
+                    1_000,
+                )],
+                published: published.into(),
+            };
+            let signed = SignedObject::sign(&key, &Payload::Person(person.clone())).unwrap();
+            (person, signed)
+        };
+        let media_of = |db: &Db| -> Vec<EndpointId> {
+            let bound = db.media_endpoints_of(&key.public()).unwrap();
+            bound.iter().map(|b| b.endpoint).collect()
+        };
+        assert!(media_of(&db).is_empty());
+        let (later, later_signed) = dated(3, LATER);
+        db.keep_found(&directory, &later, &later_signed, &[], 100)
+            .unwrap();
+        let three = SecretKey::from_bytes(&[3; 32]).public();
+        assert_eq!(media_of(&db), [three]);
+        let (earlier, earlier_signed) = dated(4, EARLIER);
+        db.keep_found(&directory, &earlier, &earlier_signed, &[], 200)
+            .unwrap();
+        assert_eq!(media_of(&db), [three]);
     }
 
     /// The text of each post a search finds, in order.

@@ -1,6 +1,6 @@
 # ADR 0024: Watching a found post without showing who you are
 
-**Status:** Accepted (2026-11-09), after the maintainer's review and the revisions below. Not built yet. Settles what [ADR 0015](0015-nodes-meet-first.md) left open ("a found post's media opens only once its author is followed").
+**Status:** Accepted (2026-11-09), after the maintainer's review and the revisions below. Steps 1 and 2 built (2026-11-09), with the creator's media endpoints as the only public sources until [ADR 0025](0025-shared-posts-are-found-and-hosted.md) names hosting resharers; the gate's tests of a busy source, a source that stops partway, and moving to the next need those, and come with it. Settles what [ADR 0015](0015-nodes-meet-first.md) left open ("a found post's media opens only once its author is followed").
 
 Revised 2026-11-09, after the maintainer's review:
 

@@ -108,6 +108,7 @@ fn profile(identity: &SecretKey, nodes: Vec<iroh::EndpointId>, secs: i64) -> Pay
         summary: None,
         discoverable: false,
         nodes,
+        media_endpoints: vec![],
         published: at(secs),
     })
 }
@@ -463,6 +464,7 @@ async fn news_of_a_revocation_travels_with_a_reshare() {
         summary: None,
         discoverable: false,
         nodes: vec![carol_node.endpoint().id()],
+        media_endpoints: vec![],
         published: at(-3600),
     });
     carols.set_profile(SignedObject::sign(&carol, &carols_profile).unwrap());
@@ -986,6 +988,7 @@ async fn move_as(key: &CertifiedKey, to: &Node) -> SocialResponse {
         summary: None,
         discoverable: false,
         nodes: vec![node.endpoint().id()],
+        media_endpoints: vec![],
         published: at(60),
     });
     let req = SocialRequest::Moved {

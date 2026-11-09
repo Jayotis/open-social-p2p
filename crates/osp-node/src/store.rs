@@ -345,6 +345,32 @@ impl ContentStore {
         class: BlobClass,
         declared: u64,
     ) -> Result<u64> {
+        self.download_with(hash, sources, class, declared, None)
+            .await
+    }
+
+    /// As `download`, but connecting only through `pool`, a viewing
+    /// endpoint's (ADR 0024), never through the node's own endpoints.
+    pub async fn download_through(
+        &self,
+        hash: &BlobHash,
+        sources: Sources,
+        class: BlobClass,
+        declared: u64,
+        pool: &ConnectionPool,
+    ) -> Result<u64> {
+        self.download_with(hash, sources, class, declared, Some(pool))
+            .await
+    }
+
+    async fn download_with(
+        &self,
+        hash: &BlobHash,
+        sources: Sources,
+        class: BlobClass,
+        declared: u64,
+        via: Option<&ConnectionPool>,
+    ) -> Result<u64> {
         let h = to_hash(hash);
         if let Some(size) = self.size(h).await? {
             // Already here. Hosting it for others still has to fit that quota.
@@ -363,9 +389,15 @@ impl ContentStore {
         // Keeps the collector off the partial blob until it has its tag.
         let _downloading = self.store.tags().temp_tag(h).await?;
         debug!(%hash, ?sources, "downloading");
-        self.fetch(h, &sources, declared, Instant::now() + DOWNLOAD_TIMEOUT)
-            .await
-            .with_context(|| format!("download of {} failed", hash.fmt_short()))?;
+        self.fetch(
+            h,
+            &sources,
+            declared,
+            Instant::now() + DOWNLOAD_TIMEOUT,
+            via,
+        )
+        .await
+        .with_context(|| format!("download of {} failed", hash.fmt_short()))?;
         let size = self
             .size(h)
             .await?
@@ -520,6 +552,7 @@ impl ContentStore {
         sources: &Sources,
         declared: u64,
         deadline: Instant,
+        via: Option<&ConnectionPool>,
     ) -> Result<()> {
         let request = Arc::new(GetRequest::blob(hash));
         let remote = self.store.remote();
@@ -531,7 +564,7 @@ impl ContentStore {
                 .await?
                 .is_complete();
         let failed = if in_parts {
-            self.fetch_in_parts(hash, &sources.at_once, declared, deadline)
+            self.fetch_in_parts(hash, &sources.at_once, declared, deadline, via)
                 .await?
         } else {
             Vec::new()
@@ -557,7 +590,9 @@ impl ContentStore {
                 local: local.local_bytes(),
                 declared,
             };
-            let attempt = self.attempt(node, local.missing(), stop, deadline).await;
+            let attempt = self
+                .attempt(node, local.missing(), stop, deadline, via)
+                .await;
             self.record(hash, &attempt);
             match attempt.outcome {
                 Outcome::Completed => return Ok(()),
@@ -603,6 +638,7 @@ impl ContentStore {
         nodes: &[Source],
         declared: u64,
         deadline: Instant,
+        via: Option<&ConnectionPool>,
     ) -> Result<Vec<(Source, Outcome)>> {
         let have = self.store.observe(hash).await?;
         let sources = nodes.len().min(self.max_sources);
@@ -638,7 +674,7 @@ impl ContentStore {
                 }
                 let part = Arc::new(Part::new(range));
                 running.push(part.clone());
-                attempts.push(self.fetch_part(hash, node, part, deadline));
+                attempts.push(self.fetch_part(hash, node, part, deadline, via));
             }
             let next = if done.is_empty() {
                 attempts.next().await
@@ -677,11 +713,12 @@ impl ContentStore {
         node: Source,
         part: Arc<Part>,
         deadline: Instant,
+        via: Option<&ConnectionPool>,
     ) -> (Arc<Part>, Attempt) {
         let ranges = ChunkRanges::bytes(part.start..part.end());
         let request = GetRequest::blob_ranges(hash, ranges);
         let attempt = self
-            .attempt(node, request, Stop::PastPart(&part), deadline)
+            .attempt(node, request, Stop::PastPart(&part), deadline, via)
             .await;
         (part, attempt)
     }
@@ -711,6 +748,7 @@ impl ContentStore {
         request: GetRequest,
         stop: Stop<'_>,
         deadline: Instant,
+        via: Option<&ConnectionPool>,
     ) -> Attempt {
         let started = Instant::now();
         let node = source.node;
@@ -722,7 +760,8 @@ impl ContentStore {
             first_byte: None,
         };
         let left = || deadline.saturating_duration_since(Instant::now());
-        let connecting = self.pool_for(&source).get_or_connect(source.endpoint);
+        let pool = via.unwrap_or_else(|| self.pool_for(&source));
+        let connecting = pool.get_or_connect(source.endpoint);
         attempt.outcome = match tokio::time::timeout(left(), connecting).await {
             Err(_) => Outcome::Failed,
             Ok(Err(e)) => {
@@ -1426,7 +1465,7 @@ fn connect_outcome(e: &PoolConnectError) -> Outcome {
     }
 }
 
-fn new_pool(endpoint: &Endpoint) -> ConnectionPool {
+pub(crate) fn new_pool(endpoint: &Endpoint) -> ConnectionPool {
     let mut options = connection_pool::Options::default();
     options.connect_timeout = CONNECT_TIMEOUT;
     ConnectionPool::new(endpoint.clone(), iroh_blobs::ALPN, options)
@@ -2339,7 +2378,7 @@ mod tests {
         let attempt = async |node: EndpointId, declared: u64| {
             let stop = Stop::PastDeclared { local: 0, declared };
             store
-                .attempt(node.into(), GetRequest::blob(hash), stop, soon)
+                .attempt(node.into(), GetRequest::blob(hash), stop, soon, None)
                 .await
         };
         assert_eq!(attempt(busy.id(), KB).await.outcome, Outcome::Busy);
@@ -2482,6 +2521,7 @@ mod tests {
                 &providers,
                 KB / 2,
                 Instant::now() + Duration::from_secs(30),
+                None,
             )
             .await
             .unwrap_err();
@@ -2494,7 +2534,7 @@ mod tests {
         let (late, unseen) = f.provider(&[9; KB as usize], None).await;
         let providers = in_turn(vec![late.id(), late.id()]);
         let err = store
-            .fetch(unseen, &providers, KB, Instant::now())
+            .fetch(unseen, &providers, KB, Instant::now(), None)
             .await
             .unwrap_err();
         assert!(format!("{err:#}").contains("timed out"), "{err:#}");
@@ -2752,7 +2792,7 @@ mod tests {
                 };
                 let half = Arc::new(Part::new(0..size / 2));
                 let (_, attempt) = store
-                    .fetch_part(hash, Source::from(first.id()), half, deadline)
+                    .fetch_part(hash, Source::from(first.id()), half, deadline, None)
                     .await;
                 assert_eq!(attempt.outcome, Outcome::Completed);
                 tokio::time::sleep(GC_SOON * 10).await;
