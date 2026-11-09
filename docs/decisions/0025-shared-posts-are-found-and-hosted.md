@@ -1,6 +1,6 @@
 # ADR 0025: Shared posts are found, and hosted for whoever finds them
 
-**Status:** Accepted (2026-11-09), after the maintainer's review and the revisions below. Not built yet; the minimum first ("Building it"). Builds on [ADR 0024](0024-watching-found-posts-without-your-identity.md). Adds to [ADR 0015](0015-nodes-meet-first.md)'s directories and [doc 13](../13-hosting-roles-and-follower-swarm.md)'s resharers' swarms. It supersedes [ADR 0020](0020-sharing-media-you-open.md), which was accepted but never built (below).
+**Status:** Accepted (2026-11-09), after the maintainer's review and the revisions below. Step 1 built (2026-11-09), the minimum first ("Building it"). A hosting reshare past a post's 16 is listed as plain, not left out, and logged. Search shows a found reshare as its post, not yet with who reshared it. Builds on [ADR 0024](0024-watching-found-posts-without-your-identity.md). Adds to [ADR 0015](0015-nodes-meet-first.md)'s directories and [doc 13](../13-hosting-roles-and-follower-swarm.md)'s resharers' swarms. It supersedes [ADR 0020](0020-sharing-media-you-open.md), which was accepted but never built (below).
 
 Revised 2026-11-09, after the maintainer's review:
 

@@ -297,6 +297,30 @@ const MIGRATIONS: &[&str] = &[
         PRIMARY KEY (blob, post)
     );
     CREATE INDEX found_blobs_by_post ON found_blobs(post);",
+    // 21: reshares in directories' lists (ADR 0025). For a reader: a found
+    // reshare's files are kept under the reshare (`post`), with the post they
+    // belong to (`note`), and `found_hosts` holds the found reshares a
+    // directory marked hosting. For a directory: how each listed reshare's
+    // checks of the resharer's copy went, and whether it's listed as hosting.
+    "ALTER TABLE found_blobs ADD COLUMN note TEXT;
+    CREATE TABLE found_hosts (
+        via   TEXT PRIMARY KEY,
+        note  TEXT NOT NULL,
+        actor TEXT NOT NULL
+    );
+    CREATE INDEX found_hosts_by_note ON found_hosts(note);
+    CREATE TABLE reshare_checks (
+        announce   TEXT PRIMARY KEY,
+        actor      TEXT NOT NULL,
+        post       TEXT NOT NULL,
+        passed     INTEGER NOT NULL DEFAULT 0,
+        fails      INTEGER NOT NULL DEFAULT 0,
+        checked_ms INTEGER NOT NULL,
+        hosting    INTEGER NOT NULL DEFAULT 0,
+        claims     INTEGER NOT NULL DEFAULT 1
+    );
+    CREATE INDEX reshare_checks_by_post ON reshare_checks(post);
+    CREATE INDEX reshare_checks_by_actor ON reshare_checks(actor);",
 ];
 
 /// The search index (ADR 0014): a number for each post, by its object ID, and
@@ -355,6 +379,26 @@ pub struct Listed {
 }
 
 /// Why a blob is kept, which decides who it is served to.
+/// A reshare a directory listed, checked by the reader (ADR 0025).
+pub struct FoundReshare {
+    pub announce: SignedObject,
+    pub announce_payload: Payload,
+    pub post: SignedObject,
+    pub post_payload: Payload,
+    /// The directory marked it hosting.
+    pub hosting: bool,
+}
+
+/// How a directory's checks of one listed reshare's copy have gone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReshareCheck {
+    /// One has passed, ever.
+    pub passed: bool,
+    /// Failed in a row since the last that passed.
+    pub fails: u32,
+    pub checked_ms: i64,
+}
+
 /// What a `Delete` did on this node (`Db::apply_delete`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Deleted {
@@ -1843,12 +1887,28 @@ impl Db {
     /// Keeps someone found through `directory`: `posts`, in place of those it
     /// brought before, and `profile` unless the one stored is newer. The caller
     /// has checked them. A post that's here for another reason stays as it is.
+    #[cfg(test)]
     pub fn keep_found(
         &self,
         directory: &EndpointId,
         person: &Person,
         profile: &SignedObject,
         posts: &[(SignedObject, Payload)],
+        now: i64,
+    ) -> Result<()> {
+        self.keep_found_with(directory, person, profile, posts, &[], now)
+    }
+
+    /// The same, with their reshares (ADR 0025): each reshare and the post it
+    /// points at are kept as found, and one the directory marked hosting
+    /// names its resharer as a source of that post's media.
+    pub fn keep_found_with(
+        &self,
+        directory: &EndpointId,
+        person: &Person,
+        profile: &SignedObject,
+        posts: &[(SignedObject, Payload)],
+        reshares: &[FoundReshare],
         now: i64,
     ) -> Result<()> {
         let actor = person.actor.to_string();
@@ -1859,7 +1919,15 @@ impl Db {
             let rows = stmt.query_map(params![actor], |row| row.get(0))?;
             rows.collect::<rusqlite::Result<_>>()?
         };
-        let ids: Vec<String> = posts.iter().map(|(obj, _)| obj.id().to_string()).collect();
+        let ids: Vec<String> = posts
+            .iter()
+            .map(|(obj, _)| obj.id().to_string())
+            .chain(
+                reshares
+                    .iter()
+                    .flat_map(|r| [r.announce.id().to_string(), r.post.id().to_string()]),
+            )
+            .collect();
         for id in earlier.iter().filter(|id| !ids.contains(id)) {
             drop_found_post(&tx, id)?;
         }
@@ -1888,6 +1956,10 @@ impl Db {
                     )?;
                 }
             }
+        }
+        for r in reshares {
+            bytes += serde_json::to_vec(&r.announce)?.len() + serde_json::to_vec(&r.post)?.len();
+            keep_found_reshare(&tx, r, &actor, now)?;
         }
         if profile_is_newer(&tx, person)? {
             upsert_profile(&tx, person, profile)?;
@@ -1964,7 +2036,7 @@ impl Db {
     /// by this node's owner, which takes it off the found posts (ADR 0024).
     /// Its media is fetched only through viewing endpoints. None for any
     /// other blob, which is fetched the usual way.
-    pub fn found_only_post(&self, blob: &BlobHash) -> Result<Option<Note>> {
+    pub fn found_only_post(&self, blob: &BlobHash) -> Result<Option<(ObjectId, Note)>> {
         // A post kept here for good says so: it's fetched the usual way.
         let kept: Option<i64> = self
             .conn()
@@ -1979,22 +2051,201 @@ impl Db {
         }
         let posts: Vec<String> = {
             let conn = self.conn();
-            let mut stmt = conn.prepare("SELECT post FROM found_blobs WHERE blob = ?1")?;
+            let mut stmt =
+                conn.prepare("SELECT COALESCE(note, post) FROM found_blobs WHERE blob = ?1")?;
             let rows = stmt.query_map(params![blob.to_string()], |row| row.get(0))?;
             rows.collect::<rusqlite::Result<_>>()?
         };
         for id in posts {
-            let Some(obj) = self.get_object(&id.parse()?)? else {
+            let id: ObjectId = id.parse()?;
+            let Some(obj) = self.get_object(&id)? else {
                 continue;
             };
             if let Ok(Payload::Note(note)) = obj.verify()
                 && note.blobs().any(|b| b == *blob)
                 && !self.is_following(&note.actor)?
             {
-                return Ok(Some(note));
+                return Ok(Some((id, note)));
             }
         }
         Ok(None)
+    }
+
+    /// Whether `blob` is named here only by posts a directory brought, whatever
+    /// became of them: such a blob is never fetched the usual way (ADR 0024).
+    pub fn only_found_names(&self, blob: &BlobHash) -> Result<bool> {
+        let conn = self.conn();
+        let found: Option<i64> = conn
+            .query_row(
+                "SELECT 1 FROM found_blobs WHERE blob = ?1 LIMIT 1",
+                params![blob.to_string()],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let kept: Option<i64> = conn
+            .query_row(
+                "SELECT 1 FROM declared_sizes WHERE blob = ?1",
+                params![blob.to_string()],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(found.is_some() && kept.is_none())
+    }
+
+    /// The resharers a directory marked as hosting `post` (ADR 0025), from
+    /// the listings this node holds.
+    pub fn found_hosts_of(&self, post: &ObjectId) -> Result<Vec<PublicKey>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare("SELECT DISTINCT actor FROM found_hosts WHERE note = ?1")?;
+        let rows = stmt.query_map(params![post.to_string()], |row| row.get::<_, String>(0))?;
+        rows.map(|actor| Ok(actor?.parse()?)).collect()
+    }
+
+    // ---- a directory's checks of listed reshares (ADR 0025) ----
+
+    pub fn reshare_check(&self, announce: &ObjectId) -> Result<Option<ReshareCheck>> {
+        Ok(self
+            .conn()
+            .query_row(
+                "SELECT passed, fails, checked_ms FROM reshare_checks WHERE announce = ?1",
+                params![announce.to_string()],
+                |row| {
+                    Ok(ReshareCheck {
+                        passed: row.get::<_, i64>(0)? != 0,
+                        fails: row.get::<_, i64>(1)? as u32,
+                        checked_ms: row.get(2)?,
+                    })
+                },
+            )
+            .optional()?)
+    }
+
+    /// Notes how a check of `actor`'s reshare `announce` of `post` went.
+    pub fn note_reshare_check(
+        &self,
+        announce: &ObjectId,
+        actor: &PublicKey,
+        post: &ObjectId,
+        passed: bool,
+        now: i64,
+    ) -> Result<ReshareCheck> {
+        let conn = self.conn();
+        conn.execute(
+            "INSERT INTO reshare_checks (announce, actor, post, passed, fails, checked_ms)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT(announce) DO UPDATE SET
+                 passed = MAX(passed, excluded.passed),
+                 fails = CASE WHEN excluded.passed = 1 THEN 0 ELSE fails + 1 END,
+                 checked_ms = excluded.checked_ms",
+            params![
+                announce.to_string(),
+                actor.to_string(),
+                post.to_string(),
+                passed as i64,
+                (!passed) as i64,
+                now
+            ],
+        )?;
+        drop(conn);
+        self.reshare_check(announce)?
+            .context("a reshare check just noted is missing")
+    }
+
+    /// Notes a listed reshare that doesn't claim to host, so a `Delete` of its
+    /// post finds it. It's never checked.
+    pub fn note_plain_reshare(
+        &self,
+        announce: &ObjectId,
+        actor: &PublicKey,
+        post: &ObjectId,
+        now: i64,
+    ) -> Result<()> {
+        self.conn().execute(
+            "INSERT OR IGNORE INTO reshare_checks (announce, actor, post, checked_ms, claims)
+             VALUES (?1, ?2, ?3, ?4, 0)",
+            params![
+                announce.to_string(),
+                actor.to_string(),
+                post.to_string(),
+                now
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Puts `item` in place of someone's listing, as it is, for readers.
+    pub fn replace_listed_item(&self, actor: &PublicKey, item: &ListingItem) -> Result<()> {
+        let conn = self.conn();
+        let tx = conn.unchecked_transaction()?;
+        put_listing(&tx, &person_listing_key(actor), item)?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Says whether `announce` is listed as hosting, for counting a post's.
+    pub fn set_reshare_hosting(&self, announce: &ObjectId, hosting: bool) -> Result<()> {
+        self.conn().execute(
+            "UPDATE reshare_checks SET hosting = ?2 WHERE announce = ?1",
+            params![announce.to_string(), hosting as i64],
+        )?;
+        Ok(())
+    }
+
+    /// How many of `post`'s reshares are listed as hosting, but `announce`.
+    pub fn hosting_reshares_of(&self, post: &ObjectId, announce: &ObjectId) -> Result<usize> {
+        let n: i64 = self.conn().query_row(
+            "SELECT COUNT(*) FROM reshare_checks
+             WHERE post = ?1 AND announce != ?2 AND hosting = 1",
+            params![post.to_string(), announce.to_string()],
+            |row| row.get(0),
+        )?;
+        Ok(n as usize)
+    }
+
+    /// Forgets the checks of `actor`'s reshares that aren't listed any more.
+    pub fn forget_reshare_checks(&self, actor: &PublicKey, keep: &[ObjectId]) -> Result<()> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare("SELECT announce FROM reshare_checks WHERE actor = ?1")?;
+        let ids: Vec<String> = stmt
+            .query_map(params![actor.to_string()], |row| row.get(0))?
+            .collect::<rusqlite::Result<_>>()?;
+        let keep: Vec<String> = keep.iter().map(|id| id.to_string()).collect();
+        for id in ids.iter().filter(|id| !keep.contains(id)) {
+            conn.execute(
+                "DELETE FROM reshare_checks WHERE announce = ?1",
+                params![id],
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Whether any of `actor`'s listed reshares was last checked before
+    /// `before_ms`.
+    pub fn reshare_checks_due(&self, actor: &PublicKey, before_ms: i64) -> Result<bool> {
+        Ok(self
+            .conn()
+            .query_row(
+                "SELECT 1 FROM reshare_checks
+                 WHERE actor = ?1 AND claims = 1 AND checked_ms < ?2 LIMIT 1",
+                params![actor.to_string(), before_ms],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()?
+            .is_some())
+    }
+
+    /// Who has a reshare of `post` listed. Their checks of it go.
+    pub fn take_reshares_of(&self, post: &ObjectId) -> Result<Vec<PublicKey>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare("SELECT DISTINCT actor FROM reshare_checks WHERE post = ?1")?;
+        let actors: Vec<String> = stmt
+            .query_map(params![post.to_string()], |row| row.get(0))?
+            .collect::<rusqlite::Result<_>>()?;
+        conn.execute(
+            "DELETE FROM reshare_checks WHERE post = ?1",
+            params![post.to_string()],
+        )?;
+        actors.iter().map(|a| Ok(a.parse()?)).collect()
     }
 
     /// The owner keeps a post that came from a directory, as by resharing it.
@@ -3222,10 +3473,100 @@ fn found_post_is_kept(conn: &Connection, id: &str) -> Result<()> {
 
 /// Removes a post that came from a directory and has no other reason to be here.
 fn drop_found_post(conn: &Connection, id: &str) -> Result<()> {
+    // A post a found reshare still points at stays, as that reshare's.
+    let pointed_at: Option<String> = conn
+        .query_row(
+            "SELECT found_posts.actor FROM refs
+             JOIN found_posts ON found_posts.id = refs.id
+             WHERE refs.ref = ?1 AND refs.id != ?1",
+            params![id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if let Some(owner) = pointed_at {
+        conn.execute(
+            "UPDATE found_posts SET actor = ?2 WHERE id = ?1",
+            params![id, owner],
+        )?;
+        return Ok(());
+    }
+    let owner: Option<String> = conn
+        .query_row(
+            "SELECT actor FROM found_posts WHERE id = ?1",
+            params![id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    // What a reshare points at, before its refs go with it.
+    let reshared: Vec<String> = {
+        let mut stmt = conn.prepare("SELECT ref FROM refs WHERE id = ?1")?;
+        let rows = stmt.query_map(params![id], |row| row.get(0))?;
+        rows.collect::<rusqlite::Result<_>>()?
+    };
     conn.execute("DELETE FROM found_posts WHERE id = ?1", params![id])?;
     conn.execute("DELETE FROM found_blobs WHERE post = ?1", params![id])?;
+    conn.execute("DELETE FROM found_hosts WHERE via = ?1", params![id])?;
     conn.execute("DELETE FROM objects WHERE id = ?1", params![id])?;
-    remove_from_search(conn, id)
+    remove_from_search(conn, id)?;
+    // The post a found reshare brought goes with it, unless something else
+    // here holds it.
+    for post in reshared {
+        let same_owner: Option<i64> = conn
+            .query_row(
+                "SELECT 1 FROM found_posts WHERE id = ?1 AND actor IS ?2",
+                params![post, owner],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if same_owner.is_some() {
+            drop_found_post(conn, &post)?;
+        }
+    }
+    Ok(())
+}
+
+/// Keeps a reshare a directory listed, and the post it points at, as found
+/// under `actor`, the resharer's listing.
+fn keep_found_reshare(conn: &Connection, r: &FoundReshare, actor: &str, now: i64) -> Result<()> {
+    let (announce, note) = (r.announce.id().to_string(), r.post.id().to_string());
+    for (obj, payload, id) in [
+        (&r.post, &r.post_payload, &note),
+        (&r.announce, &r.announce_payload, &announce),
+    ] {
+        if insert_object(conn, obj, payload, now, None)? {
+            conn.execute(
+                "INSERT INTO found_posts (id, actor) VALUES (?1, ?2)",
+                params![id, actor],
+            )?;
+        }
+    }
+    let found: Option<i64> = conn
+        .query_row(
+            "SELECT 1 FROM found_posts WHERE id = ?1",
+            params![announce],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if found.is_none() {
+        return Ok(());
+    }
+    if let Payload::Note(post) = &r.post_payload {
+        for (blob, size) in post.sized_blobs() {
+            conn.execute(
+                "INSERT OR IGNORE INTO found_blobs (blob, post, size, note)
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![blob.to_string(), announce, size as i64, note],
+            )?;
+        }
+    }
+    match r.hosting {
+        true => conn.execute(
+            "INSERT OR REPLACE INTO found_hosts (via, note, actor) VALUES (?1, ?2, ?3)",
+            params![announce, note, actor],
+        )?,
+        false => conn.execute("DELETE FROM found_hosts WHERE via = ?1", params![announce])?,
+    };
+    Ok(())
 }
 
 /// Removes everything a directory brought of someone. Their profile goes unless
@@ -3285,6 +3626,10 @@ fn put_listing(conn: &Connection, key: &str, item: &ListingItem) -> Result<()> {
 }
 
 fn drop_listed(conn: &Connection, actor: &PublicKey) -> Result<bool> {
+    conn.execute(
+        "DELETE FROM reshare_checks WHERE actor = ?1",
+        params![actor.to_string()],
+    )?;
     let n = conn.execute(
         "DELETE FROM listed WHERE actor = ?1",
         params![actor.to_string()],
@@ -4541,6 +4886,7 @@ mod tests {
         let item = ListingItem::Person {
             profile,
             posts: vec![note; 2],
+            reshares: vec![],
         };
         for byte in 2..12 {
             let actor = SecretKey::from_bytes(&[byte; 32]).public();
@@ -4573,6 +4919,7 @@ mod tests {
         let bare = ListingItem::Person {
             profile: profile.clone(),
             posts: vec![],
+            reshares: vec![],
         };
         db.put_listed(&actor, &bare, 1, 0).unwrap();
         assert_eq!(numbers(&db, 0), [1]);
@@ -4581,6 +4928,7 @@ mod tests {
         let with_post = ListingItem::Person {
             profile,
             posts: vec![note],
+            reshares: vec![],
         };
         db.put_listed(&actor, &with_post, 3, 0).unwrap();
         assert_eq!(numbers(&db, 0), [2]);
@@ -4934,6 +5282,197 @@ mod tests {
         db.keep_found(&directory, &earlier, &earlier_signed, &[], 200)
             .unwrap();
         assert_eq!(media_of(&db), [three]);
+    }
+
+    /// Kim's post with a photo, Jimmy's hosting reshare of it, and the
+    /// listings that bring them (ADR 0025).
+    struct Reshared {
+        kim: SecretKey,
+        jimmy: SecretKey,
+        post: (SignedObject, Payload),
+        blob: BlobHash,
+        jimmy_person: Person,
+        jimmy_profile: SignedObject,
+        reshare: FoundReshare,
+    }
+
+    fn reshared() -> Reshared {
+        let kim = SecretKey::from_bytes(&[1; 32]);
+        let jimmy = SecretKey::from_bytes(&[2; 32]);
+        let blob = BlobHash::from_bytes([5; 32]);
+        let payload = Payload::Note(Note {
+            actor: kim.public(),
+            content: "walnut bowl".into(),
+            published: EARLIER.into(),
+            attachment: vec![Attachment {
+                kind: osp_proto::MediaKind::Image,
+                media_type: "image/webp".into(),
+                blob,
+                size: 700,
+                width: 1,
+                height: 1,
+                duration_ms: None,
+                name: None,
+                thumbnail: None,
+                profile: "v1-720p".into(),
+            }],
+            in_reply_to: None,
+        });
+        let post = (SignedObject::sign(&kim, &payload).unwrap(), payload);
+        let announce = Payload::Announce(osp_proto::Announce {
+            actor: jimmy.public(),
+            object: post.0.id(),
+            object_actor: kim.public(),
+            published: LATER.into(),
+            hosting: true,
+        });
+        let (jimmy_person, jimmy_profile) = signed_person(&jimmy, "Jimmy", None);
+        let reshare = FoundReshare {
+            announce: SignedObject::sign(&jimmy, &announce).unwrap(),
+            announce_payload: announce,
+            post: post.0.clone(),
+            post_payload: post.1.clone(),
+            hosting: true,
+        };
+        Reshared {
+            kim,
+            jimmy,
+            post,
+            blob,
+            jimmy_person,
+            jimmy_profile,
+            reshare,
+        }
+    }
+
+    #[test]
+    fn a_found_hosting_reshare_names_its_resharer_and_goes_with_its_listing() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(&dir.path().join("t.db")).unwrap();
+        let directory = SecretKey::from_bytes(&[9; 32]).public();
+        let r = reshared();
+        let post_id = r.post.0.id();
+        db.keep_found_with(
+            &directory,
+            &r.jimmy_person,
+            &r.jimmy_profile,
+            &[],
+            std::slice::from_ref(&r.reshare),
+            100,
+        )
+        .unwrap();
+        assert_eq!(db.declared_size(&r.blob).unwrap(), Some(700));
+        let (id, note) = db.found_only_post(&r.blob).unwrap().unwrap();
+        assert_eq!((id, note.actor), (post_id, r.kim.public()));
+        assert_eq!(db.found_hosts_of(&post_id).unwrap(), [r.jimmy.public()]);
+
+        // His next listing has no reshares: it and Kim's post go.
+        db.keep_found_with(&directory, &r.jimmy_person, &r.jimmy_profile, &[], &[], 200)
+            .unwrap();
+        assert!(db.found_only_post(&r.blob).unwrap().is_none());
+        assert!(db.found_hosts_of(&post_id).unwrap().is_empty());
+        assert!(db.get_object(&post_id).unwrap().is_none());
+        assert!(!db.only_found_names(&r.blob).unwrap());
+    }
+
+    #[test]
+    fn a_post_a_found_reshare_points_at_stays_when_its_own_listing_lets_go() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(&dir.path().join("t.db")).unwrap();
+        let directory = SecretKey::from_bytes(&[9; 32]).public();
+        let r = reshared();
+        let post_id = r.post.0.id();
+        // Kim's own listing brings the post, and Jimmy's his reshare of it.
+        let (kim_person, kim_profile) = signed_person(&r.kim, "Kim", None);
+        db.keep_found(
+            &directory,
+            &kim_person,
+            &kim_profile,
+            std::slice::from_ref(&r.post),
+            100,
+        )
+        .unwrap();
+        db.keep_found_with(
+            &directory,
+            &r.jimmy_person,
+            &r.jimmy_profile,
+            &[],
+            std::slice::from_ref(&r.reshare),
+            100,
+        )
+        .unwrap();
+        // Kim's next listing doesn't have it: Jimmy's reshare still holds it.
+        db.keep_found(&directory, &kim_person, &kim_profile, &[], 200)
+            .unwrap();
+        assert!(db.get_object(&post_id).unwrap().is_some());
+        assert!(db.found_only_post(&r.blob).unwrap().is_some());
+        // And it goes with his.
+        db.keep_found_with(&directory, &r.jimmy_person, &r.jimmy_profile, &[], &[], 300)
+            .unwrap();
+        assert!(db.get_object(&post_id).unwrap().is_none());
+    }
+
+    #[test]
+    fn a_stale_directorys_reshare_of_a_deleted_post_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(&dir.path().join("t.db")).unwrap();
+        let directory = SecretKey::from_bytes(&[9; 32]).public();
+        let r = reshared();
+        let d = Delete {
+            actor: r.kim.public(),
+            object: r.post.0.id(),
+            published: LATER.into(),
+        };
+        let delete = SignedObject::sign(&r.kim, &Payload::Delete(d.clone())).unwrap();
+        let me = SecretKey::from_bytes(&[3; 32]).public();
+        db.apply_delete(&delete, &d, true, &me).unwrap();
+        db.keep_found_with(
+            &directory,
+            &r.jimmy_person,
+            &r.jimmy_profile,
+            &[],
+            std::slice::from_ref(&r.reshare),
+            100,
+        )
+        .unwrap();
+        assert!(db.get_object(&r.post.0.id()).unwrap().is_none());
+        assert!(db.get_object(&r.reshare.announce.id()).unwrap().is_none());
+        assert!(db.found_only_post(&r.blob).unwrap().is_none());
+        assert!(db.found_hosts_of(&r.post.0.id()).unwrap().is_empty());
+    }
+
+    #[test]
+    fn reshare_checks_count_failures_in_a_row_after_one_passed() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(&dir.path().join("t.db")).unwrap();
+        let (announce, post) = (ObjectId::from_bytes([1; 32]), ObjectId::from_bytes([2; 32]));
+        let actor = SecretKey::from_bytes(&[3; 32]).public();
+        let check = |passed, now| {
+            db.note_reshare_check(&announce, &actor, &post, passed, now)
+                .unwrap()
+        };
+        let failed_first = check(false, 1);
+        assert!(!failed_first.passed);
+        let passed = check(true, 2);
+        assert!(passed.passed && passed.fails == 0);
+        assert_eq!(check(false, 3).fails, 1);
+        assert_eq!(check(false, 4).fails, 2);
+        let back = check(true, 5);
+        assert!(back.passed && back.fails == 0);
+        assert!(db.reshare_checks_due(&actor, 6).unwrap());
+        assert!(!db.reshare_checks_due(&actor, 5).unwrap());
+        // A plain reshare is never due a check.
+        let plain = ObjectId::from_bytes([4; 32]);
+        let other = SecretKey::from_bytes(&[4; 32]).public();
+        db.note_plain_reshare(&plain, &other, &post, 1).unwrap();
+        assert!(!db.reshare_checks_due(&other, 100).unwrap());
+        // Both listers of the post are found when it's deleted.
+        let mut listers = db.take_reshares_of(&post).unwrap();
+        listers.sort();
+        let mut both = vec![actor, other];
+        both.sort();
+        assert_eq!(listers, both);
+        assert!(db.reshare_check(&announce).unwrap().is_none());
     }
 
     /// The text of each post a search finds, in order.
