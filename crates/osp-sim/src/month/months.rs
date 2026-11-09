@@ -11,7 +11,9 @@ use serde::Serialize;
 use super::calibrate::{ASK_DELAY, DOWN, SPREAD_SECS, TELL_DELAY, UP, time_for};
 use super::records::Records;
 use super::rng::Rng;
-use super::spread::{Fetch, Leg, Load, Part, Peer, Rules, Sources, Spread, Swarm, VIDEO_BYTES};
+use super::spread::{
+    Fetch, Leg, Load, Part, Peer, Rules, SWARM_SAMPLE, Sources, Spread, Swarm, VIDEO_BYTES,
+};
 
 use super::records::DAY;
 /// 45 posts, one every 2 days.
@@ -122,21 +124,131 @@ pub fn population(start: Start) -> (Vec<Member>, Vec<Peer>) {
     (members, peers)
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, clap::ValueEnum)]
+pub enum RuleSet {
+    /// Followers fetch from those Kim's node names at random.
+    Accepted,
+    /// ADR 0023: partners first, and Kim's node names first those whose
+    /// copies passed her spot checks on the most days.
+    Partners,
+}
+
+/// ADR 0023's starting values.
+const MAX_PARTNERS: usize = 4;
+const PARTNERS_AT_ONCE: usize = 2;
+/// A partner whose faded work falls below this drops out.
+const PARTNER_FLOOR: f64 = 1e6;
+const NAMED_BY_CHECKS: usize = 3;
+const HALF_LIFE: f64 = 14.0 * DAY;
+
+/// One node's partners for Kim's posts: the peer, the bytes swapped with
+/// it either way, faded, and when that was last brought up to date.
+#[derive(Clone, Debug, Default)]
+struct Partners(Vec<(usize, f64, f64)>);
+
+impl Partners {
+    fn fade_to(&mut self, t: f64) {
+        for (_, score, at) in &mut self.0 {
+            if t > *at {
+                *score *= 0.5f64.powf((t - *at) / HALF_LIFE);
+                *at = t;
+            }
+        }
+        self.0.retain(|&(_, score, _)| score >= PARTNER_FLOOR);
+        self.0.sort_by(|a, b| b.1.total_cmp(&a.1));
+    }
+
+    fn swapped(&mut self, peer: usize, bytes: f64, t: f64) {
+        self.fade_to(t);
+        if let Some(p) = self.0.iter_mut().find(|p| p.0 == peer) {
+            p.1 += bytes;
+        } else if self.0.len() < MAX_PARTNERS {
+            self.0.push((peer, bytes, t));
+        } else if self.0.last().is_some_and(|l| l.1 < bytes) {
+            // Keeping those with the most work done.
+            *self.0.last_mut().unwrap() = (peer, bytes, t);
+        }
+        self.0.sort_by(|a, b| b.1.total_cmp(&a.1));
+    }
+
+    fn has(&self, peer: usize) -> bool {
+        self.0.iter().any(|p| p.0 == peer)
+    }
+}
+
 /// What decides each transfer's path, and what the nodes write down.
 struct Media {
     way: Way,
+    rule_set: RuleSet,
     creator: usize,
     /// Seconds from the start of the post spreading now.
     post_at: f64,
     records: Records,
+    partners: Vec<Partners>,
+    /// Bytes delivered by a partner, and by an operator's node, this post.
+    from_partners: f64,
+    from_operator: f64,
+    operator: Vec<bool>,
+}
+
+impl Media {
+    /// Up to 6 followers holding a copy, as Kim's node names them to `to`.
+    fn named(&self, to: usize, swarm: &Swarm, rng: &mut Rng) -> Vec<usize> {
+        match self.rule_set {
+            RuleSet::Accepted => swarm.named(to, rng),
+            RuleSet::Partners => {
+                let mut pool: Vec<usize> = swarm.pool().into_iter().filter(|&n| n != to).collect();
+                rng.shuffle(&mut pool);
+                let days = |n: usize| {
+                    self.records
+                        .get(self.creator, n)
+                        .map_or(0.0, |r| r.work_days)
+                };
+                pool.sort_by(|&a, &b| days(b).total_cmp(&days(a)));
+                let mut named: Vec<usize> = pool.iter().copied().take(NAMED_BY_CHECKS).collect();
+                let mut rest: Vec<usize> = pool.into_iter().skip(NAMED_BY_CHECKS).collect();
+                rng.shuffle(&mut rest);
+                named.extend(
+                    rest.into_iter()
+                        .take(SWARM_SAMPLE - named.len().min(SWARM_SAMPLE)),
+                );
+                named.sort_by_key(|&n| !swarm.direct[n]);
+                named
+            }
+        }
+    }
 }
 
 impl Rules for Media {
-    /// Under the rules as accepted: those Kim's node names, at random, then
-    /// Kim.
     fn sources(&mut self, to: usize, swarm: &Swarm, rng: &mut Rng) -> Sources {
+        let named = self.named(to, swarm, rng);
+        let at_once = match self.rule_set {
+            RuleSet::Accepted => named,
+            RuleSet::Partners => {
+                // Partners holding it in 2 of the 3 places, a follower not
+                // worked with in the third, then the rest named.
+                let t = self.post_at;
+                self.partners[to].fade_to(t);
+                let mut list: Vec<usize> = self.partners[to]
+                    .0
+                    .iter()
+                    .map(|p| p.0)
+                    .filter(|p| swarm.noted.contains(p))
+                    .take(PARTNERS_AT_ONCE)
+                    .collect();
+                if let Some(&fresh) = named.iter().find(|&&n| !self.partners[to].has(n)) {
+                    list.push(fresh);
+                }
+                for n in named {
+                    if !list.contains(&n) {
+                        list.push(n);
+                    }
+                }
+                list
+            }
+        };
         Sources {
-            at_once: swarm.named(to, rng),
+            at_once,
             in_turn: vec![self.creator],
         }
     }
@@ -158,6 +270,16 @@ impl Rules for Media {
         if part.bytes > 0.0 {
             self.records.work(part.to, part.source, part.bytes, t);
             self.records.served(part.source, part.to, t);
+            if self.partners[part.to].has(part.source) {
+                self.from_partners += part.bytes;
+            }
+            if self.operator[part.source] {
+                self.from_operator += part.bytes;
+            }
+            if part.source != self.creator && part.to != self.creator {
+                self.partners[part.to].swapped(part.source, part.bytes, t);
+                self.partners[part.source].swapped(part.to, part.bytes, t);
+            }
         }
     }
 
@@ -189,6 +311,10 @@ pub struct Post {
     /// Of the followers there from day 0 that said yes to earned links, the
     /// share with a direct link to someone other than Kim (mark 4).
     pub day0_linked: f64,
+    /// Shares of the bytes delivered that came from a partner, and from the
+    /// operator's nodes.
+    pub from_partners: f64,
+    pub from_operator: f64,
     /// Records between nodes other than Kim at layers 0 to 4.
     pub layers: [usize; 5],
     /// The most checked bytes, and work days, in any record not Kim's.
@@ -200,6 +326,7 @@ pub struct Post {
 pub struct Months {
     pub start: Start,
     pub way: Way,
+    pub rule_set: RuleSet,
     pub seed: u64,
     pub posts: Vec<Post>,
 }
@@ -210,7 +337,7 @@ const SPOT_CHECK_BYTES: f64 = 1024.0;
 /// Honest nodes saying yes to earned links (a starting value).
 const YES_TO_EARNED: f64 = 0.75;
 
-pub fn run(start: Start, way: Way, seed: u64) -> Months {
+pub fn run(start: Start, way: Way, rule_set: RuleSet, seed: u64) -> Months {
     // What's the same in every way: who's there, who says yes, when each
     // post goes out and when each follower wakes for it.
     let mut plan = Rng::new(seed);
@@ -241,7 +368,12 @@ pub fn run(start: Start, way: Way, seed: u64) -> Months {
     let mut checks = Rng::new(seed.wrapping_add(2));
     let mut rules = Media {
         way,
+        rule_set,
         creator,
+        partners: vec![Partners::default(); peers.len()],
+        from_partners: 0.0,
+        from_operator: 0.0,
+        operator: members.iter().map(|m| m.kind == Kind::Operator).collect(),
         post_at: 0.0,
         records: Records::new(yes.clone()),
     };
@@ -265,6 +397,8 @@ pub fn run(start: Start, way: Way, seed: u64) -> Months {
         }
         rules.records.sweep(at);
         rules.post_at = at;
+        rules.from_partners = 0.0;
+        rules.from_operator = 0.0;
         let present: Vec<usize> = fetches.iter().map(|f| f.node).collect();
         // Kim's node notes each copy anew for each post; who has followed
         // longest is the order they followed. It names first those it
@@ -329,6 +463,8 @@ pub fn run(start: Start, way: Way, seed: u64) -> Months {
             failed: out.failed,
             marks,
             direct_pairs,
+            from_partners: rules.from_partners / out.delivered.max(1.0),
+            from_operator: rules.from_operator / out.delivered.max(1.0),
             day0_linked: linked as f64 / day0.len().max(1) as f64,
             layers: rules.records.layers_without(creator),
             most_bytes: rules.records.most_without(creator).0,
@@ -338,6 +474,7 @@ pub fn run(start: Start, way: Way, seed: u64) -> Months {
     Months {
         start,
         way,
+        rule_set,
         seed,
         posts,
     }

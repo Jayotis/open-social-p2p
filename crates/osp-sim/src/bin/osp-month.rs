@@ -36,6 +36,8 @@ enum Command {
         start: months::Start,
         #[arg(long, value_enum)]
         way: months::Way,
+        #[arg(long, value_enum, default_value = "accepted")]
+        rules: months::RuleSet,
         #[arg(long, default_value_t = 1)]
         seed: u64,
         /// Also write each post's figures here, as JSON.
@@ -114,10 +116,11 @@ fn main() -> Result<()> {
         Command::Run {
             start,
             way,
+            rules,
             seed,
             out,
         } => {
-            let m = months::run(start, way, seed);
+            let m = months::run(start, way, rules, seed);
             print_months(&m);
             if let Some(path) = out {
                 std::fs::write(path, serde_json::to_string_pretty(&m)?)?;
@@ -130,11 +133,11 @@ fn main() -> Result<()> {
 fn print_months(m: &months::Months) {
     const DAY: f64 = 86_400.0;
     println!(
-        "post | day | present | 50% / 95% / all (s) | creator copies | relayed (copies) | off the relay | busy | failed | B8 | direct pairs | day-0 linked | layers 0-4, not Kim | most MB, days"
+        "post | day | present | 50% / 95% / all (s) | creator copies | relayed (copies) | off the relay | busy | failed | B8 | direct pairs | day-0 linked | layers 0-4, not Kim | most MB, days | from partners | from operator"
     );
     for p in &m.posts {
         println!(
-            "{:>4} | {:>4.1} | {:>3} | {} / {} / {} | {:.1} | {:.1} | {:.0}% | {} | {} | {} | {} | {:.0}% | {:?} | {:.0}, {:.1}",
+            "{:>4} | {:>4.1} | {:>3} | {} / {} / {} | {:.1} | {:.1} | {:.0}% | {} | {} | {} | {} | {:.0}% | {:?} | {:.0}, {:.1} | {:.0}% | {:.0}%",
             p.index + 1,
             p.at / DAY,
             p.present,
@@ -152,6 +155,8 @@ fn print_months(m: &months::Months) {
             p.layers,
             p.most_bytes / 1e6,
             p.most_days,
+            100.0 * p.from_partners,
+            100.0 * p.from_operator,
         );
     }
     // Weeks 5 to 8 and 10 to 13, as marks 1 to 3 compare them.
