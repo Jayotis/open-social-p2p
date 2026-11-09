@@ -44,6 +44,9 @@ enum Command {
         /// How layer 4's checked bytes are counted to reach it.
         #[arg(long, value_enum, default_value = "window")]
         bytes: osp_sim::month::records::BytesRule,
+        /// When honest machines ask others for their lists.
+        #[arg(long, value_enum, default_value = "when-reason")]
+        lists: osp_sim::month::meeting::Asking,
         #[arg(long, default_value_t = 1)]
         seed: u64,
         /// Also write each post's figures here, as JSON.
@@ -125,10 +128,11 @@ fn main() -> Result<()> {
             rules,
             days,
             bytes,
+            lists,
             seed,
             out,
         } => {
-            let m = months::run(start, way, rules, days, bytes, seed);
+            let m = months::run(start, way, rules, days, bytes, lists, seed);
             print_months(&m);
             if let Some(path) = out {
                 std::fs::write(path, serde_json::to_string_pretty(&m)?)?;

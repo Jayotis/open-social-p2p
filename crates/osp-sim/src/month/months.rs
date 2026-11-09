@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use serde::Serialize;
 
 use super::calibrate::{ASK_DELAY, DOWN, SPREAD_SECS, TELL_DELAY, UP, time_for};
-use super::meeting::{MeetCounts, Meeting, Standing, Who};
+use super::meeting::{Asking, MeetCounts, Meeting, Standing, Who};
 use super::records::{Block, BytesRule, DayRule, Records};
 use super::rng::Rng;
 use super::spread::{
@@ -203,6 +203,9 @@ struct Media {
     /// layer 2 here is jobs on 3 days in the last 30, ADR 0017's bar for a
     /// viewer's hop.
     carried: Records,
+    /// The hop next to each viewer's record of the jobs it carried for that
+    /// viewer: what the hop itself knows of whom it worked for.
+    near_viewer: Records,
     hop_rng: Rng,
     /// When each machine first got a middle turn.
     first_middle: Vec<Option<f64>>,
@@ -509,6 +512,10 @@ impl Rules for Media {
                     self.records.work(part.to, m, part.bytes, t);
                 }
             }
+            // The hop next to the viewer knows which machine it carried for.
+            if let Some(last) = part.legs.last().filter(|l| l.carried && !l.relayed) {
+                self.near_viewer.work(last.from, part.to, part.bytes, t);
+            }
         }
     }
 
@@ -559,6 +566,7 @@ pub struct Months {
     pub rule_set: RuleSet,
     pub days: DayRule,
     pub bytes_rule: BytesRule,
+    pub asking: Asking,
     pub seed: u64,
     pub posts: Vec<Post>,
     pub newcomers: Vec<Newcomer>,
@@ -753,6 +761,7 @@ fn meet_until(rules: &mut Media, t: f64) {
         meeting,
         records,
         carried,
+        near_viewer,
         ..
     } = rules;
     meeting.advance(t, &mut |_| {
@@ -764,7 +773,19 @@ fn meet_until(rules: &mut Media, t: f64) {
                 s.insert((h, a));
             }
         }
-        s
+        // What each machine's own record tells it: it was the hop next to
+        // a viewer on 3 days, or its node served another on 3 days in the
+        // last 30 and has shown it its machine.
+        let mut reasons: Standing = near_viewer.at_least(2).into_iter().collect();
+        for (v, m) in records.at_least(2) {
+            if records
+                .get(v, m)
+                .is_some_and(|r| r.served_days_window() >= 3)
+            {
+                reasons.insert((v, m));
+            }
+        }
+        (s, reasons)
     });
     for (kim, jimmy, until) in std::mem::take(&mut meeting.to_count) {
         records.introduce(kim, jimmy, until);
@@ -854,6 +875,7 @@ pub fn run(
     rule_set: RuleSet,
     days: DayRule,
     bytes_rule: BytesRule,
+    asking: Asking,
     seed: u64,
 ) -> Months {
     // What's the same in every way: who's there, who says yes, when each
@@ -922,7 +944,11 @@ pub fn run(
             .collect(),
     };
     let mut rules = Media {
-        meeting: Meeting::new(who, seed.wrapping_add(6)),
+        meeting: {
+            let mut m = Meeting::new(who, seed.wrapping_add(6));
+            m.asking = asking;
+            m
+        },
         first_served: vec![None; peers.len()],
         swapped: HashMap::new(),
         operator_down: 0.0,
@@ -938,6 +964,7 @@ pub fn run(
         carries: carries.clone(),
         present: vec![false; peers.len()],
         carried: Records::new(vec![true; peers.len()], days, bytes_rule),
+        near_viewer: Records::new(vec![true; peers.len()], days, bytes_rule),
         hop_rng: Rng::new(seed.wrapping_add(4)),
         first_middle: vec![None; peers.len()],
         hops: HopCounts::default(),
@@ -1163,6 +1190,7 @@ pub fn run(
         rule_set,
         days,
         bytes_rule,
+        asking,
         seed,
         posts,
         newcomers,
