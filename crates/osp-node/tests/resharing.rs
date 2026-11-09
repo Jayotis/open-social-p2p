@@ -388,10 +388,10 @@ async fn failed_checks_list_a_hosting_reshare_as_plain() {
     }
 }
 
-/// Past the most hosting reshares of one post, another is listed plain, and
-/// the directory says so in its log.
+/// Past the most hosting reshares of one post, another is left out of the
+/// listing, and the directory says so in its log.
 #[tokio::test(flavor = "multi_thread")]
-async fn past_the_most_hosting_reshares_of_a_post_another_is_listed_plain() {
+async fn past_the_most_hosting_reshares_of_a_post_another_is_left_out() {
     capture_logs();
     let dir = tempfile::tempdir().unwrap();
     let net = SimNet::new(73);
@@ -402,17 +402,11 @@ async fn past_the_most_hosting_reshares_of_a_post_another_is_listed_plain() {
     wait_for_listing(&net, &directory, jimmy.identity(), Some(vec![(post, true)])).await;
     let carol = resharer(dir.path(), &net, &directory, "Carol", post, true).await;
     assert!(carol.ask_to_be_listed().await);
-    wait_for_listing(
-        &net,
-        &directory,
-        carol.identity(),
-        Some(vec![(post, false)]),
-    )
-    .await;
+    wait_for_listing(&net, &directory, carol.identity(), Some(vec![])).await;
     assert!(
         LOGS.lock()
             .unwrap()
-            .contains("a post has more than 1 hosting reshares"),
+            .contains("a post has more than 1 hosting reshares; leaving this one out"),
         "not logged"
     );
     // Jimmy keeps his place.

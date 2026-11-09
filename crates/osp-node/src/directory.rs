@@ -62,8 +62,8 @@ const OUTBOX_TAIL: u32 = 20;
 pub(crate) const RESHARE_RECHECK_EVERY: Duration = Duration::from_secs(24 * 60 * 60);
 /// Checks failed in a row, after one passed, that take the hosting mark off.
 const RESHARE_FAILS_UNMARK: u32 = 2;
-/// Most hosting reshares of one post a directory lists. More is logged, and
-/// waits for the rotation ADR 0025 has decided.
+/// Most hosting reshares of one post a directory lists. One more is left out
+/// and logged, until the rotation ADR 0025 has decided.
 pub(crate) const MAX_HOSTING_RESHARES: usize = 16;
 /// A machine on the map isn't greeted back again for this long.
 const GREET_AGAIN_AFTER: Duration = Duration::from_secs(7 * 24 * 60 * 60);
@@ -253,8 +253,14 @@ impl Core {
         }
         let (posts, reshares) = self.latest_items(listed, &addr, latest).await?;
         let mut listed_reshares = Vec::new();
+        // Its checks are kept even when it's left out, so it isn't checked
+        // again at every read.
+        let mut kept: Vec<ObjectId> = Vec::new();
         for (announce, a, post, note) in reshares {
-            let hosting = self.reshare_hosting(&person, &announce, &a, &note).await?;
+            let Some(hosting) = self.reshare_hosting(&person, &announce, &a, &note).await? else {
+                kept.push(announce.id());
+                continue;
+            };
             listed_reshares.push(ListedReshare {
                 announce,
                 post,
@@ -265,7 +271,7 @@ impl Core {
         let ListingItem::Person { reshares, .. } = &item else {
             unreachable!("person_item makes a person's listing");
         };
-        let kept: Vec<ObjectId> = reshares.iter().map(|r| r.announce.id()).collect();
+        kept.extend(reshares.iter().map(|r| r.announce.id()));
         self.db.forget_reshare_checks(&listed.actor, &kept)?;
         self.db.put_listed(&listed.actor, &item, latest, now_ms())
     }
@@ -273,19 +279,20 @@ impl Core {
     /// Whether a listed reshare is to be marked hosting (ADR 0025): it says
     /// so, a piece of the post's media fetched from the resharer's media
     /// endpoint checked out, its rechecks haven't failed twice in a row since,
-    /// and the post hasn't its most hosting reshares listed already.
+    /// and the post hasn't its most hosting reshares listed already. None for
+    /// one past the most, which is left out of the listing, and logged.
     async fn reshare_hosting(
         &self,
         resharer: &Person,
         announce: &SignedObject,
         a: &Announce,
         note: &Note,
-    ) -> Result<bool> {
+    ) -> Result<Option<bool>> {
         let id = announce.id();
         let now = now_ms();
         if !a.hosting {
             self.db.note_plain_reshare(&id, &a.actor, &a.object, now)?;
-            return Ok(false);
+            return Ok(Some(false));
         }
         let recheck = self.sim.reshare_recheck_every.as_millis() as i64;
         let check = match self.db.reshare_check(&id)? {
@@ -302,17 +309,18 @@ impl Core {
                     .note_reshare_check(&id, &a.actor, &a.object, passed, now)?
             }
         };
-        let mut hosting = check.passed && check.fails < RESHARE_FAILS_UNMARK;
+        let hosting = check.passed && check.fails < RESHARE_FAILS_UNMARK;
         let most = self.sim.max_hosting_reshares;
         if hosting && self.db.hosting_reshares_of(&a.object, &id)? >= most {
             info!(
                 post = %a.object.fmt_short(),
-                "a post has more than {most} hosting reshares; listing this one as plain"
+                "a post has more than {most} hosting reshares; leaving this one out"
             );
-            hosting = false;
+            self.db.set_reshare_hosting(&id, false)?;
+            return Ok(None);
         }
         self.db.set_reshare_hosting(&id, hosting)?;
-        Ok(hosting)
+        Ok(Some(hosting))
     }
 
     /// Fetches one random 1 KiB piece of the post's media from the
