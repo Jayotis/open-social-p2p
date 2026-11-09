@@ -64,7 +64,8 @@ Each way runs twice. Under **the rules as accepted**, Jimmy fetches from the fol
 
 **Each record,** kept by each node alone, and fading by half every 14 days. A node credits only what it received and checked itself, so when Jimmy serves Alice, the work goes in Alice's record of Jimmy, and when she serves him, in his record of her. Nothing passes between the two records.
 
-- Work, for ADR 0018's layers: downloads completed from a node; Kim's spot checks of her followers' copies, 100 a day (a starting value), each piece checked; and, once a node has shown its machine at layer 2, the jobs that machine carried.
+- Work, for ADR 0018's layers: downloads completed from a node; Kim's spot checks of her followers' copies; and, once a node has shown its machine at layer 2, the jobs that machine carried. Each counts only the bytes the node checked.
+- Kim's spot checks: 100 a day (a starting value), each fetching one 1 KiB piece picked at random, as today's check of a follower's copy does, and crediting that 1 KiB and no more. So her checks put followers on her record and count days toward layers 1 to 3. But even all 100 a day on one follower for 91 days would come to 8.9 MiB, short of layer 4's 100 MB, and Kim never downloads from her followers. By these rules she earns no direct link with any of them, though [ADR 0018](../decisions/0018-earned-direct-connections.md#layers) expects her to. The model reports that as it finds it, and credits no bytes that nobody checked.
 - Layers 1 to 4 as in ADR 0018's table. Layer 4 needs 100 MB of checked bytes (a starting value). ADR 0018's caps apply: 32 earned peers at once, and 2 new a week.
 - Carrying, for ADR 0016's record: jobs finished as a hop, on different days.
 - ADR 0023's partners: up to 4 for Kim's posts.
@@ -119,7 +120,7 @@ Fixed on 2026-11-08, before the model is built.
 **The model's own checks,** not the design's. Any failure is a fault in the model, fixed before the results count:
 
 - No machine learns an address the rules don't give it.
-- Partners swap both ways: across pairs of partners, each side served first on between a third and two thirds of the posts both fetched, and each side's record holds only the work it received.
+- No node credits more bytes than it checked, and each side's record of the other holds only the work it received.
 - The operator holds no post before a transfer has brought it one.
 
 ## Recorded too
@@ -137,6 +138,8 @@ Also recorded:
 - how many weeks pass before hops carry anything, and in S, whether they still carry after the 10 leave;
 - how often a follower's sources are ones it used before;
 - days to each layer for pairs of followers, with and without an introduction, and the days of work each side's record holds of the other;
+- how evenly partners swap: for each pair, the share of the posts both fetched that each side served first, by their upload speeds, and the pairs that stay short of layer 3 because the work goes mostly one way. A fast follower serving a slow one more often is how the swarm should work, so this is measured, not required;
+- the bytes Kim checked from each follower, and the direct links she earned, if any;
 - for each newcomer, in each group, the days to its first copy served, middle turn, standing, list and introduction, and to being picked next to a viewer;
 - lists asked for and refused;
 - the operator's figures, above.
@@ -151,6 +154,7 @@ If marks 0 to 3 are met under one set of rules, one real run checks B8's marks w
 - **Missed:** nothing from ADR 0017 is built, ADR 0014's rules stand, and the invited alpha goes ahead on relays. The figures go to the maintainer for the rules to be rethought, and a new ADR's rules are measured the same way, once.
 - **Marks 4 to 6** decide whether ADR 0023 is accepted. Its partners can be built before any hops, as on their own they move bytes onto earned links (way 2).
 - **Marks 7 and 8** decide whether ADR 0022's starting values go into its build.
+- **Kim's links:** if she earns none, as the arithmetic above says, whether creators need direct links with their followers, and which rule would change (the size or number of spot checks, or the bytes layer 4 asks of them), is the maintainer's decision, made from the figures.
 - **If a mark is missed,** the cause is looked for in the rules and in the model before anything changes, and the model is run once more.
 
 ## Not modelled
