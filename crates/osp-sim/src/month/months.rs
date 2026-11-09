@@ -6,7 +6,7 @@
 //!
 //! [plan]: ../../../docs/testing/hops-model.md
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 
 use serde::Serialize;
 
@@ -15,8 +15,8 @@ use super::meeting::{Asking, MeetCounts, Meeting, Standing, Who};
 use super::records::{Block, BytesRule, DayRule, Records};
 use super::rng::Rng;
 use super::spread::{
-    Fetch, Leg, Load, Part, Peer, Rules, SWARM_SAMPLE, Sources, Spread, Swarm, VIDEO_BYTES,
-    transfer_places,
+    Fetch, Leg, Load, OVERHEAD, Part, Peer, Rules, SWARM_SAMPLE, Sources, Spread, Swarm,
+    VIDEO_BYTES, transfer_places,
 };
 
 use super::records::DAY;
@@ -140,6 +140,90 @@ pub enum RuleSet {
     Partners,
 }
 
+/// Experiments A to C (docs/testing/hops-experiments.md), each a candidate
+/// revision measured against the baseline, the model's second run.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, clap::ValueEnum)]
+pub enum Experiment {
+    Baseline,
+    /// One-way service toward a direct link, and the machine-to-node binding.
+    A,
+    /// A share of relayed transfers given to machines with no standing.
+    B5,
+    B10,
+    B20,
+    /// B10, with 1% or 5% of B's jobs failing part way.
+    #[value(name = "b10-f1")]
+    #[serde(rename = "b10-f1")]
+    B10F1,
+    #[value(name = "b10-f5")]
+    #[serde(rename = "b10-f5")]
+    B10F5,
+    /// Kim's node gives each post first to up to 4 followers.
+    C,
+    Abc5,
+    Abc10,
+    Abc20,
+}
+
+/// What an experiment changes.
+#[derive(Clone, Copy, Debug, Default)]
+struct Settings {
+    one_way: bool,
+    /// B: the share of eligible transfers given to a machine with no
+    /// standing, and the share of those jobs that fail.
+    b_share: f64,
+    b_fail: f64,
+    kim_first: bool,
+}
+
+impl Experiment {
+    fn settings(self) -> Settings {
+        use Experiment::*;
+        let b = |b_share: f64| Settings {
+            b_share,
+            ..Default::default()
+        };
+        let abc = |b_share: f64| Settings {
+            one_way: true,
+            b_share,
+            b_fail: 0.0,
+            kim_first: true,
+        };
+        match self {
+            Baseline => Settings::default(),
+            A => Settings {
+                one_way: true,
+                ..Default::default()
+            },
+            B5 => b(0.05),
+            B10 => b(0.10),
+            B20 => b(0.20),
+            B10F1 => Settings {
+                b_fail: 0.01,
+                ..b(0.10)
+            },
+            B10F5 => Settings {
+                b_fail: 0.05,
+                ..b(0.10)
+            },
+            C => Settings {
+                kim_first: true,
+                ..Default::default()
+            },
+            Abc5 => abc(0.05),
+            Abc10 => abc(0.10),
+            Abc20 => abc(0.20),
+        }
+    }
+}
+
+/// B: jobs one machine takes a day (a starting value).
+const B_JOBS_A_DAY: usize = 2;
+/// C: followers Kim's node gives each post to first.
+const KIM_FIRST: usize = 4;
+/// Days followed for the daily figures.
+const RUN_DAYS: usize = 100;
+
 /// ADR 0023's starting values.
 const MAX_PARTNERS: usize = 4;
 const PARTNERS_AT_ONCE: usize = 2;
@@ -219,6 +303,88 @@ struct Media {
     swapped: HashMap<(usize, usize), [f64; 2]>,
     /// Bytes of the file the operator's nodes received.
     operator_down: f64,
+    /// The experiment's settings, and what it follows.
+    exp: Settings,
+    newcomer: Vec<bool>,
+    /// B: picks, and which jobs fail, apart from every other draw.
+    b_rng: Rng,
+    fail_rng: Rng,
+    /// The path just picked is one of B's jobs.
+    last_b: bool,
+    /// B's jobs each machine took each day.
+    b_day_jobs: HashMap<(usize, usize), usize>,
+    /// Days each machine turned a job away under the daily limit.
+    b_limit_days: HashMap<usize, BTreeSet<usize>>,
+    /// A machine's own record of the viewers it did B's jobs for: the viewer
+    /// gave it the job, through the relay, so it knows the viewer's machine,
+    /// not its address.
+    b_known: Records,
+    /// Days each machine finished jobs for each viewer, any jobs: (m, v).
+    job_days: HashMap<(usize, usize), BTreeSet<usize>>,
+    /// The first job each machine got: a middle turn or one of B's.
+    first_job: Vec<Option<f64>>,
+    b_jobs_of: Vec<usize>,
+    /// Followers Kim's node gives this post to first (C).
+    first_copies: Vec<bool>,
+    /// Addresses learned: by any other machine, by the operator's.
+    exposed_any: Vec<bool>,
+    exposed_operator: Vec<bool>,
+    extra: Extra,
+    /// Downloads whose transfer had a failed job this post.
+    failed_to: Vec<usize>,
+}
+
+/// The figures the experiments' plan records, beyond each post's.
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct Extra {
+    /// B, each day: transfers picked for a job, jobs taken, jobs turned
+    /// away by the daily limit (the rest found no machine).
+    pub b_offered: Vec<usize>,
+    pub b_taken: Vec<usize>,
+    pub b_turned_away: Vec<usize>,
+    /// B's bytes on the wire: the second leg through the relay, which is
+    /// also the relay's standby capacity for the fallback, never counted as
+    /// media delivered; and the upload of the machines doing the jobs, of
+    /// newcomers among them.
+    pub b_relay_extra: f64,
+    pub b_standby: f64,
+    pub b_upload: f64,
+    pub b_upload_newcomers: f64,
+    /// B's failures: jobs picked to fail, jobs that did (one picked can end
+    /// first), those whose download completed anyway, the bytes on the wire
+    /// they cost beyond a job that didn't fail. A failed job's machine is
+    /// credited nothing (`part_done`).
+    pub b_fail_picked: usize,
+    pub b_failed: usize,
+    pub b_failed_completed: usize,
+    pub b_fail_extra: f64,
+    /// Among honest followers: the share of bytes served by the 10% that
+    /// served most, and the Gini of bytes served.
+    pub top10_share: f64,
+    pub gini: f64,
+    /// Honest nodes (Kim among them) whose address another machine learned,
+    /// through a direct link or as the hop next to it, and the operator's.
+    pub honest: usize,
+    pub exposed_any: usize,
+    pub exposed_operator: usize,
+    /// The operator's share of the entries in honest machines' tables at the
+    /// end, and of Kim's picks (C).
+    pub operator_table_share: f64,
+    pub kim_picks: usize,
+    pub kim_picks_operator: usize,
+    /// Earned links (follower pairs, approved ones left out): distinct pairs
+    /// ever linked, by whether both sides had work both ways when first
+    /// seen; and at the end.
+    pub links_both_ways: usize,
+    pub links_one_way: usize,
+    pub links_end_both_ways: usize,
+    pub links_end_one_way: usize,
+    /// A's weekly bar: servers active with a node (3 days or more in 30),
+    /// and of those, the ones that miss it, on day 60 and at the end.
+    pub active_day60: usize,
+    pub missing_weekly_day60: usize,
+    pub active_end: usize,
+    pub missing_weekly_end: usize,
 }
 
 /// Transfers through hops, for mark 9: how often the operator's nodes held
@@ -266,6 +432,10 @@ impl Media {
         }
         let mut c = self.records.direct_peers(v);
         c.extend(self.carried.known_to(v, 2));
+        if self.exp.one_way {
+            // The binding counts a machine's downloads from the first.
+            c.extend(self.records.known_to(v, 2));
+        }
         c.sort_unstable();
         c.dedup();
         c.retain(|&m| m != not && m != v && self.can_hop(m, load));
@@ -282,16 +452,32 @@ impl Media {
         c
     }
 
+    /// `m` has standing with `v`: jobs for it on 3 days, or under A, as the
+    /// binding counts them from the first, downloads on 3 days.
+    fn has_standing(&self, v: usize, m: usize) -> bool {
+        self.carried.get(v, m).is_some_and(|r| r.layer >= 2)
+            || (self.exp.one_way && self.records.get(v, m).is_some_and(|r| r.layer >= 2))
+    }
+
     /// A machine with no standing with `v`, for the middle, from `v`'s
     /// table. One whose introduction `v` counts goes first (ADR 0022).
     fn middle(&mut self, v: usize, taken: &[usize], load: &Load) -> Option<usize> {
+        let mut rng = std::mem::replace(&mut self.hop_rng, Rng::new(0));
+        let m = self.no_standing(&mut rng, v, taken, load);
+        self.hop_rng = rng;
+        m
+    }
+
+    /// Picks a machine with no standing with `v` from its table, by the rule
+    /// set's rule for middle turns.
+    fn no_standing(&self, rng: &mut Rng, v: usize, taken: &[usize], load: &Load) -> Option<usize> {
         let pool: Vec<usize> = self
             .meeting
             .table(v)
             .filter(|&m| {
                 !taken.contains(&m)
                     && self.can_hop(m, load)
-                    && self.carried.get(v, m).is_none_or(|r| r.layer < 2)
+                    && !self.has_standing(v, m)
                     && !self.records.direct(v, m)
             })
             .collect();
@@ -305,14 +491,14 @@ impl Media {
             .filter(|&m| self.meeting.introduced(v, m, t))
             .collect();
         if !introduced.is_empty() {
-            return Some(introduced[self.hop_rng.below(introduced.len())]);
+            return Some(introduced[rng.below(introduced.len())]);
         }
-        if self.rule_set == RuleSet::Partners && self.hop_rng.chance(MIDDLE_RETURNING) {
+        if self.rule_set == RuleSet::Partners && rng.chance(MIDDLE_RETURNING) {
             // Those that finished one for `v` before, most jobs first.
             let jobs = |m: usize| self.carried.get(v, m).map_or(0.0, |r| r.work_days);
             let mut back: Vec<usize> = pool.iter().copied().filter(|&m| jobs(m) > 0.0).collect();
             if !back.is_empty() {
-                self.hop_rng.shuffle(&mut back);
+                rng.shuffle(&mut back);
                 back.sort_by(|&a, &b| jobs(b).total_cmp(&jobs(a)));
                 return Some(back[0]);
             }
@@ -328,7 +514,38 @@ impl Media {
                 if f.is_empty() { pool } else { f }
             }
         };
-        Some(fresh[self.hop_rng.below(fresh.len())])
+        Some(fresh[rng.below(fresh.len())])
+    }
+
+    /// B: a job for a machine with no standing with `v`, on a transfer from
+    /// `h` through the relay. The machine turns it away over its daily limit.
+    fn b_job(&mut self, h: usize, v: usize, load: &Load) -> Option<usize> {
+        let t = self.post_at + load.now;
+        let day = ((t / DAY) as usize).min(RUN_DAYS - 1);
+        self.extra.b_offered[day] += 1;
+        let mut rng = std::mem::replace(&mut self.b_rng, Rng::new(0));
+        let m = self.no_standing(&mut rng, v, &[h, v], load);
+        self.b_rng = rng;
+        let m = m?;
+        let jobs = self.b_day_jobs.entry((m, day)).or_default();
+        if *jobs >= B_JOBS_A_DAY {
+            self.extra.b_turned_away[day] += 1;
+            self.b_limit_days.entry(m).or_default().insert(day);
+            return None;
+        }
+        *jobs += 1;
+        self.extra.b_taken[day] += 1;
+        self.b_jobs_of[m] += 1;
+        self.first_job[m].get_or_insert(t);
+        Some(m)
+    }
+
+    /// `a` and `b` learned each other's address.
+    fn expose(&mut self, a: usize, b: usize) {
+        self.exposed_any[a] = true;
+        self.exposed_any[b] = true;
+        self.exposed_operator[b] |= self.operator[a];
+        self.exposed_operator[a] |= self.operator[b];
     }
 
     /// Way 3's path from host `h` to viewer `v`: H → Q → (M) → P → V.
@@ -376,6 +593,7 @@ impl Media {
         if let Some(m) = m {
             self.hops.middle_turns += 1;
             self.first_middle[m].get_or_insert(t);
+            self.first_job[m].get_or_insert(t);
         }
         // Counts for mark 9.
         let ends: Vec<usize> = p.iter().chain(q.iter()).copied().collect();
@@ -437,6 +655,13 @@ impl Media {
 
 impl Rules for Media {
     fn sources(&mut self, to: usize, swarm: &Swarm, rng: &mut Rng) -> Sources {
+        if self.first_copies[to] {
+            // C: told of the post first, it fetches from Kim at once.
+            return Sources {
+                at_once: Vec::new(),
+                in_turn: vec![self.creator],
+            };
+        }
         let named = self.named(to, swarm, rng);
         let at_once = match self.rule_set {
             RuleSet::Accepted => named,
@@ -470,15 +695,61 @@ impl Rules for Media {
     }
 
     fn path(&mut self, source: usize, to: usize, load: &Load, _rng: &mut Rng) -> Vec<Leg> {
+        self.last_b = false;
         let direct = self.records.direct(source, to);
-        match self.way {
+        let mut legs = match self.way {
             Way::Hops if !direct => self.hop_path(source, to, load),
             _ => vec![Leg {
                 from: source,
                 relayed: self.way == Way::Relays || !direct,
                 carried: false,
             }],
+        };
+        // B, in way 3 where machines carry: a transfer through the relay
+        // with no hop at either end, now and then, through a machine with no
+        // standing, both legs through the relay.
+        if self.way == Way::Hops
+            && self.exp.b_share > 0.0
+            && legs.len() == 1
+            && legs[0].relayed
+            && self.b_rng.chance(self.exp.b_share)
+            && let Some(m) = self.b_job(source, to, load)
+        {
+            legs = vec![
+                Leg {
+                    from: source,
+                    relayed: true,
+                    carried: false,
+                },
+                Leg {
+                    from: m,
+                    relayed: true,
+                    carried: true,
+                },
+            ];
+            self.last_b = true;
         }
+        // Each leg not through the relay shows its two machines' addresses
+        // to each other.
+        for k in 0..legs.len() {
+            if !legs[k].relayed {
+                let next = legs.get(k + 1).map_or(to, |l| l.from);
+                self.expose(legs[k].from, next);
+            }
+        }
+        legs
+    }
+
+    fn fail_after(&mut self, part: f64) -> Option<f64> {
+        if !self.last_b || self.exp.b_fail <= 0.0 {
+            return None;
+        }
+        let fails = self.fail_rng.chance(self.exp.b_fail);
+        let at = self.fail_rng.range(0.1, 0.9);
+        fails.then(|| {
+            self.extra.b_fail_picked += 1;
+            part * at
+        })
     }
 
     fn part_done(&mut self, part: &Part, now: f64) {
@@ -502,14 +773,41 @@ impl Rules for Media {
                 self.partners[part.to].swapped(part.source, part.bytes, t);
                 self.partners[part.source].swapped(part.to, part.bytes, t);
             }
-            // The viewer credits every hop for a job finished. Its node's
-            // record counts what the machine carried once the node has shown
-            // the machine, which it does at layer 2 with the viewer.
-            for leg in part.legs.iter().filter(|l| l.carried) {
-                let m = leg.from;
-                self.carried.work(part.to, m, part.bytes, t);
-                if self.records.get(m, part.to).is_some_and(|r| r.layer >= 2) {
-                    self.records.work(part.to, m, part.bytes, t);
+            // B's jobs: two legs through the relay, the second carried.
+            let b =
+                part.legs.len() == 2 && part.legs.iter().all(|l| l.relayed) && part.legs[1].carried;
+            if b {
+                let m = part.legs[1].from;
+                let wire = part.bytes * OVERHEAD;
+                self.extra.b_relay_extra += wire;
+                self.extra.b_standby += wire;
+                self.extra.b_upload += wire;
+                if self.newcomer[m] {
+                    self.extra.b_upload_newcomers += wire;
+                }
+            }
+            if part.hop_failed {
+                // A failed job earns its machine nothing.
+                self.extra.b_failed += 1;
+                self.failed_to.push(part.to);
+            } else {
+                // The viewer credits every hop for a job finished. Its node's
+                // record counts what the machine carried once the node has
+                // shown the machine, which it does at layer 2 with the
+                // viewer; under A, with the binding, from the first job.
+                let day = (t / DAY) as usize;
+                for leg in part.legs.iter().filter(|l| l.carried) {
+                    let m = leg.from;
+                    self.carried.work(part.to, m, part.bytes, t);
+                    self.job_days.entry((m, part.to)).or_default().insert(day);
+                    if self.exp.one_way
+                        || self.records.get(m, part.to).is_some_and(|r| r.layer >= 2)
+                    {
+                        self.records.work(part.to, m, part.bytes, t);
+                    }
+                }
+                if b {
+                    self.b_known.work(part.legs[1].from, part.to, part.bytes, t);
                 }
             }
             // The hop next to the viewer knows which machine it carried for.
@@ -557,6 +855,10 @@ pub struct Post {
     /// The most checked bytes, and work days, in any record not Kim's.
     pub most_bytes: f64,
     pub most_days: f64,
+    /// Bytes on the wire sent by honest followers' homes (Kim not counted),
+    /// and by Kim's.
+    pub home_up: f64,
+    pub kim_up: f64,
 }
 
 #[derive(Debug, Serialize)]
@@ -567,6 +869,7 @@ pub struct Months {
     pub days: DayRule,
     pub bytes_rule: BytesRule,
     pub asking: Asking,
+    pub experiment: Experiment,
     pub seed: u64,
     pub posts: Vec<Post>,
     pub newcomers: Vec<Newcomer>,
@@ -601,6 +904,8 @@ pub struct Months {
     pub operator_direct_honest: usize,
     pub operator_down: f64,
     pub operator_up: f64,
+    /// The experiments' figures.
+    pub extra: Extra,
 }
 
 /// Bytes each side of a partner pair served the other over the run.
@@ -720,7 +1025,11 @@ fn pair_report(rules: &Media, creator: usize, t: f64) -> PairReport {
         let ba = rules.records.blocks(b, a, t);
         assert!(
             direct || consent || !(ab.is_empty() && ba.is_empty()),
-            "pair {a}, {b} meets everything but isn't direct"
+            "pair {a}, {b} meets everything but isn't direct: allows {} / {}, earned and new this week {:?} / {:?}",
+            rules.records.allows(a, b),
+            rules.records.allows(b, a),
+            rules.records.earned_load(a, t),
+            rules.records.earned_load(b, t),
         );
         let operator = rules.operator[a] || rules.operator[b];
         rep.all.add(direct, consent, operator, &ab, &ba);
@@ -762,27 +1071,37 @@ fn meet_until(rules: &mut Media, t: f64) {
         records,
         carried,
         near_viewer,
+        b_known,
+        exp,
         ..
     } = rules;
+    let binding = exp.one_way;
     meeting.advance(t, &mut |_| {
         let mut s: Standing = carried.at_least(2).into_iter().collect();
         for (h, a) in records.at_least(2) {
             // Downloads count once the other's node has shown its machine,
-            // which it does at layer 2.
-            if records.get(a, h).is_some_and(|r| r.layer >= 2) {
+            // which it does at layer 2; under A, with the binding, from the
+            // first.
+            if binding || records.get(a, h).is_some_and(|r| r.layer >= 2) {
                 s.insert((h, a));
             }
         }
         // What each machine's own record tells it: it was the hop next to
-        // a viewer on 3 days, or its node served another on 3 days in the
-        // last 30 and has shown it its machine.
+        // a viewer on 3 days, or did B's jobs for it on 3 days, or its node
+        // served another on 3 days in the last 30 and has shown it its
+        // machine (under A, given it the binding).
         let mut reasons: Standing = near_viewer.at_least(2).into_iter().collect();
-        for (v, m) in records.at_least(2) {
-            if records
-                .get(v, m)
-                .is_some_and(|r| r.served_days_window() >= 3)
-            {
-                reasons.insert((v, m));
+        reasons.extend(b_known.at_least(2));
+        if binding {
+            reasons.extend(records.served_on_3_days());
+        } else {
+            for (v, m) in records.at_least(2) {
+                if records
+                    .get(v, m)
+                    .is_some_and(|r| r.served_days_window() >= 3)
+                {
+                    reasons.insert((v, m));
+                }
             }
         }
         (s, reasons)
@@ -812,6 +1131,18 @@ pub struct Newcomer {
     pub list: Option<f64>,
     pub introduced: Option<f64>,
     pub first_served: Option<f64>,
+    /// Its first job, a middle turn or one of B's; B's jobs it did.
+    pub first_job: Option<f64>,
+    pub b_jobs: usize,
+    /// Jobs it finished, for how many viewers, and the pairs with a viewer
+    /// that had jobs on 1, 2, and 3 days or more, over the run.
+    pub jobs: usize,
+    pub viewers: usize,
+    pub pairs_by_days: [usize; 3],
+    /// The most days of jobs for any one viewer in the last 30, at any post.
+    pub best_same_viewer: usize,
+    /// Days it turned a job away under B's daily limit.
+    pub limit_days: usize,
 }
 
 fn reciprocity(rules: &Media, creator: usize, operator: bool) -> Reciprocity {
@@ -833,6 +1164,24 @@ fn reciprocity(rules: &Media, creator: usize, operator: bool) -> Reciprocity {
     shares.sort_by(f64::total_cmp);
     r.median_lesser_share = shares.get(shares.len() / 2).copied().unwrap_or(0.0);
     r
+}
+
+/// The Gini coefficient of `xs`: 0 when all are equal, near 1 when one
+/// has it all.
+fn gini(xs: &[f64]) -> f64 {
+    let mut v = xs.to_vec();
+    v.sort_by(f64::total_cmp);
+    let n = v.len() as f64;
+    let total: f64 = v.iter().sum();
+    if n == 0.0 || total <= 0.0 {
+        return 0.0;
+    }
+    let weighted: f64 = v
+        .iter()
+        .enumerate()
+        .map(|(i, x)| (i as f64 + 1.0) * x)
+        .sum();
+    (2.0 * weighted) / (n * total) - (n + 1.0) / n
 }
 
 /// The largest group of `nodes` linked by partners, either way.
@@ -869,6 +1218,8 @@ const SPOT_CHECK_BYTES: f64 = 1024.0;
 /// Honest nodes saying yes to earned links (a starting value).
 const YES_TO_EARNED: f64 = 0.75;
 
+/// One start, one way, one set of rules and one experiment, for a seed.
+#[allow(clippy::too_many_arguments)]
 pub fn run(
     start: Start,
     way: Way,
@@ -876,8 +1227,10 @@ pub fn run(
     days: DayRule,
     bytes_rule: BytesRule,
     asking: Asking,
+    experiment: Experiment,
     seed: u64,
 ) -> Months {
+    let exp = experiment.settings();
     // What's the same in every way: who's there, who says yes, when each
     // post goes out and when each follower wakes for it.
     let mut plan = Rng::new(seed);
@@ -968,7 +1321,36 @@ pub fn run(
         hop_rng: Rng::new(seed.wrapping_add(4)),
         first_middle: vec![None; peers.len()],
         hops: HopCounts::default(),
+        exp,
+        newcomer: members
+            .iter()
+            .map(|m| matches!(m.kind, Kind::NewcomerDirectory | Kind::NewcomerGiven))
+            .collect(),
+        b_rng: Rng::new(seed.wrapping_add(7)),
+        fail_rng: Rng::new(seed.wrapping_add(8)),
+        last_b: false,
+        b_day_jobs: HashMap::new(),
+        b_limit_days: HashMap::new(),
+        b_known: Records::new(vec![true; peers.len()], days, bytes_rule),
+        job_days: HashMap::new(),
+        first_job: vec![None; peers.len()],
+        b_jobs_of: vec![0; peers.len()],
+        first_copies: vec![false; peers.len()],
+        exposed_any: vec![false; peers.len()],
+        exposed_operator: vec![false; peers.len()],
+        extra: Extra {
+            b_offered: vec![0; RUN_DAYS],
+            b_taken: vec![0; RUN_DAYS],
+            b_turned_away: vec![0; RUN_DAYS],
+            ..Default::default()
+        },
+        failed_to: Vec::new(),
     };
+    rules.records.one_way = exp.one_way;
+    let mut kim_rng = Rng::new(seed.wrapping_add(9));
+    let mut served_total = vec![0.0f64; peers.len()];
+    let mut links: HashMap<(usize, usize), bool> = HashMap::new();
+    let mut best_same_viewer = vec![0usize; peers.len()];
     // S: the 10 approved by hand to one another are direct peers.
     let approved: Vec<usize> = (0..members.len())
         .filter(|&i| members[i].kind == Kind::Approved)
@@ -997,13 +1379,20 @@ pub fn run(
             list: None,
             introduced: None,
             first_served: None,
+            first_job: None,
+            b_jobs: 0,
+            jobs: 0,
+            viewers: 0,
+            pairs_by_days: [0; 3],
+            best_same_viewer: 0,
+            limit_days: 0,
         })
         .collect();
     let mut checked_to = 0.0;
     let mut operator_up = 0.0;
     let mut posts = Vec::new();
     let mut pairs_day60 = None;
-    for (index, (at, fetches)) in schedule.into_iter().enumerate() {
+    for (index, (at, mut fetches)) in schedule.into_iter().enumerate() {
         // Kim's spot checks since the last post, of followers holding a copy.
         while checked_to + DAY <= at {
             let candidates: Vec<usize> = (1..peers.len())
@@ -1022,6 +1411,9 @@ pub fn run(
         if pairs_day60.is_none() && at > 60.0 * DAY {
             rules.records.sweep(60.0 * DAY);
             pairs_day60 = Some(pair_report(&rules, creator, 60.0 * DAY));
+            let (active, missing) = rules.records.active_missing_weekly(60.0 * DAY, creator);
+            rules.extra.active_day60 = active;
+            rules.extra.missing_weekly_day60 = missing;
         }
         rules.records.sweep(at);
         let standing = rules.records.standing(peers.len(), creator);
@@ -1053,6 +1445,45 @@ pub fn run(
             rules.present[i] = true;
         }
         rules.carried.sweep(at);
+        for (n, &d) in rules
+            .carried
+            .best_window_days(peers.len())
+            .iter()
+            .enumerate()
+        {
+            best_same_viewer[n] = best_same_viewer[n].max(d);
+        }
+        // Direct links show each pair's addresses to each other; earned
+        // ones are counted by whether they needed work both ways.
+        for &i in &present {
+            for p in rules.records.direct_peers(i) {
+                rules.expose(i, p);
+                if i < p && !rules.records.is_approved(i, p) && i != creator {
+                    let both = rules.records.both_ways(i, p);
+                    links.entry((i, p)).or_insert(both);
+                }
+            }
+        }
+        // C: Kim's node tells up to 4 followers first, those that said yes
+        // to earned links whose copies passed her checks on the most days.
+        rules.first_copies = vec![false; peers.len()];
+        rules.failed_to.clear();
+        if exp.kim_first {
+            let mut pool: Vec<usize> = present.iter().copied().filter(|&i| yes[i]).collect();
+            kim_rng.shuffle(&mut pool);
+            let days = |n: usize| rules.records.get(creator, n).map_or(0.0, |r| r.work_days);
+            pool.sort_by(|&a, &b| days(b).total_cmp(&days(a)));
+            for &i in pool.iter().take(KIM_FIRST) {
+                rules.first_copies[i] = true;
+                rules.extra.kim_picks += 1;
+                rules.extra.kim_picks_operator += rules.operator[i] as usize;
+            }
+            for f in &mut fetches {
+                if rules.first_copies[f.node] {
+                    f.wakes = 0.0;
+                }
+            }
+        }
         // Kim's node notes each copy anew for each post; who has followed
         // longest is the order they followed. It names first those it
         // reaches directly.
@@ -1091,12 +1522,23 @@ pub fn run(
             until: POST_UNTIL,
         }
         .run(&mut swarm, &fetches, &[]);
+        let mut home_up = 0.0;
         for &i in &present {
             hosts[i] |= out.held[i].is_some();
             if rules.operator[i] {
                 operator_up += out.sent[i];
+            } else {
+                home_up += out.sent[i];
             }
+            served_total[i] += out.served[i];
         }
+        rules.extra.b_fail_extra += out.hop_failure_extra;
+        let completed = rules
+            .failed_to
+            .iter()
+            .filter(|&&v| out.held[v].is_some())
+            .count();
+        rules.extra.b_failed_completed += completed;
         let held: Vec<Option<f64>> = present.iter().map(|&i| out.held[i]).collect();
         let p95 = time_for(&held, 0.95);
         let all = time_for(&held, 1.0);
@@ -1127,12 +1569,16 @@ pub fn run(
             layers: rules.records.layers_without(creator),
             most_bytes: rules.records.most_without(creator).0,
             most_days: rules.records.most_without(creator).1,
+            home_up,
+            kim_up: out.sent[creator],
         });
     }
     let end = posts.last().map_or(0.0, |p| p.at) + POST_UNTIL;
     rules.records.sweep(end);
     // Meeting runs on to day 91, for mark 8.
     meet_until(&mut rules, 91.0 * DAY);
+    // Introductions counted since change what the records reach.
+    rules.records.sweep(end);
     // The model's own check: no table over ADR 0015's and 0016's limits.
     assert!((0..peers.len()).all(|v| rules.meeting.sources_ok(v)));
     for nc in &mut newcomers {
@@ -1142,7 +1588,60 @@ pub fn run(
         nc.list = since(rules.meeting.first_list[nc.node]);
         nc.introduced = since(rules.meeting.first_introduced[nc.node]);
         nc.first_served = since(rules.first_served[nc.node]);
+        nc.first_job = since(rules.first_job[nc.node]);
+        nc.b_jobs = rules.b_jobs_of[nc.node];
+        nc.best_same_viewer = best_same_viewer[nc.node];
+        nc.limit_days = rules.b_limit_days.get(&nc.node).map_or(0, |d| d.len());
+        for (&(m, _), d) in &rules.job_days {
+            if m == nc.node {
+                nc.viewers += 1;
+                nc.jobs += d.len();
+                nc.pairs_by_days[d.len().min(3) - 1] += 1;
+            }
+        }
     }
+    let (active, missing) = rules.records.active_missing_weekly(end, creator);
+    rules.extra.active_end = active;
+    rules.extra.missing_weekly_end = missing;
+    for (&(a, b), &both) in &links {
+        if both {
+            rules.extra.links_both_ways += 1;
+        } else {
+            rules.extra.links_one_way += 1;
+        }
+        if rules.records.direct(a, b) {
+            if rules.records.both_ways(a, b) {
+                rules.extra.links_end_both_ways += 1;
+            } else {
+                rules.extra.links_end_one_way += 1;
+            }
+        }
+    }
+    // Fairness among honest followers, newcomers among them.
+    let mut served: Vec<f64> = (0..members.len())
+        .filter(|&i| !matches!(members[i].kind, Kind::Creator | Kind::Operator))
+        .map(|i| served_total[i])
+        .collect();
+    served.sort_by(|a, b| b.total_cmp(a));
+    let total: f64 = served.iter().sum();
+    let top = served.len().div_ceil(10);
+    rules.extra.top10_share = served[..top].iter().sum::<f64>() / total.max(1.0);
+    rules.extra.gini = gini(&served);
+    let honest: Vec<usize> = (0..members.len()).filter(|&i| !rules.operator[i]).collect();
+    rules.extra.honest = honest.len();
+    rules.extra.exposed_any = honest.iter().filter(|&&i| rules.exposed_any[i]).count();
+    rules.extra.exposed_operator = honest
+        .iter()
+        .filter(|&&i| rules.exposed_operator[i])
+        .count();
+    let (mut entries, mut of_operator) = (0usize, 0usize);
+    for &v in honest.iter().filter(|&&v| members[v].present(end)) {
+        for m in rules.meeting.table(v) {
+            entries += 1;
+            of_operator += rules.operator[m] as usize;
+        }
+    }
+    rules.extra.operator_table_share = of_operator as f64 / entries.max(1) as f64;
     let pairs_end = pair_report(&rules, creator, end);
     let spot_checks = spot_checks(&rules, creator, peers.len());
     let at_end: Vec<usize> = (1..members.len())
@@ -1185,6 +1684,8 @@ pub fn run(
         operator_direct_honest,
         operator_down: rules.operator_down,
         operator_up,
+        extra: rules.extra.clone(),
+        experiment,
         start,
         way,
         rule_set,

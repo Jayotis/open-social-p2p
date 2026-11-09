@@ -99,6 +99,9 @@ pub struct Record {
     /// The other offered this node a link: it reached layer 4 with it.
     pub offered: bool,
     pub layer: u8,
+    /// This side allows a direct link with the other: layer 4, or, under
+    /// experiment A, one-way service or a client relationship.
+    pub allows: bool,
     at: f64,
 }
 
@@ -126,7 +129,33 @@ impl Record {
     pub fn window_bytes(&self) -> f64 {
         self.byte_days.iter().map(|&(_, b)| b).sum()
     }
+
+    /// Different days the other did checked work for this node in the last
+    /// 30 days.
+    pub fn work_days_window(&self) -> usize {
+        self.work_day_list.len()
+    }
+
+    /// Experiment A's weekly bar: work on 3 different days in each of at
+    /// least 2 of the last 4 weeks, blocks of 7 days counted back from `t`'s
+    /// day that don't overlap, so a day counts toward one week only.
+    pub fn weekly_bar(&self, t: f64) -> bool {
+        let today = day(t);
+        let mut weeks = [0usize; WEEKS];
+        for &d in &self.work_day_list {
+            let k = ((today - d) / 7) as usize;
+            if k < WEEKS {
+                weeks[k] += 1;
+            }
+        }
+        weeks.iter().filter(|&&n| n >= DAYS_A_WEEK).count() >= WEEKS_WITH_DAYS
+    }
 }
+
+/// Experiment A's bar for one-way service (docs/testing/hops-experiments.md).
+const WEEKS: usize = 4;
+const DAYS_A_WEEK: usize = 3;
+const WEEKS_WITH_DAYS: usize = 2;
 
 /// Each of a record's conditions for the layers, met or not, judged apart.
 struct Conditions {
@@ -150,7 +179,24 @@ fn conditions(
     room_now: bool,
     introduced: bool,
 ) -> Conditions {
-    let cut = if introduced { 0.5 } else { 1.0 };
+    conditions_cut(
+        r,
+        rule,
+        bytes_rule,
+        t,
+        room_now,
+        if introduced { 0.5 } else { 1.0 },
+    )
+}
+
+fn conditions_cut(
+    r: &Record,
+    rule: DayRule,
+    bytes_rule: BytesRule,
+    t: f64,
+    room_now: bool,
+    cut: f64,
+) -> Conditions {
     let was = r.layer;
     let (work_q, served_q) = match rule {
         DayRule::Window => (r.work_day_list.len() as f64, r.served_day_list.len() as f64),
@@ -169,8 +215,29 @@ fn conditions(
         both_ways: r.offered || ok(3, served_q, r.served_days, DAYS_FOR_BOTH_WAYS),
         bytes: ok(4, bytes_q, r.bytes, cut * EARNED_BYTES),
         age: t - r.first >= cut * EARNED_AFTER,
-        room: was >= 4 || room_now,
+        room: r.allows || room_now,
     }
+}
+
+/// Experiment A: whether `r`'s holder allows a link without work both ways.
+/// Contribution: the other served it on 3 days in each of 2 of the last 4
+/// weeks, with layer 4's checked bytes in the last 30 days. Client: it served
+/// the other's requests on 3 days in the last 30. Either needs layer 4's
+/// days since first contact. A side that allows keeps it, as now, on faded
+/// standing at half the marks: 3 faded days and half the bytes for
+/// contribution, 1.5 faded days for a client.
+fn one_way_allows(r: &Record, t: f64, cut: f64) -> (bool, bool) {
+    if t - r.first < cut * EARNED_AFTER {
+        return (false, false);
+    }
+    let bytes = cut * EARNED_BYTES;
+    let contribution = (r.weekly_bar(t) && r.window_bytes() >= bytes)
+        || (r.allows
+            && r.work_days >= 0.5 * (DAYS_A_WEEK * WEEKS_WITH_DAYS) as f64
+            && r.bytes >= 0.5 * bytes);
+    let client = r.served_days_window() >= DAYS_FOR_BOTH_WAYS as usize
+        || (r.allows && r.served_days >= 0.5 * DAYS_FOR_BOTH_WAYS);
+    (contribution, client)
 }
 
 fn day(t: f64) -> i64 {
@@ -195,6 +262,9 @@ pub struct Records {
     /// (holder, about): an introduction of `about` that `holder` counts,
     /// until then.
     introduced: HashMap<(usize, usize), f64>,
+    /// Experiment A: a side allows a link on one-way service or a client
+    /// relationship, as well as on layer 4.
+    pub one_way: bool,
 }
 
 impl Records {
@@ -209,6 +279,7 @@ impl Records {
             granted_at: vec![Vec::new(); n],
             approved: vec![Vec::new(); n],
             introduced: HashMap::new(),
+            one_way: false,
         }
     }
 
@@ -289,8 +360,9 @@ impl Records {
         let (rule, bytes_rule) = (self.rule, self.bytes_rule);
         let room_now = earned_now < MAX_EARNED && new_this_week < NEW_EARNED_A_WEEK;
         let introduced = self.is_introduced(holder, about, t);
+        let one_way = self.one_way;
         let r = self.row(holder, about, t);
-        let was = r.layer;
+        let was_allows = r.allows;
         let c = conditions(r, rule, bytes_rule, t, room_now, introduced);
         let mut layer = 0;
         if c.layer1 {
@@ -306,7 +378,13 @@ impl Records {
             }
         }
         r.layer = layer;
-        if layer == 4 && was < 4 {
+        let mut allows = layer == 4;
+        if one_way && !allows {
+            let (contribution, client) = one_way_allows(r, t, if introduced { 0.5 } else { 1.0 });
+            allows = (contribution || client) && (was_allows || room_now);
+        }
+        r.allows = allows;
+        if allows && !was_allows {
             // Only a node that says yes asks for a link and spends its caps.
             if self.yes[holder] {
                 self.earned[holder].push((about, t));
@@ -316,7 +394,7 @@ impl Records {
                 self.row(about, holder, t).offered = true;
                 self.update(about, holder, t);
             }
-        } else if layer < 4 && was == 4 {
+        } else if !allows && was_allows {
             self.earned[holder].retain(|&(p, _)| p != about);
         }
     }
@@ -327,7 +405,7 @@ impl Records {
         let Some(r) = self.get(holder, about) else {
             return vec![Block::WorkDays, Block::BothWays, Block::Bytes, Block::Age];
         };
-        if r.layer == 4 {
+        if r.allows {
             return Vec::new();
         }
         let mut r = r.clone();
@@ -399,8 +477,8 @@ impl Records {
         self.approved[a].contains(&b)
             || (self.yes[a]
                 && self.yes[b]
-                && self.get(a, b).is_some_and(|r| r.layer == 4)
-                && self.get(b, a).is_some_and(|r| r.layer == 4))
+                && self.get(a, b).is_some_and(|r| r.allows)
+                && self.get(b, a).is_some_and(|r| r.allows))
     }
 
     /// The peers `node` has a direct link with now, approved or earned.
@@ -460,6 +538,70 @@ impl Records {
                 (b.max(r.bytes), d.max(r.work_days))
             })
     }
+
+    /// Every (holder, about) where the holder served `about` on 3 different
+    /// days in the last 30, whatever its layer.
+    pub fn served_on_3_days(&self) -> Vec<(usize, usize)> {
+        let mut v: Vec<(usize, usize)> = self
+            .rows
+            .iter()
+            .filter(|(_, r)| r.served_days_window() >= DAYS_FOR_BOTH_WAYS as usize)
+            .map(|(&k, _)| k)
+            .collect();
+        v.sort_unstable();
+        v
+    }
+
+    /// For each node, the most different days in the last 30 any one node's
+    /// record holds of its work.
+    pub fn best_window_days(&self, n: usize) -> Vec<usize> {
+        let mut best = vec![0; n];
+        for (&(_, a), r) in &self.rows {
+            best[a] = best[a].max(r.work_days_window());
+        }
+        best
+    }
+
+    /// Experiment A: servers active with a node (work for it on 3 days or
+    /// more in the last 30, Kim's records left out either way), and of
+    /// those, the ones that miss the weekly bar. Records swept to `t` first.
+    pub fn active_missing_weekly(&self, t: f64, creator: usize) -> (usize, usize) {
+        let mut active = 0;
+        let mut missing = 0;
+        for (&(h, a), r) in &self.rows {
+            if h == creator || a == creator || r.work_days_window() < DAYS_FOR_REGULAR as usize {
+                continue;
+            }
+            active += 1;
+            missing += !r.weekly_bar(t) as usize;
+        }
+        (active, missing)
+    }
+
+    /// Both sides hold the other at layer 4: a link that needed work both
+    /// ways, as today.
+    pub fn both_ways(&self, a: usize, b: usize) -> bool {
+        self.get(a, b).is_some_and(|r| r.layer == 4) && self.get(b, a).is_some_and(|r| r.layer == 4)
+    }
+
+    /// `a` and `b` approved each other by hand.
+    pub fn is_approved(&self, a: usize, b: usize) -> bool {
+        self.approved[a].contains(&b)
+    }
+
+    /// Earned links `node` holds now, and those it granted in the last week.
+    pub fn earned_load(&self, node: usize, t: f64) -> (usize, usize) {
+        let recent = self.granted_at[node]
+            .iter()
+            .filter(|&&g| t - g < 7.0 * DAY)
+            .count();
+        (self.earned[node].len(), recent)
+    }
+
+    /// `holder`'s record of `about` allows a link.
+    pub fn allows(&self, holder: usize, about: usize) -> bool {
+        self.get(holder, about).is_some_and(|r| r.allows)
+    }
 }
 
 #[cfg(test)]
@@ -514,6 +656,44 @@ mod tests {
             r.work(0, 1, 1e6, d * DAY);
         }
         assert_eq!(r.get(0, 1).unwrap().layer, 1);
+    }
+
+    /// 0 serves 1 every 2 days for 36 days, 20 MB each time; 1 never
+    /// serves 0.
+    fn one_way_service(one_way: bool) -> Records {
+        let mut r = Records::new(vec![true, true], DayRule::Window, BytesRule::Window);
+        r.one_way = one_way;
+        for k in 0..19 {
+            let t = k as f64 * 2.0 * DAY;
+            r.work(1, 0, 20e6, t);
+            r.served(0, 1, t);
+        }
+        r
+    }
+
+    #[test]
+    fn under_a_one_way_service_opens_a_link() {
+        assert!(!one_way_service(false).direct(0, 1));
+        let r = one_way_service(true);
+        assert!(r.direct(0, 1));
+        // Requests earned 1 nothing: 0's record of it is at no layer.
+        assert_eq!(r.get(0, 1).unwrap().layer, 0);
+        assert!(!r.both_ways(0, 1));
+    }
+
+    #[test]
+    fn a_day_counts_toward_one_week_only() {
+        let mut r = Records::new(vec![true, true], DayRule::Window, BytesRule::Window);
+        for d in [5.0, 6.0, 7.0, 8.0, 9.0, 10.0] {
+            r.work(0, 1, 1e6, d * DAY);
+        }
+        // On day 13 the weeks are days 7 to 13 (4 days) and 0 to 6 (2): one
+        // week at 3, though a sliding week would find two.
+        assert!(!r.get(0, 1).unwrap().weekly_bar(13.0 * DAY));
+        // On day 12, days 6 to 12 (5) and days 0 to 5 (1).
+        r.work(0, 1, 1e6, 2.0 * DAY);
+        r.work(0, 1, 1e6, 3.0 * DAY);
+        assert!(r.get(0, 1).unwrap().weekly_bar(12.0 * DAY));
     }
 
     #[test]

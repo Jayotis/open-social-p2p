@@ -117,6 +117,10 @@ pub struct Part {
     /// Bytes of the file it delivered, every one checked.
     pub bytes: f64,
     pub started: f64,
+    /// A hop on its path stopped part way (experiment B's failures): these
+    /// bytes reached the node and were checked, and the rest goes on through
+    /// the relay alone. The hop earns nothing for it.
+    pub hop_failed: bool,
 }
 
 /// What the rules see of who's busy when they pick a path.
@@ -124,6 +128,8 @@ pub struct Load<'a> {
     pub serving: &'a [usize],
     pub carrying: &'a [usize],
     pub peers: &'a [Peer],
+    /// Seconds after the post.
+    pub now: f64,
 }
 
 impl Load<'_> {
@@ -200,6 +206,11 @@ pub trait Rules {
     fn part_done(&mut self, part: &Part, now: f64);
     /// `node` holds the post now.
     fn holds(&mut self, node: usize, now: f64);
+    /// For the path just picked, of a part of `part` bytes: the bytes after
+    /// which a hop on it stops, if it's to fail.
+    fn fail_after(&mut self, _part: f64) -> Option<f64> {
+        None
+    }
 }
 
 /// Who fetches, and when.
@@ -250,6 +261,8 @@ struct Stream {
     bytes: f64,
     started: f64,
     rate: f64,
+    /// A hop on the path stops once this many bytes have been sent.
+    fail_at: Option<f64>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -275,6 +288,11 @@ pub struct Outcome {
     /// Requests refused as busy, and downloads that gave up.
     pub busy: usize,
     pub failed: usize,
+    /// Hops that stopped part way, and the bytes on the wire that cost: what
+    /// the source had sent the hop beyond what reached the node, up to
+    /// QUIC's stream window, through the relay.
+    pub hop_failures: usize,
+    pub hop_failure_extra: f64,
 }
 
 pub struct Spread<'a, R: Rules> {
@@ -461,6 +479,7 @@ impl<R: Rules> Spread<'_, R> {
             // Move the bytes.
             let mut sent_now = vec![0.0f64; n];
             let mut part_ends: Vec<usize> = Vec::new();
+            let mut failing: Vec<usize> = Vec::new();
             for &s in &ids {
                 let st = live.streams[s].as_mut().unwrap();
                 let moved = st.rate * dt;
@@ -497,9 +516,14 @@ impl<R: Rules> Spread<'_, R> {
                 }
                 if st.part_left <= 1e-6 && st.junk <= 1e-6 {
                     part_ends.push(s);
+                } else if st.fail_at.is_some_and(|f| st.bytes >= f) {
+                    failing.push(s);
                 }
             }
             t += dt;
+            for s in failing {
+                self.hop_fails(s, &downloads, &mut live, &mut out, t);
+            }
             second += 1;
             // What each node measures itself sending, over 5 s.
             for (i, &sent) in sent_now.iter().enumerate() {
@@ -598,6 +622,57 @@ impl<R: Rules> Spread<'_, R> {
         out
     }
 
+    /// A hop on stream `s`'s path stopped: what reached the node so far is
+    /// a part of its own, credited to the source but not the hops, and the
+    /// rest goes on from the source through the relay alone.
+    fn hop_fails(
+        &mut self,
+        s: usize,
+        downloads: &[Download],
+        live: &mut Live,
+        out: &mut Outcome,
+        now: f64,
+    ) {
+        let n = live.n;
+        let st = live.streams[s].as_mut().unwrap();
+        let to = downloads[st.download].node;
+        let legs = std::mem::replace(
+            &mut st.legs,
+            vec![Leg {
+                from: st.source,
+                relayed: true,
+                carried: false,
+            }],
+        );
+        for leg in legs.iter().filter(|l| l.carried) {
+            live.carrying[leg.from] -= 1;
+        }
+        let lost = st.part_left.min(SEND_AHEAD) * OVERHEAD;
+        out.sent[st.source] += lost;
+        out.served[st.source] += lost;
+        out.relayed += lost;
+        out.wasted += lost / OVERHEAD;
+        out.hop_failures += 1;
+        out.hop_failure_extra += lost;
+        st.resources = vec![
+            Res::Up as usize * n + st.source,
+            Res::Relay as usize * n + st.source,
+            Res::Down as usize * n + to,
+        ];
+        let part = Part {
+            source: st.source,
+            to,
+            legs,
+            bytes: st.bytes,
+            started: st.started,
+            hop_failed: true,
+        };
+        st.bytes = 0.0;
+        st.started = now;
+        st.fail_at = None;
+        self.rules.part_done(&part, now);
+    }
+
     fn end_stream(&mut self, s: usize, downloads: &mut [Download], live: &mut Live, now: f64) {
         let Some(st) = live.streams[s].take() else {
             return;
@@ -617,6 +692,7 @@ impl<R: Rules> Spread<'_, R> {
                 legs: st.legs,
                 bytes: st.bytes,
                 started: st.started,
+                hop_failed: false,
             },
             now,
         );
@@ -638,9 +714,11 @@ impl<R: Rules> Spread<'_, R> {
                 serving: &live.serving,
                 carrying: &live.carrying,
                 peers: self.peers,
+                now: t,
             };
             self.rules.path(source, node, &load, self.rng)
         };
+        let fail_at = self.rules.fail_after(part);
         live.serving[source] += 1;
         let mut resources = Vec::new();
         for leg in &legs {
@@ -665,6 +743,7 @@ impl<R: Rules> Spread<'_, R> {
             bytes: 0.0,
             started: t,
             rate: 0.0,
+            fail_at,
         }));
         downloads[d].streams.push(id);
     }
@@ -844,4 +923,82 @@ fn split_slowest(
     st.part_left = keep;
     st.junk += (left.min(SEND_AHEAD) - keep).max(0.0);
     Some(left - keep)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Node 2 fetches from 0 through 1, both legs through the relay, and 1
+    /// stops half way.
+    struct Failing {
+        parts: Vec<Part>,
+    }
+
+    impl Rules for Failing {
+        fn sources(&mut self, _to: usize, _swarm: &Swarm, _rng: &mut Rng) -> Sources {
+            Sources {
+                at_once: Vec::new(),
+                in_turn: vec![0],
+            }
+        }
+        fn path(&mut self, source: usize, _to: usize, _load: &Load, _rng: &mut Rng) -> Vec<Leg> {
+            vec![
+                Leg {
+                    from: source,
+                    relayed: true,
+                    carried: false,
+                },
+                Leg {
+                    from: 1,
+                    relayed: true,
+                    carried: true,
+                },
+            ]
+        }
+        fn part_done(&mut self, part: &Part, _now: f64) {
+            self.parts.push(part.clone());
+        }
+        fn holds(&mut self, _node: usize, _now: f64) {}
+        fn fail_after(&mut self, part: f64) -> Option<f64> {
+            Some(part / 2.0)
+        }
+    }
+
+    #[test]
+    fn a_failed_hop_leaves_the_rest_to_the_relay() {
+        let mut peers = vec![Peer::new(20.0, 100.0); 3];
+        peers[1].carry_places = 2;
+        peers[1].carry_share = 0.5;
+        let mut rules = Failing { parts: Vec::new() };
+        let mut rng = Rng::new(1);
+        let out = Spread {
+            peers: &mut peers,
+            rules: &mut rules,
+            rng: &mut rng,
+            creator: 0,
+            ask_delay: (0.0, 0.0),
+            tell_delay: 0.0,
+            bytes: 10e6,
+            until: 3600.0,
+        }
+        .run(
+            &mut Swarm::new(3),
+            &[Fetch {
+                node: 2,
+                wakes: 0.0,
+            }],
+            &[],
+        );
+        assert!(out.held[2].is_some());
+        assert_eq!(out.hop_failures, 1);
+        assert!(out.hop_failure_extra > 0.0);
+        let [first, rest] = &rules.parts[..] else {
+            panic!("{} parts", rules.parts.len());
+        };
+        assert!(first.hop_failed && first.legs.len() == 2);
+        assert!(!rest.hop_failed && rest.legs.len() == 1 && rest.legs[0].relayed);
+        assert!((first.bytes + rest.bytes - 10e6).abs() < 1.0);
+        assert!(out.carried[1] > 0.0 && out.carried[1] < 10e6);
+    }
 }
