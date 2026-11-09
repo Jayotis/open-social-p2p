@@ -87,7 +87,23 @@ impl Who {
 }
 
 /// (holder, about): `holder` holds `about` at standing (work on 3 days).
+/// Also used for (asker, asked): the asker's own record gives it a reason to
+/// think it has standing with the machine asked.
 pub type Standing = HashSet<(usize, usize)>;
+
+/// When an honest machine asks another for its list.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, clap::ValueEnum)]
+pub enum Asking {
+    /// Every machine in its table, every day: the aggressive baseline of
+    /// the first run (2026-11-09).
+    EveryDay,
+    /// Only machines its own record gives it a reason to (it served them on
+    /// 3 days in the last 30, or was the hop next to them on 3 days), at
+    /// most once a day each, and only while its table has room: the
+    /// once-a-day limit is a maximum, not a schedule (the maintainer,
+    /// 2026-11-09).
+    WhenReason,
+}
 
 /// What meeting did, for the report.
 #[derive(Clone, Debug, Default, Serialize)]
@@ -136,6 +152,9 @@ pub struct Meeting {
     /// directory went off (mark 8).
     pub heard_new_late: Vec<bool>,
     pub counts: MeetCounts,
+    pub asking: Asking,
+    /// Machines each has a reason, from its own record, to ask for a list.
+    reasons: Vec<Vec<usize>>,
 }
 
 impl Meeting {
@@ -160,6 +179,8 @@ impl Meeting {
             first_introduced: vec![None; n],
             heard_new_late: vec![false; n],
             counts: MeetCounts::default(),
+            asking: Asking::WhenReason,
+            reasons: vec![Vec::new(); n],
         }
     }
 
@@ -238,14 +259,22 @@ impl Meeting {
 
     /// Runs meeting up to `to`, an hour at a time; `standing` is brought up
     /// to date by the caller for each day.
-    pub fn advance(&mut self, to: f64, standing: &mut dyn FnMut(f64) -> Standing) {
+    pub fn advance(&mut self, to: f64, standing: &mut dyn FnMut(f64) -> (Standing, Standing)) {
         while self.at <= to {
             let t = self.at;
             self.arrivals(t);
             let day = (t / DAY).floor() as i64;
             if day != self.day {
                 self.day = day;
-                let s = standing(t);
+                let (s, reasons) = standing(t);
+                let mut by_asker = vec![Vec::new(); self.tables.len()];
+                for (v, m) in reasons {
+                    by_asker[v].push(m);
+                }
+                for r in &mut by_asker {
+                    r.sort_unstable();
+                }
+                self.reasons = by_asker;
                 self.daily(t, &s);
             }
             self.dials(t);
@@ -405,19 +434,34 @@ impl Meeting {
         self.introductions(t, &holds, &held_by);
     }
 
-    /// Each machine asks each in its table for its list, at a check-in;
-    /// Alice answers only one that worked for her on 3 days, once a day.
+    /// Who asks whom for a list (`Asking`); Alice answers only one that
+    /// worked for her on 3 days, once a day. The operator's machines ask
+    /// every machine in their table every day, as the plan has them ask for
+    /// every list they can.
     fn lists(&mut self, t: f64, holds: &[Vec<usize>]) {
         let n = self.tables.len();
         let day = (t / DAY).floor() as i64;
         let mut order: Vec<usize> = (0..n).filter(|&v| self.who.present(v, t)).collect();
         self.rng.shuffle(&mut order);
         for v in order {
-            let asked: Vec<usize> = self.tables[v]
-                .keys()
-                .copied()
-                .filter(|&m| self.who.present(m, t))
-                .collect();
+            let poll = self.asking == Asking::EveryDay || self.who.operator[v];
+            if !poll && self.tables[v].len() >= TABLE {
+                // A full table needs no new contacts.
+                continue;
+            }
+            let asked: Vec<usize> = if poll {
+                self.tables[v]
+                    .keys()
+                    .copied()
+                    .filter(|&m| self.who.present(m, t))
+                    .collect()
+            } else {
+                self.reasons[v]
+                    .iter()
+                    .copied()
+                    .filter(|&m| self.who.present(m, t))
+                    .collect()
+            };
             for alice in asked {
                 self.counts.lists_asked += 1;
                 if self.who.operator[v] {
@@ -564,7 +608,8 @@ mod tests {
     #[test]
     fn strangers_get_no_list_and_tables_keep_their_limits() {
         let mut m = Meeting::new(who(300), 1);
-        m.advance(3.0 * DAY, &mut |_| Standing::new());
+        m.asking = Asking::EveryDay;
+        m.advance(3.0 * DAY, &mut |_| (Standing::new(), Standing::new()));
         assert!(m.first_list.iter().all(|l| l.is_none()));
         assert!(m.counts.lists_asked > 0);
         assert_eq!(m.counts.lists_refused, m.counts.lists_asked);
@@ -584,12 +629,24 @@ mod tests {
         // 1 worked for 0, and 0 for 2: 0 gives 1 its list and introduces 1
         // to 2, the only machine that accepts 0's.
         let s: Standing = [(0, 1), (2, 0)].into_iter().collect();
-        m.advance(1.0 * DAY, &mut |_| s.clone());
+        // 1's own record gives it a reason to ask 0.
+        let r: Standing = [(1, 0)].into_iter().collect();
+        m.advance(1.0 * DAY, &mut |_| (s.clone(), r.clone()));
         assert!(m.first_list[1].is_some());
         assert!(m.first_list[3].is_none());
         assert!(m.first_introduced[1].is_some());
         assert!(m.introduced(2, 1, DAY));
         assert!(!m.introduced(3, 1, DAY));
         assert_eq!(m.counts.introductions_sent, 1);
+    }
+
+    #[test]
+    fn a_machine_asks_only_those_it_has_a_reason_to() {
+        let mut m = Meeting::new(who(50), 1);
+        let r: Standing = [(1, 0)].into_iter().collect();
+        m.advance(2.0 * DAY, &mut |_| (Standing::new(), r.clone()));
+        // Days 0, 1 and 2: one ask a day, from 1 to 0, refused.
+        assert_eq!(m.counts.lists_asked, 3);
+        assert_eq!(m.counts.lists_refused, 3);
     }
 }

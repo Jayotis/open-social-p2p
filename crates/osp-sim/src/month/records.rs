@@ -117,6 +117,11 @@ impl Record {
         self.byte_days.retain(|&(d, _)| d > since);
     }
 
+    /// Different days this node served the other in the last 30 days.
+    pub fn served_days_window(&self) -> usize {
+        self.served_day_list.len()
+    }
+
     /// Checked bytes received in the last 30 days.
     pub fn window_bytes(&self) -> f64 {
         self.byte_days.iter().map(|&(_, b)| b).sum()

@@ -1,6 +1,6 @@
 # Hops and earned links over three months, in a model
 
-**Status:** Run on 2026-11-09, all marks judged ([results](#results)): mark 0 met, marks 5 and 9 met, mark 3 met in Z under ADR 0023's rules; marks 1, 2, 4, 6, 7 and 8 missed. The plan below was fixed on 2026-11-08 before any code or run, and no pass mark has changed since. It covers [ADR 0017](../decisions/0017-one-hop-forwarding.md)'s stage A, with [ADR 0018](../decisions/0018-earned-direct-connections.md)'s layers on a shortened clock (its step 2's question). [ADR 0023](../decisions/0023-followers-keep-working-together.md)'s partners run beside the rules as accepted, and [ADR 0022](../decisions/0022-lists-and-introductions-are-earned.md)'s earned lists get a first read. Changing a pass mark later needs a dated note here saying what changed and why.
+**Status:** Run on 2026-11-09, all marks judged ([results](#results)): mark 0 met, marks 5 and 9 met, mark 3 met in Z under ADR 0023's rules; marks 1, 2, 4, 6, 7 and 8 missed. The maintainer accepted the results and the plan's outcome the same day: nothing from ADR 0017 is built under these rules, and the alpha goes ahead on relays. A second run with lists asked only with a reason missed mark 9 too ([below](#lists-asked-only-with-a-reason)). The plan below was fixed on 2026-11-08 before any code or run, and no pass mark has changed since. It covers [ADR 0017](../decisions/0017-one-hop-forwarding.md)'s stage A, with [ADR 0018](../decisions/0018-earned-direct-connections.md)'s layers on a shortened clock (its step 2's question). [ADR 0023](../decisions/0023-followers-keep-working-together.md)'s partners run beside the rules as accepted, and [ADR 0022](../decisions/0022-lists-and-introductions-are-earned.md)'s earned lists get a first read. Changing a pass mark later needs a dated note here saying what changed and why.
 
 Stage A asks two things. Would two hops of volunteer nodes take enough media off relays to be worth building? And do pairs of nodes deal with each other often enough to earn direct links? None of this is built, so the run measures the rules, not the code.
 
@@ -170,7 +170,7 @@ If marks 0 to 3 are met under one set of rules, one real run checks B8's marks w
 Where the plan left a choice, the model took these readings:
 
 - **Standing, for lists and introductions:** ADR 0022's work first. Alice holds Jimmy at standing when his machine finished jobs for her on 3 different days in the last 30, or when he served her downloads on 3 days and his node has shown her its machine (his node holds hers at layer 2).
-- **Asking for lists:** every machine asks each one in its table once a day, at a check-in, and the operator's do the same. Alice answers with up to 20 machines from her table, or an empty list.
+- **Asking for lists,** in the first run: every machine asks each one in its table once a day, at a check-in, and the operator's do the same. Alice answers with up to 20 machines from her table, or an empty list. That run is kept as the aggressive baseline (`--lists every-day`); the [second run](#lists-asked-only-with-a-reason) asks only with a reason.
 - **Introductions:** every machine with standing asks to be introduced; Alice picks whom to, among machines that accept hers. A machine Kim counts an introduction for goes first among her middle machines, and halves layer 4's 30 days and 100 MB for it. "Answered sooner when busy" isn't modelled.
 - **Tables:** 256 places: 40 for those who greet (an introduction counts among them), turns when they're full, a greeting first, and 64 for one source, the directory's map included. A machine that did work for the node leaves the greeters' places. A middle machine is drawn from the viewer's own table.
 - **Mark 7's "that node's list":** a list from any node that holds the newcomer at standing. **Mark 8's established nodes:** the honest followers there from day 0 that carry.
@@ -231,6 +231,24 @@ The operator's nodes fetch at once, so they nearly always hold a post first, and
 **Newcomers meet, but rarely carry.** A middle turn comes on 1 transfer in 10 through hops, so 489 in the whole run, about 5 a day for some 400 machines that carry. Directory newcomers greeted their way into tables, but only 15 of the 39 that carry got a middle turn at any time, and of all 50, 9 got a list and 4 an introduction; of newcomers given one machine, none got a middle turn, 4 a list and 1 an introduction. With no standing, lists stay shut, as ADR 0022 intends: 99.6% of 4.6 million asks were refused. Under ADR 0023's rules newcomers also serve later (mark 6), as Kim's node names first the followers her checks passed on the most days, and they aren't anyone's partner yet.
 
 **What the operator got,** under ADR 0023's rules: direct links with 22 honest nodes; 3,923 of the 19,922 lists given (20%, with 7% of the machines) and 173 of 643 introductions; for 71 GB received and 0.36 TB sent serving and carrying. Every list came from work the honest node checked: mostly downloads the operator's nodes served.
+
+### Lists asked only with a reason
+
+ADR 0022's once a day is a limit, not a schedule (the maintainer, 2026-11-09). So in the second run, the model's default, an honest machine asks for a list only while its table has room, and only machines its own record gives it a reason to think it has worked for: its node served theirs on 3 days in the last 30 and has shown them its machine, or it carried as the hop next to that viewer on 3 days. A middle machine sees neither end, so its middle turns give it no one to ask. The machine asked still decides from its own record, as before. The operator's machines still ask every machine in their table every day, as the plan has them ask for every list they can. The rule for what earns a list is unchanged: 3 days of checked carrying, or 3 days of checked downloads once an authenticated binding ties the machine to its node; the binding itself earns nothing.
+
+Every pass mark is unchanged, as are the results of marks 0 to 7, except for small differences in the figures. Under ADR 0023's rules, seed 1:
+
+| | Every day (first run) | With a reason |
+| --- | --- | --- |
+| Lists asked by honest machines | 4,130,621 | 10,798 |
+| of those refused | 99.6% | 0.1% |
+| Lists given, to honest machines / to the operator's | 15,999 / 3,923 | 10,783 / 4,236 |
+| Mark 8: established nodes hearing of a new machine after day 56 | 165 of 206 | 142 of 206 |
+| Mark 9: the operator's share of end hops; both ends (limit) | 24.5%; 10.7% (12.0%), met [5/5] | 27.8%; 15.7% (15.4%), missed [3/5] |
+
+With honest machines asking far less, the operator's machines, which still ask everyone, hold more of what nodes know: 28% of the lists given, with 7% of the machines. They end up next to more ends as hops, and mark 9 is now missed on seed 1. Every list they got still came from work the honest node checked. Mark 8 drops as established nodes ask less.
+
+The second run's way to get a list still needs work both ways when it's earned by downloads: Jimmy's node shows its machine to Alice only once it holds her at layer 2, so Alice must have served him too. A machine that only serves, the role the swarm most needs, gets a list only by carrying.
 
 ### What the plan says follows
 
