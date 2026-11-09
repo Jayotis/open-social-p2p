@@ -1,6 +1,6 @@
 # ADR 0024: Watching a found post without showing who you are
 
-**Status:** Proposed (2026-11-09). Approved in principle by the maintainer the same day, and revised after that review; stays Proposed until the implementation is agreed. Settles what [ADR 0015](0015-nodes-meet-first.md) left open ("a found post's media opens only once its author is followed").
+**Status:** Accepted (2026-11-09), after the maintainer's review and the revisions below. Not built yet. Settles what [ADR 0015](0015-nodes-meet-first.md) left open ("a found post's media opens only once its author is followed").
 
 Revised 2026-11-09, after the maintainer's review:
 

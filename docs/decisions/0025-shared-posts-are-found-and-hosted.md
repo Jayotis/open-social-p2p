@@ -1,6 +1,6 @@
 # ADR 0025: Shared posts are found, and hosted for whoever finds them
 
-**Status:** Proposed (2026-11-09). Approved in principle by the maintainer the same day, and revised after that review; stays Proposed until the implementation is agreed. Builds on [ADR 0024](0024-watching-found-posts-without-your-identity.md). Adds to [ADR 0015](0015-nodes-meet-first.md)'s directories and [doc 13](../13-hosting-roles-and-follower-swarm.md)'s resharers' swarms. Once accepted, it supersedes [ADR 0020](0020-sharing-media-you-open.md), which is accepted but unbuilt (below).
+**Status:** Accepted (2026-11-09), after the maintainer's review and the revisions below. Not built yet; the minimum first ("Building it"). Builds on [ADR 0024](0024-watching-found-posts-without-your-identity.md). Adds to [ADR 0015](0015-nodes-meet-first.md)'s directories and [doc 13](../13-hosting-roles-and-follower-swarm.md)'s resharers' swarms. It supersedes [ADR 0020](0020-sharing-media-you-open.md), which was accepted but never built (below).
 
 Revised 2026-11-09, after the maintainer's review:
 
@@ -54,7 +54,7 @@ ADR 0020 would have a node, after one general yes at setup, serve what its owner
 - `share_opened` and its setup question aren't built.
 - Neither are ADR 0020's lists of opened posts.
 
-ADR 0020's status changes to superseded when this record is accepted. Its daily confirmation with the author is kept in spirit, as ADR 0019's daily check for reshares without a follow (below).
+ADR 0020 is superseded by this record. Its daily confirmation with the author is kept in spirit, as ADR 0019's daily check for reshares without a follow (below).
 
 ### Directories list reshares
 
