@@ -1025,7 +1025,11 @@ fn pair_report(rules: &Media, creator: usize, t: f64) -> PairReport {
         let ba = rules.records.blocks(b, a, t);
         assert!(
             direct || consent || !(ab.is_empty() && ba.is_empty()),
-            "pair {a}, {b} meets everything but isn't direct"
+            "pair {a}, {b} meets everything but isn't direct: allows {} / {}, earned and new this week {:?} / {:?}",
+            rules.records.allows(a, b),
+            rules.records.allows(b, a),
+            rules.records.earned_load(a, t),
+            rules.records.earned_load(b, t),
         );
         let operator = rules.operator[a] || rules.operator[b];
         rep.all.add(direct, consent, operator, &ab, &ba);
@@ -1573,6 +1577,8 @@ pub fn run(
     rules.records.sweep(end);
     // Meeting runs on to day 91, for mark 8.
     meet_until(&mut rules, 91.0 * DAY);
+    // Introductions counted since change what the records reach.
+    rules.records.sweep(end);
     // The model's own check: no table over ADR 0015's and 0016's limits.
     assert!((0..peers.len()).all(|v| rules.meeting.sources_ok(v)));
     for nc in &mut newcomers {

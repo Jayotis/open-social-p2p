@@ -589,6 +589,15 @@ impl Records {
         self.approved[a].contains(&b)
     }
 
+    /// Earned links `node` holds now, and those it granted in the last week.
+    pub fn earned_load(&self, node: usize, t: f64) -> (usize, usize) {
+        let recent = self.granted_at[node]
+            .iter()
+            .filter(|&&g| t - g < 7.0 * DAY)
+            .count();
+        (self.earned[node].len(), recent)
+    }
+
     /// `holder`'s record of `about` allows a link.
     pub fn allows(&self, holder: usize, about: usize) -> bool {
         self.get(holder, about).is_some_and(|r| r.allows)
