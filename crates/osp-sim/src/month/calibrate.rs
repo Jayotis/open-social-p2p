@@ -14,8 +14,8 @@ use super::spread::{Fetch, Leg, Load, Part, Peer, Rules, Sources, Spread, Swarm,
 
 pub const FOLLOWERS: usize = 300;
 pub const LATECOMERS: usize = 10;
-const UP: [f64; 3] = [5.0, 10.0, 20.0];
-const DOWN: [f64; 3] = [50.0, 100.0, 300.0];
+pub const UP: [f64; 3] = [5.0, 10.0, 20.0];
+pub const DOWN: [f64; 3] = [50.0, 100.0, 300.0];
 /// Followers spread their fetches over this long (`PREFETCH_SPREAD`).
 pub const SPREAD_SECS: f64 = 600.0;
 /// `WhoHosts` over a connection already open: one round trip over Tor

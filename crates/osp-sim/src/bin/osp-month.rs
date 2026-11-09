@@ -5,7 +5,7 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use osp_sim::month::calibrate;
+use osp_sim::month::{calibrate, months};
 
 #[derive(Parser)]
 #[command(version)]
@@ -27,6 +27,18 @@ enum Command {
         #[arg(long, default_value_t = 5)]
         seeds: u64,
         /// Also write the figures here, as JSON.
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
+    /// Three months of posts, one start and one way.
+    Run {
+        #[arg(long, value_enum)]
+        start: months::Start,
+        #[arg(long, value_enum)]
+        way: months::Way,
+        #[arg(long, default_value_t = 1)]
+        seed: u64,
+        /// Also write each post's figures here, as JSON.
         #[arg(long)]
         out: Option<PathBuf>,
     },
@@ -99,6 +111,63 @@ fn main() -> Result<()> {
                 std::fs::write(path, serde_json::to_string_pretty(&json)?)?;
             }
         }
+        Command::Run {
+            start,
+            way,
+            seed,
+            out,
+        } => {
+            let m = months::run(start, way, seed);
+            print_months(&m);
+            if let Some(path) = out {
+                std::fs::write(path, serde_json::to_string_pretty(&m)?)?;
+            }
+        }
     }
     Ok(())
+}
+
+fn print_months(m: &months::Months) {
+    const DAY: f64 = 86_400.0;
+    println!(
+        "post | day | present | 50% / 95% / all (s) | creator copies | relayed (copies) | off the relay | busy | failed | B8"
+    );
+    for p in &m.posts {
+        println!(
+            "{:>4} | {:>4.1} | {:>3} | {} / {} / {} | {:.1} | {:.1} | {:.0}% | {} | {} | {}",
+            p.index + 1,
+            p.at / DAY,
+            p.present,
+            time(p.p50),
+            time(p.p95),
+            time(p.all),
+            p.creator_copies,
+            p.relayed / osp_sim::month::spread::VIDEO_BYTES,
+            100.0 * p.delivered_off_relay / p.delivered.max(1.0),
+            p.busy,
+            p.failed,
+            if p.marks { "met" } else { "missed" },
+        );
+    }
+    // Weeks 5 to 8 and 10 to 13, as marks 1 to 3 compare them.
+    for (name, first, last) in [("weeks 5-8", 5, 8), ("weeks 10-13", 10, 13)] {
+        let ps: Vec<_> = m
+            .posts
+            .iter()
+            .filter(|p| {
+                let week = (p.at / DAY / 7.0) as usize + 1;
+                (first..=last).contains(&week)
+            })
+            .collect();
+        let relayed: f64 = ps.iter().map(|p| p.relayed).sum();
+        let delivered: f64 = ps.iter().map(|p| p.delivered).sum();
+        let off: f64 = ps.iter().map(|p| p.delivered_off_relay).sum();
+        let met = ps.iter().filter(|p| p.marks).count();
+        println!(
+            "{name}: {} posts, B8 met on {met}; relayed {:.1} GB; {:.0}% delivered off the relay",
+            ps.len(),
+            relayed / 1e9,
+            100.0 * off / delivered.max(1.0),
+        );
+    }
 }

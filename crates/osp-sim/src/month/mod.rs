@@ -4,5 +4,6 @@
 //! and what each node writes in its own record.
 
 pub mod calibrate;
+pub mod months;
 pub mod rng;
 pub mod spread;
