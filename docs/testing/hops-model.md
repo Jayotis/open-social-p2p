@@ -98,6 +98,8 @@ Fixed on 2026-11-08, before the model is built.
 
 *Note, 2026-11-09:* the all-relay run's 1,535 s and 370 copies came from a node that fetched some bytes twice (a waiting prefetch lost what had arrived; [the note on the relay runs](network-conditions.md#media-through-relays)). Measured again with the fix: 1,376 s and 325 copies, which replace them here. The model was built to the node's code, which never had that bug, so it's checked against the corrected run. The 50% run's 3% excess stays inside this mark's tenth, so its figures stand.
 
+*Note, 2026-11-09:* the mark didn't say how many times the model runs. It runs each case with 5 seeds, and each figure is judged by its median over the 5, as a single real run can itself start slow or fast (the run with none behind the relay started slow).
+
 **ADR 0017's gate,** for each start and each set of rules:
 
 1. **Hops take at least a quarter of what way 2 still relays off the relay,** in weeks 10 to 13: way 3's relayed bytes are at most three quarters of way 2's.
