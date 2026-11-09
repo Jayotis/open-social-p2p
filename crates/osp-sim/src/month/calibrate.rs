@@ -44,8 +44,10 @@ pub const MEASURED: [Measured; 3] = [
     },
     Measured {
         percent: 100,
-        p95: 1535.0,
-        relay_copies: 369.7,
+        // Measured again with the prefetch fix (b43f2d8): the first run's
+        // 1,535 s and 369.7 copies fetched some bytes twice.
+        p95: 1376.0,
+        relay_copies: 325.3,
     },
 ];
 const P95_WITHIN: f64 = 0.2;

@@ -179,12 +179,14 @@ impl Swarm {
         pool
     }
 
-    /// Up to 6 named to `to`, at random, those reached directly first.
+    /// Up to 6 named to `to`, at random among those reached directly, then
+    /// among the others: the node sorts the whole pool before taking 6
+    /// (`pick_hosts`).
     pub fn named(&self, to: usize, rng: &mut Rng) -> Vec<usize> {
         let mut pool: Vec<usize> = self.pool().into_iter().filter(|&n| n != to).collect();
         rng.shuffle(&mut pool);
-        pool.truncate(SWARM_SAMPLE);
         pool.sort_by_key(|&n| !self.direct[n]);
+        pool.truncate(SWARM_SAMPLE);
         pool
     }
 }
