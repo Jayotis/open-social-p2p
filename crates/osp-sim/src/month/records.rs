@@ -37,6 +37,44 @@ pub enum DayRule {
     Faded,
 }
 
+/// How layer 4's checked bytes are counted to reach it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, clap::ValueEnum)]
+pub enum BytesRule {
+    /// Bytes received and checked in the last 30 days, from daily totals
+    /// (the maintainer's decision, 2026-11-09).
+    Window,
+    /// The faded total, as for keeping the layer (the first reading).
+    Faded,
+}
+
+/// Why a pair isn't directly connected, one direction's record or both.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize)]
+pub enum Block {
+    /// One of them said no to earned links.
+    Consent,
+    /// Fewer than 3 days of work (layer 2).
+    WorkDays,
+    /// Not served on 3 days, and no offer (layer 3's both ways).
+    BothWays,
+    /// Too few checked bytes (layer 4).
+    Bytes,
+    /// Under 30 days since first contact (layer 4).
+    Age,
+    /// The holder had no room under the caps when all else was met.
+    Caps,
+}
+
+impl Block {
+    pub const ALL: [Block; 6] = [
+        Block::Consent,
+        Block::WorkDays,
+        Block::BothWays,
+        Block::Bytes,
+        Block::Age,
+        Block::Caps,
+    ];
+}
+
 /// Days of work count toward reaching a layer for this long.
 const QUALIFYING_WINDOW: i64 = 30;
 
@@ -56,6 +94,8 @@ pub struct Record {
     /// The days of each, unfaded, in the last 30 days, to reach a layer.
     work_day_list: Vec<i64>,
     served_day_list: Vec<i64>,
+    /// Checked bytes received each day, in the last 30 days: totals only.
+    byte_days: Vec<(i64, f64)>,
     /// The other offered this node a link: it reached layer 4 with it.
     pub offered: bool,
     pub layer: u8,
@@ -74,6 +114,53 @@ impl Record {
         let since = day(t) - QUALIFYING_WINDOW;
         self.work_day_list.retain(|&d| d > since);
         self.served_day_list.retain(|&d| d > since);
+        self.byte_days.retain(|&(d, _)| d > since);
+    }
+
+    /// Checked bytes received in the last 30 days.
+    pub fn window_bytes(&self) -> f64 {
+        self.byte_days.iter().map(|&(_, b)| b).sum()
+    }
+}
+
+/// Each of a record's conditions for the layers, met or not, judged apart.
+struct Conditions {
+    layer1: bool,
+    work_days: bool,
+    both_ways: bool,
+    bytes: bool,
+    age: bool,
+    room: bool,
+}
+
+/// Reaching a layer counts actual days (or, under `Faded`, faded ones) and,
+/// for layer 4, bytes; keeping one it holds needs half the mark, faded.
+fn conditions(
+    r: &Record,
+    rule: DayRule,
+    bytes_rule: BytesRule,
+    t: f64,
+    room_now: bool,
+) -> Conditions {
+    let was = r.layer;
+    let (work_q, served_q) = match rule {
+        DayRule::Window => (r.work_day_list.len() as f64, r.served_day_list.len() as f64),
+        DayRule::Faded => (r.work_days, r.served_days),
+    };
+    let bytes_q = match bytes_rule {
+        BytesRule::Window => r.window_bytes(),
+        BytesRule::Faded => r.bytes,
+    };
+    // Qualifies for `layer` by `q`, or keeps it by the faded `kept`.
+    let ok =
+        |layer: u8, q: f64, kept: f64, mark: f64| q >= mark || (was >= layer && kept >= 0.5 * mark);
+    Conditions {
+        layer1: ok(1, work_q, r.work_days, 1.0),
+        work_days: ok(2, work_q, r.work_days, DAYS_FOR_REGULAR),
+        both_ways: r.offered || ok(3, served_q, r.served_days, DAYS_FOR_BOTH_WAYS),
+        bytes: ok(4, bytes_q, r.bytes, EARNED_BYTES),
+        age: t - r.first >= EARNED_AFTER,
+        room: was >= 4 || room_now,
     }
 }
 
@@ -88,6 +175,7 @@ pub struct Records {
     /// Who says yes to earned links.
     pub yes: Vec<bool>,
     pub rule: DayRule,
+    pub bytes_rule: BytesRule,
     /// When each node granted layer 4 to each peer it holds there now.
     earned: Vec<Vec<(usize, f64)>>,
     /// When each node granted layer 4, for the weekly cap.
@@ -95,12 +183,13 @@ pub struct Records {
 }
 
 impl Records {
-    pub fn new(yes: Vec<bool>, rule: DayRule) -> Self {
+    pub fn new(yes: Vec<bool>, rule: DayRule, bytes_rule: BytesRule) -> Self {
         let n = yes.len();
         Records {
             rows: HashMap::new(),
             yes,
             rule,
+            bytes_rule,
             earned: vec![Vec::new(); n],
             granted_at: vec![Vec::new(); n],
         }
@@ -128,6 +217,10 @@ impl Records {
         }
         let r = self.row(holder, about, t);
         r.bytes += bytes;
+        match r.byte_days.last_mut() {
+            Some((d, b)) if *d == day(t) => *b += bytes,
+            _ => r.byte_days.push((day(t), bytes)),
+        }
         if r.last_work_day != Some(day(t)) {
             r.last_work_day = Some(day(t));
             r.work_days += 1.0;
@@ -158,28 +251,19 @@ impl Records {
         let earned_now = self.earned[holder].len();
         self.granted_at[holder].retain(|&g| t - g < 7.0 * DAY);
         let new_this_week = self.granted_at[holder].len();
-        let rule = self.rule;
+        let (rule, bytes_rule) = (self.rule, self.bytes_rule);
+        let room_now = earned_now < MAX_EARNED && new_this_week < NEW_EARNED_A_WEEK;
         let r = self.row(holder, about, t);
         let was = r.layer;
-        let (work_q, served_q) = match rule {
-            DayRule::Window => (r.work_day_list.len() as f64, r.served_day_list.len() as f64),
-            DayRule::Faded => (r.work_days, r.served_days),
-        };
-        // Qualifies for `layer` by `q`, or keeps it by the faded `kept`.
-        let ok = |layer: u8, q: f64, kept: f64, mark: f64| {
-            q >= mark || (was >= layer && kept >= 0.5 * mark)
-        };
+        let c = conditions(r, rule, bytes_rule, t, room_now);
         let mut layer = 0;
-        if ok(1, work_q, r.work_days, 1.0) {
+        if c.layer1 {
             layer = 1;
-            if ok(2, work_q, r.work_days, DAYS_FOR_REGULAR) {
+            if c.work_days {
                 layer = 2;
-                if r.offered || ok(3, served_q, r.served_days, DAYS_FOR_BOTH_WAYS) {
+                if c.both_ways {
                     layer = 3;
-                    let room =
-                        was >= 4 || (earned_now < MAX_EARNED && new_this_week < NEW_EARNED_A_WEEK);
-                    if t - r.first >= EARNED_AFTER && ok(4, r.bytes, r.bytes, EARNED_BYTES) && room
-                    {
+                    if c.age && c.bytes && c.room {
                         layer = 4;
                     }
                 }
@@ -187,15 +271,66 @@ impl Records {
         }
         r.layer = layer;
         if layer == 4 && was < 4 {
-            self.earned[holder].push((about, t));
-            self.granted_at[holder].push(t);
-            // It asks `about` for its endpoints, offering its own: in
-            // `about`'s record of it, an offer, which meets "both ways".
-            self.row(about, holder, t).offered = true;
-            self.update(about, holder, t);
+            // Only a node that says yes asks for a link and spends its caps.
+            if self.yes[holder] {
+                self.earned[holder].push((about, t));
+                self.granted_at[holder].push(t);
+                // It asks `about` for its endpoints, offering its own: in
+                // `about`'s record of it, an offer, which meets "both ways".
+                self.row(about, holder, t).offered = true;
+                self.update(about, holder, t);
+            }
         } else if layer < 4 && was == 4 {
             self.earned[holder].retain(|&(p, _)| p != about);
         }
+    }
+
+    /// What keeps `holder`'s record of `about` short of layer 4 at `t`, each
+    /// condition judged on its own (empty if it's at layer 4).
+    pub fn blocks(&self, holder: usize, about: usize, t: f64) -> Vec<Block> {
+        let Some(r) = self.get(holder, about) else {
+            return vec![Block::WorkDays, Block::BothWays, Block::Bytes, Block::Age];
+        };
+        if r.layer == 4 {
+            return Vec::new();
+        }
+        let mut r = r.clone();
+        r.fade_to(t);
+        let recent = self.granted_at[holder]
+            .iter()
+            .filter(|&&g| t - g < 7.0 * DAY)
+            .count();
+        let room_now = self.earned[holder].len() < MAX_EARNED && recent < NEW_EARNED_A_WEEK;
+        let c = conditions(&r, self.rule, self.bytes_rule, t, room_now);
+        let mut out = Vec::new();
+        if !c.work_days {
+            out.push(Block::WorkDays);
+        }
+        if !c.both_ways {
+            out.push(Block::BothWays);
+        }
+        if !c.bytes {
+            out.push(Block::Bytes);
+        }
+        if !c.age {
+            out.push(Block::Age);
+        }
+        if out.is_empty() && !c.room {
+            out.push(Block::Caps);
+        }
+        out
+    }
+
+    /// Every pair with a record either way.
+    pub fn pairs(&self) -> Vec<(usize, usize)> {
+        let mut v: Vec<(usize, usize)> = self
+            .rows
+            .keys()
+            .map(|&(h, a)| (h.min(a), h.max(a)))
+            .collect();
+        v.sort_unstable();
+        v.dedup();
+        v
     }
 
     /// Fades every record to `t`, so links whose work stopped drop back.
@@ -265,7 +400,7 @@ mod tests {
 
     #[test]
     fn a_link_needs_work_both_ways_for_a_month() {
-        let mut r = Records::new(vec![true, true], DayRule::Window);
+        let mut r = Records::new(vec![true, true], DayRule::Window, BytesRule::Window);
         // 0 and 1 fetch 20 MB from each other every 3 days.
         for k in 0..12 {
             let t = k as f64 * 3.0 * DAY;
@@ -285,7 +420,7 @@ mod tests {
 
     #[test]
     fn three_actual_days_reach_layer_2_though_spread_out() {
-        let mut r = Records::new(vec![true, true], DayRule::Window);
+        let mut r = Records::new(vec![true, true], DayRule::Window, BytesRule::Window);
         for d in [0.0, 12.0, 24.0] {
             r.work(0, 1, 1e6, d * DAY);
         }
@@ -297,7 +432,7 @@ mod tests {
         r.sweep(40.0 * DAY);
         assert_eq!(r.get(0, 1).unwrap().layer, 1);
 
-        let mut faded = Records::new(vec![true, true], DayRule::Faded);
+        let mut faded = Records::new(vec![true, true], DayRule::Faded, BytesRule::Faded);
         for d in [0.0, 12.0, 24.0] {
             faded.work(0, 1, 1e6, d * DAY);
         }
@@ -306,7 +441,7 @@ mod tests {
 
     #[test]
     fn days_older_than_30_dont_qualify() {
-        let mut r = Records::new(vec![true, true], DayRule::Window);
+        let mut r = Records::new(vec![true, true], DayRule::Window, BytesRule::Window);
         for d in [0.0, 20.0, 40.0] {
             r.work(0, 1, 1e6, d * DAY);
         }
@@ -315,7 +450,7 @@ mod tests {
 
     #[test]
     fn spot_checks_put_a_follower_on_record_but_earn_nothing_direct() {
-        let mut r = Records::new(vec![true, true], DayRule::Window);
+        let mut r = Records::new(vec![true, true], DayRule::Window, BytesRule::Window);
         for d in 0..91 {
             let t = d as f64 * DAY;
             for _ in 0..100 {

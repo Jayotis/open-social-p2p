@@ -9,7 +9,7 @@
 use serde::Serialize;
 
 use super::calibrate::{ASK_DELAY, DOWN, SPREAD_SECS, TELL_DELAY, UP, time_for};
-use super::records::{DayRule, Records};
+use super::records::{Block, BytesRule, DayRule, Records};
 use super::rng::Rng;
 use super::spread::{
     Fetch, Leg, Load, Part, Peer, Rules, SWARM_SAMPLE, Sources, Spread, Swarm, VIDEO_BYTES,
@@ -328,9 +328,144 @@ pub struct Months {
     pub way: Way,
     pub rule_set: RuleSet,
     pub days: DayRule,
+    pub bytes_rule: BytesRule,
     pub seed: u64,
     pub posts: Vec<Post>,
     pub newcomers: Vec<Newcomer>,
+    /// Why follower pairs aren't direct peers, by day 60 and at the end.
+    pub pairs_day60: Option<PairReport>,
+    pub pairs_end: PairReport,
+    /// Kim's spot checks, apart: they can't reach layer 4's bytes.
+    pub spot_checks: SpotChecks,
+}
+
+/// Follower pairs, Kim left out, that have dealt with each other, and why
+/// those not directly connected aren't.
+#[derive(Debug, Default, Serialize)]
+pub struct PairReport {
+    pub day: f64,
+    pub all: Blocked,
+    /// Of those, pairs where one is the other's partner for Kim's posts.
+    pub partners: Blocked,
+}
+
+#[derive(Debug, Default, Serialize)]
+pub struct Blocked {
+    pub pairs: usize,
+    pub direct: usize,
+    /// One said no to earned links, and of those, pairs whose records
+    /// met everything else.
+    pub consent: usize,
+    pub consent_only: usize,
+    /// Pairs where both said yes and aren't direct, by the first thing
+    /// missing, in `Block::ALL`'s order (consent's place left at 0):
+    /// `WorkDays` if neither did work for the other on 3 days in the last
+    /// 30, `BothWays` if only one did (the other direction is the same
+    /// transfers seen from the other side), then bytes, age and caps. Also
+    /// the only thing missing, and anything missing.
+    pub both_yes_blocked: usize,
+    /// Of the pairs where work went one way only, those with an operator's
+    /// node in them (they fetch at once, so they nearly always hold first).
+    pub one_way_with_operator: usize,
+    pub first: [usize; 6],
+    pub only: [usize; 6],
+    pub any: [usize; 6],
+}
+
+impl Blocked {
+    /// `ab` and `ba`: what each side's record of the other is missing.
+    fn add(&mut self, direct: bool, consent: bool, operator: bool, ab: &[Block], ba: &[Block]) {
+        self.pairs += 1;
+        if direct {
+            self.direct += 1;
+            return;
+        }
+        if consent {
+            self.consent += 1;
+            self.consent_only += (ab.is_empty() && ba.is_empty()) as usize;
+            return;
+        }
+        self.both_yes_blocked += 1;
+        let idx = |b: &Block| Block::ALL.iter().position(|x| x == b).unwrap();
+        let mut seen = [false; 6];
+        let (wa, wb) = (ab.contains(&Block::WorkDays), ba.contains(&Block::WorkDays));
+        if wa && wb {
+            seen[idx(&Block::WorkDays)] = true;
+        } else if wa || wb {
+            seen[idx(&Block::BothWays)] = true;
+            self.one_way_with_operator += operator as usize;
+        }
+        for b in ab.iter().chain(ba) {
+            if !matches!(b, Block::WorkDays | Block::BothWays) {
+                seen[idx(b)] = true;
+            }
+        }
+        let hit: Vec<usize> = (0..6).filter(|&i| seen[i]).collect();
+        if let Some(&f) = hit.first() {
+            self.first[f] += 1;
+        }
+        if hit.len() == 1 {
+            self.only[hit[0]] += 1;
+        }
+        for i in hit {
+            self.any[i] += 1;
+        }
+    }
+}
+
+#[derive(Debug, Default, Serialize)]
+pub struct SpotChecks {
+    /// Followers Kim's record holds at layer 2 or more, and at 3.
+    pub at_layer2: usize,
+    pub at_layer3: usize,
+    /// The most checked bytes Kim received from one follower in the last 30
+    /// days, and faded, against layer 4's 100 MB.
+    pub most_window_bytes: f64,
+    pub most_faded_bytes: f64,
+    /// Kim's direct links.
+    pub links: usize,
+}
+
+fn pair_report(rules: &Media, creator: usize, t: f64) -> PairReport {
+    let mut rep = PairReport {
+        day: t / DAY,
+        ..Default::default()
+    };
+    for (a, b) in rules.records.pairs() {
+        if a == creator || b == creator {
+            continue;
+        }
+        let direct = rules.records.direct(a, b);
+        let consent = !(rules.records.yes[a] && rules.records.yes[b]);
+        let ab = rules.records.blocks(a, b, t);
+        let ba = rules.records.blocks(b, a, t);
+        assert!(
+            direct || consent || !(ab.is_empty() && ba.is_empty()),
+            "pair {a}, {b} meets everything but isn't direct"
+        );
+        let operator = rules.operator[a] || rules.operator[b];
+        rep.all.add(direct, consent, operator, &ab, &ba);
+        if rules.partners[a].has(b) || rules.partners[b].has(a) {
+            rep.partners.add(direct, consent, operator, &ab, &ba);
+        }
+    }
+    rep
+}
+
+fn spot_checks(rules: &Media, creator: usize, n: usize) -> SpotChecks {
+    let mut s = SpotChecks {
+        links: rules.records.direct_peers(creator).len(),
+        ..Default::default()
+    };
+    for f in 0..n {
+        if let Some(r) = rules.records.get(creator, f) {
+            s.at_layer2 += (r.layer >= 2) as usize;
+            s.at_layer3 += (r.layer >= 3) as usize;
+            s.most_window_bytes = s.most_window_bytes.max(r.window_bytes());
+            s.most_faded_bytes = s.most_faded_bytes.max(r.bytes);
+        }
+    }
+    s
 }
 
 /// One newcomer's progress, in days after it arrived, as seen at each post.
@@ -351,7 +486,14 @@ const SPOT_CHECK_BYTES: f64 = 1024.0;
 /// Honest nodes saying yes to earned links (a starting value).
 const YES_TO_EARNED: f64 = 0.75;
 
-pub fn run(start: Start, way: Way, rule_set: RuleSet, days: DayRule, seed: u64) -> Months {
+pub fn run(
+    start: Start,
+    way: Way,
+    rule_set: RuleSet,
+    days: DayRule,
+    bytes_rule: BytesRule,
+    seed: u64,
+) -> Months {
     // What's the same in every way: who's there, who says yes, when each
     // post goes out and when each follower wakes for it.
     let mut plan = Rng::new(seed);
@@ -389,7 +531,7 @@ pub fn run(start: Start, way: Way, rule_set: RuleSet, days: DayRule, seed: u64) 
         from_operator: 0.0,
         operator: members.iter().map(|m| m.kind == Kind::Operator).collect(),
         post_at: 0.0,
-        records: Records::new(yes.clone(), days),
+        records: Records::new(yes.clone(), days, bytes_rule),
     };
     let mut hosts = vec![false; peers.len()];
     let mut newcomers: Vec<Newcomer> = (0..members.len())
@@ -408,6 +550,7 @@ pub fn run(start: Start, way: Way, rule_set: RuleSet, days: DayRule, seed: u64) 
         .collect();
     let mut checked_to = 0.0;
     let mut posts = Vec::new();
+    let mut pairs_day60 = None;
     for (index, (at, fetches)) in schedule.into_iter().enumerate() {
         // Kim's spot checks since the last post, of followers holding a copy.
         while checked_to + DAY <= at {
@@ -422,6 +565,10 @@ pub fn run(start: Start, way: Way, rule_set: RuleSet, days: DayRule, seed: u64) 
                 }
             }
             checked_to += DAY;
+        }
+        if pairs_day60.is_none() && at > 60.0 * DAY {
+            rules.records.sweep(60.0 * DAY);
+            pairs_day60 = Some(pair_report(&rules, creator, 60.0 * DAY));
         }
         rules.records.sweep(at);
         let standing = rules.records.standing(peers.len(), creator);
@@ -513,14 +660,22 @@ pub fn run(start: Start, way: Way, rule_set: RuleSet, days: DayRule, seed: u64) 
             most_days: rules.records.most_without(creator).1,
         });
     }
+    let end = posts.last().map_or(0.0, |p| p.at) + POST_UNTIL;
+    rules.records.sweep(end);
+    let pairs_end = pair_report(&rules, creator, end);
+    let spot_checks = spot_checks(&rules, creator, peers.len());
     Months {
         start,
         way,
         rule_set,
         days,
+        bytes_rule,
         seed,
         posts,
         newcomers,
+        pairs_day60,
+        pairs_end,
+        spot_checks,
     }
 }
 

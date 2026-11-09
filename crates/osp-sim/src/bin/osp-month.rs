@@ -41,6 +41,9 @@ enum Command {
         /// How days of work are counted to reach a layer.
         #[arg(long, value_enum, default_value = "window")]
         days: osp_sim::month::records::DayRule,
+        /// How layer 4's checked bytes are counted to reach it.
+        #[arg(long, value_enum, default_value = "window")]
+        bytes: osp_sim::month::records::BytesRule,
         #[arg(long, default_value_t = 1)]
         seed: u64,
         /// Also write each post's figures here, as JSON.
@@ -121,10 +124,11 @@ fn main() -> Result<()> {
             way,
             rules,
             days,
+            bytes,
             seed,
             out,
         } => {
-            let m = months::run(start, way, rules, days, seed);
+            let m = months::run(start, way, rules, days, bytes, seed);
             print_months(&m);
             if let Some(path) = out {
                 std::fs::write(path, serde_json::to_string_pretty(&m)?)?;
@@ -217,4 +221,47 @@ fn print_months(m: &months::Months) {
         ));
     }
     println!("summary: {}", summary.join("; "));
+    let names = [
+        "consent",
+        "too few days either way",
+        "one way only",
+        "bytes",
+        "age",
+        "caps",
+    ];
+    let show = |name: &str, b: &months::Blocked| {
+        let list = |xs: [usize; 6]| -> String {
+            names[1..]
+                .iter()
+                .zip(&xs[1..])
+                .map(|(n, c)| format!("{n} {c}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        println!(
+            "  {name}: {} pairs, {} direct; one said no {} (everything else met {}); both yes, not direct {}: first reason {}; only reason {}; any {}",
+            b.pairs,
+            b.direct,
+            b.consent,
+            b.consent_only,
+            b.both_yes_blocked,
+            list(b.first),
+            list(b.only),
+            list(b.any)
+        );
+    };
+    for r in m.pairs_day60.iter().chain(std::iter::once(&m.pairs_end)) {
+        println!("why follower pairs aren't direct, day {:.0}:", r.day);
+        show("all that dealt with each other", &r.all);
+        show("partners", &r.partners);
+    }
+    let k = &m.spot_checks;
+    println!(
+        "Kim's spot checks (1 KiB each): {} followers at layer 2, {} at layer 3; most checked from one follower {:.1} KiB in 30 days ({:.1} KiB faded) against 100 MB; Kim's links {}",
+        k.at_layer2,
+        k.at_layer3,
+        k.most_window_bytes / 1024.0,
+        k.most_faded_bytes / 1024.0,
+        k.links
+    );
 }
