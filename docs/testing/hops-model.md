@@ -19,8 +19,11 @@ Stage A asks two things. Would two hops of volunteer nodes take enough media off
 
 - Kim, the creator, at 20 Mbit/s up and 100 down, as in B8.
 - 300 followers from day 0, at 5, 10 and 20 Mbit/s up in turn, and 50, 100 and 300 down.
-- 50 newcomers following Kim, arriving evenly over days 42 to 56, each told only of a directory, at the same speeds.
+- 50 newcomers following Kim, arriving evenly over days 35 to 49, each told only of a directory, at the same speeds.
+- 50 more newcomers following Kim, arriving evenly over days 57 to 63, after the directory has gone off. Each is told of one established machine picked at random, as if a friend had passed on its record. Starting from a machine someone gives you isn't built ([meeting](meeting.md#newcomers)), so this stands in for it.
 - One operator's 30 nodes, following Kim ([below](#the-operator)).
+
+A newcomer needs no directory for its media: following Kim gets it her posts, the followers her node recommends, and partners. The directory, or a machine given to it, only starts its machine, which [ADR 0015](../decisions/0015-nodes-meet-first.md) keeps apart from whom it follows. So the two groups of newcomers differ in how their machines start, not in how their media does.
 
 **From 10 approved by hand (S):**
 
@@ -50,7 +53,7 @@ Each way runs twice. Under **the rules as accepted**, Jimmy fetches from the fol
 
 ## What the model follows
 
-**Each post.** Each follower waits a random moment in the 10 minutes after the post, then fetches from up to 3 sources at once, and from Kim last, as the node does. Under the accepted rules, the sources are the 6 followers Kim's node names at random among those holding a copy. Under ADR 0023's, they're its partners first. Each node serves one transfer for each 1.5 Mbit/s of its upload, and refuses more as busy, as the node does ([places to suit the upload](network-conditions.md#places-to-suit-the-upload)). A transfer gets the smallest share along its path: of the sender's upload, of each hop's carrying limit, of the relay's limit for each endpoint, and of the receiver's download. The model steps a second at a time while a post spreads.
+**Each post.** Each follower waits a random moment in the 10 minutes after the post, drawn afresh for each post, so which of two partners holds a post first changes from post to post. It then fetches from up to 3 sources at once, and from Kim last, as the node does. Under the accepted rules, the sources are the 6 followers Kim's node names at random among those holding a copy. Under ADR 0023's, they're its partners first. Each node serves one transfer for each 1.5 Mbit/s of its upload, and refuses more as busy, as the node does ([places to suit the upload](network-conditions.md#places-to-suit-the-upload)). A transfer gets the smallest share along its path: of the sender's upload, of each hop's carrying limit, of the relay's limit for each endpoint, and of the receiver's download. The model steps a second at a time while a post spreads.
 
 **Each path,** in way 3, as ADR 0017's "Who picks" sets it, for Jimmy fetching from Alice:
 
@@ -59,7 +62,7 @@ Each way runs twice. Under **the rules as accepted**, Jimmy fetches from the fol
 - On 1 in 10 transfers that use a hop, a machine in the middle that has no standing with Jimmy, from his table. It's picked at random under the accepted rules, and by ADR 0023's rule otherwise.
 - A leg with no hop goes through the relay. A transfer takes its bytes off the relay only if none of its legs goes through it.
 
-**Each record,** kept by each node alone, and fading by half every 14 days:
+**Each record,** kept by each node alone, and fading by half every 14 days. A node credits only what it received and checked itself, so when Jimmy serves Alice, the work goes in Alice's record of Jimmy, and when she serves him, in his record of her. Nothing passes between the two records.
 
 - Work, for ADR 0018's layers: downloads completed from a node; Kim's spot checks of her followers' copies, 100 a day (a starting value), each piece checked; and, once a node has shown its machine at layer 2, the jobs that machine carried.
 - Layers 1 to 4 as in ADR 0018's table. Layer 4 needs 100 MB of checked bytes (a starting value). ADR 0018's caps apply: 32 earned peers at once, and 2 new a week.
@@ -70,19 +73,19 @@ Each way runs twice. Under **the rules as accepted**, Jimmy fetches from the fol
 
 - At the start, a machine knows only a directory's map and the machines that greet it. The map holds every machine that greeted the directory. Each machine greets those on the map, within ADR 0015's 6 dials an hour.
 - Tables keep ADR 0015's and 0016's limits: 256 places, the 40 places of those who greet, and a quarter for one source. Tor's timing isn't modelled.
-- Alice gives her list to a machine that did work for her on 3 different days, once a day, and an empty list to anyone else. She introduces a machine that did that work to machines that accept her introductions, as ADR 0022 sets. A node that counts an introduction halves layer 4's days and bytes for the machine introduced, as ADR 0018 does for a reference.
-- The directory goes off on day 63, for the last four weeks.
+- Alice gives her list to a machine that did work for her on 3 different days, once a day, and an empty list to anyone else. She introduces a machine that did that work to machines that accept her introductions, as ADR 0022 sets. A node that counts an introduction halves layer 4's days and bytes for the machine introduced, as ADR 0018 does for a reference. Kim's node recommending sources isn't an introduction, and counts for nothing here ([ADR 0023](../decisions/0023-followers-keep-working-together.md)).
+- The directory goes off on day 56, for the last five weeks.
 
 ## The operator
 
-In Z, one operator runs 30 nodes following Kim, about a tenth of the machines that carry, each at 100 Mbit/s up and 1,000 down. They host every post and serve it fast, and say yes to carrying and to earned links. They carry and finish every job they get, greet every machine on the map, and ask for every list they can. That's the expensive path ADR 0022 sets as the price: everything it gets, it gets by real work. It never drops a job, as dropping only loses standing; ADR 0017's stage C tests that.
+In Z, one operator runs 30 nodes following Kim, about a tenth of the machines that carry, each at 100 Mbit/s up and 1,000 down. They fetch each post the moment it's out, with no random wait, by the same rules as any follower: nobody else holds it yet, so their first copies come from Kim, and each copy counts in their download and in its sender's upload. Then they host it and serve it fast, and say yes to carrying and to earned links. They carry and finish every job they get, greet every machine on the map, and ask for every list they can. That's the expensive path ADR 0022 sets as the price: everything it gets, it gets by real work. It never drops a job, as dropping only loses standing; ADR 0017's stage C tests that.
 
 The model reports what the operator got and what it paid:
 
 - honest nodes' addresses, through direct links and as the hop next to an end;
 - lists and introductions;
 - the transfers where it held the hops on both sides, and so saw both ends;
-- the terabytes it uploaded.
+- the terabytes it downloaded getting the posts, and uploaded serving and carrying them.
 
 A fast server that serves well is a benefit, so nothing marks the operator down for that. Mark 9 only checks that it sees both ends no more often than its share of the hops suggests.
 
@@ -95,7 +98,7 @@ Fixed on 2026-11-08, before the model is built.
 **ADR 0017's gate,** for each start and each set of rules:
 
 1. **Hops take at least a quarter of what way 2 still relays off the relay,** in weeks 10 to 13: way 3's relayed bytes are at most three quarters of way 2's.
-2. **B8's marks hold** for the posts of weeks 10 to 13 in way 3: 95% of the followers present hold each post within 15 minutes and all within 30, and Kim sends copies to at most a tenth of them. Also, no post in any week spreads more slowly in way 3 than in way 1. Every follower starts behind the relay, where B8's marks were missed ([media through relays](network-conditions.md#media-through-relays)), so the early weeks can't be expected to meet them.
+2. **B8's marks hold** for the posts of weeks 10 to 13 in way 3: 95% of the followers present hold each post within 15 minutes and all within 30, and Kim sends copies to at most a tenth of them. Every follower starts behind the relay, where B8's marks were missed ([media through relays](network-conditions.md#media-through-relays)), so the early weeks can't be expected to meet them. Over all 45 posts, way 3 isn't slower than way 1: its time for 95% of followers is no later than way 1's for at least 9 posts in 10, and no more than a fifth later for any. A path through hops can be held up for a while, as any can, so this allows a few slow posts but not slower ones in general.
 3. **The share going direct grows,** in ways 2 and 3: it's higher in weeks 10 to 13 than in weeks 5 to 8.
 
 **ADR 0023,** judged on its rules against the accepted ones, in way 3 of Z:
@@ -106,14 +109,18 @@ Fixed on 2026-11-08, before the model is built.
 
 **ADR 0022's first read,** judged on ADR 0023's rules, in way 3 of Z:
 
-7. **Newcomers get going:** 9 in 10 of Z's newcomers that said yes to carrying get a middle turn within 7 days of arriving, standing with one node (jobs for it on 3 different days) within 21, and that node's list and an introduction within 28.
-8. **Nodes keep meeting with the directory off:** after day 63, each established node that carries adds a machine to its table through a list or an introduction.
+7. **Newcomers get going,** in each of Z's two groups, judged apart: 9 in 10 of those that said yes to carrying get a middle turn within 7 days of arriving, standing with one node (jobs for it on 3 different days) within 21, and that node's list and an introduction within 28. For the second group, this is joining with the directory off, starting from one machine.
+8. **Established nodes keep meeting with the directory off:** after day 56, each established node that carries gets at least one list or introduction naming a machine that isn't in its table. That counts what it hears of, whether or not its table has room to keep it.
 
 **The operator,** in way 3 of Z, under each set of rules:
 
 9. **It sees both ends no more often than its share suggests:** the share of transfers through hops where it held the hops on both sides is at most twice p², where p is its share of the hops picked.
 
-**The model's own check,** not the design's: no machine learns an address the rules don't give it. Any such case is a fault in the model, fixed before the results count.
+**The model's own checks,** not the design's. Any failure is a fault in the model, fixed before the results count:
+
+- No machine learns an address the rules don't give it.
+- Partners swap both ways: across pairs of partners, each side served first on between a third and two thirds of the posts both fetched, and each side's record holds only the work it received.
+- The operator holds no post before a transfer has brought it one.
 
 ## Recorded too
 
@@ -129,8 +136,8 @@ Also recorded:
 
 - how many weeks pass before hops carry anything, and in S, whether they still carry after the 10 leave;
 - how often a follower's sources are ones it used before;
-- days to each layer for pairs of followers, with and without an introduction;
-- for each newcomer, the days to its first copy served, middle turn, standing, list and introduction, and to being picked next to a viewer;
+- days to each layer for pairs of followers, with and without an introduction, and the days of work each side's record holds of the other;
+- for each newcomer, in each group, the days to its first copy served, middle turn, standing, list and introduction, and to being picked next to a viewer;
 - lists asked for and refused;
 - the operator's figures, above.
 
@@ -148,4 +155,4 @@ If marks 0 to 3 are met under one set of rules, one real run checks B8's marks w
 
 ## Not modelled
 
-QUIC, and timings shorter than a second; Tor's timing for messages; routers, so every pair can connect; nodes going off and coming back; other creators, reshares and strangers; bad data and failing disks; an operator dropping jobs; other users of the relay; and phones, which are windows onto their owner's node.
+QUIC, and timings shorter than a second; Tor's timing for messages; routers, so every pair can connect; nodes going off and coming back; other creators, scouts' reshares and strangers, so whether creators' and scouts' nodes become the network's meeting points isn't shown; bad data and failing disks; an operator dropping jobs; other users of the relay; and phones, which are windows onto their owner's node.
