@@ -95,7 +95,8 @@ pub struct Run {
     pub creator_copies: f64,
     pub relay_copies: f64,
     /// What followers received over one copy each, sent twice as parts were
-    /// taken over: 6, 0.3, 3 and 14% in the measured runs.
+    /// taken over. The measured runs' 0.3 to 14% was mostly a bug since
+    /// fixed (b43f2d8); with it fixed, 0% with all behind the relay.
     pub followers_extra: f64,
     pub busy: usize,
     pub failed: usize,
@@ -192,14 +193,68 @@ pub fn run(percent: usize, seed: u64) -> Run {
         latecomers,
         mark: None,
     };
-    if let Some(m) = MEASURED.iter().find(|m| m.percent == percent) {
-        let p95_ok = run
-            .p95
-            .is_some_and(|p| (p - m.p95).abs() <= P95_WITHIN * m.p95);
-        let relay_ok =
-            (run.relay_copies - m.relay_copies).abs() <= RELAY_WITHIN * m.relay_copies.max(1.0);
-        let creator_ok = (CREATOR_COPIES.0..=CREATOR_COPIES.1).contains(&run.creator_copies);
-        run.mark = Some(p95_ok && relay_ok && creator_ok);
-    }
+    run.mark = judge(percent, run.p95, run.relay_copies, run.creator_copies);
     run
+}
+
+/// Mark 0 for one case, if it was measured.
+pub fn judge(
+    percent: usize,
+    p95: Option<f64>,
+    relay_copies: f64,
+    creator_copies: f64,
+) -> Option<bool> {
+    let m = MEASURED.iter().find(|m| m.percent == percent)?;
+    let p95_ok = p95.is_some_and(|p| (p - m.p95).abs() <= P95_WITHIN * m.p95);
+    let relay_ok = (relay_copies - m.relay_copies).abs() <= RELAY_WITHIN * m.relay_copies.max(1.0);
+    let creator_ok = (CREATOR_COPIES.0..=CREATOR_COPIES.1).contains(&creator_copies);
+    Some(p95_ok && relay_ok && creator_ok)
+}
+
+/// The median of each figure over a case's seeds, as mark 0 judges it.
+#[derive(Debug, Serialize)]
+pub struct Median {
+    pub percent: usize,
+    pub seeds: usize,
+    pub p50: Option<f64>,
+    pub p95: Option<f64>,
+    pub all: Option<f64>,
+    pub creator_copies: f64,
+    pub relay_copies: f64,
+    pub mark: Option<bool>,
+}
+
+fn median(mut xs: Vec<f64>) -> f64 {
+    xs.sort_by(f64::total_cmp);
+    let n = xs.len();
+    if n % 2 == 1 {
+        xs[n / 2]
+    } else {
+        (xs[n / 2 - 1] + xs[n / 2]) / 2.0
+    }
+}
+
+/// A time not reached counts as later than any reached; the median is
+/// `None` if over half the seeds didn't reach it.
+fn median_time(ts: &[Option<f64>]) -> Option<f64> {
+    let xs: Vec<f64> = ts.iter().map(|t| t.unwrap_or(f64::INFINITY)).collect();
+    Some(median(xs)).filter(|t| t.is_finite())
+}
+
+/// `runs` all of one case, one for each seed.
+pub fn medians(runs: &[Run]) -> Median {
+    let percent = runs[0].percent;
+    let p95 = median_time(&runs.iter().map(|r| r.p95).collect::<Vec<_>>());
+    let relay_copies = median(runs.iter().map(|r| r.relay_copies).collect());
+    let creator_copies = median(runs.iter().map(|r| r.creator_copies).collect());
+    Median {
+        percent,
+        seeds: runs.len(),
+        p50: median_time(&runs.iter().map(|r| r.p50).collect::<Vec<_>>()),
+        p95,
+        all: median_time(&runs.iter().map(|r| r.all).collect::<Vec<_>>()),
+        creator_copies,
+        relay_copies,
+        mark: judge(percent, p95, relay_copies, creator_copies),
+    }
 }
