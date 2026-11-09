@@ -1,18 +1,19 @@
 //! Three months of Kim's posts ([plan]): who's in each start, when each
 //! post goes out, and what each post cost and took.
 //!
-//! Built a step at a time. So far: way 1 (relays alone) under the rules as
-//! accepted, which needs no records, as nothing earns anything there.
+//! Built a step at a time. So far: ways 1 (relays alone) and 2 (earned
+//! links) under the rules as accepted.
 //!
 //! [plan]: ../../../docs/testing/hops-model.md
 
 use serde::Serialize;
 
-use super::calibrate::{ASK_DELAY, DOWN, SPREAD_SECS, TELL_DELAY, UP};
+use super::calibrate::{ASK_DELAY, DOWN, SPREAD_SECS, TELL_DELAY, UP, time_for};
+use super::records::Records;
 use super::rng::Rng;
 use super::spread::{Fetch, Leg, Load, Part, Peer, Rules, Sources, Spread, Swarm, VIDEO_BYTES};
 
-const DAY: f64 = 86_400.0;
+use super::records::DAY;
 /// 45 posts, one every 2 days.
 pub const POSTS: usize = 45;
 const POST_EVERY_DAYS: f64 = 2.0;
@@ -37,6 +38,9 @@ pub enum Start {
 pub enum Way {
     /// 1: media through the relay, as today.
     Relays,
+    /// 2: directly between two nodes that each earned it (ADR 0018),
+    /// otherwise through the relay.
+    Earned,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -118,13 +122,18 @@ pub fn population(start: Start) -> (Vec<Member>, Vec<Peer>) {
     (members, peers)
 }
 
-/// Way 1 under the rules as accepted: sources as Kim's node names them,
-/// every leg through the relay.
-struct RelaysAlone {
+/// What decides each transfer's path, and what the nodes write down.
+struct Media {
+    way: Way,
     creator: usize,
+    /// Seconds from the start of the post spreading now.
+    post_at: f64,
+    records: Records,
 }
 
-impl Rules for RelaysAlone {
+impl Rules for Media {
+    /// Under the rules as accepted: those Kim's node names, at random, then
+    /// Kim.
     fn sources(&mut self, to: usize, swarm: &Swarm, rng: &mut Rng) -> Sources {
         Sources {
             at_once: swarm.named(to, rng),
@@ -132,15 +141,26 @@ impl Rules for RelaysAlone {
         }
     }
 
-    fn path(&mut self, source: usize, _to: usize, _load: &Load, _rng: &mut Rng) -> Vec<Leg> {
+    fn path(&mut self, source: usize, to: usize, _load: &Load, _rng: &mut Rng) -> Vec<Leg> {
+        let relayed = match self.way {
+            Way::Relays => true,
+            Way::Earned => !self.records.direct(source, to),
+        };
         vec![Leg {
             from: source,
-            relayed: true,
+            relayed,
             carried: false,
         }]
     }
 
-    fn part_done(&mut self, _part: &Part, _now: f64) {}
+    fn part_done(&mut self, part: &Part, now: f64) {
+        let t = self.post_at + now;
+        if part.bytes > 0.0 {
+            self.records.work(part.to, part.source, part.bytes, t);
+            self.records.served(part.source, part.to, t);
+        }
+    }
+
     fn holds(&mut self, _node: usize, _now: f64) {}
 }
 
@@ -164,6 +184,16 @@ pub struct Post {
     pub failed: usize,
     /// B8's three marks for this post.
     pub marks: bool,
+    /// Pairs with a direct link when the post went out.
+    pub direct_pairs: usize,
+    /// Of the followers there from day 0 that said yes to earned links, the
+    /// share with a direct link to someone other than Kim (mark 4).
+    pub day0_linked: f64,
+    /// Records between nodes other than Kim at layers 0 to 4.
+    pub layers: [usize; 5],
+    /// The most checked bytes, and work days, in any record not Kim's.
+    pub most_bytes: f64,
+    pub most_days: f64,
 }
 
 #[derive(Debug, Serialize)]
@@ -174,34 +204,94 @@ pub struct Months {
     pub posts: Vec<Post>,
 }
 
+/// Kim's spot checks a day, each of a 1 KiB piece (a starting value).
+const SPOT_CHECKS_A_DAY: usize = 100;
+const SPOT_CHECK_BYTES: f64 = 1024.0;
+/// Honest nodes saying yes to earned links (a starting value).
+const YES_TO_EARNED: f64 = 0.75;
+
 pub fn run(start: Start, way: Way, seed: u64) -> Months {
-    let mut rng = Rng::new(seed);
+    // What's the same in every way: who's there, who says yes, when each
+    // post goes out and when each follower wakes for it.
+    let mut plan = Rng::new(seed);
     let (members, mut peers) = population(start);
     let creator = 0;
-    let mut rules = match way {
-        Way::Relays => RelaysAlone { creator },
+    let yes: Vec<bool> = members
+        .iter()
+        .map(|m| m.kind == Kind::Operator || plan.chance(YES_TO_EARNED))
+        .collect();
+    let schedule: Vec<(f64, Vec<Fetch>)> = (0..POSTS)
+        .map(|index| {
+            let at = (index as f64 * POST_EVERY_DAYS) * DAY + plan.range(0.0, DAY);
+            let fetches = (1..members.len())
+                .filter(|&i| members[i].present(at))
+                .map(|node| Fetch {
+                    node,
+                    wakes: if members[node].kind == Kind::Operator {
+                        0.0
+                    } else {
+                        plan.range(0.0, SPREAD_SECS)
+                    },
+                })
+                .collect();
+            (at, fetches)
+        })
+        .collect();
+    let mut rng = Rng::new(seed.wrapping_add(1));
+    let mut checks = Rng::new(seed.wrapping_add(2));
+    let mut rules = Media {
+        way,
+        creator,
+        post_at: 0.0,
+        records: Records::new(yes.clone()),
     };
+    let mut hosts = vec![false; peers.len()];
+    let mut checked_to = 0.0;
     let mut posts = Vec::new();
-    for index in 0..POSTS {
-        let at = (index as f64 * POST_EVERY_DAYS) * DAY + rng.range(0.0, DAY);
-        let present: Vec<usize> = (1..members.len())
-            .filter(|&i| members[i].present(at))
-            .collect();
+    for (index, (at, fetches)) in schedule.into_iter().enumerate() {
+        // Kim's spot checks since the last post, of followers holding a copy.
+        while checked_to + DAY <= at {
+            let candidates: Vec<usize> = (1..peers.len())
+                .filter(|&i| hosts[i] && members[i].present(checked_to))
+                .collect();
+            if !candidates.is_empty() {
+                for _ in 0..SPOT_CHECKS_A_DAY {
+                    let f = candidates[checks.below(candidates.len())];
+                    let t = checked_to + checks.range(0.0, DAY);
+                    rules.records.work(creator, f, SPOT_CHECK_BYTES, t);
+                }
+            }
+            checked_to += DAY;
+        }
+        rules.records.sweep(at);
+        rules.post_at = at;
+        let present: Vec<usize> = fetches.iter().map(|f| f.node).collect();
         // Kim's node notes each copy anew for each post; who has followed
-        // longest is the order they followed. Under way 1 nobody is reached
-        // directly.
+        // longest is the order they followed. It names first those it
+        // reaches directly.
         let mut swarm = Swarm::new(peers.len());
-        let fetches: Vec<Fetch> = present
-            .iter()
-            .map(|&node| Fetch {
-                node,
-                wakes: if members[node].kind == Kind::Operator {
-                    0.0
-                } else {
-                    rng.range(0.0, SPREAD_SECS)
-                },
+        for &i in &present {
+            swarm.direct[i] = rules.records.direct(creator, i);
+        }
+        let direct_pairs = (0..peers.len())
+            .map(|i| {
+                rules
+                    .records
+                    .direct_peers(i)
+                    .into_iter()
+                    .filter(|&p| p > i)
+                    .count()
             })
+            .sum();
+        let day0: Vec<usize> = present
+            .iter()
+            .copied()
+            .filter(|&i| members[i].arrives == 0.0 && members[i].kind != Kind::Operator && yes[i])
             .collect();
+        let linked = day0
+            .iter()
+            .filter(|&&i| rules.records.direct_peers(i).iter().any(|&p| p != creator))
+            .count();
         let out = Spread {
             peers: &mut peers,
             rules: &mut rules,
@@ -213,9 +303,12 @@ pub fn run(start: Start, way: Way, seed: u64) -> Months {
             until: POST_UNTIL,
         }
         .run(&mut swarm, &fetches, &[]);
+        for &i in &present {
+            hosts[i] |= out.held[i].is_some();
+        }
         let held: Vec<Option<f64>> = present.iter().map(|&i| out.held[i]).collect();
-        let p95 = super::calibrate::time_for(&held, 0.95);
-        let all = super::calibrate::time_for(&held, 1.0);
+        let p95 = time_for(&held, 0.95);
+        let all = time_for(&held, 1.0);
         let creator_copies = out.served[creator] / VIDEO_BYTES;
         let marks = p95.is_some_and(|t| t <= P95_WITHIN)
             && all.is_some_and(|t| t <= ALL_WITHIN)
@@ -224,7 +317,7 @@ pub fn run(start: Start, way: Way, seed: u64) -> Months {
             index,
             at,
             present: present.len(),
-            p50: super::calibrate::time_for(&held, 0.5),
+            p50: time_for(&held, 0.5),
             p95,
             all,
             creator_copies,
@@ -235,6 +328,11 @@ pub fn run(start: Start, way: Way, seed: u64) -> Months {
             busy: out.busy,
             failed: out.failed,
             marks,
+            direct_pairs,
+            day0_linked: linked as f64 / day0.len().max(1) as f64,
+            layers: rules.records.layers_without(creator),
+            most_bytes: rules.records.most_without(creator).0,
+            most_days: rules.records.most_without(creator).1,
         });
     }
     Months {

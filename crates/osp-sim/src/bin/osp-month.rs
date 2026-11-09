@@ -130,11 +130,11 @@ fn main() -> Result<()> {
 fn print_months(m: &months::Months) {
     const DAY: f64 = 86_400.0;
     println!(
-        "post | day | present | 50% / 95% / all (s) | creator copies | relayed (copies) | off the relay | busy | failed | B8"
+        "post | day | present | 50% / 95% / all (s) | creator copies | relayed (copies) | off the relay | busy | failed | B8 | direct pairs | day-0 linked | layers 0-4, not Kim | most MB, days"
     );
     for p in &m.posts {
         println!(
-            "{:>4} | {:>4.1} | {:>3} | {} / {} / {} | {:.1} | {:.1} | {:.0}% | {} | {} | {}",
+            "{:>4} | {:>4.1} | {:>3} | {} / {} / {} | {:.1} | {:.1} | {:.0}% | {} | {} | {} | {} | {:.0}% | {:?} | {:.0}, {:.1}",
             p.index + 1,
             p.at / DAY,
             p.present,
@@ -147,6 +147,11 @@ fn print_months(m: &months::Months) {
             p.busy,
             p.failed,
             if p.marks { "met" } else { "missed" },
+            p.direct_pairs,
+            100.0 * p.day0_linked,
+            p.layers,
+            p.most_bytes / 1e6,
+            p.most_days,
         );
     }
     // Weeks 5 to 8 and 10 to 13, as marks 1 to 3 compare them.

@@ -5,5 +5,6 @@
 
 pub mod calibrate;
 pub mod months;
+pub mod records;
 pub mod rng;
 pub mod spread;
