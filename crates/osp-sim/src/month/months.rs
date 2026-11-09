@@ -487,6 +487,7 @@ pub struct Post {
     pub delivered: f64,
     pub delivered_off_relay: f64,
     pub delivered_through_hops: f64,
+    pub delivered_direct: f64,
     pub busy: usize,
     pub failed: usize,
     /// B8's three marks for this post.
@@ -879,6 +880,7 @@ pub fn run(
             delivered: out.delivered,
             delivered_off_relay: out.delivered_off_relay,
             delivered_through_hops: out.delivered_through_hops,
+            delivered_direct: out.delivered_direct,
             busy: out.busy,
             failed: out.failed,
             marks,

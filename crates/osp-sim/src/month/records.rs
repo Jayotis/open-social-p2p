@@ -347,7 +347,10 @@ impl Records {
 
     /// Fades every record to `t`, so links whose work stopped drop back.
     pub fn sweep(&mut self, t: f64) {
-        let keys: Vec<_> = self.rows.keys().copied().collect();
+        // In a fixed order, so a seed always gives the same run: which
+        // record is brought up to date first can decide a cap or an offer.
+        let mut keys: Vec<_> = self.rows.keys().copied().collect();
+        keys.sort_unstable();
         for (h, a) in keys {
             self.update(h, a, t);
         }

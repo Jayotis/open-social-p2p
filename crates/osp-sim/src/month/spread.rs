@@ -268,6 +268,8 @@ pub struct Outcome {
     pub delivered: f64,
     pub delivered_off_relay: f64,
     pub delivered_through_hops: f64,
+    /// … and over a direct connection, with no hop and no relay.
+    pub delivered_direct: f64,
     /// Bytes received and thrown away, as another node took over a part.
     pub wasted: f64,
     /// Requests refused as busy, and downloads that gave up.
@@ -490,6 +492,8 @@ impl<R: Rules> Spread<'_, R> {
                 }
                 if st.legs.iter().any(|l| l.carried) {
                     out.delivered_through_hops += useful;
+                } else if !through_relay {
+                    out.delivered_direct += useful;
                 }
                 if st.part_left <= 1e-6 && st.junk <= 1e-6 {
                     part_ends.push(s);
