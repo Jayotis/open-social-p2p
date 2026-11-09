@@ -56,6 +56,7 @@ use crate::{
     tor::TorSide,
     trust,
     uploads::{LiveUpload, UploadKey},
+    viewing::{self, Viewing},
 };
 
 /// Limits that only the simulated network harness (`osp-sim`) changes,
@@ -110,6 +111,10 @@ pub struct SimSettings {
     /// How long things take among machines (ADR 0015's step 3). The
     /// simulator and tests run them faster.
     pub meeting: MeetingTimes,
+    /// How long a viewing endpoint takes new requests, and longest it lives
+    /// (ADR 0024). Tests shorten them.
+    pub viewing_reuse: Duration,
+    pub viewing_life: Duration,
     /// The node sends and receives through this simulated network instead
     /// of IP sockets (`simnet`). Its config should have relays disabled.
     #[cfg(feature = "sim")]
@@ -143,6 +148,8 @@ impl Default for SimSettings {
             max_found_people: directory::MAX_FOUND_PEOPLE,
             greets_back_per_hour: directory::MAX_GREETS_BACK_PER_HOUR,
             meeting: MeetingTimes::default(),
+            viewing_reuse: viewing::REUSE_FOR,
+            viewing_life: viewing::MAX_LIFE,
             #[cfg(feature = "sim")]
             network: None,
             #[cfg(feature = "sim")]
@@ -253,6 +260,8 @@ pub(crate) struct Core {
     pub reading_directories: tokio::sync::Mutex<HashSet<EndpointId>>,
     /// Wakes the reading of directories, when the machines met all fail.
     pub read_directories_now: Notify,
+    /// Endpoints for fetching found posts' media unseen (ADR 0024).
+    pub viewing: Viewing,
     pub sim: SimSettings,
     /// With `SimSettings::tor_delay`: when the Tor-like circuits to each
     /// node are, or will be, ready.
@@ -549,6 +558,7 @@ impl Node {
             listed_now: Notify::new(),
             reading_directories: tokio::sync::Mutex::new(HashSet::new()),
             read_directories_now: Notify::new(),
+            viewing: Viewing::new(sim.viewing_reuse, sim.viewing_life),
             sim,
             #[cfg(feature = "sim")]
             tor_ready: Mutex::new(HashMap::new()),
@@ -677,6 +687,12 @@ impl Node {
         self.core.shareable_addr().await
     }
 
+    /// How many viewing endpoints this node has made since it started (ADR
+    /// 0024).
+    pub fn viewing_endpoints_made(&self) -> usize {
+        self.core.viewing.made()
+    }
+
     /// This node's own signed profile, as it gives it to others.
     pub fn profile(&self) -> SignedObject {
         self.core.profile.clone()
@@ -778,6 +794,19 @@ impl Node {
         self.core.check_unfollowed_reshares().await
     }
 
+    /// Opens a blob as one of the node's devices does: from here if it's
+    /// stored, otherwise fetched, by the size its post declares.
+    pub async fn open_blob(&self, hash: &BlobHash) -> Result<u64> {
+        let declared = self
+            .core
+            .db
+            .declared_size(hash)?
+            .context("no post on this node includes it")?;
+        self.core
+            .ensure_blob(hash, BlobClass::Cache, declared)
+            .await
+    }
+
     /// Downloads a blob of at most `size` bytes from specific nodes into
     /// the cache, asking them one at a time. For tests and diagnostics.
     pub async fn download_blob_from(
@@ -819,6 +848,7 @@ impl Node {
         for task in &self.tasks {
             task.abort();
         }
+        self.core.viewing.close_all().await;
         self.router
             .shutdown()
             .await
@@ -1039,6 +1069,25 @@ pub(crate) fn endpoint_builder(
     lookup: &MemoryLookup,
     relays: &RelayPolicy,
 ) -> Result<Builder> {
+    builder_publishing(net, lookup, relays, true)
+}
+
+/// The same, for an endpoint that finds others but isn't published under its
+/// ID, as a viewing endpoint mustn't be (ADR 0024).
+pub(crate) fn endpoint_builder_unpublished(
+    net: &NetworkConfig,
+    lookup: &MemoryLookup,
+    relays: &RelayPolicy,
+) -> Result<Builder> {
+    builder_publishing(net, lookup, relays, false)
+}
+
+fn builder_publishing(
+    net: &NetworkConfig,
+    lookup: &MemoryLookup,
+    relays: &RelayPolicy,
+    publish: bool,
+) -> Result<Builder> {
     let transport = QuicTransportConfig::builder()
         .max_concurrent_bidi_streams(MAX_STREAMS_PER_CONN.into())
         // None of our protocols use one-way streams. Nobody would read them,
@@ -1052,8 +1101,10 @@ pub(crate) fn endpoint_builder(
         .clear_address_lookup()
         .address_lookup(Checked::new(lookup.clone(), relays.clone()));
     if net.address_lookup {
+        if publish {
+            builder = builder.address_lookup(PkarrPublisher::n0_dns());
+        }
         builder = builder
-            .address_lookup(PkarrPublisher::n0_dns())
             .address_lookup(Checked::new(PkarrResolver::n0_dns(), relays.clone()))
             .address_lookup(Checked::new(DnsAddressLookup::n0_dns(), relays.clone()));
     }

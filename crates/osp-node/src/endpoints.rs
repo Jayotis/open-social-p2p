@@ -147,7 +147,7 @@ impl OwnEndpoints {
 /// On the simulated network, an endpoint's packets go through it, and a
 /// `relayed` one's through its relay, if it has one.
 #[cfg(feature = "sim")]
-fn sim_network(
+pub(crate) fn sim_network(
     builder: iroh::endpoint::Builder,
     sim: &SimSettings,
     key: &SecretKey,
@@ -169,7 +169,7 @@ fn sim_network(
 }
 
 #[cfg(not(feature = "sim"))]
-fn sim_network(
+pub(crate) fn sim_network(
     builder: iroh::endpoint::Builder,
     _sim: &SimSettings,
     _key: &SecretKey,
