@@ -29,6 +29,8 @@ Each record captures one significant decision: the problem, the options consider
 | [0023](0023-followers-keep-working-together.md) | Followers keep working together | Proposed 2026-11-08; adds to 0018's layer 1 and 0017's middle turns; measured first in 0017's stage A model |
 | [0024](0024-watching-found-posts-without-your-identity.md) | Watching a found post without showing who you are | Proposed 2026-11-09, revised after review; settles 0015's open question on found posts' media |
 | [0025](0025-shared-posts-are-found-and-hosted.md) | Shared posts are found, and hosted for whoever finds them | Proposed 2026-11-09, revised after review; builds on 0024; adds to 0015's directories and doc 13's resharers' swarms; supersedes 0020 once accepted |
+| [0026](0026-help-distribute.md) | Help Distribute: hosting public media without a reshare | Proposed 2026-11-09; a hosting identity bound to nothing; revisits part of 0016; after 0025's step 3 |
+| [0027](0027-directory-bootstrap-list-and-mirror.md) | A signed list of directories, and a mirror of their listings | Proposed 2026-11-09; adds to 0015's directories and 0014's step 6 |
 
 Proposals under review that may become ADRs: [peer reciprocity and recognition](../12-peer-reciprocity-and-recognition.md) (its first phase, measuring, is ADR 0011) and [hosting roles and the follower swarm](../13-hosting-roles-and-follower-swarm.md) (its first phase is accepted, and whether to share copies is asked at setup, ADR 0012). See the [critical review](../reviews/2026-10-21-review-of-docs-12-and-13.md) for what blocks them.
 
