@@ -1,6 +1,6 @@
 # ADR 0022: Lists and introductions are earned
 
-**Status:** Proposed (2026-11-08), from the maintainer's decisions after [ADR 0016](0016-machine-acquaintances.md)'s stage A3 missed its gate. It changes [ADR 0015](0015-nodes-meet-first.md)'s `Known` reply, and makes ADR 0016's introductions and references one feature, replacing [ADR 0021](0021-introduced-machines-count-among-those-who-greet.md). Each change says what it replaces. Built after carrying, with ADR 0016's stage B. Until then, `Known` works as it does now, and introductions stay off by default.
+**Status:** Accepted (2026-11-08), the maintainer's decisions after [ADR 0016](0016-machine-acquaintances.md)'s stage A3 missed its gate. It changes [ADR 0015](0015-nodes-meet-first.md)'s `Known` reply, and makes ADR 0016's introductions and references one feature, replacing [ADR 0021](0021-introduced-machines-count-among-those-who-greet.md). Each change says what it replaces. Built after carrying, with ADR 0016's stage B. Until then, `Known` works as it does now, and introductions stay off by default.
 
 ## Context
 
@@ -100,7 +100,7 @@ After ADR 0016's stage B (carrying, and checked work letting a machine out of th
 
 | Step | Work | Gate |
 | --- | --- | --- |
-| 1 | Access to contacts, introduction relationships and introductions, as above | In `osp-sim` with carrying, with marks set in the run's plan before it runs: a newcomer that knows only a directory gets a middle turn, standing with one node, its list and an introduction, each within a set time; strangers get no list; introductions reach only machines that accepted the introducer's; one operator's names get no honest node's list without carrying its jobs; established nodes keep meeting with the directory off |
+| 1 | Access to contacts, introduction relationships and introductions, as above | In `osp-sim` with carrying, with marks set in the run's plan before it runs: a newcomer that knows only a directory gets a middle turn, standing with one node, its list and an introduction, each within a set time; strangers get no list; introductions reach only machines that accepted the introducer's; one operator's names get no honest node's list without carrying its jobs; established nodes keep meeting with the directory off. Also stage E's: signers can't be spoofed, an introduction from a machine without carrying standing, or passed on by another, changes nothing, and ADR 0018's price check |
 
 ## Validation
 

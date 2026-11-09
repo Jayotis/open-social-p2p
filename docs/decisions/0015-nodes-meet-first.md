@@ -66,7 +66,7 @@ Questions to settle:
 `osp/machine/1` starts with three requests, each with a capped reply:
 
 - **`Hello`:** each side sends its machine record: its ID, what it offers (being a directory, so far) and a date, signed by its own key.
-- **`Known`:** up to 20 records, picked at random from machines it has met lately. It doesn't say how or when.
+- **`Known`:** up to 20 records, picked at random from machines it has met lately. It doesn't say how or when. Once carrying is built, [ADR 0022](0022-lists-and-introductions-are-earned.md#access-to-contacts) (2026-11-08) answers it only for a machine that has done work for this node that it checked, on 3 different days; anyone else gets an empty list.
 - **`Listing { since, limit }`:** a directory's lists, below, in pages, as an outbox is read. Other machines say they aren't directories.
 
 A request a machine doesn't know gets an error rather than a closed connection, so messages can be added later.
