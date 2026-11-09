@@ -396,6 +396,7 @@ mod tests {
                 summary: None,
                 discoverable: false,
                 nodes: vec![],
+                media_endpoints: vec![],
                 published: "2026-10-22T12:00:00.000Z".to_string(),
             }),
         ];

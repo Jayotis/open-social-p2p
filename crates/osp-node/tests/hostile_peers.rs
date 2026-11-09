@@ -482,6 +482,7 @@ impl HostileAuthor {
                         summary: None,
                         discoverable: false,
                         nodes: vec![],
+                        media_endpoints: vec![],
                         published: osp_proto::now_rfc3339(),
                     }),
                 )

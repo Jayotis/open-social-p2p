@@ -12,8 +12,8 @@ use std::{
 use anyhow::{Context, Result, ensure};
 use iroh::{EndpointAddr, EndpointId, PublicKey};
 use osp_proto::{
-    BlobHash, BoundEndpoint, Delete, EarlierKeys, EndpointKind, Key, Note, ObjectId, Payload,
-    Person, SignedObject,
+    BlobHash, BoundEndpoint, Delete, EarlierKeys, EndpointBinding, EndpointKind, Key, Note,
+    ObjectId, Payload, Person, SignedObject,
     machine::{ListingEntry, ListingItem, MAX_LISTING_PAGE_BYTES, MachineRecord},
     rpc::{FollowInfo, PeerCounts, StorageInfo, Upload, UploadId},
 };
@@ -1391,6 +1391,18 @@ impl Db {
             .optional()?;
         json.map(|j| serde_json::from_str(&j).context("corrupt stored profile"))
             .transpose()
+    }
+
+    /// The media endpoints the newest profile held for `actor` gives, those
+    /// that check out (ADR 0024). An older profile's never replaces it, so
+    /// neither do its bindings.
+    pub fn media_endpoints_of(&self, actor: &PublicKey) -> Result<Vec<EndpointBinding>> {
+        Ok(match self.profile(actor)?.map(|obj| obj.verify()) {
+            Some(Ok(Payload::Person(person))) if person.actor == *actor => {
+                person.media_endpoints().cloned().collect()
+            }
+            _ => vec![],
+        })
     }
 
     pub fn profile_name(&self, actor: &PublicKey) -> Result<Option<String>> {
@@ -4417,6 +4429,7 @@ mod tests {
             summary: summary.map(String::from),
             discoverable: false,
             nodes: vec![],
+            media_endpoints: vec![],
             published: osp_proto::now_rfc3339(),
         };
         let obj = SignedObject::sign(key, &Payload::Person(person.clone())).unwrap();
@@ -4776,6 +4789,7 @@ mod tests {
                 summary: None,
                 discoverable: true,
                 nodes: vec![],
+                media_endpoints: vec![],
                 published: published.into(),
             };
             let signed = SignedObject::sign(&key, &Payload::Person(person.clone())).unwrap();
@@ -4793,6 +4807,48 @@ mod tests {
         db.keep_found(&directory, &newest, &newest_signed, &[], 300)
             .unwrap();
         assert_eq!(found_people(&db, "newest"), ["Newest"]);
+    }
+
+    #[test]
+    fn a_media_endpoint_from_an_older_profile_is_ignored() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(&dir.path().join("t.db")).unwrap();
+        let directory = SecretKey::from_bytes(&[9; 32]).public();
+        let key = SecretKey::from_bytes(&[1; 32]);
+        let node = SecretKey::from_bytes(&[2; 32]);
+        let dated = |media: u8, published: &str| {
+            let media = SecretKey::from_bytes(&[media; 32]);
+            let person = Person {
+                actor: key.public(),
+                name: "Kim".into(),
+                summary: None,
+                discoverable: true,
+                nodes: vec![node.public()],
+                media_endpoints: vec![EndpointBinding::new(
+                    &node,
+                    &media,
+                    EndpointKind::Media,
+                    1_000,
+                )],
+                published: published.into(),
+            };
+            let signed = SignedObject::sign(&key, &Payload::Person(person.clone())).unwrap();
+            (person, signed)
+        };
+        let media_of = |db: &Db| -> Vec<EndpointId> {
+            let bound = db.media_endpoints_of(&key.public()).unwrap();
+            bound.iter().map(|b| b.endpoint).collect()
+        };
+        assert!(media_of(&db).is_empty());
+        let (later, later_signed) = dated(3, LATER);
+        db.keep_found(&directory, &later, &later_signed, &[], 100)
+            .unwrap();
+        let three = SecretKey::from_bytes(&[3; 32]).public();
+        assert_eq!(media_of(&db), [three]);
+        let (earlier, earlier_signed) = dated(4, EARLIER);
+        db.keep_found(&directory, &earlier, &earlier_signed, &[], 200)
+            .unwrap();
+        assert_eq!(media_of(&db), [three]);
     }
 
     /// The text of each post a search finds, in order.

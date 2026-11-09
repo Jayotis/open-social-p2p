@@ -18,7 +18,7 @@ use iroh::{
 };
 use iroh_blobs::BlobsProtocol;
 use osp_proto::{
-    BlobHash, EarlierKeys, ObjectId, Payload, Person, SignedObject,
+    BlobHash, EarlierKeys, EndpointBinding, EndpointKind, ObjectId, Payload, Person, SignedObject,
     rpc::{BackupInfo, ClientRequest, ClientResponse},
 };
 use tokio::{
@@ -492,7 +492,13 @@ impl Node {
         };
         import_restored_media(&home, &store).await?;
         resign_own_objects(&signer, &db)?;
-        let profile = own_profile(&signer, &config, endpoint.id(), &db)?;
+        // The media endpoint's binding goes in the profile (ADR 0024); a
+        // direct endpoint's never does.
+        let media_binding = endpoints
+            .as_ref()
+            .and_then(|own| own.media.as_ref())
+            .map(|m| m.binding.clone());
+        let profile = own_profile(&signer, &config, endpoint.id(), media_binding, &db)?;
         let media_tools = media::tools_available(&config.media).await;
         let heic_tool = media::heic_tool_available(&config.media).await;
         if matches!(signer, Signer::Identity(_)) {
@@ -669,6 +675,11 @@ impl Node {
     /// The address other nodes should use to reach this one.
     pub async fn addr(&self) -> EndpointAddr {
         self.core.shareable_addr().await
+    }
+
+    /// This node's own signed profile, as it gives it to others.
+    pub fn profile(&self) -> SignedObject {
+        self.core.profile.clone()
     }
 
     /// How to reach the media endpoint, when it's on.
@@ -1125,8 +1136,14 @@ fn own_profile(
     signer: &Signer,
     config: &Config,
     node: EndpointId,
+    media: Option<EndpointBinding>,
     db: &Db,
 ) -> Result<SignedObject> {
+    debug_assert!(media.as_ref().is_none_or(|b| b.kind == EndpointKind::Media));
+    let media_endpoints: Vec<EndpointBinding> = media
+        .into_iter()
+        .filter(|b| b.kind == EndpointKind::Media)
+        .collect();
     let me = signer.identity();
     let summary = config.summary.as_deref().map(str::trim);
     let summary = summary.filter(|s| !s.is_empty()).map(String::from);
@@ -1140,6 +1157,7 @@ fn own_profile(
         && p.summary == summary
         && p.discoverable == discoverable
         && p.nodes == [node]
+        && p.media_endpoints == media_endpoints
         && existing.certificate() == signer.certificate()
     {
         return Ok(existing.clone());
@@ -1159,6 +1177,7 @@ fn own_profile(
         summary,
         discoverable,
         nodes: vec![node],
+        media_endpoints,
         published: humantime::format_rfc3339_millis(at).to_string(),
     };
     let obj = signer.sign(&Payload::Person(person.clone()))?;

@@ -742,6 +742,7 @@ mod tests {
             summary: None,
             discoverable: true,
             nodes: vec![],
+            media_endpoints: vec![],
             published: DATE.into(),
         };
         SignedObject::sign(&key(), &Payload::Person(person)).unwrap()

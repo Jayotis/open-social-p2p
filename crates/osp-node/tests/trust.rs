@@ -185,6 +185,7 @@ impl Peer {
             summary: None,
             discoverable: false,
             nodes,
+            media_endpoints: vec![],
             published: osp_proto::now_rfc3339(),
         });
         let req = SocialRequest::AskTrust {

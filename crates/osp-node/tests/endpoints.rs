@@ -23,7 +23,7 @@ use iroh_relay::server::{RelayConfig, Server, ServerConfig};
 use osp_node::{Config, DirectRule, Node, RelayChoice};
 use osp_proto::{
     BlobHash, BoundEndpoint, CLIENT_ALPN, EndpointBinding, EndpointKind, ObjectId, PairingTicket,
-    SOCIAL_ALPN,
+    Payload, SOCIAL_ALPN,
     framing::{read_frame, write_frame},
     rpc::{ClientRequest, ClientResponse},
     social::{SocialRequest, SocialResponse},
@@ -511,6 +511,33 @@ async fn the_media_endpoint_serves_anyone_and_tells_no_address() {
     tokio::time::sleep(SETTLE).await;
     assert_eq!(told_of(&addr.id), 0, "told of an address");
 
+    node.shutdown().await.unwrap();
+}
+
+/// ADR 0024: the profile carries the media endpoint's binding, so a node that
+/// follows nobody here can fetch public media from it. Never the direct one's.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_profile_names_the_media_endpoint_and_never_the_direct_one() {
+    let (_relay, url) = local_relay().await;
+    let dir = tempfile::tempdir().unwrap();
+    let node = start(dir.path(), config("Node", &url, DirectRule::Anyone)).await;
+    let media = node.media_addr().await.unwrap().id;
+    let direct = node.direct_addr().await.unwrap().id;
+    let profile = node.profile();
+    let Payload::Person(person) = profile.verify().unwrap() else {
+        panic!("not a profile");
+    };
+    let bound = person.media_endpoint(&node.node_id()).unwrap();
+    assert_eq!(bound.endpoint, media);
+    assert_eq!(person.media_endpoints.len(), 1);
+    let json = serde_json::to_string(&profile).unwrap();
+    assert!(!json.contains(&direct.to_string()), "{json}");
+    node.shutdown().await.unwrap();
+
+    // The binding is the same after a restart, so the profile isn't signed
+    // again for nothing.
+    let node = Node::spawn(&dir.path().join("node")).await.unwrap();
+    assert_eq!(node.profile(), profile);
     node.shutdown().await.unwrap();
 }
 
