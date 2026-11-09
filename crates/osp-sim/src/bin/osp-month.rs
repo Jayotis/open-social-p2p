@@ -47,6 +47,9 @@ enum Command {
         /// When honest machines ask others for their lists.
         #[arg(long, value_enum, default_value = "when-reason")]
         lists: osp_sim::month::meeting::Asking,
+        /// Experiment A, B or C, or several (docs/testing/hops-experiments.md).
+        #[arg(long, value_enum, default_value = "baseline")]
+        experiment: months::Experiment,
         #[arg(long, default_value_t = 1)]
         seed: u64,
         /// Also write each post's figures here, as JSON.
@@ -129,10 +132,11 @@ fn main() -> Result<()> {
             days,
             bytes,
             lists,
+            experiment,
             seed,
             out,
         } => {
-            let m = months::run(start, way, rules, days, bytes, lists, seed);
+            let m = months::run(start, way, rules, days, bytes, lists, experiment, seed);
             print_months(&m);
             if let Some(path) = out {
                 std::fs::write(path, serde_json::to_string_pretty(&m)?)?;
