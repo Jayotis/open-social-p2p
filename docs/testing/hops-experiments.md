@@ -2,6 +2,8 @@
 
 **Status:** Plan, fixed on 2026-11-09 before any code or run. The maintainer approved the three experiments after [the hops model](hops-model.md#results) missed most of its marks. Changing anything below later needs a dated note here saying what changed and why.
 
+**Clarified 2026-11-09, still before any code (the maintainer):** A's weeks are four consecutive blocks of 7 days that don't overlap, so one day can't count toward two weeks, and the run reports how often active servers miss that bar. B's baseline keeps every machine online and counts the relay's standby capacity apart from the bytes it carries, and two more configurations have 1% and 5% of B's jobs fail. B's figures also follow each newcomer's work with each viewer, as that's what earns standing. No pass mark changed.
+
 The hops model showed three things in the way of the design. Hosts rarely had a hop to pick, because a host's hop must be its direct peer. Direct links need work in both directions, but partners mostly work one way: a fast follower serving slower ones is the swarm doing its job, not failing. And newcomers had about 5 middle turns a day across the whole network to earn their first standing.
 
 Each experiment changes one of those, as a candidate revision of [ADR 0018](../decisions/0018-earned-direct-connections.md), [ADR 0017](../decisions/0017-one-hop-forwarding.md) or [ADR 0023](../decisions/0023-followers-keep-working-together.md). None is built in the node, and meeting a mark here approves nothing: it gives the figures for a new ADR, which is then measured the same way.
@@ -14,7 +16,7 @@ Everything in the [hops model's plan](hops-model.md) not named below: the two st
 
 Today a direct link needs each side to hold the other at layer 4, and layer 3 needs work both ways. Under A, contribution and connection are counted apart:
 
-- **Contribution, in Alice's record of Jimmy:** checked downloads Jimmy served her. Layers 1 and 2 as now. Alice's side allows a link when Jimmy served her on 3 different days in each of 2 of the last 4 weeks, with 100 MB checked in the last 30 days, and 30 days since first contact. Kept, as now, on faded standing at half the marks.
+- **Contribution, in Alice's record of Jimmy:** checked downloads Jimmy served her. Layers 1 and 2 as now. Alice's side allows a link when Jimmy served her on 3 different days in each of at least 2 of the last 4 weeks, with 100 MB checked in the last 30 days, and 30 days since first contact. The 4 weeks are consecutive blocks of 7 days counted back from now, which don't overlap, so a day counts toward one week only. Kept, as now, on faded standing at half the marks. Kim posts every 2 days, so 3 days of service in one week may be hard to reach: the run reports how often a server that served the same node on 3 days or more in the last 30 misses this bar.
 - **Client relationship, in Jimmy's record of Alice:** requests from Alice that Jimmy authenticated, on 3 different days in the last 30, and 30 days since first contact. Jimmy's side allows a link on that. Requests earn Alice no contribution standing: they count toward no layer, no list, no introduction and no hop pick.
 - **A link opens** only when both sides allow it, each said yes to earned links, and each has room under ADR 0018's caps (32 at once, 2 new a week). Work both ways still counts, so a pair that swaps as now also qualifies.
 - **The machine-to-node binding:** a node can prove which machine is its own with a signed binding, given to a node it served. The binding earns nothing. It replaces "once the node has shown its machine at layer 2" everywhere: a machine's checked downloads count toward lists, introductions and the viewer's hop picks from the first job, not only after the other side also served it.
@@ -29,6 +31,8 @@ A newcomer can't earn standing without jobs, and today jobs come only as middle 
 - **Credit as now:** the viewer checks each job and credits it in its own record. Standing is jobs for the same viewer on 3 different days in the last 30.
 
 The cost is real: each such transfer goes through the relay twice and through the newcomer's upload once. B is measured for what it costs, not only what it earns.
+
+**Failures.** In B5, B10 and B20 every machine stays online, so the fallback is never used. The relay's standby capacity for it, what a transfer could fall back on, is counted apart from the bytes it actually carries, and never as media delivered. Two more configurations, on B10, make a fixed share of B's jobs fail, picked by the seed so a run repeats exactly: **B10-f1**, 1% of them, and **B10-f5**, 5%. A failed job stops part way through, and the rest of the transfer goes on through the relay alone. They report whether every failed transfer was completed through the relay, the bytes that cost beyond a job that didn't fail, and that the machine got no credit for a failed job. They add to the acceptance runs, and change none of their marks.
 
 ## C. Kim supplies the first copies
 
@@ -45,6 +49,7 @@ Under C, Kim's node gives each new post first to up to 4 followers:
 | Baseline (the second run) | | | |
 | A | yes | | |
 | B5, B10, B20 | | 5%, 10%, 20% | |
+| B10-f1, B10-f5 | | 10%, with 1% or 5% of its jobs failing | |
 | C | | | yes |
 | ABC5, ABC10, ABC20 | yes | 5%, 10%, 20% | yes |
 
@@ -61,12 +66,13 @@ For each configuration and seed:
 
 - **Resource costs:** bytes through the relay; home upload for each byte delivered; under B, the extra relay bytes and newcomers' upload for B's jobs; Kim's upload.
 - **Fairness of distribution:** among honest followers, the share of bytes served by the 10% that served most, and the Gini of bytes served.
-- **Newcomer opportunities:** B's jobs offered and taken each day; newcomers with at least one job; days from arriving to jobs on 3 days for the same viewer; jobs turned away by the 2-a-day limit, and newcomers that hit it on 3 days or more, to show whether it limits progress.
+- **Newcomer opportunities:** B's jobs offered and taken each day; newcomers with at least one job; days from arriving to jobs on 3 days for the same viewer; jobs turned away by the 2-a-day limit, and newcomers that hit it on 3 days or more, to show whether it limits progress. **Work with the same viewer:** for each newcomer, the most days of jobs it did for any one viewer in the last 30, and how its jobs spread over viewers (jobs, viewers, and pairs with 1, 2, and 3 or more days), as many jobs spread over many viewers can leave nearly every newcomer short of standing.
 - **Delivery:** the time for 50% and 95% of followers to hold each post, against the baseline.
 - **Addresses exposed:** honest nodes whose address any other machine learned, through a direct link or as the hop next to it, and honest nodes whose address the operator's machines learned.
 - **Concentration of knowledge:** the operator's share of lists given, of introductions, of end hops, of the entries in honest machines' tables, and, under C, of Kim's picks.
-- **A's links:** links opened on one-way service, and those that needed work both ways.
+- **A's links:** links opened on one-way service, and those that needed work both ways; servers active with a node (3 days or more in 30) that miss the weekly bar.
+- **The relay:** bytes it carried, and, apart, its standby capacity for B's fallback.
 
 ## Not modelled
 
-As in the hops model's plan. Also: how a relay or a newcomer falling behind affects one transfer in detail (B's fallback is modelled as the transfer going on through the relay); bad bindings or forged requests, as signatures aren't modelled.
+As in the hops model's plan. Also: failures other than B10-f1's and B10-f5's, and how a newcomer falling behind affects one transfer in detail (a failed job's transfer goes on through the relay); bad bindings or forged requests, as signatures aren't modelled.
