@@ -4,6 +4,7 @@
 use std::{
     collections::{HashMap, HashSet},
     fmt,
+    hash::{Hash, Hasher},
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
@@ -15,18 +16,18 @@ use iroh::{
     protocol::{AcceptError, ProtocolHandler},
 };
 use osp_proto::{
-    BoundEndpoint, EndpointKind, Payload, Person, SOCIAL_ALPN, SignedObject,
+    BlobHash, BoundEndpoint, EndpointKind, Payload, Person, SOCIAL_ALPN, SignedObject,
     framing::{read_frame, read_frame_max, write_frame},
     social::{
-        MAX_GET_OBJECTS, MAX_OUTBOX_PAGE, MAX_REQUEST_LEN, OutboxEntry, SocialRequest,
-        SocialResponse,
+        HostingReshare, MAX_GET_OBJECTS, MAX_OUTBOX_PAGE, MAX_REQUEST_LEN, OutboxEntry,
+        SocialRequest, SocialResponse,
     },
 };
 use tokio::sync::Semaphore;
 use tracing::{debug, info};
 
 use crate::{
-    db::{SwarmMember, now_ms},
+    db::{ResharerHost, SwarmMember, now_ms},
     network,
     node::{Core, check_addr, remember},
     peers::{self, Event},
@@ -81,6 +82,18 @@ const MAX_SWARM_SAMPLES_PER_HOUR: u32 = 60;
 /// follower tells us of a copy once for each post it fetches ahead of
 /// time, and one already noted isn't checked again.
 const MAX_HOSTING_CHECKS_PER_HOUR: u32 = 60;
+/// Hosting resharers of one post an author's node keeps (ADR 0025). A
+/// starting value: well over what it names, so a few that stop serving
+/// leave others to name.
+const MAX_RESHARER_HOSTS: usize = 64;
+/// Hosting resharers one reply names, at most, by the day's draw.
+pub(crate) const RESHARERS_NAMED: usize = 6;
+/// A resharer whose copy failed this many checks in a row isn't named,
+/// until one passes (ADR 0025).
+pub(crate) const RESHARER_FAILS_UNNAMED: u32 = 2;
+/// A host whose copy passed a check within this long may take the one place
+/// for a recently verified host (ADR 0025). A starting value.
+const RECENT_HOST: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 const HOUR: Duration = Duration::from_secs(60 * 60);
 /// How far ahead of our clock a profile or key certificate may be dated.
 /// The newer one wins (ADR 0009, ADR 0010), so one dated years ahead could
@@ -283,17 +296,22 @@ impl Core {
                         false => nodes.push(self.shareable_addr().await),
                     }
                 }
+                let public = class.is_some_and(|c| c.is_public());
                 // Followers with a copy of media we host by choice, our own
                 // or reshared, only to followers.
-                if class.is_some_and(|c| c.is_public())
+                let mut members = Vec::new();
+                let mut sample = Vec::new();
+                let sampled = public
                     && self.db.is_follower(&remote)?
-                    && self.swarm_samples.allow(remote, MAX_SWARM_SAMPLES_PER_HOUR)
-                {
-                    let mut members = self.db.swarm_members(&blob, &remote)?;
+                    && self.swarm_samples.allow(remote, MAX_SWARM_SAMPLES_PER_HOUR);
+                if sampled {
+                    members = self.db.swarm_members(&blob, &remote)?;
                     members.retain(|m| !bound || m.host.is_some());
-                    let picked =
-                        self.heard
-                            .pick_hosts(members, Instant::now(), self.sim.heard_lately);
+                    let picked = self.heard.pick_hosts(
+                        members.clone(),
+                        Instant::now(),
+                        self.sim.heard_lately,
+                    );
                     let [direct, relayed, not_lately] = picked.pool;
                     let named: Vec<String> = picked
                         .named
@@ -305,13 +323,63 @@ impl Core {
                         direct, relayed, not_lately, trusted = picked.trusted, ?named,
                         "named followers as hosts"
                     );
-                    for member in picked.named {
-                        match member.host.filter(|_| bound) {
-                            Some(host) => hosts.push(host),
-                            None => nodes.push(member.addr),
+                    sample = picked.named;
+                }
+                // Hosting resharers that may be listed, to anyone (ADR 0025),
+                // by their media endpoints. Only a node with other endpoints
+                // names them: they serve nothing on their public IDs.
+                let mut resharers = Vec::new();
+                if bound && public {
+                    resharers = self.resharers_to_name(&blob)?;
+                    resharers.retain(|h| h.binding.public != remote);
+                }
+                // At most one place for a recently verified, under-used host:
+                // in the followers' sample for a follower, else among the
+                // resharers. None kept when none qualifies.
+                if public && self.config.swarm.recent_host_place {
+                    let named: HashSet<EndpointId> = sample
+                        .iter()
+                        .map(|m| m.addr.id)
+                        .chain(resharers.iter().map(|h| h.binding.public))
+                        .collect();
+                    match self.recent_host(&blob, remote, bound, &members, &named)? {
+                        Some(Recent::Follower(member)) => {
+                            give_place(&mut sample, SWARM_SAMPLE, member, |m| m.trusted)
                         }
+                        Some(Recent::Resharer(host)) if sampled => {
+                            // A follower's sample holds followers' copies;
+                            // a resharer's place is taken from it.
+                            if sample.len() >= SWARM_SAMPLE
+                                && let Some(i) = sample.iter().rposition(|m| !m.trusted)
+                            {
+                                sample.remove(i);
+                            }
+                            resharers.insert(0, host);
+                        }
+                        Some(Recent::Resharer(host)) => {
+                            give_place(&mut resharers, RESHARERS_NAMED, host, |_| false)
+                        }
+                        None => {}
                     }
                 }
+                let mut named_now: Vec<EndpointId> = Vec::new();
+                for member in sample {
+                    named_now.push(member.addr.id);
+                    match member.host.filter(|_| bound) {
+                        Some(host) => hosts.push(host),
+                        None => nodes.push(member.addr),
+                    }
+                }
+                for host in resharers {
+                    if !hosts
+                        .iter()
+                        .any(|h| h.binding.public == host.binding.public)
+                    {
+                        named_now.push(host.binding.public);
+                        hosts.push(host);
+                    }
+                }
+                self.named_hosts.note(&named_now);
                 for addr in self.db.hosts(&blob)? {
                     if addr.id == remote || addr.id == self.endpoint.id() {
                         continue;
@@ -331,7 +399,17 @@ impl Core {
                     false => SocialResponse::Hosts { nodes },
                 }
             }
-            SocialRequest::Hosting { blob } => {
+            SocialRequest::Hosting {
+                blob,
+                reshare: Some(reshare),
+            } => {
+                self.resharer_hosting(remote, &blob, &reshare).await?;
+                SocialResponse::Ok
+            }
+            SocialRequest::Hosting {
+                blob,
+                reshare: None,
+            } => {
                 ensure!(
                     self.db.follower_shares(&remote)?,
                     "only a follower that shares what it prefetches can host this node's media"
@@ -497,6 +575,167 @@ impl Core {
             self.sync_now.notify_one();
         }
         Ok(())
+    }
+
+    /// A resharer tells this node it hosts a copy of one of its posts (ADR
+    /// 0025). Its `Announce` and its owner's profile are checked; then, if
+    /// it's new, a piece of `blob` from the media endpoint the profile gives.
+    /// One noted before isn't checked again here, the daily rechecks do
+    /// that, but gets its newest profile's endpoint and listing choice.
+    async fn resharer_hosting(
+        &self,
+        remote: EndpointId,
+        blob: &BlobHash,
+        reshare: &HostingReshare,
+    ) -> Result<()> {
+        let me = self.signer.identity();
+        let Payload::Announce(a) = reshare.announce.verify()? else {
+            bail!("that isn't a reshare");
+        };
+        ensure!(a.hosting, "that reshare doesn't host a copy");
+        ensure!(
+            a.object_actor == me,
+            "that reshare isn't of this node's posts"
+        );
+        ensure!(
+            reshare.profile.signer() == a.actor,
+            "the profile isn't the resharer's"
+        );
+        let Payload::Person(person) = reshare.profile.verify()? else {
+            bail!("that isn't a profile");
+        };
+        profile_date(&person)?;
+        ensure!(
+            person.nodes.contains(&remote),
+            "the profile doesn't list your node"
+        );
+        let note = match self.db.outbox_object(&a.object)? {
+            Some(obj) => match obj.verify()? {
+                Payload::Note(note) => note,
+                _ => bail!("{} isn't one of this node's posts", a.object.fmt_short()),
+            },
+            None => bail!("{} isn't one of this node's posts", a.object.fmt_short()),
+        };
+        let size = note
+            .sized_blobs()
+            .find_map(|(b, size)| (b == *blob).then_some(size))
+            .with_context(|| format!("{} isn't media of that post", blob.fmt_short()))?;
+        let media = person
+            .media_endpoint(&remote)
+            .context("the profile gives no media endpoint for your node")?
+            .clone();
+        let blobs: Vec<BlobHash> = note.blobs().collect();
+        let host = ResharerHost {
+            node: remote,
+            post: a.object,
+            actor: a.actor,
+            announce: reshare.announce.id(),
+            media,
+            discoverable: person.discoverable,
+            fails: 0,
+            checked_ms: now_ms(),
+        };
+        if self.db.is_resharer_host(&a.object, &remote)? {
+            return self.db.note_resharer_host(&host, &blobs);
+        }
+        ensure!(
+            self.db.resharer_hosts_of(&a.object)? < MAX_RESHARER_HOSTS,
+            "this node keeps as many hosting resharers of that post as it notes"
+        );
+        ensure!(
+            self.hosting_checks
+                .allow(remote, MAX_HOSTING_CHECKS_PER_HOUR),
+            "this node has checked enough of your copies this hour; try again later"
+        );
+        let source = Source {
+            node: remote,
+            endpoint: host.media.endpoint,
+            from_direct: false,
+        };
+        if let Err(e) = self.store.check_piece(blob, size, source).await {
+            debug!(
+                resharer = %a.actor.fmt_short(),
+                "a resharer said it hosts a copy, but didn't send a piece of it: {e:#}"
+            );
+            bail!(
+                "this node couldn't get a piece of {} from your media endpoint: {e:#}",
+                blob.fmt_short()
+            );
+        }
+        self.db.note_resharer_host(&host, &blobs)?;
+        info!(
+            resharer = %a.actor.fmt_short(),
+            post = %a.object.fmt_short(),
+            listed = person.discoverable,
+            "a resharer hosts a copy of a post"
+        );
+        Ok(())
+    }
+
+    /// The host for the one place in a `WhoHosts` reply for a recently
+    /// verified, under-used host (ADR 0025): of those `named` doesn't hold
+    /// already, the one this node has named least often. Followers in
+    /// `members` qualify if their copy was checked within `RECENT_HOST` and
+    /// they were heard from lately; hosting resharers that may be listed if
+    /// their last check passed within it. None if nobody qualifies.
+    fn recent_host(
+        &self,
+        blob: &BlobHash,
+        remote: EndpointId,
+        bound: bool,
+        members: &[SwarmMember],
+        named: &HashSet<EndpointId>,
+    ) -> Result<Option<Recent>> {
+        let since = now_ms() - RECENT_HOST.as_millis() as i64;
+        let now = Instant::now();
+        let mut candidates: Vec<(EndpointId, Recent)> = members
+            .iter()
+            .filter(|m| {
+                m.verified_ms >= since
+                    && self.heard.contact(&m.addr.id, now, self.sim.heard_lately)
+                        != Contact::NotLately
+            })
+            .map(|m| (m.addr.id, Recent::Follower(m.clone())))
+            .collect();
+        if bound {
+            for host in self.db.named_resharers(blob, 1)? {
+                if host.checked_ms >= since && host.node != remote {
+                    let bound = BoundEndpoint {
+                        addr: EndpointAddr::new(host.media.endpoint),
+                        binding: host.media,
+                    };
+                    candidates.push((host.node, Recent::Resharer(bound)));
+                }
+            }
+        }
+        candidates.retain(|(id, _)| !named.contains(id));
+        let picked = self.named_hosts.least(candidates);
+        if let Some((id, _)) = &picked {
+            debug!(host = %id.fmt_short(), "gave the place for a recently verified host");
+        }
+        Ok(picked.map(|(_, recent)| recent))
+    }
+
+    /// The hosting resharers of `blob` this node names to anyone (ADR
+    /// 0025), by their media endpoints: those that may be listed and whose
+    /// last 2 checks didn't both fail. At most `RESHARERS_NAMED`, by a draw
+    /// that holds for the day and changes the next.
+    pub(crate) fn resharers_to_name(&self, blob: &BlobHash) -> Result<Vec<BoundEndpoint>> {
+        let mut named = self.db.named_resharers(blob, RESHARER_FAILS_UNNAMED)?;
+        let day = now_ms() / (24 * 60 * 60 * 1000);
+        named.sort_by_key(|host| {
+            let mut h = std::hash::DefaultHasher::new();
+            (blob.as_bytes(), day, host.node.as_bytes()).hash(&mut h);
+            h.finish()
+        });
+        Ok(named
+            .into_iter()
+            .take(RESHARERS_NAMED)
+            .map(|host| BoundEndpoint {
+                addr: EndpointAddr::new(host.media.endpoint),
+                binding: host.media,
+            })
+            .collect())
     }
 
     /// Where to get a piece of a blob from a follower that says it holds a
@@ -927,6 +1166,55 @@ impl Heard {
     }
 }
 
+/// The host for a reply's place for a recently verified host.
+enum Recent {
+    Follower(SwarmMember),
+    Resharer(BoundEndpoint),
+}
+
+/// Puts `host` among `named`, at most `most` of them: in place of the last
+/// one `fixed` doesn't hold in place if they're full. Nothing changes when
+/// every place is held (trusted followers', ADR 0013).
+fn give_place<T>(named: &mut Vec<T>, most: usize, host: T, fixed: impl Fn(&T) -> bool) {
+    if named.len() >= most {
+        match named.iter().rposition(|h| !fixed(h)) {
+            Some(i) => {
+                named.remove(i);
+            }
+            None => return,
+        }
+    }
+    named.push(host);
+}
+
+/// How often this node has named each host in a `WhoHosts` reply, since it
+/// started, so the place for a recently verified host goes to one named
+/// least. In memory only.
+#[derive(Default)]
+pub(crate) struct NamedHosts(Mutex<HashMap<EndpointId, u32>>);
+
+impl NamedHosts {
+    fn note(&self, named: &[EndpointId]) {
+        let mut counts = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        if counts.len() >= MAX_FOLLOWERS {
+            counts.clear();
+        }
+        for id in named {
+            *counts.entry(*id).or_default() += 1;
+        }
+    }
+
+    /// The candidate named least often, the first of those named as few times.
+    fn least<T>(&self, candidates: Vec<(EndpointId, T)>) -> Option<(EndpointId, T)> {
+        let counts = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        candidates
+            .into_iter()
+            .enumerate()
+            .min_by_key(|(i, (id, _))| (counts.get(id).copied().unwrap_or(0), *i))
+            .map(|(_, c)| c)
+    }
+}
+
 /// How `node` was last heard from, by `heard`, within `lately` of `now`.
 fn contact(
     heard: &HashMap<EndpointId, (Instant, bool)>,
@@ -990,6 +1278,7 @@ mod tests {
             addr: addr.clone(),
             trusted,
             host: None,
+            verified_ms: 0,
         }
     }
 
@@ -1142,6 +1431,58 @@ mod tests {
         let picked = heard.pick_hosts(members, now, HEARD_LATELY);
         assert_eq!(picked.pool, [1, 1, 1]);
         assert_eq!(ids(&picked), [direct.id, relayed.id, quiet.id]);
+    }
+
+    /// The place for a recently verified host (ADR 0025) takes the last
+    /// untrusted follower's place in a full sample, never a trusted one's,
+    /// and adds nothing when there's no host for it.
+    #[test]
+    fn the_recent_host_place_never_takes_a_trusted_followers_place() {
+        let addrs: Vec<EndpointAddr> = (0..SWARM_SAMPLE).map(|_| some_addr()).collect();
+        let newcomer = member(&some_addr(), false);
+
+        // Room left: it's added.
+        let mut sample: Vec<SwarmMember> = addrs[..2].iter().map(|a| member(a, false)).collect();
+        give_place(&mut sample, SWARM_SAMPLE, newcomer.clone(), |m| m.trusted);
+        assert_eq!(
+            ids(&Picked {
+                named: sample,
+                pool: [0; 3],
+                trusted: 0
+            })
+            .len(),
+            3
+        );
+
+        // Full: the last untrusted one gives way.
+        let mut sample: Vec<SwarmMember> = addrs
+            .iter()
+            .enumerate()
+            .map(|(i, a)| member(a, i < 3 || i == SWARM_SAMPLE - 1))
+            .collect();
+        give_place(&mut sample, SWARM_SAMPLE, newcomer.clone(), |m| m.trusted);
+        let named: Vec<EndpointId> = sample.iter().map(|m| m.addr.id).collect();
+        assert_eq!(named.len(), SWARM_SAMPLE);
+        assert!(!named.contains(&addrs[SWARM_SAMPLE - 2].id));
+        assert!(named.contains(&newcomer.addr.id));
+        assert_eq!(sample.iter().filter(|m| m.trusted).count(), 4);
+
+        // Full of trusted followers: nothing changes.
+        let mut sample: Vec<SwarmMember> = addrs.iter().map(|a| member(a, true)).collect();
+        give_place(&mut sample, SWARM_SAMPLE, newcomer, |m| m.trusted);
+        assert!(sample.iter().all(|m| m.trusted));
+    }
+
+    #[test]
+    fn the_recent_host_place_goes_to_the_host_named_least_or_to_nobody() {
+        let named = NamedHosts::default();
+        assert!(named.least(Vec::<(EndpointId, ())>::new()).is_none());
+        let [a, b, c] = [(); 3].map(|_| some_addr().id);
+        named.note(&[a, a, b]);
+        let least = named.least(vec![(a, ()), (b, ()), (c, ())]);
+        assert_eq!(least.map(|(id, _)| id), Some(c));
+        let least = named.least(vec![(a, ()), (b, ())]);
+        assert_eq!(least.map(|(id, _)| id), Some(b));
     }
 
     #[test]

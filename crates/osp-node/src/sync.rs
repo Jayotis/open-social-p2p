@@ -833,7 +833,13 @@ impl Core {
         let mut untold = Vec::new();
         for tracker in &wanted.trackers {
             let told = self
-                .social_request(tracker, &SocialRequest::Hosting { blob: *blob })
+                .social_request(
+                    tracker,
+                    &SocialRequest::Hosting {
+                        blob: *blob,
+                        reshare: None,
+                    },
+                )
                 .await;
             if let Err(e) = told {
                 debug!(blob = %blob.fmt_short(), "couldn't tell a tracker we hold a copy: {e:#}");
@@ -844,7 +850,7 @@ impl Core {
     }
 
     /// The home nodes `actor`'s profile lists, if we have it.
-    fn nodes_of(&self, actor: &PublicKey) -> Vec<EndpointId> {
+    pub(crate) fn nodes_of(&self, actor: &PublicKey) -> Vec<EndpointId> {
         if let Ok(Some(profile)) = self.db.profile(actor)
             && let Ok(Payload::Person(person)) = profile.verify()
         {
@@ -1320,6 +1326,11 @@ pub(crate) async fn reshares_loop(core: Arc<Core>) {
         }
         if let Err(e) = core.check_unfollowed_reshares().await {
             warn!("asking about reshared posts failed: {e:#}");
+        }
+        // Again each day, so one missed while an author's node was off
+        // gets there, with our newest profile (ADR 0025).
+        if let Err(e) = core.tell_authors_hosting().await {
+            warn!("telling authors of the copies we host failed: {e:#}");
         }
         tokio::time::sleep(jitter(RESHARES_CHECKED_EVERY)).await;
     }

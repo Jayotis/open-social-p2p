@@ -165,7 +165,12 @@ impl Peer {
             .accept(iroh_blobs::ALPN, BlobsProtocol::new(&media, None))
             .spawn();
         peer._serving = Some(router);
-        let resp = peer.ask(&SocialRequest::Hosting { blob }).await;
+        let resp = peer
+            .ask(&SocialRequest::Hosting {
+                blob,
+                reshare: None,
+            })
+            .await;
         assert!(matches!(resp, SocialResponse::Ok), "{resp:?}");
         peer
     }

@@ -504,14 +504,30 @@ impl Core {
                 self.ensure_blob(&blob, BlobClass::Replica, size).await?;
             }
         }
-        self.publish(Payload::Announce(Announce {
-            actor: self.signer.identity(),
-            object: note_id,
-            object_actor: note.actor,
-            published: osp_proto::now_rfc3339(),
-            hosting: host,
-        }))
-        .await
+        let me = self.signer.identity();
+        let id = self
+            .publish(Payload::Announce(Announce {
+                actor: me,
+                object: note_id,
+                object_actor: note.actor,
+                published: osp_proto::now_rfc3339(),
+                hosting: host,
+            }))
+            .await?;
+        // The whole copy is here, each chunk checked: the author's node may
+        // name it (ADR 0025). If it can't be told now, it is tomorrow.
+        if host
+            && note.actor != me
+            && let Some(announce) = self.db.outbox_object(&id)?
+        {
+            let core = self.clone();
+            tokio::spawn(async move {
+                if let Err(e) = core.tell_author_hosting(&announce).await {
+                    debug!("couldn't tell the author's node we host a copy: {e:#}");
+                }
+            });
+        }
+        Ok(id)
     }
 
     /// Deletes one of the owner's posts or reshares (ADR 0019): signs a
@@ -524,7 +540,11 @@ impl Core {
             .outbox_object(id)?
             .with_context(|| format!("{} isn't one of your posts or reshares", id.fmt_short()))?;
         let reshared = match obj.verify()? {
-            Payload::Note(_) => None,
+            Payload::Note(_) => {
+                // Its resharers aren't named any more (ADR 0025).
+                self.db.forget_resharer_hosts(id, None)?;
+                None
+            }
             Payload::Announce(a) => Some(a.object),
             _ => bail!("{} isn't a post or reshare", id.fmt_short()),
         };

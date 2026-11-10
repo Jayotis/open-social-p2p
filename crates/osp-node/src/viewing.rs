@@ -24,7 +24,7 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail};
-use iroh::{Endpoint, PublicKey, SecretKey};
+use iroh::{Endpoint, EndpointAddr, PublicKey, SecretKey};
 use iroh_blobs::util::connection_pool::ConnectionPool;
 use osp_proto::{BlobHash, Note, ObjectId};
 use tokio::{sync::Notify, time::Instant};
@@ -228,20 +228,19 @@ impl Core {
         declared: u64,
     ) -> Result<u64> {
         let mut sources: Vec<Source> = Vec::new();
+        let add = |sources: &mut Vec<Source>, source: Source| {
+            if !sources.iter().any(|s| s.endpoint == source.endpoint) {
+                sources.push(source);
+            }
+        };
+        let authors = self.db.media_endpoints_of(&note.actor)?;
         let hosts = self.db.found_hosts_of(id)?;
-        let people = std::iter::once(note.actor).chain(hosts.into_iter().take(MAX_FOUND_HOSTS));
-        for person in people {
+        for person in hosts.into_iter().take(MAX_FOUND_HOSTS) {
             for bound in self.db.media_endpoints_of(&person)? {
-                if !sources.iter().any(|s| s.endpoint == bound.endpoint) {
-                    sources.push(Source {
-                        node: bound.public,
-                        endpoint: bound.endpoint,
-                        from_direct: false,
-                    });
-                }
+                add(&mut sources, Source::media(&bound));
             }
         }
-        if sources.is_empty() {
+        if sources.is_empty() && authors.is_empty() {
             bail!("{NO_PRIVATE_SOURCE} (no profile held gives a media endpoint for it)");
         }
         let lease = self
@@ -249,6 +248,29 @@ impl Core {
             .lease(note.actor, || self.viewing_endpoint())
             .await
             .context(NO_PRIVATE_SOURCE)?;
+        // The resharers its author names (ADR 0025), asked through the
+        // viewing endpoint too. A deleted post stops here.
+        if let Some(author) = authors.first() {
+            let named = self
+                .ask_author_for_hosts(
+                    &lease.inner.endpoint,
+                    EndpointAddr::new(author.endpoint),
+                    (id, note),
+                    blob,
+                )
+                .await?;
+            for source in named {
+                if source.node != self.endpoint.id()
+                    && !self.nodes_of(&note.actor).contains(&source.node)
+                {
+                    add(&mut sources, source);
+                }
+            }
+        }
+        // Its author's own last: they're the ones to spare.
+        for bound in &authors {
+            add(&mut sources, Source::media(bound));
+        }
         let fetched = self
             .store
             .download_through(

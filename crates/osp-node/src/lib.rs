@@ -14,6 +14,7 @@ mod directory;
 mod endpoints;
 mod health;
 mod home;
+mod hosting;
 mod keys;
 mod machine;
 pub mod media;
