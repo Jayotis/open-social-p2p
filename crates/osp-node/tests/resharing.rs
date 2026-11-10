@@ -715,3 +715,76 @@ async fn a_resharer_failing_two_checks_in_a_row_stops_being_named() {
         node.shutdown().await.unwrap();
     }
 }
+
+/// The posts a directory lists of `actor`, by ID.
+async fn listed_posts(net: &SimNet, directory: &Node, actor: PublicKey) -> Vec<ObjectId> {
+    let (me, conn) = stranger_conn(net, directory.machine_id().unwrap(), MACHINE_ALPN).await;
+    let (mut send, mut recv) = conn.open_bi().await.unwrap();
+    let request = MachineRequest::Listing {
+        since: 0,
+        limit: 100,
+    };
+    write_frame(&mut send, &request).await.unwrap();
+    send.finish().unwrap();
+    let reply: MachineResponse = read_frame(&mut recv).await.unwrap();
+    conn.close(0u32.into(), b"done");
+    me.close().await;
+    let MachineResponse::Listing { entries, .. } = reply else {
+        panic!("unexpected {reply:?}");
+    };
+    entries
+        .into_iter()
+        .find_map(|entry| match entry.item {
+            ListingItem::Person { profile, posts, .. } if profile.signer() == actor => {
+                Some(posts.iter().map(|p| p.id()).collect())
+            }
+            _ => None,
+        })
+        .unwrap_or_default()
+}
+
+/// A directory that follows Kim hears of her `Delete` through its follow, and
+/// drops the post and Jimmy's reshare of it from its lists at once, not at its
+/// next read of Kim an hour later. Found on real nodes, 2026-11-10.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_directory_that_follows_the_author_drops_a_deleted_post_at_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let net = SimNet::new(78);
+    let mut config = Config::local_test("The directory");
+    config.endpoints.enabled = true;
+    config.directory.serve = true;
+    let settings = SimSettings {
+        listed_read_every: Duration::from_secs(3600),
+        ..sim(&net)
+    };
+    let directory = start_sim(dir.path(), config, settings).await;
+    let kim = start_sim(
+        dir.path(),
+        config_knowing("Kim", &directory, true),
+        sim(&net),
+    )
+    .await;
+    let (post, _) = post_photo(&kim, dir.path(), "Kim's oak table").await;
+    assert!(kim.ask_to_be_listed().await);
+    until("Kim's post isn't listed", async || {
+        listed_posts(&net, &directory, kim.identity()).await == vec![post]
+    })
+    .await;
+    let jimmy = resharer(dir.path(), &net, &directory, "Jimmy", post, true).await;
+    assert!(jimmy.ask_to_be_listed().await);
+    wait_for_listing(&net, &directory, jimmy.identity(), Some(vec![(post, true)])).await;
+    follow(&directory, &kim).await;
+
+    call(&kim, ClientRequest::Delete { id: post }).await;
+    wait_for_listing(&net, &directory, jimmy.identity(), Some(vec![])).await;
+    assert!(
+        listed_posts(&net, &directory, kim.identity())
+            .await
+            .is_empty()
+    );
+    assert!(directory.knows_deleted(&post).unwrap());
+
+    for node in [jimmy, kim, directory] {
+        node.shutdown().await.unwrap();
+    }
+}
