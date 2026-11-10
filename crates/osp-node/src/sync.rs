@@ -470,7 +470,8 @@ impl Core {
         let me = self.signer.identity();
         let deleted = match self.db.apply_delete(delete, d, always, &me) {
             Ok(Some(deleted)) => deleted,
-            Ok(None) => return Ok(()),
+            // Known already; a directory still makes sure it isn't listed.
+            Ok(None) => return self.drop_listed(&d.object, &d.actor),
             Err(e) => {
                 warn!(%author, "skipping a delete: {e:#}");
                 return Ok(());
@@ -481,6 +482,7 @@ impl Core {
         }
         self.store.let_go(&deleted.files).await;
         self.lock_holds().remove(&d.object);
+        self.drop_listed(&d.object, &d.actor)?;
         if deleted.ours {
             let forward = Payload::ForwardDelete(ForwardDelete {
                 actor: me,

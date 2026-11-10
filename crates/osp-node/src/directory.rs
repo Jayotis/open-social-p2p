@@ -103,8 +103,10 @@ const READER: u32 = 1;
 /// Pages taken in one conversation. With the rest of a large directory for next
 /// time, one read stays a small thing over Tor.
 const MAX_PAGES_PER_READ: usize = 64;
-/// Most people kept from directories, and most bytes of them. Typically about
-/// 1 KB a person, so these are far apart; the bytes are there for the hostile.
+/// Most people kept from directories, and most bytes of them. A person's
+/// listing measured about 8.6 KB with 5 photo posts, and 21 KB with 5 hosting
+/// reshares too (2026-11-09), so the bytes fill first: 64 MiB holds about
+/// 3,000 to 7,800 people.
 pub(crate) const MAX_FOUND_PEOPLE: usize = 5_000;
 const MAX_FOUND_BYTES: u64 = 64 << 20;
 
@@ -348,29 +350,47 @@ impl Core {
     /// listed reshare of it (ADR 0025), so it can't be listed again.
     async fn listed_delete(&self, delete: &SignedObject, d: &osp_proto::Delete) -> Result<()> {
         let mut forwards = Vec::new();
-        self.act_on_delete(delete, d, true, &mut forwards).await?;
-        if !self.db.is_tombstoned(&d.object)? {
+        // That drops it from the lists too (`drop_listed`).
+        self.act_on_delete(delete, d, true, &mut forwards).await
+    }
+
+    /// Drops a deleted post from what this directory lists at once, however it
+    /// learned of the `Delete` (ADR 0025): from its author's listing, and every
+    /// listed reshare of it. A post this node follows is deleted through its
+    /// follow, before the next read of its author would see it.
+    pub(crate) fn drop_listed(&self, post: &ObjectId, author: &iroh::PublicKey) -> Result<()> {
+        if !self.config.directory.serve || !self.db.is_tombstoned(post)? {
             return Ok(());
         }
-        for actor in self.db.take_reshares_of(&d.object)? {
-            if let Some(ListingItem::Person {
+        let mut actors = self.db.take_reshares_of(post)?;
+        if !actors.contains(author) {
+            actors.push(*author);
+        }
+        for actor in actors {
+            let Some(ListingItem::Person {
                 profile,
                 posts,
                 reshares,
             }) = self.db.listed_item(&actor)?
-            {
-                let reshares = reshares
-                    .into_iter()
-                    .filter(|r| r.post.id() != d.object)
-                    .collect();
-                let item = ListingItem::Person {
-                    profile,
-                    posts,
-                    reshares,
-                };
-                self.db.replace_listed_item(&actor, &item)?;
-                info!(post = %d.object.fmt_short(), "dropped a listed reshare of a deleted post");
+            else {
+                continue;
+            };
+            let (before_posts, before_reshares) = (posts.len(), reshares.len());
+            let posts: Vec<_> = posts.into_iter().filter(|p| p.id() != *post).collect();
+            let reshares: Vec<_> = reshares
+                .into_iter()
+                .filter(|r| r.post.id() != *post)
+                .collect();
+            if posts.len() == before_posts && reshares.len() == before_reshares {
+                continue;
             }
+            let item = ListingItem::Person {
+                profile,
+                posts,
+                reshares,
+            };
+            self.db.replace_listed_item(&actor, &item)?;
+            info!(post = %post.fmt_short(), "dropped a deleted post from a listing");
         }
         Ok(())
     }
