@@ -38,6 +38,8 @@ pub const MAX_LISTING_PAGE_BYTES: usize = 64 * 1024;
 pub const MAX_LISTED_POSTS: usize = 5;
 /// Most records in a reply to `Known`.
 pub const MAX_KNOWN: usize = 20;
+/// Most reshares a directory lists of one person (ADR 0025).
+pub const MAX_LISTED_RESHARES: usize = 5;
 /// Largest listing of one person, in bytes.
 pub const MAX_LISTED_PERSON_BYTES: usize = 32 * 1024;
 
@@ -283,10 +285,13 @@ pub enum ListingItem {
     /// A machine that greeted the directory, and answered when greeted back.
     Machine { record: MachineRecord },
     /// Someone who asked to be listed: their signed profile, and their latest
-    /// posts, newest first, each as they signed it.
+    /// posts, newest first, each as they signed it. And their latest reshares,
+    /// newest first (ADR 0025), which a reader from before passes over.
     Person {
         profile: SignedObject,
         posts: Vec<SignedObject>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        reshares: Vec<ListedReshare>,
     },
     /// Someone no longer listed. It isn't signed, as it can only take away what
     /// came from this directory, and a directory can always leave things out.
@@ -295,6 +300,25 @@ pub enum ListingItem {
     /// takes that kind, it reads each directory again from the start.
     #[serde(other)]
     Unknown,
+}
+
+/// A reshare in someone's listing (ADR 0025): everything a reader needs to
+/// reach the resharer's copy without asking the post's author. With the
+/// listing's profile, which gives the resharer's media endpoint, it's all
+/// signed.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ListedReshare {
+    /// The resharer's signed `Announce`.
+    pub announce: SignedObject,
+    /// The post it reshares, as its author signed it, with her key
+    /// certificate.
+    pub post: SignedObject,
+    /// The directory's word that the resharer serves a copy: a piece of the
+    /// post's media, fetched from the resharer's media endpoint, checked out,
+    /// and its daily rechecks haven't failed twice in a row since. Evidence,
+    /// not proof: a reader measures each source for itself.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub hosting: bool,
 }
 
 #[cfg(test)]
@@ -453,6 +477,7 @@ mod tests {
         let item = ListingItem::Person {
             profile,
             posts: vec![],
+            reshares: vec![],
         };
         let filler = ListingEntry {
             seq: u64::MAX,

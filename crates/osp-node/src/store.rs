@@ -421,11 +421,18 @@ impl ContentStore {
     /// against the hash as it arrives. A node without the blob can't send
     /// it, unless it fetches that chunk from a node with it.
     pub async fn check_hosting(&self, hash: &BlobHash, source: Source) -> Result<()> {
-        let hash = to_hash(hash);
         let size = self
-            .size(hash)
+            .size(to_hash(hash))
             .await?
             .context("this node doesn't hold it")?;
+        self.check_piece(hash, size, source).await
+    }
+
+    /// The same check, of a blob this node doesn't hold, by the size its post
+    /// declares: a directory checking a resharer's copy (ADR 0025). The hash
+    /// covers the piece and the size, so a node without the blob can't pass.
+    pub async fn check_piece(&self, hash: &BlobHash, size: u64, source: Source) -> Result<()> {
+        let hash = to_hash(hash);
         let chunks = size.div_ceil(1024).max(1);
         let chunk = ((crate::sync::random_fraction() * chunks as f64) as u64).min(chunks - 1);
         let request = GetRequest::blob_ranges(hash, ChunkRanges::chunk(chunk));

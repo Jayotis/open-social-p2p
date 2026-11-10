@@ -947,11 +947,15 @@ impl Core {
         // A found post that its owner hasn't followed or shared is fetched
         // only through viewing endpoints, never from here (ADR 0024). Hosting
         // it is sharing it, which is public, so that goes on as usual.
-        if class != BlobClass::Replica
-            && !self.store.has(blob).await?
-            && let Some(note) = self.db.found_only_post(blob)?
-        {
-            return self.watch_found(blob, &note, class, declared).await;
+        if class != BlobClass::Replica && !self.store.has(blob).await? {
+            if let Some(post) = self.db.found_only_post(blob)? {
+                return self.watch_found(blob, &post, class, declared).await;
+            }
+            // Its post went, but it's still named only by what a directory
+            // brought: never the usual way, which would show who asks.
+            if self.db.only_found_names(blob)? {
+                bail!("{}", crate::viewing::NO_PRIVATE_SOURCE);
+            }
         }
         // Opened on demand, on one of our devices or with `osp fetch`:
         // someone is waiting.

@@ -26,7 +26,7 @@ use std::{
 use anyhow::{Context, Result, bail};
 use iroh::{Endpoint, PublicKey, SecretKey};
 use iroh_blobs::util::connection_pool::ConnectionPool;
-use osp_proto::{BlobHash, Note};
+use osp_proto::{BlobHash, Note, ObjectId};
 use tokio::{sync::Notify, time::Instant};
 use tracing::{debug, info};
 
@@ -48,6 +48,10 @@ pub(crate) const MAX_LIFE: Duration = Duration::from_secs(60 * 60);
 /// Most viewing endpoints at once. A starting value. Another author's post
 /// waits for one to be free, rather than sharing one.
 pub(crate) const MAX_VIEWING: usize = 4;
+
+/// Most sources of one post a viewing fetch takes from the listings held
+/// (ADR 0025), besides its author's own nodes.
+pub(crate) const MAX_FOUND_HOSTS: usize = 16;
 
 /// What the person is told when no public source could be reached privately.
 pub(crate) const NO_PRIVATE_SOURCE: &str = "no public source of this post could be reached \
@@ -213,27 +217,32 @@ fn close(slots: Vec<Slot>) {
 impl Core {
     /// Fetches media of `note`, a found post that its owner hasn't followed or
     /// shared, through a viewing endpoint, from public sources only: the
-    /// media endpoints its author's profile gives. Other hosts come with
-    /// ADR 0025. Never through this node's own endpoints.
+    /// media endpoints its author's profile gives, then those of resharers a
+    /// directory listed as hosting it (ADR 0025), each from the newest
+    /// profile held. Never through this node's own endpoints.
     pub(crate) async fn watch_found(
         &self,
         blob: &BlobHash,
-        note: &Note,
+        (id, note): &(ObjectId, Note),
         class: BlobClass,
         declared: u64,
     ) -> Result<u64> {
-        let sources: Vec<Source> = self
-            .db
-            .media_endpoints_of(&note.actor)?
-            .into_iter()
-            .map(|bound| Source {
-                node: bound.public,
-                endpoint: bound.endpoint,
-                from_direct: false,
-            })
-            .collect();
+        let mut sources: Vec<Source> = Vec::new();
+        let hosts = self.db.found_hosts_of(id)?;
+        let people = std::iter::once(note.actor).chain(hosts.into_iter().take(MAX_FOUND_HOSTS));
+        for person in people {
+            for bound in self.db.media_endpoints_of(&person)? {
+                if !sources.iter().any(|s| s.endpoint == bound.endpoint) {
+                    sources.push(Source {
+                        node: bound.public,
+                        endpoint: bound.endpoint,
+                        from_direct: false,
+                    });
+                }
+            }
+        }
         if sources.is_empty() {
-            bail!("{NO_PRIVATE_SOURCE} (its author's profile gives no media endpoint)");
+            bail!("{NO_PRIVATE_SOURCE} (no profile held gives a media endpoint for it)");
         }
         let lease = self
             .viewing

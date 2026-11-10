@@ -477,8 +477,6 @@ impl Core {
 
     async fn reshare(self: &Arc<Self>, id: &ObjectId, host: bool) -> Result<ObjectId> {
         let (note_id, note) = self.resolve_note(id)?;
-        // The reshare needs it for as long as it's in the outbox.
-        self.db.found_post_stays(&note_id)?;
         if host {
             // Check the whole post fits before fetching any of it.
             let mut needed = 0;
@@ -488,6 +486,20 @@ impl Core {
                 }
             }
             self.store.check_replica_room(needed)?;
+            // A found post's media comes as it would to watch it, through a
+            // viewing endpoint (ADR 0024), before the post stops being found.
+            for (blob, size) in note.sized_blobs() {
+                if !self.store.has(&blob).await?
+                    && let Some(post) = self.db.found_only_post(&blob)?
+                {
+                    self.watch_found(&blob, &post, BlobClass::Cache, size)
+                        .await?;
+                }
+            }
+        }
+        // The reshare needs it for as long as it's in the outbox.
+        self.db.found_post_stays(&note_id)?;
+        if host {
             for (blob, size) in note.sized_blobs() {
                 self.ensure_blob(&blob, BlobClass::Replica, size).await?;
             }

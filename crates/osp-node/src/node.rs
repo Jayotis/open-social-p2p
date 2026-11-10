@@ -115,6 +115,11 @@ pub struct SimSettings {
     /// (ADR 0024). Tests shorten them.
     pub viewing_reuse: Duration,
     pub viewing_life: Duration,
+    /// How often a directory checks again a listed resharer's copy (ADR
+    /// 0025). Tests shorten it.
+    pub reshare_recheck_every: Duration,
+    /// Most hosting reshares of one post a directory lists. Tests lower it.
+    pub max_hosting_reshares: usize,
     /// The node sends and receives through this simulated network instead
     /// of IP sockets (`simnet`). Its config should have relays disabled.
     #[cfg(feature = "sim")]
@@ -150,6 +155,8 @@ impl Default for SimSettings {
             meeting: MeetingTimes::default(),
             viewing_reuse: viewing::REUSE_FOR,
             viewing_life: viewing::MAX_LIFE,
+            reshare_recheck_every: directory::RESHARE_RECHECK_EVERY,
+            max_hosting_reshares: directory::MAX_HOSTING_RESHARES,
             #[cfg(feature = "sim")]
             network: None,
             #[cfg(feature = "sim")]
@@ -792,6 +799,14 @@ impl Node {
     /// they deleted those posts, as the node does once a day. For tests.
     pub async fn check_reshares_now(&self) -> Result<usize> {
         self.core.check_unfollowed_reshares().await
+    }
+
+    /// Lets go of a stored blob, whatever it's kept for, as if it were lost.
+    /// For tests.
+    pub async fn let_go_of_blob(&self, hash: &BlobHash) -> Result<()> {
+        self.core.db.remove_blob(hash)?;
+        self.core.store.let_go(&[*hash]).await;
+        Ok(())
     }
 
     /// Opens a blob as one of the node's devices does: from here if it's

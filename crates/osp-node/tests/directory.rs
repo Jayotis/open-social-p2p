@@ -266,7 +266,7 @@ async fn wait_for_entry<T>(
 /// What the lists say of someone: their entry's number, profile and posts.
 fn listing_of(actor: iroh::PublicKey) -> impl Fn(&ListingEntry) -> Option<Listing> {
     move |entry| match &entry.item {
-        ListingItem::Person { profile, posts } if profile.signer() == actor => Some(Listing {
+        ListingItem::Person { profile, posts, .. } if profile.signer() == actor => Some(Listing {
             seq: entry.seq,
             texts: posts.iter().map(text_of).collect(),
         }),
@@ -734,7 +734,7 @@ async fn the_map_holds_machines_that_answered_and_says_nothing_of_people() {
     for entry in &entries {
         let shown = match &entry.item {
             ListingItem::Machine { record } => format!("{:?}", record.verify().unwrap()),
-            ListingItem::Person { profile, posts } => {
+            ListingItem::Person { profile, posts, .. } => {
                 let posts: Vec<_> = posts.iter().map(text_of).collect();
                 format!("{:?} {posts:?}", person_in(profile))
             }
@@ -845,7 +845,11 @@ fn signed_note(key: &SecretKey, text: &str) -> SignedObject {
 fn person_entry(seq: u64, profile: SignedObject, posts: Vec<SignedObject>) -> ListingEntry {
     ListingEntry {
         seq,
-        item: ListingItem::Person { profile, posts },
+        item: ListingItem::Person {
+            profile,
+            posts,
+            reshares: vec![],
+        },
     }
 }
 
@@ -1833,7 +1837,7 @@ async fn being_listed_ties_a_machine_to_nobody() {
                 assert!(!shown.contains(&alice.identity().to_string()), "{shown}");
                 assert!(!shown.contains(&alice.node_id().to_string()), "{shown}");
             }
-            ListingItem::Person { profile, posts } => {
+            ListingItem::Person { profile, posts, .. } => {
                 let person = person_in(profile);
                 assert!(!person.nodes.contains(&her_machine));
                 let shown: Vec<_> = std::iter::once(profile)

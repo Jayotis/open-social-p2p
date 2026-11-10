@@ -13,14 +13,14 @@
 
 use std::{sync::Arc, time::Duration};
 
-use anyhow::{Result, anyhow, bail, ensure};
+use anyhow::{Context, Result, anyhow, bail, ensure};
 use iroh::{EndpointAddr, EndpointId};
 use n0_future::{BufferedStreamExt, StreamExt, stream};
 use osp_proto::{
-    Payload, SignedObject,
+    Announce, Note, ObjectId, Payload, Person, SignedObject,
     machine::{
-        ListingEntry, ListingItem, MAX_LISTED_PERSON_BYTES, MAX_LISTED_POSTS, MAX_LISTING_PAGE,
-        OFFERS_DIRECTORY,
+        ListedReshare, ListingEntry, ListingItem, MAX_LISTED_PERSON_BYTES, MAX_LISTED_POSTS,
+        MAX_LISTED_RESHARES, MAX_LISTING_PAGE, OFFERS_DIRECTORY,
     },
     social::{SocialRequest, SocialResponse},
 };
@@ -28,11 +28,12 @@ use tokio::sync::{Semaphore, mpsc};
 use tracing::{debug, info, warn};
 
 use crate::{
-    db::{Db, Listed, now_ms},
+    db::{Db, FoundReshare, Listed, now_ms},
     health,
     machine::{self, MachineSide},
     node::Core,
     social::{PerHour, profile_date},
+    store::Source,
     sync::{jitter, random_fraction},
 };
 
@@ -53,9 +54,17 @@ const LISTED_READ_TIMEOUT: Duration = Duration::from_secs(120);
 /// Someone whose node hasn't answered for this long is dropped. They can ask
 /// again, as a node does every day.
 const LISTED_SILENCE: Duration = Duration::from_secs(30 * 24 * 60 * 60);
-/// How far back in an outbox a directory looks for someone's latest posts. Most
-/// entries are posts; a run of reshares just means fewer are listed.
+/// How far back in an outbox a directory looks for someone's latest posts and
+/// reshares. A long run of one just means fewer of the other are listed.
 const OUTBOX_TAIL: u32 = 20;
+/// How often a directory checks again that a listed resharer serves the copy
+/// its reshare says it hosts (ADR 0025), at one of its reads of them.
+pub(crate) const RESHARE_RECHECK_EVERY: Duration = Duration::from_secs(24 * 60 * 60);
+/// Checks failed in a row, after one passed, that take the hosting mark off.
+const RESHARE_FAILS_UNMARK: u32 = 2;
+/// Most hosting reshares of one post a directory lists. One more is left out
+/// and logged, until the rotation ADR 0025 has decided.
+pub(crate) const MAX_HOSTING_RESHARES: usize = 16;
 /// A machine on the map isn't greeted back again for this long.
 const GREET_AGAIN_AFTER: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 /// Machines greeted back per hour, at most, whoever they say they are. Names
@@ -235,26 +244,157 @@ impl Core {
             self.db.listed_item(&listed.actor)?,
             Some(ListingItem::Person { profile: known, .. }) if known == profile
         );
-        if same_profile && latest == listed.latest {
+        let recheck = self.sim.reshare_recheck_every.as_millis() as i64;
+        let rechecks_due = self
+            .db
+            .reshare_checks_due(&listed.actor, now_ms() - recheck)?;
+        if same_profile && latest == listed.latest && !rechecks_due {
             return self.db.set_listed_read(&listed.actor, latest, now_ms());
         }
-        let posts = self.latest_posts(listed, &addr, latest).await?;
-        let item = person_item(profile, posts);
+        let (posts, reshares) = self.latest_items(listed, &addr, latest).await?;
+        let mut listed_reshares = Vec::new();
+        // Its checks are kept even when it's left out, so it isn't checked
+        // again at every read.
+        let mut kept: Vec<ObjectId> = Vec::new();
+        for (announce, a, post, note) in reshares {
+            let Some(hosting) = self.reshare_hosting(&person, &announce, &a, &note).await? else {
+                kept.push(announce.id());
+                continue;
+            };
+            listed_reshares.push(ListedReshare {
+                announce,
+                post,
+                hosting,
+            });
+        }
+        let item = person_item(profile, posts, listed_reshares);
+        let ListingItem::Person { reshares, .. } = &item else {
+            unreachable!("person_item makes a person's listing");
+        };
+        kept.extend(reshares.iter().map(|r| r.announce.id()));
+        self.db.forget_reshare_checks(&listed.actor, &kept)?;
         self.db.put_listed(&listed.actor, &item, latest, now_ms())
     }
 
-    /// The posts at the end of a listed node's outbox, newest first.
-    async fn latest_posts(
+    /// Whether a listed reshare is to be marked hosting (ADR 0025): it says
+    /// so, a piece of the post's media fetched from the resharer's media
+    /// endpoint checked out, its rechecks haven't failed twice in a row since,
+    /// and the post hasn't its most hosting reshares listed already. None for
+    /// one past the most, which is left out of the listing, and logged.
+    async fn reshare_hosting(
+        &self,
+        resharer: &Person,
+        announce: &SignedObject,
+        a: &Announce,
+        note: &Note,
+    ) -> Result<Option<bool>> {
+        let id = announce.id();
+        let now = now_ms();
+        if !a.hosting {
+            self.db.note_plain_reshare(&id, &a.actor, &a.object, now)?;
+            return Ok(Some(false));
+        }
+        let recheck = self.sim.reshare_recheck_every.as_millis() as i64;
+        let check = match self.db.reshare_check(&id)? {
+            Some(check) if now - check.checked_ms < recheck => check,
+            _ => {
+                let passed = match self.check_resharer_copy(resharer, note).await {
+                    Ok(()) => true,
+                    Err(e) => {
+                        debug!(resharer = %a.actor.fmt_short(), "a resharer's copy failed its check: {e:#}");
+                        false
+                    }
+                };
+                self.db
+                    .note_reshare_check(&id, &a.actor, &a.object, passed, now)?
+            }
+        };
+        let hosting = check.passed && check.fails < RESHARE_FAILS_UNMARK;
+        let most = self.sim.max_hosting_reshares;
+        if hosting && self.db.hosting_reshares_of(&a.object, &id)? >= most {
+            info!(
+                post = %a.object.fmt_short(),
+                "a post has more than {most} hosting reshares; leaving this one out"
+            );
+            self.db.set_reshare_hosting(&id, false)?;
+            return Ok(None);
+        }
+        self.db.set_reshare_hosting(&id, hosting)?;
+        Ok(Some(hosting))
+    }
+
+    /// Fetches one random 1 KiB piece of the post's media from the
+    /// resharer's media endpoint, by the binding in their profile, and checks
+    /// it against the hash. Evidence it serves a copy, not proof.
+    async fn check_resharer_copy(&self, resharer: &Person, note: &Note) -> Result<()> {
+        let bound = resharer
+            .nodes
+            .iter()
+            .find_map(|node| resharer.media_endpoint(node))
+            .context("their profile gives no media endpoint")?;
+        let blobs: Vec<_> = note.sized_blobs().collect();
+        ensure!(!blobs.is_empty(), "the post has no media");
+        let pick = ((random_fraction() * blobs.len() as f64) as usize).min(blobs.len() - 1);
+        let (blob, size) = blobs[pick];
+        let source = Source {
+            node: bound.public,
+            endpoint: bound.endpoint,
+            from_direct: false,
+        };
+        self.store.check_piece(&blob, size, source).await
+    }
+
+    /// Keeps a tombstone for a post its author deleted, and drops every
+    /// listed reshare of it (ADR 0025), so it can't be listed again.
+    async fn listed_delete(&self, delete: &SignedObject, d: &osp_proto::Delete) -> Result<()> {
+        let mut forwards = Vec::new();
+        self.act_on_delete(delete, d, true, &mut forwards).await?;
+        if !self.db.is_tombstoned(&d.object)? {
+            return Ok(());
+        }
+        for actor in self.db.take_reshares_of(&d.object)? {
+            if let Some(ListingItem::Person {
+                profile,
+                posts,
+                reshares,
+            }) = self.db.listed_item(&actor)?
+            {
+                let reshares = reshares
+                    .into_iter()
+                    .filter(|r| r.post.id() != d.object)
+                    .collect();
+                let item = ListingItem::Person {
+                    profile,
+                    posts,
+                    reshares,
+                };
+                self.db.replace_listed_item(&actor, &item)?;
+                info!(post = %d.object.fmt_short(), "dropped a listed reshare of a deleted post");
+            }
+        }
+        Ok(())
+    }
+
+    /// The posts and reshares at the end of a listed node's outbox, newest
+    /// first, each reshare with the post it points at. A `Delete` there, the
+    /// author's or one a resharer passes on, is acted on: its post is
+    /// tombstoned here, and no reshare of it is listed again (ADR 0025).
+    async fn latest_items(
         &self,
         listed: &Listed,
         addr: &EndpointAddr,
         latest: u64,
-    ) -> Result<Vec<SignedObject>> {
+    ) -> Result<(Vec<SignedObject>, Vec<ListedCandidate>)> {
         let req = SocialRequest::GetOutbox {
             since: latest.saturating_sub(OUTBOX_TAIL as u64),
             limit: OUTBOX_TAIL,
         };
-        let SocialResponse::Outbox { entries, .. } = self.social_request(addr, &req).await? else {
+        let SocialResponse::Outbox {
+            entries,
+            referenced,
+            ..
+        } = self.social_request(addr, &req).await?
+        else {
             bail!("unexpected reply to GetOutbox");
         };
         ensure!(
@@ -262,18 +402,56 @@ impl Core {
             "outbox page has {} entries; we asked for at most {OUTBOX_TAIL}",
             entries.len()
         );
+        let referenced = |id: &ObjectId| referenced.iter().find(|obj| obj.id() == *id);
         let mut posts = Vec::new();
+        let mut reshares = Vec::new();
+        // Deletes first, so a reshare deleted in the same page isn't listed.
+        for entry in &entries {
+            if entry.object.signer() != listed.actor {
+                continue;
+            }
+            let delete = match self.verify_received(&entry.object) {
+                Ok(Payload::Delete(d)) => Some((entry.object.clone(), d)),
+                Ok(Payload::ForwardDelete(f)) => {
+                    referenced(&f.delete).and_then(|obj| match self.verify_received(obj) {
+                        Ok(Payload::Delete(d)) if obj.signer() == d.actor => Some((obj.clone(), d)),
+                        _ => None,
+                    })
+                }
+                _ => None,
+            };
+            if let Some((obj, d)) = delete
+                && let Err(e) = self.listed_delete(&obj, &d).await
+            {
+                debug!("skipping a delete in a listed outbox: {e:#}");
+            }
+        }
         for entry in entries.into_iter().rev() {
             if entry.object.signer() != listed.actor {
                 continue;
             }
             match self.verify_received(&entry.object) {
                 Ok(Payload::Note(_)) => posts.push(entry.object),
+                Ok(Payload::Announce(a)) if reshares.len() < MAX_LISTED_RESHARES => {
+                    if self.db.is_tombstoned(&a.object)? {
+                        continue;
+                    }
+                    let Some(post) = referenced(&a.object) else {
+                        continue;
+                    };
+                    match self.verify_received(post) {
+                        Ok(Payload::Note(note)) if post.signer() == a.object_actor => {
+                            reshares.push((entry.object, a, post.clone(), note));
+                        }
+                        Ok(_) => debug!("skipping a reshare of something that isn't its post"),
+                        Err(e) => debug!("skipping a reshared post: {e:#}"),
+                    }
+                }
                 Ok(_) => {}
                 Err(e) => debug!("skipping an invalid outbox entry: {e:#}"),
             }
         }
-        Ok(posts)
+        Ok((posts, reshares))
     }
 
     /// Asks each directory this node knows to list its owner, from the public
@@ -444,8 +622,12 @@ impl Core {
             );
             cursor = entry.seq;
             match entry.item {
-                ListingItem::Person { profile, posts } => {
-                    if let Err(e) = self.take_person(directory, &profile, posts) {
+                ListingItem::Person {
+                    profile,
+                    posts,
+                    reshares,
+                } => {
+                    if let Err(e) = self.take_person(directory, &profile, posts, reshares) {
                         debug!("skipping a directory's entry: {e:#}");
                     }
                 }
@@ -467,6 +649,7 @@ impl Core {
         directory: EndpointId,
         profile: &SignedObject,
         posts: Vec<SignedObject>,
+        reshares: Vec<ListedReshare>,
     ) -> Result<()> {
         let actor = profile.signer();
         // This node has better than a directory's copy of these.
@@ -477,6 +660,11 @@ impl Core {
             posts.len() <= MAX_LISTED_POSTS,
             "it lists {} posts of one person",
             posts.len()
+        );
+        ensure!(
+            reshares.len() <= MAX_LISTED_RESHARES,
+            "it lists {} reshares of one person",
+            reshares.len()
         );
         // All checked before a key is learned from any of it, so what's refused
         // leaves nothing behind (`verify_received`).
@@ -492,14 +680,52 @@ impl Core {
             ensure!(post.signer() == actor, "a post signed by someone else");
             ensure!(matches!(post.verify()?, Payload::Note(_)), "not a post");
         }
+        // Each reshare is its owner's, of a post signed by the author it
+        // names, and the directory's hosting mark only on one that says so.
+        for r in &reshares {
+            ensure!(
+                r.announce.signer() == actor,
+                "a reshare signed by someone else"
+            );
+            let Payload::Announce(a) = r.announce.verify()? else {
+                bail!("not a reshare");
+            };
+            ensure!(a.actor == actor, "a reshare made for someone else");
+            ensure!(
+                r.post.id() == a.object,
+                "a reshare listed with another post"
+            );
+            ensure!(
+                r.post.signer() == a.object_actor,
+                "a reshared post signed by someone else"
+            );
+            ensure!(matches!(r.post.verify()?, Payload::Note(_)), "not a post");
+        }
         self.verify_received(profile)?;
         let mut checked = Vec::new();
         for post in posts {
             let payload = self.verify_received(&post)?;
             checked.push((post, payload));
         }
+        let mut found = Vec::new();
+        for r in reshares {
+            // A post known deleted stays out, however old the directory's data.
+            if self.db.is_tombstoned(&r.post.id())? {
+                continue;
+            }
+            let announce_payload = self.verify_received(&r.announce)?;
+            let post_payload = self.verify_received(&r.post)?;
+            let claims = matches!(&announce_payload, Payload::Announce(a) if a.hosting);
+            found.push(FoundReshare {
+                announce: r.announce,
+                announce_payload,
+                post: r.post,
+                post_payload,
+                hosting: r.hosting && claims,
+            });
+        }
         self.db
-            .keep_found(&directory, &person, profile, &checked, now_ms())
+            .keep_found_with(&directory, &person, profile, &checked, &found, now_ms())
     }
 
     /// Whether a later profile than `person` is stored, saying they may not be
@@ -517,25 +743,46 @@ impl Core {
     }
 }
 
-/// Someone's listing: their profile, and as many of their posts, newest first,
-/// as fit. A post that would pass the limit is left out, rather than one person
-/// taking up the page. The largest profile fits on its own.
-fn person_item(profile: SignedObject, newest_first: Vec<SignedObject>) -> ListingItem {
+/// Someone's listing: their profile, and as many of their posts and then of
+/// their reshares, newest first, as fit. One that would pass the limit is left
+/// out, rather than one person taking up the page. The largest profile fits on
+/// its own.
+fn person_item(
+    profile: SignedObject,
+    newest_posts: Vec<SignedObject>,
+    newest_reshares: Vec<ListedReshare>,
+) -> ListingItem {
     let mut bytes = encoded_len(&profile);
     let mut posts = Vec::new();
-    for post in newest_first {
+    for post in newest_posts {
         let len = encoded_len(&post);
         if posts.len() < MAX_LISTED_POSTS && bytes + len <= MAX_LISTED_PERSON_BYTES {
             bytes += len;
             posts.push(post);
         }
     }
-    ListingItem::Person { profile, posts }
+    let mut reshares = Vec::new();
+    for reshare in newest_reshares {
+        let len = encoded_len(&reshare.announce) + encoded_len(&reshare.post) + 32;
+        if reshares.len() < MAX_LISTED_RESHARES && bytes + len <= MAX_LISTED_PERSON_BYTES {
+            bytes += len;
+            reshares.push(reshare);
+        }
+    }
+    ListingItem::Person {
+        profile,
+        posts,
+        reshares,
+    }
 }
 
 fn encoded_len(object: &SignedObject) -> usize {
     serde_json::to_vec(object).map_or(usize::MAX / 2, |json| json.len())
 }
+
+/// A reshare read from a listed outbox: the `Announce`, and the post it
+/// points at, each signed and decoded.
+type ListedCandidate = (SignedObject, Announce, SignedObject, Note);
 
 /// A directory's reading of those who asked to be listed.
 pub(crate) async fn listed_loop(core: Arc<Core>) {
@@ -760,7 +1007,7 @@ mod tests {
         let posts: Vec<_> = (0..MAX_LISTED_POSTS + 3)
             .map(|i| post(format!("post {i}")))
             .collect();
-        let listed = listed_posts(person_item(profile(), posts.clone()));
+        let listed = listed_posts(person_item(profile(), posts.clone(), vec![]));
         assert_eq!(listed, posts[..MAX_LISTED_POSTS]);
     }
 
@@ -772,7 +1019,7 @@ mod tests {
             post(huge.clone()),
             post("older".into()),
         ];
-        let listed = listed_posts(person_item(profile(), posts.clone()));
+        let listed = listed_posts(person_item(profile(), posts.clone(), vec![]));
         assert_eq!(listed, [posts[0].clone(), posts[2].clone()]);
     }
 }
