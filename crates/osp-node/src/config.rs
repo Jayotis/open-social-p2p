@@ -101,7 +101,7 @@ pub struct StorageConfig {
 /// The follower swarm (doc 13): sharing what this node fetched ahead of
 /// time, so a popular post doesn't swamp its author's home connection.
 /// `osp init` asks; without a yes, it's off (ADR 0012).
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SwarmConfig {
     /// Serve the media of posts by people you follow, which this node
@@ -110,6 +110,20 @@ pub struct SwarmConfig {
     /// about what you watched. Media you open from elsewhere is never
     /// shared. It counts against `serving.max_upload_mbps`.
     pub share_prefetched: bool,
+    /// When this node names who hosts its media, keep one place of the six
+    /// for a host whose copy it checked recently and has named least, so new
+    /// hosts get a first chance (ADR 0025). On during the alpha, while it's
+    /// measured with and without.
+    pub recent_host_place: bool,
+}
+
+impl Default for SwarmConfig {
+    fn default() -> Self {
+        Self {
+            share_prefetched: false,
+            recent_host_place: true,
+        }
+    }
 }
 
 /// Messages between nodes over Tor (ADR 0014), being built. With it on, the

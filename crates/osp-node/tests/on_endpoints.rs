@@ -587,7 +587,10 @@ async fn a_subscriber_is_held_to_its_bindings() {
     // Without an endpoint, a follower's claim of a copy can't be checked.
     let without = Peer::follower(&addr, &url, None).await;
     let reply = without
-        .ask(&SocialRequest::Hosting { blob: photo.blob })
+        .ask(&SocialRequest::Hosting {
+            blob: photo.blob,
+            reshare: None,
+        })
         .await;
     let SocialResponse::Error { message } = reply else {
         panic!("unexpected {reply:?}");
@@ -598,7 +601,10 @@ async fn a_subscriber_is_held_to_its_bindings() {
     let quiet_key = SecretKey::generate();
     let quiet = Peer::follower(&addr, &url, Some(&quiet_key)).await;
     let reply = quiet
-        .ask(&SocialRequest::Hosting { blob: photo.blob })
+        .ask(&SocialRequest::Hosting {
+            blob: photo.blob,
+            reshare: None,
+        })
         .await;
     assert!(matches!(reply, SocialResponse::Error { .. }), "{reply:?}");
     let hosts = without.who_hosts(photo.blob).await;

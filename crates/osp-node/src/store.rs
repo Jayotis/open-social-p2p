@@ -987,6 +987,18 @@ pub(crate) struct Source {
     pub from_direct: bool,
 }
 
+impl Source {
+    /// A node's media endpoint, by its binding, connected to from anything
+    /// but our direct endpoint.
+    pub fn media(binding: &osp_proto::EndpointBinding) -> Self {
+        Self {
+            node: binding.public,
+            endpoint: binding.endpoint,
+            from_direct: false,
+        }
+    }
+}
+
 impl From<EndpointId> for Source {
     /// A node without other endpoints.
     fn from(node: EndpointId) -> Self {

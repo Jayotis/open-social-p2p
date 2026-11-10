@@ -321,6 +321,24 @@ const MIGRATIONS: &[&str] = &[
     );
     CREATE INDEX reshare_checks_by_post ON reshare_checks(post);
     CREATE INDEX reshare_checks_by_actor ON reshare_checks(actor);",
+    // 22: for an author's node, the resharers that told it they host one of
+    // its posts (ADR 0025), each of the post's files a row: the resharer's
+    // node, identity and `Announce`, its media endpoint's binding (JSON) from
+    // its profile, whether that says it may be listed, and how this node's
+    // checks of its copy went. A row is made only once a check passed.
+    "CREATE TABLE resharer_hosts (
+        blob         TEXT NOT NULL,
+        node         TEXT NOT NULL,
+        post         TEXT NOT NULL,
+        actor        TEXT NOT NULL,
+        announce     TEXT NOT NULL,
+        media        TEXT NOT NULL,
+        discoverable INTEGER NOT NULL,
+        fails        INTEGER NOT NULL DEFAULT 0,
+        checked_ms   INTEGER NOT NULL,
+        PRIMARY KEY (blob, node)
+    );
+    CREATE INDEX resharer_hosts_by_post ON resharer_hosts(post);",
 ];
 
 /// The search index (ADR 0014): a number for each post, by its object ID, and
@@ -395,6 +413,20 @@ pub struct ReshareCheck {
     /// One has passed, ever.
     pub passed: bool,
     /// Failed in a row since the last that passed.
+    pub fails: u32,
+    pub checked_ms: i64,
+}
+
+/// A resharer that told this node it hosts one of its posts (ADR 0025).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ResharerHost {
+    pub node: EndpointId,
+    pub post: ObjectId,
+    pub actor: PublicKey,
+    pub announce: ObjectId,
+    pub media: EndpointBinding,
+    pub discoverable: bool,
+    /// Checks failed in a row since the last that passed.
     pub fails: u32,
     pub checked_ms: i64,
 }
@@ -555,6 +587,8 @@ pub struct SwarmMember {
     pub trusted: bool,
     /// The endpoint it may be named by to other nodes, if it has one.
     pub host: Option<BoundEndpoint>,
+    /// When this node checked its copy and noted it.
+    pub verified_ms: i64,
 }
 
 /// SQLite connection shared by the node's tasks.
@@ -2655,7 +2689,7 @@ impl Db {
     pub fn swarm_members(&self, blob: &BlobHash, except: &EndpointId) -> Result<Vec<SwarmMember>> {
         let conn = self.conn();
         let mut stmt = conn.prepare(
-            "SELECT f.node_addr, t.node IS NOT NULL, f.host
+            "SELECT f.node_addr, t.node IS NOT NULL, f.host, s.seen_ms
              FROM swarm s JOIN followers f ON f.node = s.node
                  LEFT JOIN trust t ON t.node = s.node AND t.state = 'allowed'
              WHERE s.blob = ?1 AND f.shares = 1 AND s.node != ?2
@@ -2666,14 +2700,181 @@ impl Db {
                 row.get::<_, String>(0)?,
                 row.get::<_, bool>(1)?,
                 row.get::<_, Option<String>>(2)?,
+                row.get::<_, i64>(3)?,
             ))
         })?;
         rows.map(|r| {
-            let (addr, trusted, host) = r?;
+            let (addr, trusted, host, verified_ms) = r?;
             Ok(SwarmMember {
                 addr: serde_json::from_str(&addr)?,
                 trusted,
                 host: host.map(|h| serde_json::from_str(&h)).transpose()?,
+                verified_ms,
+            })
+        })
+        .collect()
+    }
+
+    // ---- hosting resharers, for an author's node (ADR 0025) ----
+
+    /// Notes a resharer whose copy of `host.post` passed its check, for each
+    /// of `blobs`, the post's files. One noted before keeps its checks, and
+    /// gets the endpoint and listing choice of its newest profile.
+    pub fn note_resharer_host(&self, host: &ResharerHost, blobs: &[BlobHash]) -> Result<()> {
+        let conn = self.conn();
+        let tx = conn.unchecked_transaction()?;
+        let media = serde_json::to_string(&host.media)?;
+        for blob in blobs {
+            tx.execute(
+                "INSERT INTO resharer_hosts
+                     (blob, node, post, actor, announce, media, discoverable, fails, checked_ms)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+                 ON CONFLICT(blob, node) DO UPDATE SET
+                     actor = excluded.actor, announce = excluded.announce,
+                     media = excluded.media, discoverable = excluded.discoverable",
+                params![
+                    blob.to_string(),
+                    host.node.to_string(),
+                    host.post.to_string(),
+                    host.actor.to_string(),
+                    host.announce.to_string(),
+                    media,
+                    host.discoverable as i64,
+                    host.fails as i64,
+                    host.checked_ms,
+                ],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Whether `node` is noted as a hosting resharer of `post`.
+    pub fn is_resharer_host(&self, post: &ObjectId, node: &EndpointId) -> Result<bool> {
+        Ok(self
+            .conn()
+            .query_row(
+                "SELECT 1 FROM resharer_hosts WHERE post = ?1 AND node = ?2 LIMIT 1",
+                params![post.to_string(), node.to_string()],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()?
+            .is_some())
+    }
+
+    /// How many resharers are noted as hosting `post`.
+    pub fn resharer_hosts_of(&self, post: &ObjectId) -> Result<usize> {
+        let n: i64 = self.conn().query_row(
+            "SELECT COUNT(DISTINCT node) FROM resharer_hosts WHERE post = ?1",
+            params![post.to_string()],
+            |row| row.get(0),
+        )?;
+        Ok(n as usize)
+    }
+
+    /// The resharers to name as hosts of `blob` to anyone: they may be
+    /// listed, and fewer than `max_fails` checks in a row failed.
+    pub fn named_resharers(&self, blob: &BlobHash, max_fails: u32) -> Result<Vec<ResharerHost>> {
+        self.resharer_rows(
+            "WHERE blob = ?1 AND discoverable = 1 AND fails < ?2",
+            params![blob.to_string(), max_fails as i64],
+        )
+    }
+
+    /// Hosting resharers last checked before `before_ms`, one row per post.
+    pub fn resharer_rechecks_due(&self, before_ms: i64) -> Result<Vec<(ResharerHost, BlobHash)>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT post, node, MIN(blob) FROM resharer_hosts
+             WHERE checked_ms < ?1 GROUP BY post, node",
+        )?;
+        let due: Vec<(String, String, String)> = stmt
+            .query_map(params![before_ms], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            })?
+            .collect::<rusqlite::Result<_>>()?;
+        drop(stmt);
+        drop(conn);
+        let mut out = Vec::new();
+        for (post, node, blob) in due {
+            let rows = self.resharer_rows(
+                "WHERE post = ?1 AND node = ?2 AND blob = ?3",
+                params![post, node, blob],
+            )?;
+            if let Some(row) = rows.into_iter().next() {
+                out.push((row, blob.parse()?));
+            }
+        }
+        Ok(out)
+    }
+
+    /// Notes how a recheck of `node`'s copy of `post` went.
+    pub fn note_resharer_check(
+        &self,
+        post: &ObjectId,
+        node: &EndpointId,
+        passed: bool,
+        now: i64,
+    ) -> Result<()> {
+        self.conn().execute(
+            "UPDATE resharer_hosts SET checked_ms = ?3,
+                 fails = CASE WHEN ?4 = 1 THEN 0 ELSE fails + 1 END
+             WHERE post = ?1 AND node = ?2",
+            params![post.to_string(), node.to_string(), now, passed as i64],
+        )?;
+        Ok(())
+    }
+
+    /// Forgets `node` as a hosting resharer of `post`, or with no node, every
+    /// resharer of it.
+    pub fn forget_resharer_hosts(&self, post: &ObjectId, node: Option<&EndpointId>) -> Result<()> {
+        let conn = self.conn();
+        match node {
+            Some(node) => conn.execute(
+                "DELETE FROM resharer_hosts WHERE post = ?1 AND node = ?2",
+                params![post.to_string(), node.to_string()],
+            )?,
+            None => conn.execute(
+                "DELETE FROM resharer_hosts WHERE post = ?1",
+                params![post.to_string()],
+            )?,
+        };
+        Ok(())
+    }
+
+    fn resharer_rows(
+        &self,
+        filter: &str,
+        args: impl rusqlite::Params,
+    ) -> Result<Vec<ResharerHost>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(&format!(
+            "SELECT node, post, actor, announce, media, discoverable, fails, checked_ms
+             FROM resharer_hosts {filter} ORDER BY node"
+        ))?;
+        let rows = stmt.query_map(args, |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, i64>(5)?,
+                row.get::<_, i64>(6)?,
+                row.get::<_, i64>(7)?,
+            ))
+        })?;
+        rows.map(|r| {
+            let (node, post, actor, announce, media, discoverable, fails, checked_ms) = r?;
+            Ok(ResharerHost {
+                node: node.parse()?,
+                post: post.parse()?,
+                actor: actor.parse()?,
+                announce: announce.parse()?,
+                media: serde_json::from_str(&media)?,
+                discoverable: discoverable != 0,
+                fails: fails as u32,
+                checked_ms,
             })
         })
         .collect()

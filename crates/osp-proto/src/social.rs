@@ -61,7 +61,17 @@ pub enum SocialRequest {
     /// follower that subscribed with `shares_prefetched`, so your node can
     /// name it in `WhoHosts`, once it has fetched a piece of the blob from
     /// the follower to check. The reply waits for the check.
-    Hosting { blob: BlobHash },
+    ///
+    /// Or from a resharer, follower or not (ADR 0025): `reshare` is its
+    /// signed `Announce` with `hosting` of the post `blob` belongs to, and its
+    /// owner's signed profile, which must list the sending node and gives its
+    /// media endpoint. The author's node checks a piece from there, and names
+    /// it as a host to anyone who asks if the profile says it may be listed.
+    Hosting {
+        blob: BlobHash,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reshare: Option<Box<HostingReshare>>,
+    },
     /// "The identity you follow now lives on this node" (ADR 0009). Sent to
     /// followers when a node takes over an identity. `profile` is its signed
     /// profile listing the sending node; `addr` is how to reach that node and
@@ -126,6 +136,42 @@ pub enum SocialResponse {
     Endpoints {
         media: Option<Box<BoundEndpoint>>,
         direct: Option<Box<BoundEndpoint>>,
+    },
+    Error {
+        message: String,
+    },
+}
+
+/// A hosting reshare, as its resharer tells the post's author of it (ADR 0025).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HostingReshare {
+    pub announce: SignedObject,
+    pub profile: SignedObject,
+}
+
+/// ALPN of the one request an author's media endpoint answers besides media
+/// (ADR 0025): who hosts one of its posts' files. It's how a viewing endpoint
+/// asks, through the relay, without showing who it is (ADR 0024).
+pub const MEDIA_HOSTS_ALPN: &[u8] = b"osp/media-hosts/0";
+
+/// "Who hosts `blob`, of your post `post`?", on an author's media endpoint.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MediaHostsRequest {
+    pub post: ObjectId,
+    pub blob: BlobHash,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "result", rename_all = "snake_case")]
+pub enum MediaHostsResponse {
+    /// The hosting resharers that may be named to anyone, by their media
+    /// endpoints, and the author's own. Never a follower's copy.
+    Hosts {
+        hosts: Vec<BoundEndpoint>,
+    },
+    /// The post was deleted: the author's signed `Delete` (ADR 0019).
+    Deleted {
+        delete: SignedObject,
     },
     Error {
         message: String,

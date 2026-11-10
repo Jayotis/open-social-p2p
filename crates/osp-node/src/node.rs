@@ -44,13 +44,14 @@ use crate::{
     endpoints::{DirectGate, OwnEndpoints, Pairings, PeerEndpoints},
     health,
     home::Home,
+    hosting,
     keys::{self, NewKey, Signer},
     machine::MachineSide,
     media,
     meet::{self, Acquaintance, IntroductionCounts, MeetingTimes},
     network::{self, ConnTracker},
     relays::{self, Checked, RelayPolicy},
-    social::{self, Heard, PerHour, SocialProtocol},
+    social::{self, Heard, NamedHosts, PerHour, SocialProtocol},
     store::{self, ContentStore, Sources},
     sync,
     tor::TorSide,
@@ -238,8 +239,10 @@ pub(crate) struct Core {
     pub sync_retries: Mutex<HashMap<PublicKey, (u32, Instant)>>,
     /// Followers given samples of the swarm (`WhoHosts`) this hour.
     pub swarm_samples: PerHour,
-    /// Followers whose copies were checked (`Hosting`) this hour.
+    /// Followers and resharers whose copies were checked (`Hosting`) this hour.
     pub hosting_checks: PerHour,
+    /// How often each host was named in `WhoHosts` (ADR 0025).
+    pub named_hosts: NamedHosts,
     /// When followers last sent us a request, and how.
     pub heard: Heard,
     /// Followers are told we moved by one task at a time.
@@ -552,6 +555,7 @@ impl Node {
             sync_retries: Mutex::new(HashMap::new()),
             swarm_samples: PerHour::default(),
             hosting_checks: PerHour::default(),
+            named_hosts: NamedHosts::default(),
             heard: Heard::default(),
             tell_moved_lock: tokio::sync::Mutex::new(()),
             started: Instant::now(),
@@ -585,6 +589,10 @@ impl Node {
                 endpoint_routers.push(
                     Router::builder(media.endpoint.clone())
                         .accept(iroh_blobs::ALPN, SharedBlobs(blobs.clone()))
+                        .accept(
+                            osp_proto::social::MEDIA_HOSTS_ALPN,
+                            hosting::MediaHostsProtocol::new(core.clone()),
+                        )
                         .spawn(),
                 );
             }
@@ -642,6 +650,7 @@ impl Node {
         };
         let sweep_uploads = tokio::spawn(core.clone().sweep_uploads_loop());
         let reshares = tokio::spawn(sync::reshares_loop(core.clone()));
+        let resharers = tokio::spawn(hosting::resharers_loop(core.clone()));
         let mut tasks = vec![
             serving_rules,
             sync_loop,
@@ -650,6 +659,7 @@ impl Node {
             replicas,
             sweep_uploads,
             reshares,
+            resharers,
         ];
         tasks.extend(directory_tasks);
         if core.config.network.relay != RelayChoice::Disabled {
@@ -799,6 +809,18 @@ impl Node {
     /// they deleted those posts, as the node does once a day. For tests.
     pub async fn check_reshares_now(&self) -> Result<usize> {
         self.core.check_unfollowed_reshares().await
+    }
+
+    /// How many of this node's blobs the follower `node` is noted as holding
+    /// a copy of (doc 13). For tests.
+    pub fn swarm_copies(&self, node: &EndpointId) -> Result<usize> {
+        self.core.db.swarm_copies(node)
+    }
+
+    /// Whether the node `resharer` is noted as hosting this node's post
+    /// `post` (ADR 0025). For tests.
+    pub fn notes_resharer(&self, post: &ObjectId, resharer: &EndpointId) -> Result<bool> {
+        self.core.db.is_resharer_host(post, resharer)
     }
 
     /// Lets go of a stored blob, whatever it's kept for, as if it were lost.

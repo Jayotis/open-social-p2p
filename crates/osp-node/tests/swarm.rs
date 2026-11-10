@@ -231,7 +231,11 @@ impl Peer {
     }
 
     async fn hosting(&self, blob: BlobHash) -> SocialResponse {
-        self.ask(&SocialRequest::Hosting { blob }).await
+        self.ask(&SocialRequest::Hosting {
+            blob,
+            reshare: None,
+        })
+        .await
     }
 }
 
