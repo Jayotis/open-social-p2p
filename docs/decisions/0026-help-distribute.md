@@ -1,6 +1,6 @@
 # ADR 0026: Help Distribute: hosting public media without a reshare
 
-**Status:** Proposed (2026-11-09), approved in principle, revised after the maintainer's review (2026-11-09), for review again. Builds on [ADR 0024](0024-watching-found-posts-without-your-identity.md) and [ADR 0025](0025-shared-posts-are-found-and-hosted.md). Revisits part of [ADR 0016](0016-machine-acquaintances.md)'s rejection of machines serving media, without using the machine name ([ADR 0015](0015-nodes-meet-first.md)). Nothing here is built until the ADR 0024/0025 milestone, with its real-node tests, is done.
+**Status:** Proposed (2026-11-09), approved in principle, revised after the maintainer's review (2026-11-09), for review again. Not to be accepted while the [open issue](#open-issue-a-stolen-key-after-the-30-day-refusal) on a stolen hosting key stands. Builds on [ADR 0024](0024-watching-found-posts-without-your-identity.md) and [ADR 0025](0025-shared-posts-are-found-and-hosted.md). Revisits part of [ADR 0016](0016-machine-acquaintances.md)'s rejection of machines serving media, without using the machine name ([ADR 0015](0015-nodes-meet-first.md)). Nothing here is built until the ADR 0024/0025 milestone, with its real-node tests, is done.
 
 Revised 2026-11-09, after the maintainer's review:
 
@@ -105,6 +105,12 @@ Help Distribute follows [ADR 0025](0025-shared-posts-are-found-and-hosted.md)'s 
 - **Replaced by the owner.** The node signs a retirement with the old key, for every author it offered to, and sends it before it deletes the old key. An author's node that gets one drops that key's records at once, and refuses offers from it for 30 days. Then the new key offers the commitments again, spread over a day, so that authors can't tell old and new apart by timing alone. That doesn't stop an author who hosted many of the same posts from guessing the link: the set of posts is the same.
 - **Lost** (disk gone, or a restore). The key isn't in the backup ([ADR 0009](0009-identity-backup-and-recovery.md)), like the machine key. A restored node makes a new one, and its commitments start again from Help Distribute. The old key's records expire as above, as it no longer answers checks.
 - **Copied by someone else.** A copy lets them serve as the key, and so be named, but only while they hold a real copy: every chunk is checked by the downloader against the author's hashes, so they can't serve anything else. What they gain is seeing which viewing endpoints download from them, which ADR 0024 makes worthless for knowing who. The owner retires the key as above, which a thief can't undo; offers from it are then refused for 30 days, and its records are gone.
+
+### Open issue: a stolen key after the 30-day refusal
+
+**This must be resolved before the ADR is accepted or any of it is built** (the maintainer, 2026-11-10).
+
+Mallory copies Jimmy's hosting key. Jimmy retires it, and Kim's node refuses offers from it for 30 days. On day 31 the refusal is over: nothing stops Mallory offering the same key to Kim's node again, passing its checks with real copies, and being named as a distributor under a key Jimmy gave up. The same applies to every author the key was retired with, and to authors it was never offered to. What she gets is what a copy gave her before (seeing which viewing endpoints download from her) and a distributor place under a key that was retired. The fix has to make a retirement last, without each author's node keeping a list that grows for ever, and without a thief being able to undo or block it.
 
 ## Consequences
 
