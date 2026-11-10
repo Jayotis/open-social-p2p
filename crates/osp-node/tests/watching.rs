@@ -199,12 +199,15 @@ fn assert_sent_nothing_from(net: &SimNet, own: &HashSet<EndpointId>) {
     );
 }
 
-/// Who sent to any of `node`'s endpoints since recording began.
-fn senders_to(net: &SimNet, node: &Node) -> HashSet<EndpointId> {
+/// Who sent to any of `node`'s endpoints since recording began, leaving out
+/// the `others` in the test: a directory reading `node`, or another creator's
+/// machine name meeting it, runs on its own timers and isn't Alice.
+fn senders_to(net: &SimNet, node: &Node, others: &[&Node]) -> HashSet<EndpointId> {
     let ids: HashSet<EndpointId> = node.endpoint_ids().into_iter().collect();
+    let others: HashSet<EndpointId> = others.iter().flat_map(|n| n.endpoint_ids()).collect();
     net.senders()
         .into_iter()
-        .filter(|(_, to)| ids.contains(to))
+        .filter(|(from, to)| ids.contains(to) && !others.contains(from))
         .map(|(from, _)| from)
         .collect()
 }
@@ -225,7 +228,7 @@ async fn a_found_post_opens_through_a_viewing_endpoint_and_nothing_of_alices_own
 
     // One viewing endpoint for both, a key Kim's node had never seen.
     assert_eq!(alice.viewing_endpoints_made(), 1);
-    let to_kim = senders_to(&net, &kim);
+    let to_kim = senders_to(&net, &kim, &[&directory]);
     assert_eq!(to_kim.len(), 1, "{to_kim:?}");
     let viewer = *to_kim.iter().next().unwrap();
     assert!(!alice.endpoint_ids().contains(&viewer));
@@ -239,7 +242,11 @@ async fn a_found_post_opens_through_a_viewing_endpoint_and_nothing_of_alices_own
     };
     call(&alice, follow).await;
     call(&alice, ClientRequest::Sync).await;
-    assert!(senders_to(&net, &kim).iter().any(|from| own.contains(from)));
+    assert!(
+        senders_to(&net, &kim, &[&directory])
+            .iter()
+            .any(|from| own.contains(from))
+    );
     assert_eq!(alice.viewing_endpoints_made(), 1);
 
     for node in [alice, kim, directory] {
@@ -266,8 +273,8 @@ async fn each_author_has_their_own_viewing_endpoint_and_a_late_request_a_new_one
     alice.open_blob(&kims_thumbnail).await.unwrap();
     alice.open_blob(&jimmys_photo).await.unwrap();
     assert_eq!(alice.viewing_endpoints_made(), 2);
-    let to_kim = senders_to(&net, &kim);
-    let to_jimmy = senders_to(&net, &jimmy);
+    let to_kim = senders_to(&net, &kim, &[&directory, &jimmy]);
+    let to_jimmy = senders_to(&net, &jimmy, &[&directory, &kim]);
     assert!(to_kim.is_disjoint(&to_jimmy), "{to_kim:?} {to_jimmy:?}");
 
     // Past the time a viewing endpoint takes new requests, Kim's photo comes
@@ -275,7 +282,7 @@ async fn each_author_has_their_own_viewing_endpoint_and_a_late_request_a_new_one
     tokio::time::sleep(Duration::from_millis(2_500)).await;
     alice.open_blob(&kims_photo).await.unwrap();
     assert_eq!(alice.viewing_endpoints_made(), 3);
-    assert_eq!(senders_to(&net, &kim).len(), 2);
+    assert_eq!(senders_to(&net, &kim, &[&directory, &jimmy]).len(), 2);
     assert_sent_nothing_from(&net, &own);
 
     for node in [alice, kim, jimmy, directory] {
