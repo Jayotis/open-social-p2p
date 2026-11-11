@@ -73,3 +73,9 @@ Every open succeeded: median 19 to 28 s from asking for sources, slowest 91 s. T
 - **Each video runs on its own.** A newcomer that hosts two videos serves each with its whole upload. At 10%, about 3% of newcomers host more than one.
 - **Viewers arrive evenly.** A video found by many at once would queue for places, which [step 4](found-and-hosted.md#step-4-results) and B8 cover.
 - **Nodes stay on.** A host that goes off is replaced by the next listed, which the model doesn't test.
+
+## Each viewer in its own order
+
+Added 2026-11-11, after the results above, and fixed before the change was built. The maintainer chose to have each viewer shuffle the hosts it's given before taking 3 ([ADR 0025](../decisions/0025-shared-posts-are-found-and-hosted.md#rotation-and-no-one-dominating), amended). The model gets the same change, and runs once more, as above.
+
+**Pass mark,** at 10%, seed 1: marks 1 to 3 are still met, and on every video with at least 16 sharers, a directory's full list, the 3 resharers that serve most serve at most half of its bytes.

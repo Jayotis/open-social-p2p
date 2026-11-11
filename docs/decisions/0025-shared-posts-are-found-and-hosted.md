@@ -82,6 +82,7 @@ A directory lists at most 16 hosting reshares of one post. Which 16:
 - **Who qualifies:** a hosting reshare whose latest check passed, from a person listed for at least 7 days (a starting value). A name made today can't qualify today.
 - **Rotation:** when more than 16 qualify, the directory picks the day's 16 by a draw from the post's ID and the date. The pick holds for the day and changes the next. How recently a host was checked doesn't move it up, so presenting freshly checked names gains nothing.
 - **A cap on new names:** of the 16, at most 8 go to people listed for less than 30 days. An operator wanting every place must keep many listed identities for a month, each hosting a real copy that passes rechecks, within ADR 0015's 100 new listings an hour.
+- **Each viewer draws its own order** (amended 2026-11-11, after step 5's model run): Alice's node shuffles the hosting sources it has for a post, those from directories and those Kim's node names, each group on its own, before taking the first 3 at once. Every viewer reading the same list in the same order sent nearly all of a video's viewers to the 3 listed first. The directories' lists and Kim's daily draw don't change.
 - **Readers merge,** so no single directory decides: Alice's node takes at most 16 hosting sources for a post from all the directories it reads, by the same kind of daily draw.
 
 ### The author's node names hosting resharers
