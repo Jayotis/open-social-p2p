@@ -39,6 +39,43 @@ Real nodes on three machines on a home network, all with messages over Tor, `[en
 - **The first Alice,** with the video already cached, had the post nowhere once she read the directory again: not in what she found, not in `show`, not in search. Her cached copy of the video (4.2 MB) stays on disk until the cache evicts it. It isn't shown or served.
 - **Jimmy stopped serving.** His node's daily check with Kim's learned of the `Delete` about 16 hours after it, and he let go of his hosted copy: 2 files, 4.0 MB, down to none.
 
+## Step 4: newcomers in `osp-sim`
+
+The step's gate: B8 with a few hundred newcomers arriving over hours who find rather than follow, some sharing with hosting, run with and without the place for a recently verified host. Plan and marks fixed on 2026-11-11, before the runs.
+
+**Before the runs, two fixes** (`c8860e4`):
+
+- **Viewers get the place too.** Kim's media endpoint, which a newcomer's viewing endpoint asks who hosts a post, named resharers without the place: only `WhoHosts` gave it, and newcomers never send `WhoHosts`. Without this fix, the two runs couldn't differ for newcomers.
+- **The place goes round.** With the 6 resharers named all taken, the place took the sixth of the day's draw, which still counted as named, so it could never win the place back and went unnamed all day. It now competes with the rest by how often each was named.
+
+**The scenario.** The home run of [media through relays](network-conditions.md#media-through-relays) with a fifth of the followers behind the relay, which met every B8 mark. Today's default, every node behind the relay, already misses the 95% mark without newcomers, so it can't show whether they change B8. Then, in the same run:
+
+- **A directory** lists Kim. She asks to be listed once she has posted, so its first read of her, within a minute, lists the post.
+- **Once the followers and latecomers are done, 200 newcomers arrive,** evenly over 3 hours, following nobody. Each reads the directory as it arrives and opens the video through a viewing endpoint ([ADR 0024](../decisions/0024-watching-found-posts-without-your-identity.md)). It tries the hosts the directory lists first, one at a time, then those Kim's media endpoint names, and Kim's own last.
+- **Every fifth newcomer, the first included, shares the video with hosting,** 40 in all, and asks to be listed at once. A real node asks within the hour. The directory lists a new node at its next read, within a minute, and reads it hourly after that. Kim's node checks a sharer's copy within seconds and names it.
+- **Every other timing is a real node's.** Uploads are 5, 10 and 20 Mbit/s in turn, as for followers.
+
+```sh
+osp-sim --dir /path/on/disk/run --swarm --net --latecomers 10 --tor-delay \
+  --endpoints anyone --relay --relay-only 20 \
+  --newcomers 200 --newcomers-over-mins 180 --newcomer-share-percent 20 \
+  [--no-recent-host-place] --label "$(git rev-parse --short HEAD)" --out run.json
+```
+
+**Recorded:**
+
+- **First uploads.** When each sharing newcomer first served someone: at least 1 MB to anyone but Kim's and the directory's nodes, whose checks take a small piece.
+- **From earlier newcomers.** The share of what newcomers received that came from earlier newcomers, for all of them and for the later half.
+- **Kim's copies.** What Kim sent the newcomers, in copies of the video.
+- **Opening times,** and any newcomer that couldn't open the video.
+
+**Pass marks.** One run with the place and one without, on the same code, one after the other, on the NVMe partition.
+
+1. **B8 holds in both:** the creator sends at most 30 copies, 95% of the followers hold the video within 15 minutes, and all within 30.
+2. **The place is kept as a policy only if newcomers' first uploads come sooner with it.** The sharers judged are those that shared at least 30 minutes before the last newcomer arrived, so each had the same time to be asked. "Sooner" means a lower median time from sharing to first serving, a sharer that never served counting as never. If neither run's median is reached, it means more judged sharers served within 30 minutes.
+
+If B8 holds and the place doesn't make first uploads sooner, `recent_host_place` goes off by default and stays a setting. If B8 misses in either run, the results go to the maintainer before anything changes.
+
 ## Still open
 
 - **A found post's cached files** could be let go as soon as the post drops out, rather than at eviction.

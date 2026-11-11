@@ -134,7 +134,7 @@ impl Core {
                 addr: EndpointAddr::new(media.endpoint.id()),
             });
         }
-        hosts.extend(self.resharers_to_name(&req.blob)?);
+        hosts.extend(self.resharers_for_viewers(&req.blob)?);
         Ok(MediaHostsResponse::Hosts { hosts })
     }
 

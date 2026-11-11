@@ -10,6 +10,8 @@
 //! [B8 test plan]: ../../docs/testing/b8-creator-upload.md
 //!
 //! `meeting` is another scenario: machines meeting machines (ADR 0015).
+//! `newcomers` adds to this one: nodes that find the post through a
+//! directory rather than follow, and share it (ADR 0025).
 
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
@@ -35,6 +37,7 @@ use tracing::info;
 pub mod deleting;
 pub mod meeting;
 pub mod month;
+pub mod newcomers;
 
 /// Bytes per second of video the node's encoder makes from noise: its
 /// 1,500 kbit/s ceiling, plus audio and the container. Measured on a
@@ -131,6 +134,11 @@ pub struct Scenario {
     /// nobody to connect directly, whatever `endpoints` says: every fifth
     /// with 20, every other with 50.
     pub relay_only_percent: usize,
+    /// Nodes keep a place for a recently verified host when they name who
+    /// hosts their media (ADR 0025), as real nodes do by default.
+    pub recent_host_place: bool,
+    /// Then newcomers find the post through a directory, and some share it.
+    pub newcomers: Option<newcomers::Newcomers>,
     /// Free text kept with the report, such as the commit tested.
     pub label: String,
 }
@@ -221,6 +229,7 @@ pub struct Report {
     pub endpoints: Option<String>,
     /// The share of followers that allow nobody to, in percent.
     pub relay_only_percent: usize,
+    pub recent_host_place: bool,
     pub time_limit_secs: u64,
     /// The video, and its media altogether (the video and its thumbnail).
     pub video_bytes: u64,
@@ -290,6 +299,7 @@ pub struct Report {
     pub machine: Option<Machine>,
     /// The simulated network, if the run had one.
     pub network: Option<NetworkReport>,
+    pub newcomers: Option<newcomers::NewcomersReport>,
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -414,6 +424,13 @@ pub async fn run(s: &Scenario) -> Result<Report> {
         s.network.as_ref().and_then(|n| n.relay).is_none() || s.endpoints.is_some(),
         "a relay needs endpoints: only media endpoints go through it"
     );
+    if let Some(n) = &s.newcomers {
+        ensure!(
+            s.network.as_ref().and_then(|n| n.relay).is_some(),
+            "newcomers watch through viewing endpoints, which go only through a relay"
+        );
+        ensure!(n.share_percent <= 100, "sharing is a percentage");
+    }
     std::fs::create_dir_all(&s.dir)?;
     let started = osp_proto::now_rfc3339();
     let source = make_video(&s.dir, s.video_bytes).await?;
@@ -439,13 +456,28 @@ pub async fn run(s: &Scenario) -> Result<Report> {
         tor_delay: s.tor_delay(),
         ..SimSettings::default()
     };
+    let directory = match (&s.newcomers, &net) {
+        (Some(n), Some(net)) => Some(newcomers::start_directory(s, net, n.count + 1).await?),
+        _ => None,
+    };
+    let known = directory.as_ref().map(newcomers::known).transpose()?;
     let creator = start(
         &s.dir.join("creator"),
         "Creator",
         s.upload_cap(s.creator_mbps),
         false,
         s.endpoints,
-        lifted,
+        SimSettings {
+            machine_names: directory.is_some(),
+            ..lifted
+        },
+        |config| {
+            config.swarm.recent_host_place = s.recent_host_place;
+            if let Some(known) = known {
+                config.directory.known = vec![known];
+                config.directory.list_me = true;
+            }
+        },
     )
     .await?;
     let spread = SimSettings {
@@ -508,6 +540,13 @@ pub async fn run(s: &Scenario) -> Result<Report> {
     };
     let posted = Instant::now();
     let mut load = Load::start();
+    if directory.is_some() {
+        // Its post is listed at the directory's first read of it.
+        ensure!(
+            creator.ask_to_be_listed().await,
+            "the creator couldn't ask to be listed"
+        );
+    }
     let ClientResponse::Item { item } = call(&creator, ClientRequest::Show { id: post }).await?
     else {
         bail!("can't show the post");
@@ -715,11 +754,31 @@ pub async fn run(s: &Scenario) -> Result<Report> {
         });
     }
 
+    let newcomers = match (&s.newcomers, &net, &directory) {
+        (Some(newcomers), Some(net), Some(directory)) => Some(
+            newcomers::Phase {
+                s,
+                newcomers,
+                net,
+                creator: &creator,
+                directory,
+                post,
+                video,
+                video_bytes,
+                posted,
+            }
+            .run()
+            .await?,
+        ),
+        _ => None,
+    };
+
     let running = followers
         .into_iter()
         .flatten()
         .chain(strangers)
-        .chain(latecomers);
+        .chain(latecomers)
+        .chain(directory);
     for result in join_all(running.map(Node::shutdown)).await {
         result?;
     }
@@ -739,6 +798,7 @@ pub async fn run(s: &Scenario) -> Result<Report> {
         tor_delay: s.tor_delay,
         endpoints: s.endpoints.map(|rule| rule.to_string()),
         relay_only_percent: s.relay_only_percent,
+        recent_host_place: s.recent_host_place,
         time_limit_secs: s.time_limit.as_secs(),
         video_bytes,
         media_bytes,
@@ -777,6 +837,7 @@ pub async fn run(s: &Scenario) -> Result<Report> {
             outages,
             packets: net.stats(),
         }),
+        newcomers,
     })
 }
 
@@ -1248,6 +1309,14 @@ impl Report {
             );
         }
         out.push('\n');
+        if let Some(newcomers) = &self.newcomers {
+            let place = match self.recent_host_place {
+                true => "with",
+                false => "without",
+            };
+            let _ = writeln!(out, "Place for a recently verified host: {place}.");
+            out.push_str(&newcomers.summary());
+        }
         out
     }
 }
@@ -1291,6 +1360,7 @@ async fn start(
     swarm: bool,
     endpoints: Option<DirectRule>,
     sim: SimSettings,
+    configure: impl FnOnce(&mut Config),
 ) -> Result<Node> {
     let mut config = Config::local_test(name);
     if let Some(rule) = endpoints {
@@ -1304,6 +1374,7 @@ async fn start(
     // Noise always reaches the bitrate ceiling, so the preset changes only
     // how long encoding takes, not the size.
     config.media.x264_preset = "ultrafast".into();
+    configure(&mut config);
     Node::init(home, &config)?;
     Node::spawn_sim(home, sim).await
 }
@@ -1490,7 +1561,13 @@ async fn start_all(
             };
             let name = format!("{name}{i}");
             let rule = s.direct_rule(i);
-            async move { start(&home, &name, cap, s.swarm, rule, sim).await }
+            let place = s.recent_host_place;
+            async move {
+                start(&home, &name, cap, s.swarm, rule, sim, |c| {
+                    c.swarm.recent_host_place = place
+                })
+                .await
+            }
         })
         .buffered_ordered(STARTING_AT_ONCE)
         .collect::<Vec<_>>()
@@ -2074,6 +2151,8 @@ mod tests {
             tor_delay: false,
             endpoints: None,
             relay_only_percent: 0,
+            recent_host_place: true,
+            newcomers: None,
             label: String::new(),
         };
         let net = SimNet::new(1);

@@ -32,6 +32,8 @@ async fn a_small_run_measures_the_creators_upload() {
         tor_delay: false,
         endpoints: None,
         relay_only_percent: 0,
+        recent_host_place: true,
+        newcomers: None,
         label: "test".into(),
     };
     let report = osp_sim::run(&scenario).await.unwrap();
@@ -120,6 +122,8 @@ fn with_the_swarm(dir: &Path) -> Scenario {
         tor_delay: false,
         endpoints: None,
         relay_only_percent: 0,
+        recent_host_place: true,
+        newcomers: None,
         label: "test".into(),
     }
 }
@@ -341,6 +345,8 @@ fn half_behind_a_relay(dir: &Path) -> Scenario {
         }),
         endpoints: Some(DirectRule::Anyone),
         relay_only_percent: 50,
+        recent_host_place: true,
+        newcomers: None,
         prefetch_spread: Duration::from_secs(30),
         time_limit: Duration::from_secs(300),
         ..with_the_swarm(dir)

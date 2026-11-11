@@ -710,6 +710,55 @@ async fn a_delete_from_the_author_wins_over_a_listed_hosts_copy() {
     }
 }
 
+/// Seven hosting resharers, one more than Kim's node names at once. With the
+/// place for a recently verified host, her media endpoint names each of them
+/// in time: the newest first, as it was named least, and then the one the
+/// day's draw put sixth, once the newest has caught up. Without it, the same
+/// six every time.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_recent_host_place_goes_round_the_resharers_a_viewer_is_named() {
+    // `RESHARERS_NAMED`.
+    const NAMED: usize = 6;
+    for place in [true, false] {
+        let dir = tempfile::tempdir().unwrap();
+        let net = SimNet::new(81);
+        let directory = start_directory(dir.path(), &net, Duration::from_secs(3600), 16).await;
+        let mut config = config_knowing("Kim", &directory, true);
+        config.swarm.recent_host_place = place;
+        let kim = start_sim(dir.path(), config, sim(&net)).await;
+        let (post, photo) = post_photo(&kim, dir.path(), "Kim's oak table").await;
+        assert!(kim.ask_to_be_listed().await);
+        wait_for_listing(&net, &directory, kim.identity(), Some(vec![])).await;
+
+        let mut resharers = Vec::new();
+        for i in 0..=NAMED {
+            let name = format!("Resharer{i}");
+            resharers.push(resharer(dir.path(), &net, &directory, &name, post, true).await);
+        }
+        for node in &resharers {
+            until("a resharer isn't noted", async || {
+                kim.notes_resharer(&post, &node.node_id()).unwrap()
+            })
+            .await;
+        }
+
+        let mut named_ever = HashSet::new();
+        // The resharers' own fetches asked too, naming the first six.
+        for _ in 0..20 {
+            let mut named = named_by(&media_hosts_as_stranger(&net, &kim, post, photo).await);
+            assert!(named.remove(&kim.node_id()));
+            assert_eq!(named.len(), NAMED, "place {place}");
+            named_ever.extend(named);
+        }
+        let wanted = if place { NAMED + 1 } else { NAMED };
+        assert_eq!(named_ever.len(), wanted, "place {place}");
+
+        for node in resharers.into_iter().chain([kim, directory]) {
+            node.shutdown().await.unwrap();
+        }
+    }
+}
+
 /// Jimmy's copy is lost: after 2 failed checks in a row, Kim's node stops
 /// naming him.
 #[tokio::test(flavor = "multi_thread")]

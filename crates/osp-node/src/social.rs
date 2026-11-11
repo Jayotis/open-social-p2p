@@ -337,12 +337,18 @@ impl Core {
                 // in the followers' sample for a follower, else among the
                 // resharers. None kept when none qualifies.
                 if public && self.config.swarm.recent_host_place {
+                    // A follower's sample gives way for a resharer, a
+                    // stranger's list of resharers for its last one.
+                    let staying = match sampled {
+                        true => &resharers[..],
+                        false => staying_resharers(&resharers),
+                    };
                     let named: HashSet<EndpointId> = sample
                         .iter()
                         .map(|m| m.addr.id)
-                        .chain(resharers.iter().map(|h| h.binding.public))
+                        .chain(staying.iter().map(|h| h.binding.public))
                         .collect();
-                    match self.recent_host(&blob, remote, bound, &members, &named)? {
+                    match self.recent_host(&blob, Some(remote), bound, &members, &named)? {
                         Some(Recent::Follower(member)) => {
                             give_place(&mut sample, SWARM_SAMPLE, member, |m| m.trusted)
                         }
@@ -681,7 +687,7 @@ impl Core {
     fn recent_host(
         &self,
         blob: &BlobHash,
-        remote: EndpointId,
+        remote: Option<EndpointId>,
         bound: bool,
         members: &[SwarmMember],
         named: &HashSet<EndpointId>,
@@ -699,7 +705,7 @@ impl Core {
             .collect();
         if bound {
             for host in self.db.named_resharers(blob, 1)? {
-                if host.checked_ms >= since && host.node != remote {
+                if host.checked_ms >= since && Some(host.node) != remote {
                     let bound = BoundEndpoint {
                         addr: EndpointAddr::new(host.media.endpoint),
                         binding: host.media,
@@ -736,6 +742,26 @@ impl Core {
                 binding: host.media,
             })
             .collect())
+    }
+
+    /// The hosting resharers of `blob` named on the media endpoint, to a
+    /// viewer this node doesn't know (ADR 0024): as in a `WhoHosts` reply to
+    /// a stranger, with the place for a recently verified host when it's on.
+    /// Counted as named, so the place goes round them.
+    pub(crate) fn resharers_for_viewers(&self, blob: &BlobHash) -> Result<Vec<BoundEndpoint>> {
+        let mut resharers = self.resharers_to_name(blob)?;
+        if self.config.swarm.recent_host_place {
+            let named: HashSet<EndpointId> = staying_resharers(&resharers)
+                .iter()
+                .map(|h| h.binding.public)
+                .collect();
+            if let Some(Recent::Resharer(host)) = self.recent_host(blob, None, true, &[], &named)? {
+                give_place(&mut resharers, RESHARERS_NAMED, host, |_| false);
+            }
+        }
+        let named: Vec<EndpointId> = resharers.iter().map(|h| h.binding.public).collect();
+        self.named_hosts.note(&named);
+        Ok(resharers)
     }
 
     /// Where to get a piece of a blob from a follower that says it holds a
@@ -1187,9 +1213,20 @@ fn give_place<T>(named: &mut Vec<T>, most: usize, host: T, fixed: impl Fn(&T) ->
     named.push(host);
 }
 
-/// How often this node has named each host in a `WhoHosts` reply, since it
-/// started, so the place for a recently verified host goes to one named
-/// least. In memory only.
+/// The resharers named that keep their place when the place for a recently
+/// verified host is given among them: all but the last, which `give_place`
+/// takes, once they're full. The last then competes for the place with the
+/// rest, so the day's draw doesn't keep it unnamed all day.
+fn staying_resharers(named: &[BoundEndpoint]) -> &[BoundEndpoint] {
+    match named.len() >= RESHARERS_NAMED {
+        true => &named[..RESHARERS_NAMED - 1],
+        false => named,
+    }
+}
+
+/// How often this node has named each host in a `WhoHosts` reply or to a
+/// viewer, since it started, so the place for a recently verified host goes
+/// to one named least. In memory only.
 #[derive(Default)]
 pub(crate) struct NamedHosts(Mutex<HashMap<EndpointId, u32>>);
 
