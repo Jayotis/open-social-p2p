@@ -280,7 +280,15 @@ async fn a_hosting_reshare_is_listed_and_serves_a_newcomer_with_its_author_offli
     let own = own_endpoints(&alice);
     read_directories(&alice).await;
     net.record_senders();
+    let opening = Instant::now();
     alice.open_blob(&photo).await.unwrap();
+    // Jimmy's copy is fetched while Kim's media endpoint is asked, so her
+    // being off costs no wait (it was 10 s).
+    assert!(
+        opening.elapsed() < Duration::from_secs(5),
+        "{:?}",
+        opening.elapsed()
+    );
 
     // The directory reads Jimmy all along, and Kim's node checks his copy;
     // anyone else sending to him is Alice.
@@ -666,6 +674,38 @@ async fn a_deleted_posts_media_endpoint_answers_with_its_delete() {
     assert!(alice.knows_deleted(&post).unwrap());
 
     for node in [alice, kim, directory] {
+        node.shutdown().await.unwrap();
+    }
+}
+
+/// Kim deletes after Alice found Jimmy's hosting reshare of her post. Alice
+/// fetches from Jimmy while she asks Kim's media endpoint, which answers with
+/// the `Delete`: whether Jimmy's copy arrived first or not, she doesn't keep
+/// it and keeps the tombstone.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_delete_from_the_author_wins_over_a_listed_hosts_copy() {
+    let dir = tempfile::tempdir().unwrap();
+    let net = SimNet::new(79);
+    let (directory, kim, post, photo) =
+        kim_and_directory(dir.path(), &net, Duration::from_secs(3600), 16).await;
+    let jimmy = resharer(dir.path(), &net, &directory, "Jimmy", post, true).await;
+    assert!(jimmy.ask_to_be_listed().await);
+    wait_for_listing(&net, &directory, jimmy.identity(), Some(vec![(post, true)])).await;
+    let alice = start_sim(
+        dir.path(),
+        config_knowing("Alice", &directory, false),
+        sim(&net),
+    )
+    .await;
+    read_directories(&alice).await;
+
+    call(&kim, ClientRequest::Delete { id: post }).await;
+    let opened = alice.open_blob(&photo).await;
+    assert!(opened.is_err(), "{opened:?}");
+    assert!(alice.knows_deleted(&post).unwrap());
+    assert_eq!(alice.blob_class(&photo).unwrap(), None);
+
+    for node in [alice, jimmy, kim, directory] {
         node.shutdown().await.unwrap();
     }
 }

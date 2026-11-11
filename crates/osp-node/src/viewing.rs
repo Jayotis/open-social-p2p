@@ -53,6 +53,11 @@ pub(crate) const MAX_VIEWING: usize = 4;
 /// (ADR 0025), besides its author's own nodes.
 pub(crate) const MAX_FOUND_HOSTS: usize = 16;
 
+/// How long after a download from listed hosts starts its author's media
+/// endpoint may still answer with a `Delete`, if the download is done first.
+/// An author who's on answers in under a second through the relay.
+pub(crate) const DELETE_GRACE: Duration = Duration::from_secs(3);
+
 /// What the person is told when no public source could be reached privately.
 pub(crate) const NO_PRIVATE_SOURCE: &str = "no public source of this post could be reached \
      without showing who you are; try again later, or follow its author";
@@ -250,37 +255,84 @@ impl Core {
             .context(NO_PRIVATE_SOURCE)?;
         // The resharers its author names (ADR 0025), asked through the
         // viewing endpoint too. A deleted post stops here.
-        if let Some(author) = authors.first() {
-            let named = self
-                .ask_author_for_hosts(
-                    &lease.inner.endpoint,
-                    EndpointAddr::new(author.endpoint),
-                    (id, note),
-                    blob,
-                )
-                .await?;
+        let ask = async {
+            match authors.first() {
+                Some(author) => {
+                    self.ask_author_for_hosts(
+                        &lease.inner.endpoint,
+                        EndpointAddr::new(author.endpoint),
+                        (id, note),
+                        blob,
+                    )
+                    .await
+                }
+                None => Ok(Vec::new()),
+            }
+        };
+        // Then the sources not yet tried: those its author named, and its
+        // author's own last, as they're the ones to spare.
+        let then = |named: Vec<Source>, tried: &[Source]| {
+            let mut rest = tried.to_vec();
             for source in named {
                 if source.node != self.endpoint.id()
                     && !self.nodes_of(&note.actor).contains(&source.node)
                 {
-                    add(&mut sources, source);
+                    add(&mut rest, source);
                 }
             }
-        }
-        // Its author's own last: they're the ones to spare.
-        for bound in &authors {
-            add(&mut sources, Source::media(bound));
-        }
-        let fetched = self
-            .store
-            .download_through(
+            for bound in &authors {
+                add(&mut rest, Source::media(bound));
+            }
+            rest.split_off(tried.len())
+        };
+        let download = |sources: Vec<Source>| {
+            self.store.download_through(
                 blob,
                 Sources::one_at_a_time(sources),
                 class,
                 declared,
                 &lease.inner.pool,
             )
-            .await;
+        };
+        let fetched = if sources.is_empty() {
+            // Nothing to start with: hear the author out first.
+            let rest = then(ask.await?, &[]);
+            download(rest).await
+        } else {
+            // Start with the listed hosts while the author is asked, so an
+            // author who's off costs no wait (real nodes: 10 s of 11.8 s).
+            let started = Instant::now();
+            let mut ask = pin!(ask);
+            let mut listed = pin!(download(sources.clone()));
+            tokio::select! {
+                biased;
+                asked = &mut ask => {
+                    // A `Delete` drops the download under way.
+                    let named = asked?;
+                    match listed.await {
+                        Ok(size) => Ok(size),
+                        Err(e) => match then(named, &sources) {
+                            rest if rest.is_empty() => Err(e),
+                            rest => download(rest).await,
+                        },
+                    }
+                }
+                done = &mut listed => match done {
+                    // The author still has a moment to say it's deleted.
+                    Ok(size) => match tokio::time::timeout_at(started + DELETE_GRACE, ask).await {
+                        Ok(Err(e)) => {
+                            self.still_named(blob, size).await?;
+                            Err(e)
+                        }
+                        _ => Ok(size),
+                    },
+                    Err(e) => match then(ask.await?, &sources) {
+                        rest if rest.is_empty() => Err(e),
+                        rest => download(rest).await,
+                    },
+                },
+            }
+        };
         drop(lease);
         match fetched {
             Ok(size) => {

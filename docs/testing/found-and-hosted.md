@@ -21,7 +21,7 @@ Real nodes on three machines on a home network, all with messages over Tor, `[en
 
 **Kim online.** Alice found the post through the directory and opened it. All 4.0 MB came from Jimmy, at 2.0 MB/s, first byte after 555 ms, 2.8 s in all. The file matched Jimmy's byte for byte. Alice follows nobody.
 
-**Kim offline** (her node stopped before Alice 2 started). Alice 2 got all 4.0 MB from Jimmy, at 2.2 MB/s, but in 11.8 s in all. About 10 s of that was waiting for Kim's media endpoint to answer who hosts it, before downloading from the sources it already had. Asking in parallel would save that wait (open below).
+**Kim offline** (her node stopped before Alice 2 started). Alice 2 got all 4.0 MB from Jimmy, at 2.2 MB/s, but in 11.8 s in all. About 10 s of that was waiting for Kim's media endpoint to answer who hosts it, before downloading from the sources it already had. Fixed since: a node now downloads from the hosts it was given while it asks the author's media endpoint, and waits for her at most 3 s more for a `Delete`.
 
 **What Kim's and Jimmy's nodes kept.** Neither node's database or log holds Alice's public ID, identity or media endpoint. Jimmy's holds nothing of Alice 2's either.
 
@@ -41,5 +41,4 @@ Real nodes on three machines on a home network, all with messages over Tor, `[en
 
 ## Still open
 
-- **The 10 s wait** for an author's media endpoint that's off: ask it alongside the download, rather than first.
 - **A found post's cached files** could be let go as soon as the post drops out, rather than at eviction.

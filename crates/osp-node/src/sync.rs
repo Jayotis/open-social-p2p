@@ -499,7 +499,7 @@ impl Core {
     /// Keeps a file only while a post kept here names it. A post deleted
     /// while its file was on its way (ADR 0019) leaves it named by nothing:
     /// it's let go rather than kept.
-    async fn still_named(&self, blob: &BlobHash, size: u64) -> Result<u64> {
+    pub(crate) async fn still_named(&self, blob: &BlobHash, size: u64) -> Result<u64> {
         if self.db.is_named(blob)? {
             return Ok(size);
         }
