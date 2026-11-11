@@ -1,6 +1,6 @@
 # Found posts over weeks, in a model
 
-**Status:** Plan for [ADR 0025](../decisions/0025-shared-posts-are-found-and-hosted.md)'s step 5, fixed 2026-11-11 before any code or run; the maintainer accepted the pass marks the same day. Run the same day ([results](#results)): all three marks met at 10%, on every seed. But at every rate the 3 resharers listed first served 89 to 100% of a video, and the rest almost nothing. Changing one later needs a dated note here saying what changed and why.
+**Status:** Plan for [ADR 0025](../decisions/0025-shared-posts-are-found-and-hosted.md)'s step 5, fixed 2026-11-11 before any code or run; the maintainer accepted the pass marks the same day. Run the same day ([results](#results)): all three marks met at 10%, on every seed. But at every rate the 3 resharers listed first served 89 to 100% of a video, and the rest almost nothing. Each viewer now takes the hosts in its own order, which brought that to 22 to 89%; its own mark missed by a point on one seed, and the change was kept ([below](#each-viewer-in-its-own-order)). Changing one later needs a dated note here saying what changed and why.
 
 Step 5 asks whether sharing with hosting is worth having: when strangers find a creator's video over weeks and some share it, do the sharers take the load off the creator? [Step 4](found-and-hosted.md#step-4-newcomers-in-osp-sim) ran real code for 200 newcomers over 3 hours. Weeks of thousands of viewers is too long for that, so this runs in `osp-month`'s model ([hops model](hops-model.md#why-a-model)), which follows each transfer by the rules and is checked against real runs (its mark 0).
 
@@ -93,3 +93,5 @@ Added 2026-11-11, after the results above, and fixed before the change was built
 | 20% | 96 to 100% | 22 to 38% |
 
 On video 1 at 10%, the top resharer's share fell from 34% to 8%, and the top 3's from 100% to 23%. What's left comes from timing: a sharer listed early is a choice for every later viewer, one listed late for a few, so on a smaller video the first sharers still serve more.
+
+**Decision** (the maintainer, 2026-11-11): the change stays, with the miss recorded. Whether to give hosts listed later a better chance is a design question for later.
