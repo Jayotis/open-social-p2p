@@ -134,6 +134,22 @@ struct Cli {
     /// follows, approved or nobody.
     #[arg(long, requires = "net", value_parser = direct_rule)]
     endpoints: Option<DirectRule>,
+    /// Nodes keep no place for a recently verified host when they name who
+    /// hosts their media (ADR 0025), which real nodes keep by default.
+    #[arg(long)]
+    no_recent_host_place: bool,
+    /// With --relay: then this many newcomers arrive, evenly over
+    /// `--newcomers-over-mins`, following nobody. Each finds the post through
+    /// a directory listing the creator, and opens it through a viewing
+    /// endpoint (ADR 0024); some share it with hosting (ADR 0025).
+    #[arg(long, default_value_t = 0, requires = "relay")]
+    newcomers: usize,
+    #[arg(long, default_value_t = 180, requires = "newcomers")]
+    newcomers_over_mins: u64,
+    /// The share of newcomers, in percent, that share the post with hosting
+    /// and ask to be listed: every fifth with 20, the first included.
+    #[arg(long, default_value_t = 20, requires = "newcomers")]
+    newcomer_share_percent: usize,
     /// Write the full report here, as JSON.
     #[arg(long)]
     out: Option<PathBuf>,
@@ -199,6 +215,12 @@ async fn main() -> Result<()> {
         tor_delay: cli.tor_delay,
         endpoints: cli.endpoints,
         relay_only_percent: cli.relay_only,
+        recent_host_place: !cli.no_recent_host_place,
+        newcomers: (cli.newcomers > 0).then(|| osp_sim::newcomers::Newcomers {
+            count: cli.newcomers,
+            over: Duration::from_secs(cli.newcomers_over_mins * 60),
+            share_percent: cli.newcomer_share_percent,
+        }),
         label: cli.label,
     };
     let result = osp_sim::run(&scenario).await;
