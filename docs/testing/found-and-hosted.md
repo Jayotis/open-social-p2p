@@ -1,6 +1,6 @@
 # Found, watched, shared and hosted, on real nodes
 
-**Status:** [ADR 0025](../decisions/0025-shared-posts-are-found-and-hosted.md)'s step 3, run once on 2026-11-10, on `main` at bde562f with the delete fix below. Kim online and Kim offline met their marks. The deleted post met its marks for a node that opens it, and showed a directory gap, fixed since (below). The checks left for later all passed (end).
+**Status:** [ADR 0025](../decisions/0025-shared-posts-are-found-and-hosted.md)'s step 3, run once on 2026-11-10, on `main` at bde562f with the delete fix below. Kim online and Kim offline met their marks. The deleted post met its marks for a node that opens it, and showed a directory gap, fixed since (below). The checks left for later all passed (end). Step 4, run once each way in `osp-sim` on 2026-11-11: B8 held with and without the place for a recently verified host, which didn't bring newcomers' first uploads sooner, so it is now off by default ([results](#step-4-results)).
 
 ## The run
 
@@ -59,7 +59,7 @@ The step's gate: B8 with a few hundred newcomers arriving over hours who find ra
 osp-sim --dir /path/on/disk/run --swarm --net --latecomers 10 --tor-delay \
   --endpoints anyone --relay --relay-only 20 \
   --newcomers 200 --newcomers-over-mins 180 --newcomer-share-percent 20 \
-  [--no-recent-host-place] --label "$(git rev-parse --short HEAD)" --out run.json
+  [--recent-host-place] --label "$(git rev-parse --short HEAD)" --out run.json
 ```
 
 **Recorded:**
@@ -76,6 +76,30 @@ osp-sim --dir /path/on/disk/run --swarm --net --latecomers 10 --tor-delay \
 
 If B8 holds and the place doesn't make first uploads sooner, `recent_host_place` goes off by default and stays a setting. If B8 misses in either run, the results go to the maintainer before anything changes.
 
+### Step 4 results
+
+Run on 2026-11-11 at e652f02 (`main` 25bed68), with the place and then without.
+
+**1. B8 held in both.**
+
+| | With the place | Without |
+|---|---|---|
+| Kim's copies to followers (at most 30) | 26.2 | 23.2 |
+| 95% of followers held the video (within 15 min) | 645 s | 636 s |
+| All held it (within 30 min) | 869 s | 755 s |
+| Latecomers, all held it | 69.7 s | 59.2 s |
+
+**2. The place didn't bring first uploads sooner.** In both runs, 2 of the 33 judged sharers served someone within 30 minutes, and 2 of all 40 by the end. Neither run reached a median, and neither had more sharers serving, so the place goes off by default (`swarm.recent_host_place = false`) and stays a setting; `osp-sim --recent-host-place` turns it on.
+
+**Newcomers otherwise did well, the same in both runs.**
+
+- All 200 opened the video: median 167 s with the place, 163 s without; slowest 231 s and 233 s. None failed.
+- 98% of what newcomers received came from earlier newcomers (100% for the later half). Kim sent them 3.8 copies in all.
+- One sharer carried nearly all of it: the most one newcomer sent was 122.7 copies with the place, 121.7 without.
+
+**Why the place made no difference.** A viewer downloads from one source at a time and tries the hosts the directory lists first, so the first listed sharer serves nearly every newcomer and the rest are rarely asked. The place only changes whom Kim's media endpoint names, which a viewer reaches only after the directory's hosts. Spreading newcomers across sharers needs a viewer to download from several sources at once, as ADR 0025 says (the first 3); that gap is open.
+
 ## Still open
 
+- **A viewer downloads from one source at a time.** ADR 0025 says the first 3 at once. Until then, the first host a directory lists serves nearly every newcomer (step 4).
 - **A found post's cached files** could be let go as soon as the post drops out, rather than at eviction.
