@@ -66,7 +66,7 @@ struct Plain {
 }
 
 impl Rules for Plain {
-    fn sources(&mut self, to: usize, swarm: &Swarm, rng: &mut Rng) -> Sources {
+    fn sources(&mut self, to: usize, swarm: &Swarm, _now: f64, rng: &mut Rng) -> Sources {
         Sources {
             at_once: swarm.named(to, rng),
             in_turn: vec![self.creator],

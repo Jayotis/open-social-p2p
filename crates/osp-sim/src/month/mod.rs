@@ -4,6 +4,7 @@
 //! and what each node writes in its own record.
 
 pub mod calibrate;
+pub mod found;
 pub mod meeting;
 pub mod months;
 pub mod records;

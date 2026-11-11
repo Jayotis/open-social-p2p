@@ -198,8 +198,9 @@ impl Swarm {
 }
 
 pub trait Rules {
-    /// Where `to` fetches the post from, asked when it wakes.
-    fn sources(&mut self, to: usize, swarm: &Swarm, rng: &mut Rng) -> Sources;
+    /// Where `to` fetches the post from, asked when it wakes, `now` seconds
+    /// after the post.
+    fn sources(&mut self, to: usize, swarm: &Swarm, now: f64, rng: &mut Rng) -> Sources;
     /// The path of a transfer from `source` to `to`, picked when it starts.
     fn path(&mut self, source: usize, to: usize, load: &Load, rng: &mut Rng) -> Vec<Leg>;
     /// A transfer ended.
@@ -394,7 +395,7 @@ impl<R: Rules> Spread<'_, R> {
                         // more is asked only when none of them is fetching;
                         // the creator's node last.
                         let node = downloads[d].node;
-                        let sources = self.rules.sources(node, swarm, self.rng);
+                        let sources = self.rules.sources(node, swarm, t, self.rng);
                         let mut list: Vec<usize> = Vec::new();
                         for &s in sources.at_once.iter().chain(&sources.in_turn) {
                             if s != node && !list.contains(&s) {
@@ -936,7 +937,7 @@ mod tests {
     }
 
     impl Rules for Failing {
-        fn sources(&mut self, _to: usize, _swarm: &Swarm, _rng: &mut Rng) -> Sources {
+        fn sources(&mut self, _to: usize, _swarm: &Swarm, _now: f64, _rng: &mut Rng) -> Sources {
             Sources {
                 at_once: Vec::new(),
                 in_turn: vec![0],

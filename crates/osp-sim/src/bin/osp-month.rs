@@ -5,7 +5,7 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use osp_sim::month::{calibrate, months};
+use osp_sim::month::{calibrate, found, months};
 
 #[derive(Parser)]
 #[command(version)]
@@ -27,6 +27,20 @@ enum Command {
         #[arg(long, default_value_t = 5)]
         seeds: u64,
         /// Also write the figures here, as JSON.
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
+    /// ADR 0025's step 5 (docs/testing/found-over-weeks.md): 1,000
+    /// newcomers find 10 creators' videos over 28 days, and some share them
+    /// with hosting, at 5, 10 and 20%. The marks are judged at 10%.
+    Found {
+        /// The first seed; the marks are judged on it.
+        #[arg(long, default_value_t = 1)]
+        seed: u64,
+        /// How many seeds, one after another from `--seed`, for context.
+        #[arg(long, default_value_t = 5)]
+        seeds: u64,
+        /// Also write every run's figures here, as JSON.
         #[arg(long)]
         out: Option<PathBuf>,
     },
@@ -123,6 +137,18 @@ fn main() -> Result<()> {
             if let Some(path) = out {
                 let json = serde_json::json!({ "runs": cases, "medians": medians });
                 std::fs::write(path, serde_json::to_string_pretty(&json)?)?;
+            }
+        }
+        Command::Found { seed, seeds, out } => {
+            let seeds: Vec<u64> = (seed..seed + seeds.max(1)).collect();
+            let mut runs = Vec::new();
+            for percent in [5.0, 10.0, 20.0] {
+                let rate: Vec<found::Run> = seeds.iter().map(|&s| found::run(percent, s)).collect();
+                print_found(&rate);
+                runs.push(rate);
+            }
+            if let Some(path) = out {
+                std::fs::write(path, serde_json::to_string_pretty(&runs)?)?;
             }
         }
         Command::Run {
@@ -343,5 +369,70 @@ fn print_months(m: &months::Months) {
         k.most_window_bytes / 1024.0,
         k.most_faded_bytes / 1024.0,
         k.links
+    );
+}
+
+fn pct(x: Option<f64>) -> String {
+    x.map_or("-".into(), |x| format!("{:.0}%", 100.0 * x))
+}
+
+fn copies(x: Option<f64>) -> String {
+    x.map_or("-".into(), |x| format!("{x:.3}"))
+}
+
+/// One sharing rate: each video on the first seed, then the marks, with how
+/// many seeds meet each.
+fn print_found(runs: &[found::Run]) {
+    let first = &runs[0];
+    println!(
+        "\nsharing with hosting {}%, seed {}:",
+        first.share_percent, first.seed
+    );
+    println!(
+        "video | viewers | sharers | from resharers, first 50 / after | creator copies per viewer, first 50 / after | creator copies | top resharer | open median / slowest (s) | failed"
+    );
+    for v in &first.videos {
+        println!(
+            "{:>5} | {:>7} | {:>7} | {} / {} | {} / {} | {:.1} | {} | {} / {} | {}",
+            v.rank,
+            v.viewers,
+            v.sharers,
+            pct(Some(v.from_resharers_first)),
+            pct(v.from_resharers_after),
+            copies(Some(v.creator_per_viewer_first)),
+            copies(v.creator_per_viewer_after),
+            v.creator_copies,
+            pct(Some(v.top_resharer)),
+            time(v.open_median),
+            time(v.open_slowest),
+            v.failed,
+        );
+    }
+    let count = |f: fn(&found::Marks) -> bool| runs.iter().filter(|r| f(&r.marks)).count();
+    let judged = first.share_percent == 10.0;
+    let say = |m: bool| {
+        if !judged {
+            "recorded"
+        } else if m {
+            "met"
+        } else {
+            "missed"
+        }
+    };
+    let n = runs.len();
+    let m = &first.marks;
+    println!(
+        "mark 1, resharers carry: {} ({} of {n} seeds); mark 2, creator's cost falls: {} ({} of {n}); mark 3, everyone watches: {} ({} of {n})",
+        say(m.resharers_carry),
+        count(|m| m.resharers_carry),
+        say(m.creator_cost_falls),
+        count(|m| m.creator_cost_falls),
+        say(m.everyone_watches),
+        count(|m| m.everyone_watches),
+    );
+    println!(
+        "one resharer served over half a video's bytes: {} ({} of {n} seeds)",
+        if m.one_resharer_most { "yes" } else { "no" },
+        count(|m| m.one_resharer_most),
     );
 }
