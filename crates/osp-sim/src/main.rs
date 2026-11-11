@@ -134,10 +134,10 @@ struct Cli {
     /// follows, approved or nobody.
     #[arg(long, requires = "net", value_parser = direct_rule)]
     endpoints: Option<DirectRule>,
-    /// Nodes keep no place for a recently verified host when they name who
-    /// hosts their media (ADR 0025), which real nodes keep by default.
+    /// Nodes keep a place for a recently verified host when they name who
+    /// hosts their media (ADR 0025), which real nodes don't by default.
     #[arg(long)]
-    no_recent_host_place: bool,
+    recent_host_place: bool,
     /// With --relay: then this many newcomers arrive, evenly over
     /// `--newcomers-over-mins`, following nobody. Each finds the post through
     /// a directory listing the creator, and opens it through a viewing
@@ -215,7 +215,7 @@ async fn main() -> Result<()> {
         tor_delay: cli.tor_delay,
         endpoints: cli.endpoints,
         relay_only_percent: cli.relay_only,
-        recent_host_place: !cli.no_recent_host_place,
+        recent_host_place: cli.recent_host_place,
         newcomers: (cli.newcomers > 0).then(|| osp_sim::newcomers::Newcomers {
             count: cli.newcomers,
             over: Duration::from_secs(cli.newcomers_over_mins * 60),

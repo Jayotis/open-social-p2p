@@ -135,7 +135,7 @@ pub struct Scenario {
     /// with 20, every other with 50.
     pub relay_only_percent: usize,
     /// Nodes keep a place for a recently verified host when they name who
-    /// hosts their media (ADR 0025), as real nodes do by default.
+    /// hosts their media (ADR 0025), which real nodes don't by default.
     pub recent_host_place: bool,
     /// Then newcomers find the post through a directory, and some share it.
     pub newcomers: Option<newcomers::Newcomers>,
@@ -2151,7 +2151,7 @@ mod tests {
             tor_delay: false,
             endpoints: None,
             relay_only_percent: 0,
-            recent_host_place: true,
+            recent_host_place: false,
             newcomers: None,
             label: String::new(),
         };

@@ -112,8 +112,8 @@ pub struct SwarmConfig {
     pub share_prefetched: bool,
     /// When this node names who hosts its media, keep one place of the six
     /// for a host whose copy it checked recently and has named least, so new
-    /// hosts get a first chance (ADR 0025). On during the alpha, while it's
-    /// measured with and without.
+    /// hosts get a first chance (ADR 0025). Off by default: in ADR 0025's
+    /// step 4 it didn't bring newcomers' first uploads sooner.
     pub recent_host_place: bool,
 }
 
@@ -121,7 +121,7 @@ impl Default for SwarmConfig {
     fn default() -> Self {
         Self {
             share_prefetched: false,
-            recent_host_place: true,
+            recent_host_place: false,
         }
     }
 }
