@@ -389,11 +389,11 @@ fn print_found(runs: &[found::Run]) {
         first.share_percent, first.seed
     );
     println!(
-        "video | viewers | sharers | from resharers, first 50 / after | creator copies per viewer, first 50 / after | creator copies | top resharer | open median / slowest (s) | failed"
+        "video | viewers | sharers | from resharers, first 50 / after | creator copies per viewer, first 50 / after | creator copies | top resharer / top 3 | open median / slowest (s) | failed"
     );
     for v in &first.videos {
         println!(
-            "{:>5} | {:>7} | {:>7} | {} / {} | {} / {} | {:.1} | {} | {} / {} | {}",
+            "{:>5} | {:>7} | {:>7} | {} / {} | {} / {} | {:.1} | {} / {} | {} / {} | {}",
             v.rank,
             v.viewers,
             v.sharers,
@@ -403,6 +403,7 @@ fn print_found(runs: &[found::Run]) {
             copies(v.creator_per_viewer_after),
             v.creator_copies,
             pct(Some(v.top_resharer)),
+            pct(Some(v.top_three)),
             time(v.open_median),
             time(v.open_slowest),
             v.failed,

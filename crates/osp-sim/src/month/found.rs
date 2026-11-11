@@ -47,8 +47,10 @@ pub struct Video {
     pub creator_per_viewer_first: f64,
     pub creator_per_viewer_after: Option<f64>,
     pub creator_copies: f64,
-    /// The most any one resharer served, as a share of all its viewers got.
+    /// The most any one resharer served, as a share of all its viewers got,
+    /// and what the 3 that served most did together.
     pub top_resharer: f64,
+    pub top_three: f64,
     /// Seconds from asking for sources to holding it.
     pub open_median: Option<f64>,
     pub open_slowest: Option<f64>,
@@ -252,7 +254,10 @@ pub fn run(share_percent: f64, seed: u64) -> Run {
                 sum(group, &rules.from_creator) / VIDEO_BYTES / group.len() as f64
             };
             let all = sum(&order, &rules.from_resharers) + sum(&order, &rules.from_creator);
-            let top = rules.served[1..].iter().copied().fold(0.0, f64::max);
+            let mut served: Vec<f64> = rules.served[1..].to_vec();
+            served.sort_by(|a, b| b.total_cmp(a));
+            let top = served.first().copied().unwrap_or(0.0);
+            let top_three: f64 = served.iter().take(3).sum();
             let mut opens: Vec<f64> = viewers[v]
                 .iter()
                 .filter_map(|&(wakes, node)| out.held[node].map(|t| t - wakes))
@@ -268,6 +273,7 @@ pub fn run(share_percent: f64, seed: u64) -> Run {
                 creator_per_viewer_after: (!after.is_empty()).then(|| per_viewer(after)),
                 creator_copies: sum(&order, &rules.from_creator) / VIDEO_BYTES,
                 top_resharer: share(top, all),
+                top_three: share(top_three, all),
                 open_median: opens.get(opens.len() / 2).copied(),
                 open_slowest: opens.last().copied(),
                 failed: order.len() - opens.len(),
