@@ -285,14 +285,18 @@ impl Core {
             }
             rest.split_off(tried.len())
         };
+        // A large file comes from the first 3 at once (ADR 0025), so one
+        // listed host doesn't serve every viewer alone; its author's own are
+        // still asked only after the rest, one at a time.
+        let author_nodes: Vec<_> = authors.iter().map(|bound| bound.public).collect();
         let download = |sources: Vec<Source>| {
-            self.store.download_through(
-                blob,
-                Sources::one_at_a_time(sources),
-                class,
-                declared,
-                &lease.inner.pool,
-            )
+            let mut sources = Sources {
+                at_once: sources,
+                in_turn: Vec::new(),
+            };
+            sources.spare(&author_nodes);
+            self.store
+                .download_through(blob, sources, class, declared, &lease.inner.pool)
         };
         let fetched = if sources.is_empty() {
             // Nothing to start with: hear the author out first.

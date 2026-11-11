@@ -97,9 +97,8 @@ Run on 2026-11-11 at e652f02 (`main` 25bed68), with the place and then without.
 - 98% of what newcomers received came from earlier newcomers (100% for the later half). Kim sent them 3.8 copies in all.
 - One sharer carried nearly all of it: the most one newcomer sent was 122.7 copies with the place, 121.7 without.
 
-**Why the place made no difference.** A viewer downloads from one source at a time and tries the hosts the directory lists first, so the first listed sharer serves nearly every newcomer and the rest are rarely asked. The place only changes whom Kim's media endpoint names, which a viewer reaches only after the directory's hosts. Spreading newcomers across sharers needs a viewer to download from several sources at once, as ADR 0025 says (the first 3); that gap is open.
+**Why the place made no difference.** A viewer then downloaded from one source at a time, trying the hosts the directory lists first, so the first listed sharer serves nearly every newcomer and the rest are rarely asked. The place only changes whom Kim's media endpoint names, which a viewer reaches only after the directory's hosts. Spreading newcomers across sharers needs a viewer to download from several sources at once, as ADR 0025 says (the first 3); a viewer now does, since these runs (`a_newcomer_fetches_a_large_file_from_several_listed_hosts_at_once`). Every viewer still gets the same list for the day, so the same first 3 serve them.
 
 ## Still open
 
-- **A viewer downloads from one source at a time.** ADR 0025 says the first 3 at once. Until then, the first host a directory lists serves nearly every newcomer (step 4).
 - **A found post's cached files** could be let go as soon as the post drops out, rather than at eviction.
