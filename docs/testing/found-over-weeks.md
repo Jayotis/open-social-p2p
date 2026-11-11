@@ -79,3 +79,17 @@ Every open succeeded: median 19 to 28 s from asking for sources, slowest 91 s. T
 Added 2026-11-11, after the results above, and fixed before the change was built. The maintainer chose to have each viewer shuffle the hosts it's given before taking 3 ([ADR 0025](../decisions/0025-shared-posts-are-found-and-hosted.md#rotation-and-no-one-dominating), amended). The model gets the same change, and runs once more, as above.
 
 **Pass mark,** at 10%, seed 1: marks 1 to 3 are still met, and on every video with at least 16 sharers, a directory's full list, the 3 resharers that serve most serve at most half of its bytes.
+
+**Results,** at 9be41e7, one round as above. `--same-order` repeats the first run exactly.
+
+- **Marks 1 to 3: met** at 10%, on all 5 seeds, with the same figures for them as before to the copy. Opening times are within a few seconds of the first run's.
+- **The top 3's mark: missed** on seed 1, met on 3 of 5 seeds. Video 9, with 18 sharers, had its top 3 serve 51%.
+- **The load spread out.** The top 3's share of each video:
+
+| Sharing | Every viewer in the order given | Each in its own order |
+| --- | --- | --- |
+| 5% | 66 to 100% | 30 to 89% |
+| 10% | 91 to 100% | 23 to 67% |
+| 20% | 96 to 100% | 22 to 38% |
+
+On video 1 at 10%, the top resharer's share fell from 34% to 8%, and the top 3's from 100% to 23%. What's left comes from timing: a sharer listed early is a choice for every later viewer, one listed late for a few, so on a smaller video the first sharers still serve more.
