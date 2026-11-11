@@ -40,6 +40,10 @@ enum Command {
         /// How many seeds, one after another from `--seed`, for context.
         #[arg(long, default_value_t = 5)]
         seeds: u64,
+        /// Viewers take the hosts in the order given, as before ADR 0025's
+        /// amendment, rather than each in its own.
+        #[arg(long)]
+        same_order: bool,
         /// Also write every run's figures here, as JSON.
         #[arg(long)]
         out: Option<PathBuf>,
@@ -139,11 +143,19 @@ fn main() -> Result<()> {
                 std::fs::write(path, serde_json::to_string_pretty(&json)?)?;
             }
         }
-        Command::Found { seed, seeds, out } => {
+        Command::Found {
+            seed,
+            seeds,
+            same_order,
+            out,
+        } => {
             let seeds: Vec<u64> = (seed..seed + seeds.max(1)).collect();
             let mut runs = Vec::new();
             for percent in [5.0, 10.0, 20.0] {
-                let rate: Vec<found::Run> = seeds.iter().map(|&s| found::run(percent, s)).collect();
+                let rate: Vec<found::Run> = seeds
+                    .iter()
+                    .map(|&s| found::run(percent, same_order, s))
+                    .collect();
                 print_found(&rate);
                 runs.push(rate);
             }
@@ -385,8 +397,14 @@ fn copies(x: Option<f64>) -> String {
 fn print_found(runs: &[found::Run]) {
     let first = &runs[0];
     println!(
-        "\nsharing with hosting {}%, seed {}:",
-        first.share_percent, first.seed
+        "\nsharing with hosting {}%, seed {}, {}:",
+        first.share_percent,
+        first.seed,
+        if first.same_order {
+            "every viewer in the order given"
+        } else {
+            "each viewer in its own order"
+        }
     );
     println!(
         "video | viewers | sharers | from resharers, first 50 / after | creator copies per viewer, first 50 / after | creator copies | top resharer / top 3 | open median / slowest (s) | failed"
