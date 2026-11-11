@@ -1,6 +1,6 @@
 # Found, watched, shared and hosted, on real nodes
 
-**Status:** [ADR 0025](../decisions/0025-shared-posts-are-found-and-hosted.md)'s step 3, run once on 2026-11-10, on `main` at bde562f with the delete fix below. Kim online and Kim offline met their marks. The deleted post met its marks for a node that opens it, and showed a directory gap, fixed since (below). Two checks are still open (end).
+**Status:** [ADR 0025](../decisions/0025-shared-posts-are-found-and-hosted.md)'s step 3, run once on 2026-11-10, on `main` at bde562f with the delete fix below. Kim online and Kim offline met their marks. The deleted post met its marks for a node that opens it, and showed a directory gap, fixed since (below). The checks left for later all passed (end).
 
 ## The run
 
@@ -33,8 +33,13 @@ Real nodes on three machines on a home network, all with messages over Tor, `[en
 
 **A gap, fixed.** The directory had heard of the `Delete` 17 s after Kim deleted, through its follow of Kim, and kept the tombstone. But it went on listing the post, and Jimmy's hosting reshare of it, until its next hourly read of Kim. Only the reading of a listed outbox dropped them. Now a directory drops a deleted post from its lists, and every listed reshare of it, as soon as it learns of the `Delete`, however it arrives. The test `a_directory_that_follows_the_author_drops_a_deleted_post_at_once` fails without the fix.
 
+**Checked afterwards** (2026-11-10 and 11):
+
+- **The directory's lists.** By the next morning the directory listed the post nowhere: neither under Kim nor as Jimmy's reshare.
+- **The first Alice,** with the video already cached, had the post nowhere once she read the directory again: not in what she found, not in `show`, not in search. Her cached copy of the video (4.2 MB) stays on disk until the cache evicts it. It isn't shown or served.
+- **Jimmy stopped serving.** His node's daily check with Kim's learned of the `Delete` about 16 hours after it, and he let go of his hosted copy: 2 files, 4.0 MB, down to none.
+
 ## Still open
 
-- **Jimmy goes on serving the deleted post** until his node's daily check with Kim's, as ADR 0025 says for a resharer without a follow. That check hasn't been seen to run on these nodes yet.
-- **The first Alice, with the video already cached,** still shows the post: she hadn't asked anyone since the delete. Whether she drops it once the directory's list no longer has it is to be checked.
 - **The 10 s wait** for an author's media endpoint that's off: ask it alongside the download, rather than first.
+- **A found post's cached files** could be let go as soon as the post drops out, rather than at eviction.
