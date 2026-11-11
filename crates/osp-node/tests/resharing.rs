@@ -319,6 +319,64 @@ async fn a_hosting_reshare_is_listed_and_serves_a_newcomer_with_its_author_offli
     }
 }
 
+/// A newcomer fetches a large file from the listed hosts at once, not from
+/// the first alone (ADR 0025): Alice asks both Jimmy and Carol, with Kim's
+/// node offline.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_newcomer_fetches_a_large_file_from_several_listed_hosts_at_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let net = SimNet::new(71);
+    let directory = start_directory(dir.path(), &net, Duration::from_secs(3600), 16).await;
+    let kim = start_sim(
+        dir.path(),
+        config_knowing("Kim", &directory, true),
+        sim(&net),
+    )
+    .await;
+    let (post, photo) = post_large_photo(&kim, dir.path()).await;
+    assert!(kim.ask_to_be_listed().await);
+    wait_for_listing(&net, &directory, kim.identity(), Some(vec![])).await;
+    let mut hosts = Vec::new();
+    for name in ["Jimmy", "Carol"] {
+        let node = resharer(dir.path(), &net, &directory, name, post, true).await;
+        assert!(node.ask_to_be_listed().await);
+        wait_for_listing(&net, &directory, node.identity(), Some(vec![(post, true)])).await;
+        hosts.push(node);
+    }
+
+    assert!(net.set_online(kim.node_id(), false));
+    let alice = start_sim(
+        dir.path(),
+        config_knowing("Alice", &directory, false),
+        sim(&net),
+    )
+    .await;
+    read_directories(&alice).await;
+    net.record_senders();
+    alice.open_blob(&photo).await.unwrap();
+
+    // Anyone but the known nodes sending to a host is Alice.
+    let known: HashSet<EndpointId> = [&directory, &kim, &hosts[0], &hosts[1]]
+        .iter()
+        .flat_map(|n| n.endpoint_ids())
+        .collect();
+    let senders = net.senders();
+    for host in &hosts {
+        let theirs: HashSet<EndpointId> = host.endpoint_ids().into_iter().collect();
+        assert!(
+            senders
+                .iter()
+                .any(|(from, to)| theirs.contains(to) && !known.contains(from)),
+            "Alice never asked {}",
+            host.identity()
+        );
+    }
+
+    for node in hosts.into_iter().chain([alice, kim, directory]) {
+        node.shutdown().await.unwrap();
+    }
+}
+
 /// A plain reshare is listed, never as hosting. Someone who didn't ask to be
 /// listed isn't, reshares and all.
 #[tokio::test(flavor = "multi_thread")]
