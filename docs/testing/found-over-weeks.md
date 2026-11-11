@@ -1,6 +1,6 @@
 # Found posts over weeks, in a model
 
-**Status:** Plan for [ADR 0025](../decisions/0025-shared-posts-are-found-and-hosted.md)'s step 5, fixed 2026-11-11 before any code or run; the maintainer accepted the pass marks the same day. Not yet run. Changing one later needs a dated note here saying what changed and why.
+**Status:** Plan for [ADR 0025](../decisions/0025-shared-posts-are-found-and-hosted.md)'s step 5, fixed 2026-11-11 before any code or run; the maintainer accepted the pass marks the same day. Run the same day ([results](#results)): all three marks met at 10%, on every seed. But at every rate the 3 resharers listed first served 89 to 100% of a video, and the rest almost nothing. Changing one later needs a dated note here saying what changed and why.
 
 Step 5 asks whether sharing with hosting is worth having: when strangers find a creator's video over weeks and some share it, do the sharers take the load off the creator? [Step 4](found-and-hosted.md#step-4-newcomers-in-osp-sim) ran real code for 200 newcomers over 3 hours. Weeks of thousands of viewers is too long for that, so this runs in `osp-month`'s model ([hops model](hops-model.md#why-a-model)), which follows each transfer by the rules and is checked against real runs (its mark 0).
 
@@ -42,3 +42,34 @@ Judged in the 10% run, on seed 1; seeds 1 to 5 give how many meet each mark, as 
 3. **Nobody can't watch:** every open succeeds.
 
 If all three are met, the model's half of step 5 passes and the scripted alpha exercise follows. If any is missed, the results go to the maintainer before anything changes. If one resharer serves more than half of a post's bytes, that's reported as ADR 0025's revisit condition, whatever the marks say.
+
+## Results
+
+`osp-month found` in `osp-sim`, 2026-11-11, at 2e4bac0: one round, all three rates, seeds 1 to 5, 14 s in all. A run repeats exactly for its seed. The top 3's share was added afterwards as a recorded figure (e06f413); the rerun gave the same figures otherwise.
+
+**The marks, at 10%, seed 1: all met, and on all 5 seeds.**
+
+| Video | Viewers | Sharers | From resharers, after the 50th | Creator's copies per viewer, first 50 / after | Creator's copies | Top resharer / top 3 |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1 | 759 | 99 | 100% | 0.04 / 0 | 2 | 34% / 100% |
+| 2 | 508 | 48 | 100% | 0.02 / 0 | 1 | 35% / 100% |
+| 3 | 402 | 36 | 100% | 0.20 / 0 | 10 | 47% / 98% |
+| 4 | 277 | 33 | 100% | 0.20 / 0 | 10 | 45% / 96% |
+| 5 | 254 | 23 | 100% | 0.04 / 0 | 2 | 37% / 99% |
+| 6 | 185 | 16 | 100% | 0.34 / 0 | 17 | 40% / 91% |
+| 7 | 185 | 11 | 100% | 0.08 / 0 | 4 | 48% / 98% |
+| 8 | 154 | 10 | 100% | 0.08 / 0 | 4 | 45% / 97% |
+| 9 | 146 | 18 | 100% | 0.02 / 0 | 1 | 39% / 99% |
+| 10 | 130 | 23 | 100% | 0.02 / 0 | 1 | 43% / 99% |
+
+Every open succeeded: median 19 to 28 s from asking for sources, slowest 91 s. That leaves out reading the directory over Tor, so it isn't comparable with step 4's opening times.
+
+**At 5% and 20%** (recorded): the marks' figures were met on every seed there too. At 5%, on seed 1, the creator sent at most 53 copies of one video (video 8, whose first 50 viewers found no sharer listed yet), and on 3 of 5 seeds one resharer served over half of some video's bytes, ADR 0025's revisit condition, where a video had only 3 sharers.
+
+**The 3 listed first carry nearly everything.** At every rate, the 3 resharers that served most served 89 to 100% of a video (66% for one video at 5%). On video 1 at 10%, 99 newcomers shared it and 3 of them sent its 759 copies, about 13 GB each over the 28 days. The other 96 sent close to nothing. That's because every viewer reads the same list and takes its first 3 at once; with viewers arriving one at a time, those 3 always have a free place. So sharing takes the load off creators, as the marks say, but it doesn't spread it: a few early sharers carry a popular video, and the rest share for nothing. ADR 0025's daily rotation, built only once a directory holds more than 16, would move it to another 3 each day.
+
+**What the model leaves out:**
+
+- **Each video runs on its own.** A newcomer that hosts two videos serves each with its whole upload. At 10%, about 3% of newcomers host more than one.
+- **Viewers arrive evenly.** A video found by many at once would queue for places, which [step 4](found-and-hosted.md#step-4-results) and B8 cover.
+- **Nodes stay on.** A host that goes off is replaced by the next listed, which the model doesn't test.
