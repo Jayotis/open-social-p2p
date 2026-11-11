@@ -654,7 +654,7 @@ impl Media {
 }
 
 impl Rules for Media {
-    fn sources(&mut self, to: usize, swarm: &Swarm, rng: &mut Rng) -> Sources {
+    fn sources(&mut self, to: usize, swarm: &Swarm, _now: f64, rng: &mut Rng) -> Sources {
         if self.first_copies[to] {
             // C: told of the post first, it fetches from Kim at once.
             return Sources {
