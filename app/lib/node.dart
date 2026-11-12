@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:clock/clock.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:device_info_plus/device_info_plus.dart';
 import 'package:flutter/widgets.dart';
@@ -9,6 +10,7 @@ import 'device_key.dart';
 import 'format.dart';
 import 'src/rust/api/osp.dart';
 import 'uploads.dart';
+import 'waiting_deletes.dart';
 
 /// Whether the home node answered recently.
 enum Reachability { unknown, connecting, online, offline }
@@ -19,11 +21,11 @@ enum Reachability { unknown, connecting, online, offline }
 /// All networking happens in Rust (`osp-client`); this class only keeps
 /// state and decides when to ask.
 class HomeNode extends ChangeNotifier with WidgetsBindingObserver {
-  HomeNode._(this.app, this.uploads);
+  HomeNode._(this.app, this.uploads, this._waiting);
 
   /// For tests: a node with a stand-in for the Rust side, not paired.
   @visibleForTesting
-  HomeNode.forTests(this.app, this.uploads);
+  HomeNode.forTests(this.app, this.uploads, [this._waiting]);
 
   /// The Rust side.
   final OspApp app;
@@ -47,6 +49,13 @@ class HomeNode extends ChangeNotifier with WidgetsBindingObserver {
 
   /// Deletes waiting out [deleteWait], by what they delete.
   final Map<String, Timer> _deleting = {};
+
+  /// Those deletes kept in a file until the node has them, so the phone
+  /// stopping the app doesn't lose one.
+  final WaitingDeletes? _waiting;
+
+  /// Deletes on their way to the node now.
+  final Set<String> _sending = {};
 
   /// The feed, less the posts whose delete is waiting.
   List<Post> get visiblePosts =>
@@ -83,6 +92,7 @@ class HomeNode extends ChangeNotifier with WidgetsBindingObserver {
     final node = HomeNode._(
       await OspApp.open(dir: dir, deviceKey: key.hex),
       uploads,
+      WaitingDeletes(File('$dir/waiting-deletes.json')),
     );
     if (key.isNew && node.app.pairedNode() != null) {
       // The old key was lost, and the node knows only that one.
@@ -113,32 +123,61 @@ class HomeNode extends ChangeNotifier with WidgetsBindingObserver {
   void deleteLater(String id, {void Function(Object error)? onFailed}) {
     _deleting[id]?.cancel();
     _deleting[id] = Timer(deleteWait, () => _sendDelete(id, onFailed));
+    _waiting?.add(id, clock.now().add(deleteWait));
     notifyListeners();
   }
 
   /// Keeps a post whose delete is still waiting.
   void undoDelete(String id) {
     _deleting.remove(id)?.cancel();
+    _waiting?.remove(id);
     notifyListeners();
   }
 
+  /// Sends a delete. It stays in the file until the node has it, unless
+  /// the owner is told it failed ([onFailed]): the post is back for them to
+  /// delete again. One sent with no one to tell is tried again when the
+  /// app next starts or comes back ([_resumeWaitingDeletes]).
   Future<void> _sendDelete(String id, void Function(Object)? onFailed) async {
     _deleting.remove(id);
+    _sending.add(id);
     try {
       await app.deletePost(id: id);
+      _waiting?.remove(id);
       posts = posts.where((p) => p.deletable != id).toList();
     } catch (e) {
-      onFailed?.call(e);
+      if (onFailed != null) {
+        _waiting?.remove(id);
+        onFailed(e);
+      }
+    } finally {
+      _sending.remove(id);
     }
     notifyListeners();
+  }
+
+  /// Waits out, or sends, the deletes kept from before the app was stopped
+  /// or went to the background.
+  void _resumeWaitingDeletes() {
+    final waiting = _waiting?.read() ?? {};
+    final now = clock.now();
+    for (final MapEntry(key: id, value: due) in waiting.entries) {
+      if (_deleting.containsKey(id) || _sending.contains(id)) continue;
+      final left = due.isAfter(now) ? due.difference(now) : Duration.zero;
+      _deleting[id] = Timer(left, () => _sendDelete(id, null));
+    }
+    if (waiting.isNotEmpty) notifyListeners();
   }
 
   /// Sends the deletes still waiting at once: leaving the app without
   /// undoing them says they're meant.
   Future<void> _sendDeletesNow() async {
     final waiting = _deleting.keys.toList();
+    final now = clock.now();
     for (final id in waiting) {
       _deleting.remove(id)?.cancel();
+      // Due now: if it doesn't get there, it goes as soon as the app's back.
+      _waiting?.add(id, now);
     }
     await Future.wait(waiting.map((id) => _sendDelete(id, null)));
   }
@@ -155,6 +194,7 @@ class HomeNode extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   void _start() {
+    _resumeWaitingDeletes();
     refresh();
     _poll ??= Timer.periodic(const Duration(seconds: 20), (_) => checkStatus());
   }

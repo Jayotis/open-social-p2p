@@ -80,7 +80,7 @@ A new signed object, `Delete { actor, object, published }`, as ADR 0004 planned.
 - **What it can't reach.** A node that missed a delete can still take an old copy from somewhere that missed it too, such as a node running changed software. A signature shows who wrote a post, not that it's still up.
 - **A new protocol name,** `osp/social/2`, as ADR 0010 did. Older nodes can't read the new objects, so a node on `osp/social/1` can't sync with one on `/2`, and can't quietly keep serving a deleted post to it; it has to update. The app's delete button needs the updated node too.
 - The app says plainly what it does, as doc 05 asks: copies on nodes running the standard software go as they hear of it, and copies people saved don't.
-- **An undo first.** Once sent, a `Delete` can't be taken back, and tombstones refuse the post for good. So the app waits about a minute before sending it, with an Undo button (decided 2026-11-06).
+- **An undo first.** Once sent, a `Delete` can't be taken back, and tombstones refuse the post for good. So the app waits about a minute before sending it, with an Undo button (decided 2026-11-06). Leaving the app sends it at once. The phone keeps it until the node has it, so one the phone stops on its way goes when the app is back, for up to a day.
 
 ### How far it reaches
 
