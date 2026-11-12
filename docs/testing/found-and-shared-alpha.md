@@ -2,6 +2,8 @@
 
 **Status:** Plan for [ADR 0025](../decisions/0025-shared-posts-are-found-and-hosted.md)'s step 5, its scripted alpha exercise. Drafted and accepted by the maintainer 2026-11-11, with check 4 allowing for hosting checks. It runs in the invited alpha ([roadmap](../06-roadmap.md)), once testers have the installer ([docs/install.md](../install.md), which sets their directories; [ADR 0027](../decisions/0027-directory-bootstrap-list-and-mirror.md)'s signed list comes after the alpha). A dry run on the maintainer's own machines comes first. It runs on the minimum as built: the directory lists up to 16 hosting reshares, with no rotation (ADR 0025, amended 2026-11-11). Changing the plan after it starts needs a dated note here saying what changed and why.
 
+**2026-11-12: waiting for testers.** Kim has posted the video: 137 s and 9.3 MB once transcoded, longer than the minute planned, which only makes each open take longer. A fresh node found it through a directory 28 minutes after it was posted. There are no testers yet, so the questions only people can answer (1 and 3 below) wait until some join, and the video stays up for them. The mechanism's checks passed in the dry run (below), so the rotation doesn't wait on this: it's built against the model's guessed rates, and the rate measured here, when there is one, tunes it.
+
 [The model](found-over-weeks.md) showed that sharing with hosting carries a video at 5 to 20% sharing, but those rates were guesses. This asks real people.
 
 ## What it's for
