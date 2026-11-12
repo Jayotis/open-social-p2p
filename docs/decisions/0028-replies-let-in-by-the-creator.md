@@ -128,7 +128,7 @@ The draft of 2026-11-11 also let strangers in automatically when they were withi
 
 Letting in nodes that did checked work for the creator ([ADR 0018](0018-earned-direct-connections.md)'s layer 2) waits for that layer to be built.
 
-A later ADR takes these up, with a simulation on each node's real view. The original draft is in the maintainer's notes.
+[ADR 0029](0029-reshares-a-reply-carries.md) (proposed) takes this up: the replier carries who reshared them, and the creator's node counts only resharers within two steps of its owner. The original draft is in the maintainer's notes.
 
 **"Hunter"** is the name from now on for doc 10's "scout": someone whose reshares find posts early. New code and docs use it; accepted ADRs and reviews keep their wording.
 
