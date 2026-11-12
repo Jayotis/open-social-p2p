@@ -27,7 +27,7 @@ use osp_proto::{
     SOCIAL_ALPN, SecretKey, SignedObject,
     framing::{read_frame, write_frame},
     rpc::{ClientRequest, ClientResponse, FollowInfo},
-    social::{MAX_GET_OBJECTS, OutboxEntry, SocialRequest, SocialResponse},
+    social::{HostingReshare, MAX_GET_OBJECTS, OutboxEntry, SocialRequest, SocialResponse},
 };
 use rusqlite::OptionalExtension;
 
@@ -359,6 +359,43 @@ async fn a_revoked_key_is_refused_and_a_retired_one_isnt() {
         .clone()
         .unwrap_or_default();
     assert!(error.contains("revoked"), "{error:?}");
+}
+
+/// Jimmy tells Kim's node he hosts a copy of her post (ADR 0025). Someone
+/// with the signing key Jimmy has since revoked can't pass off a reshare or a
+/// profile as his, whichever of the two carries the newer certificate.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_hosting_resharer_signing_with_a_revoked_key_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let kim = start(dir.path(), "Kim").await;
+    let jimmy = SecretKey::generate();
+    let first = certify(&jimmy, -2 * 3600, EarlierKeys::Retired);
+    let second = certify(&jimmy, -3600, EarlierKeys::Revoked);
+    let announce = Payload::Announce(Announce {
+        actor: jimmy.public(),
+        object: ObjectId::of(b"Kim's post"),
+        object_actor: kim.identity(),
+        published: at(-60),
+        hosting: true,
+    });
+    let reshare = |a: &CertifiedKey, p: &CertifiedKey| HostingReshare {
+        announce: signed(a, &announce),
+        profile: signed(p, &profile(&jimmy, vec![], -60)),
+    };
+
+    // Before Kim's node knows of the revocation, the first key passes.
+    kim.check_resharer_keys(&reshare(&first, &first)).unwrap();
+    for (a, p) in [(&first, &second), (&second, &first)] {
+        let err = kim.check_resharer_keys(&reshare(a, p)).unwrap_err();
+        assert!(format!("{err:#}").contains("revoked"), "{err:#}");
+    }
+    kim.check_resharer_keys(&reshare(&second, &second)).unwrap();
+    // Once it knows, the first key is refused on its own too.
+    let err = kim
+        .check_resharer_keys(&reshare(&first, &first))
+        .unwrap_err();
+    assert!(format!("{err:#}").contains("revoked"), "{err:#}");
+    kim.shutdown().await.unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread")]
