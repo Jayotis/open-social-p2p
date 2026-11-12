@@ -12,7 +12,9 @@
 //! them at home and no word anyone types leaves the node.
 
 use std::{
-    sync::Arc,
+    collections::{BTreeMap, HashSet},
+    hash::{Hash, Hasher},
+    sync::{Arc, atomic::Ordering},
     time::{Duration, Instant},
 };
 
@@ -34,7 +36,7 @@ use tokio::{
 use tracing::{debug, info, warn};
 
 use crate::{
-    db::{Db, FoundReshare, Listed, now_ms},
+    db::{Db, FoundReshare, HostingClaim, Listed, now_ms},
     health,
     machine::{self, MachineSide},
     node::Core,
@@ -68,9 +70,19 @@ const OUTBOX_TAIL: u32 = 20;
 pub(crate) const RESHARE_RECHECK_EVERY: Duration = Duration::from_secs(24 * 60 * 60);
 /// Checks failed in a row, after one passed, that take the hosting mark off.
 const RESHARE_FAILS_UNMARK: u32 = 2;
-/// Most hosting reshares of one post a directory lists. One more is left out
-/// and logged, until the rotation ADR 0025 has decided.
+/// Most hosting reshares of one post a directory lists (ADR 0025). When
+/// more qualify, the day's draw picks them, and the rest are listed plain.
 pub(crate) const MAX_HOSTING_RESHARES: usize = 16;
+/// Of those, at most this many go to people listed for less than
+/// `NEW_NAME_FOR`, so an operator can't take every place with names made
+/// for it.
+pub(crate) const MAX_NEW_NAME_HOSTS: usize = 8;
+/// Someone listed for less than this is a new name.
+pub(crate) const NEW_NAME_FOR: Duration = Duration::from_secs(30 * 24 * 60 * 60);
+/// A hosting reshare qualifies only from someone listed at least this long:
+/// a name made today can't host today.
+pub(crate) const HOSTING_AFTER_LISTED: Duration = Duration::from_secs(7 * 24 * 60 * 60);
+const DAY_MS: i64 = 24 * 60 * 60 * 1000;
 /// A machine on the map isn't greeted back again for this long.
 const GREET_AGAIN_AFTER: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 /// Machines greeted back per hour, at most, whoever they say they are. Names
@@ -222,6 +234,9 @@ impl Core {
             .buffered_unordered(LISTED_AT_ONCE)
             .collect()
             .await;
+        if let Err(e) = self.repick_daily() {
+            warn!("couldn't pick posts' hosts for the day: {e:#}");
+        }
         let dropped = self
             .db
             .drop_silent_listed(now - LISTED_SILENCE.as_millis() as i64)?;
@@ -276,14 +291,8 @@ impl Core {
         }
         let (posts, reshares) = self.latest_items(listed, &addr, latest).await?;
         let mut listed_reshares = Vec::new();
-        // Its checks are kept even when it's left out, so it isn't checked
-        // again at every read.
-        let mut kept: Vec<ObjectId> = Vec::new();
         for (announce, a, post, note) in reshares {
-            let Some(hosting) = self.reshare_hosting(&person, &announce, &a, &note).await? else {
-                kept.push(announce.id());
-                continue;
-            };
+            let hosting = self.reshare_hosting(&person, &announce, &a, &note).await?;
             listed_reshares.push(ListedReshare {
                 announce,
                 post,
@@ -294,7 +303,7 @@ impl Core {
         let ListingItem::Person { reshares, .. } = &item else {
             unreachable!("person_item makes a person's listing");
         };
-        kept.extend(reshares.iter().map(|r| r.announce.id()));
+        let kept: Vec<ObjectId> = reshares.iter().map(|r| r.announce.id()).collect();
         self.db.forget_reshare_checks(&listed.actor, &kept)?;
         self.db.put_listed(&listed.actor, &item, latest, now_ms())
     }
@@ -302,24 +311,23 @@ impl Core {
     /// Whether a listed reshare is to be marked hosting (ADR 0025): it says
     /// so, a piece of the post's media fetched from the resharer's media
     /// endpoint checked out, its rechecks haven't failed twice in a row since,
-    /// and the post hasn't its most hosting reshares listed already. None for
-    /// one past the most, which is left out of the listing, and logged.
+    /// and it's in the day's pick of the post's hosts (`repick_hosts`).
     async fn reshare_hosting(
         &self,
         resharer: &Person,
         announce: &SignedObject,
         a: &Announce,
         note: &Note,
-    ) -> Result<Option<bool>> {
+    ) -> Result<bool> {
         let id = announce.id();
         let now = now_ms();
         if !a.hosting {
             self.db.note_plain_reshare(&id, &a.actor, &a.object, now)?;
-            return Ok(Some(false));
+            return Ok(false);
         }
         let recheck = self.sim.reshare_recheck_every.as_millis() as i64;
-        let check = match self.db.reshare_check(&id)? {
-            Some(check) if now - check.checked_ms < recheck => check,
+        match self.db.reshare_check(&id)? {
+            Some(check) if now - check.checked_ms < recheck => {}
             _ => {
                 let passed = match self.check_resharer_copy(resharer, note).await {
                     Ok(()) => true,
@@ -329,21 +337,107 @@ impl Core {
                     }
                 };
                 self.db
-                    .note_reshare_check(&id, &a.actor, &a.object, passed, now)?
+                    .note_reshare_check(&id, &a.actor, &a.object, passed, now)?;
             }
-        };
-        let hosting = check.passed && check.fails < RESHARE_FAILS_UNMARK;
-        let most = self.sim.max_hosting_reshares;
-        if hosting && self.db.hosting_reshares_of(&a.object, &id)? >= most {
+        }
+        let picked = self.repick_hosts(&a.object, Some(&a.actor), false)?;
+        let hosting = picked.contains(&id);
+        if !hosting && picked.len() >= self.sim.max_hosting_reshares {
             info!(
                 post = %a.object.fmt_short(),
-                "a post has more than {most} hosting reshares; leaving this one out"
+                "a post has more hosting reshares than are listed; this one is listed plain today"
             );
-            self.db.set_reshare_hosting(&id, false)?;
-            return Ok(None);
         }
-        self.db.set_reshare_hosting(&id, hosting)?;
-        Ok(Some(hosting))
+        Ok(hosting)
+    }
+
+    /// The rules for picking a post's hosts, as this node runs them.
+    fn host_rules(&self) -> HostRules {
+        HostRules {
+            most: self.sim.max_hosting_reshares,
+            most_new: self.sim.max_new_name_hosts,
+            after_listed_ms: self.sim.hosting_after_listed.as_millis() as i64,
+            new_for_ms: self.sim.new_name_for.as_millis() as i64,
+        }
+    }
+
+    /// Marks today's pick of `post`'s hosting reshares as hosting and the
+    /// rest as plain (ADR 0025), and returns the pick. A listing whose mark
+    /// changed is given to readers again, except `reading`'s, whose read is
+    /// making it now. `log` says so when some that qualify aren't picked:
+    /// a sign the rotation is needed in the wild.
+    fn repick_hosts(
+        &self,
+        post: &ObjectId,
+        reading: Option<&iroh::PublicKey>,
+        log: bool,
+    ) -> Result<HashSet<ObjectId>> {
+        let claims = self.db.hosting_claims(post, RESHARE_FAILS_UNMARK)?;
+        let (picked, qualifying) = pick_hosts(post, now_ms(), &claims, &self.host_rules());
+        if log && qualifying > picked.len() {
+            info!(
+                post = %post.fmt_short(),
+                qualifying,
+                listed = picked.len(),
+                "a post has more hosting reshares than are listed; today's draw picked them"
+            );
+        }
+        for claim in &claims {
+            let hosting = picked.contains(&claim.announce);
+            if hosting == claim.hosting {
+                continue;
+            }
+            self.db.set_reshare_hosting(&claim.announce, hosting)?;
+            if Some(&claim.actor) != reading {
+                self.remark_listed(&claim.actor, &claim.announce, hosting)?;
+            }
+        }
+        Ok(picked)
+    }
+
+    /// Changes the hosting mark of `actor`'s listed reshare `announce`,
+    /// without reading them again.
+    fn remark_listed(
+        &self,
+        actor: &iroh::PublicKey,
+        announce: &ObjectId,
+        hosting: bool,
+    ) -> Result<()> {
+        let Some(ListingItem::Person {
+            profile,
+            posts,
+            mut reshares,
+        }) = self.db.listed_item(actor)?
+        else {
+            return Ok(());
+        };
+        let Some(reshare) = reshares
+            .iter_mut()
+            .find(|r| r.announce.id() == *announce && r.hosting != hosting)
+        else {
+            return Ok(());
+        };
+        reshare.hosting = hosting;
+        let item = ListingItem::Person {
+            profile,
+            posts,
+            reshares,
+        };
+        self.db.replace_listed_item(actor, &item)
+    }
+
+    /// Once a day, the first time it's called that day, picks again the
+    /// hosts of every post with a hosting reshare listed: the pick changes
+    /// each day, and people cross `HOSTING_AFTER_LISTED` and `NEW_NAME_FOR`.
+    fn repick_daily(&self) -> Result<()> {
+        let day = now_ms() / DAY_MS;
+        if self.hosts_picked_day.swap(day, Ordering::Relaxed) == day {
+            return Ok(());
+        }
+        for post in self.db.posts_with_hosting_claims()? {
+            self.repick_hosts(&post, None, true)?;
+        }
+        Ok(())
     }
 
     /// Fetches one random 1 KiB piece of the post's media from the
@@ -854,6 +948,74 @@ fn person_item(
     }
 }
 
+/// How a directory picks a post's hosts (ADR 0025).
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct HostRules {
+    /// Most listed as hosting.
+    pub most: usize,
+    /// Most of those from people listed for less than `new_for_ms`.
+    pub most_new: usize,
+    /// Someone listed for less than this doesn't qualify.
+    pub after_listed_ms: i64,
+    pub new_for_ms: i64,
+}
+
+/// Which of `post`'s hosting claims are listed as hosting on the day of
+/// `now`, and how many people qualified. A claim qualifies if its checks
+/// pass and its resharer has been listed `after_listed_ms`. Each person
+/// counts once, by one of their reshares. When more qualify than are
+/// listed, a draw from the post and the day picks them: it holds all day
+/// and changes the next, and nothing a host does moves it up. People listed
+/// for less than `new_for_ms` take at most `most_new` places, even if
+/// places are left empty.
+pub(crate) fn pick_hosts(
+    post: &ObjectId,
+    now: i64,
+    claims: &[HostingClaim],
+    rules: &HostRules,
+) -> (HashSet<ObjectId>, usize) {
+    let mut people: BTreeMap<iroh::PublicKey, (ObjectId, i64)> = BTreeMap::new();
+    for claim in claims {
+        let Some(listed_ms) = claim.listed_ms else {
+            continue;
+        };
+        if !claim.passing || now - listed_ms < rules.after_listed_ms {
+            continue;
+        }
+        let entry = people
+            .entry(claim.actor)
+            .or_insert((claim.announce, listed_ms));
+        entry.0 = entry.0.min(claim.announce);
+    }
+    let qualifying = people.len();
+    let day = now / DAY_MS;
+    let mut drawn: Vec<_> = people.into_iter().collect();
+    drawn.sort_by_cached_key(|(actor, _)| daily_rank(post.as_bytes(), day, actor.as_bytes()));
+    let mut picked = HashSet::new();
+    let mut new = 0;
+    for (_, (announce, listed_ms)) in drawn {
+        if picked.len() >= rules.most {
+            break;
+        }
+        if now - listed_ms < rules.new_for_ms {
+            if new >= rules.most_new {
+                continue;
+            }
+            new += 1;
+        }
+        picked.insert(announce);
+    }
+    (picked, qualifying)
+}
+
+/// Where `who` comes in the day's draw for `what`: the same all day, another
+/// the next, and the same on every node that draws.
+pub(crate) fn daily_rank(what: &[u8], day: i64, who: &[u8]) -> u64 {
+    let mut h = std::hash::DefaultHasher::new();
+    (what, day, who).hash(&mut h);
+    h.finish()
+}
+
 fn encoded_len(object: &SignedObject) -> usize {
     serde_json::to_vec(object).map_or(usize::MAX / 2, |json| json.len())
 }
@@ -1021,6 +1183,88 @@ mod tests {
     use super::*;
 
     const DATE: &str = "2026-11-01T00:00:00Z";
+
+    const RULES: HostRules = HostRules {
+        most: 16,
+        most_new: 8,
+        after_listed_ms: 7 * DAY_MS,
+        new_for_ms: 30 * DAY_MS,
+    };
+
+    /// A passing hosting claim by someone listed `days` ago, on day 100.
+    fn claim(n: u8, days: i64) -> HostingClaim {
+        HostingClaim {
+            announce: ObjectId::from_bytes([n; 32]),
+            actor: SecretKey::from_bytes(&[n; 32]).public(),
+            listed_ms: Some(NOW - days * DAY_MS),
+            passing: true,
+            hosting: false,
+        }
+    }
+
+    const NOW: i64 = 100 * DAY_MS + 1;
+
+    fn picked(claims: &[HostingClaim], now: i64) -> HashSet<ObjectId> {
+        pick_hosts(&ObjectId::from_bytes([200; 32]), now, claims, &RULES).0
+    }
+
+    #[test]
+    fn up_to_the_most_qualifying_hosts_are_all_listed() {
+        let claims: Vec<_> = (1..=16).map(|n| claim(n, 60)).collect();
+        assert_eq!(picked(&claims, NOW).len(), 16);
+        // Not yet listed a week, failing their checks, or not listed now.
+        let mut not = vec![claim(1, 6), claim(2, 60), claim(3, 60)];
+        not[1].passing = false;
+        not[2].listed_ms = None;
+        assert!(picked(&not, NOW).is_empty());
+        assert_eq!(picked(&[claim(1, 7)], NOW).len(), 1);
+    }
+
+    #[test]
+    fn past_the_most_the_days_draw_picks_them_and_holds_all_day() {
+        let claims: Vec<_> = (1..=40).map(|n| claim(n, 60)).collect();
+        let (today, qualifying) =
+            pick_hosts(&ObjectId::from_bytes([200; 32]), NOW, &claims, &RULES);
+        assert_eq!((today.len(), qualifying), (16, 40));
+        // Later the same day, and in another order: the same pick.
+        let mut shuffled = claims.clone();
+        shuffled.reverse();
+        assert_eq!(picked(&shuffled, NOW + DAY_MS - 2), today);
+        // The next day another, and over a month everyone gets a turn.
+        assert_ne!(picked(&claims, NOW + DAY_MS), today);
+        let mut seen = HashSet::new();
+        for day in 0..30 {
+            seen.extend(picked(&claims, NOW + day * DAY_MS));
+        }
+        assert_eq!(seen.len(), 40);
+        // Another post, another pick.
+        assert_ne!(
+            pick_hosts(&ObjectId::from_bytes([201; 32]), NOW, &claims, &RULES).0,
+            today
+        );
+    }
+
+    #[test]
+    fn new_names_take_at_most_half_the_places_even_if_some_stay_empty() {
+        let new: Vec<_> = (1..=20).map(|n| claim(n, 10)).collect();
+        assert_eq!(picked(&new, NOW).len(), 8);
+        let mut mixed = new.clone();
+        mixed.extend((21..=30).map(|n| claim(n, 31)));
+        let pick = picked(&mixed, NOW);
+        assert_eq!(pick.len(), 16);
+        let old = pick.iter().filter(|a| a.as_bytes()[0] > 20).count();
+        assert!(old >= 8, "{old} of 16 listed a month");
+    }
+
+    #[test]
+    fn each_person_counts_once() {
+        let mut twice = claim(1, 60);
+        twice.announce = ObjectId::from_bytes([99; 32]);
+        let claims = [claim(1, 60), twice, claim(2, 60)];
+        let (pick, qualifying) = pick_hosts(&ObjectId::from_bytes([200; 32]), NOW, &claims, &RULES);
+        assert_eq!((pick.len(), qualifying), (2, 2));
+        assert!(pick.contains(&ObjectId::from_bytes([1; 32])));
+    }
 
     #[test]
     fn a_node_with_nobody_to_meet_reads_less_often_while_reads_bring_nothing() {

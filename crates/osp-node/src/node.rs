@@ -124,6 +124,13 @@ pub struct SimSettings {
     pub reshare_recheck_every: Duration,
     /// Most hosting reshares of one post a directory lists. Tests lower it.
     pub max_hosting_reshares: usize,
+    /// Most of those from people listed for less than `new_name_for`.
+    pub max_new_name_hosts: usize,
+    /// How long someone is listed before a hosting reshare of theirs can be
+    /// marked, and how long they count as a new name (ADR 0025). Tests
+    /// shorten them.
+    pub hosting_after_listed: Duration,
+    pub new_name_for: Duration,
     /// The node sends and receives through this simulated network instead
     /// of IP sockets (`simnet`). Its config should have relays disabled.
     #[cfg(feature = "sim")]
@@ -162,6 +169,9 @@ impl Default for SimSettings {
             viewing_life: viewing::MAX_LIFE,
             reshare_recheck_every: directory::RESHARE_RECHECK_EVERY,
             max_hosting_reshares: directory::MAX_HOSTING_RESHARES,
+            max_new_name_hosts: directory::MAX_NEW_NAME_HOSTS,
+            hosting_after_listed: directory::HOSTING_AFTER_LISTED,
+            new_name_for: directory::NEW_NAME_FOR,
             #[cfg(feature = "sim")]
             network: None,
             #[cfg(feature = "sim")]
@@ -269,6 +279,8 @@ pub(crate) struct Core {
     pub machine: Option<MachineSide>,
     /// Wakes a directory's reading of listed nodes, for someone new.
     pub listed_now: Notify,
+    /// The day a directory last picked its listed posts' hosts (ADR 0025).
+    pub hosts_picked_day: std::sync::atomic::AtomicI64,
     /// Directories are read by one task at a time. It holds those whose last
     /// read failed, so that a directory that's gone is warned of once.
     pub reading_directories: tokio::sync::Mutex<HashSet<EndpointId>>,
@@ -573,6 +585,7 @@ impl Node {
             endpoints,
             machine,
             listed_now: Notify::new(),
+            hosts_picked_day: std::sync::atomic::AtomicI64::new(-1),
             reading_directories: tokio::sync::Mutex::new(HashSet::new()),
             read_directories_now: Notify::new(),
             directories_read_at: Mutex::new(None),

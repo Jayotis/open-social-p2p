@@ -78,16 +78,23 @@ async fn start_sim(root: &Path, config: Config, settings: SimSettings) -> Node {
 
 /// A directory that reads those it lists often, and checks resharers' copies
 /// again every `recheck`, listing at most `most` hosting reshares of a post.
+/// Everyone listed qualifies to host at once, and none is a new name.
 async fn start_directory(root: &Path, net: &SimNet, recheck: Duration, most: usize) -> Node {
-    let mut config = Config::local_test("The directory");
-    config.endpoints.enabled = true;
-    config.directory.serve = true;
     let settings = SimSettings {
         listed_read_every: SOON,
         reshare_recheck_every: recheck,
         max_hosting_reshares: most,
+        hosting_after_listed: Duration::ZERO,
+        new_name_for: Duration::ZERO,
         ..sim(net)
     };
+    start_directory_with(root, settings).await
+}
+
+async fn start_directory_with(root: &Path, settings: SimSettings) -> Node {
+    let mut config = Config::local_test("The directory");
+    config.endpoints.enabled = true;
+    config.directory.serve = true;
     start_sim(root, config, settings).await
 }
 
@@ -237,6 +244,15 @@ async fn kim_and_directory(
     most: usize,
 ) -> (Node, Node, ObjectId, BlobHash) {
     let directory = start_directory(root, net, recheck, most).await;
+    kim_listed_with(root, net, directory).await
+}
+
+/// Kim, listed with a photo by `directory`.
+async fn kim_listed_with(
+    root: &Path,
+    net: &SimNet,
+    directory: Node,
+) -> (Node, Node, ObjectId, BlobHash) {
     let kim = start_sim(root, config_knowing("Kim", &directory, true), sim(net)).await;
     let (post, photo) = post_photo(&kim, root, "Kim's oak table").await;
     assert!(kim.ask_to_be_listed().await);
@@ -484,10 +500,11 @@ async fn failed_checks_list_a_hosting_reshare_as_plain() {
     }
 }
 
-/// Past the most hosting reshares of one post, another is left out of the
-/// listing, and the directory says so in its log.
+/// Past the most hosting reshares of one post, the day's draw picks those
+/// listed as hosting, and the rest are listed plain (ADR 0025's rotation).
+/// The directory says so in its log.
 #[tokio::test(flavor = "multi_thread")]
-async fn past_the_most_hosting_reshares_of_a_post_another_is_left_out() {
+async fn past_the_most_hosting_reshares_of_a_post_the_days_draw_picks_them() {
     capture_logs();
     let dir = tempfile::tempdir().unwrap();
     let net = SimNet::new(73);
@@ -498,17 +515,64 @@ async fn past_the_most_hosting_reshares_of_a_post_another_is_left_out() {
     wait_for_listing(&net, &directory, jimmy.identity(), Some(vec![(post, true)])).await;
     let carol = resharer(dir.path(), &net, &directory, "Carol", post, true).await;
     assert!(carol.ask_to_be_listed().await);
-    wait_for_listing(&net, &directory, carol.identity(), Some(vec![])).await;
-    assert!(
-        LOGS.lock()
-            .unwrap()
-            .contains("a post has more than 1 hosting reshares; leaving this one out"),
-        "not logged"
-    );
-    // Jimmy keeps his place.
-    wait_for_listing(&net, &directory, jimmy.identity(), Some(vec![(post, true)])).await;
+    // One of them hosts today, whichever the draw picked; the other is
+    // listed plain, Jimmy's listing changed without reading him again.
+    let marks = async || {
+        let jimmy = listed_reshares(&net, &directory, jimmy.identity()).await;
+        let carol = listed_reshares(&net, &directory, carol.identity()).await;
+        (jimmy, carol)
+    };
+    until("one of the two to host", async || {
+        matches!(
+            marks().await,
+            (Some(j), Some(c)) if j.len() == 1 && c.len() == 1 && j[0].1 != c[0].1
+        )
+    })
+    .await;
+    let settled = marks().await;
+    // It holds: read again, they're listed the same.
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    assert_eq!(marks().await, settled);
+    let (Some(j), _) = &settled else {
+        unreachable!()
+    };
+    if j[0].1 {
+        assert!(
+            LOGS.lock()
+                .unwrap()
+                .contains("a post has more hosting reshares than are listed"),
+            "not logged"
+        );
+    }
 
     for node in [carol, jimmy, kim, directory] {
+        node.shutdown().await.unwrap();
+    }
+}
+
+/// Someone listed for less than a week can't host yet: their hosting
+/// reshare is listed plain (ADR 0025).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_name_listed_today_cant_host_today() {
+    let dir = tempfile::tempdir().unwrap();
+    let net = SimNet::new(74);
+    let settings = SimSettings {
+        listed_read_every: SOON,
+        ..sim(&net)
+    };
+    let directory = start_directory_with(dir.path(), settings).await;
+    let (directory, kim, post, _) = kim_listed_with(dir.path(), &net, directory).await;
+    let jimmy = resharer(dir.path(), &net, &directory, "Jimmy", post, true).await;
+    assert!(jimmy.ask_to_be_listed().await);
+    wait_for_listing(
+        &net,
+        &directory,
+        jimmy.identity(),
+        Some(vec![(post, false)]),
+    )
+    .await;
+
+    for node in [jimmy, kim, directory] {
         node.shutdown().await.unwrap();
     }
 }
@@ -923,6 +987,7 @@ async fn a_directory_that_follows_the_author_drops_a_deleted_post_at_once() {
     config.directory.serve = true;
     let settings = SimSettings {
         listed_read_every: Duration::from_secs(3600),
+        hosting_after_listed: Duration::ZERO,
         ..sim(&net)
     };
     let directory = start_sim(dir.path(), config, settings).await;

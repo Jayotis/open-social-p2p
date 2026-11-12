@@ -4,7 +4,6 @@
 use std::{
     collections::{HashMap, HashSet},
     fmt,
-    hash::{Hash, Hasher},
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
@@ -750,10 +749,8 @@ impl Core {
     pub(crate) fn resharers_to_name(&self, blob: &BlobHash) -> Result<Vec<BoundEndpoint>> {
         let mut named = self.db.named_resharers(blob, RESHARER_FAILS_UNNAMED)?;
         let day = now_ms() / (24 * 60 * 60 * 1000);
-        named.sort_by_key(|host| {
-            let mut h = std::hash::DefaultHasher::new();
-            (blob.as_bytes(), day, host.node.as_bytes()).hash(&mut h);
-            h.finish()
+        named.sort_by_cached_key(|host| {
+            crate::directory::daily_rank(blob.as_bytes(), day, host.node.as_bytes())
         });
         Ok(named
             .into_iter()
