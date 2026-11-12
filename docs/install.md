@@ -21,11 +21,13 @@ It then:
 
 1. installs Tor, ffmpeg and heif-convert with apt, if they're missing;
 2. downloads `osp` for your machine into `~/.local/bin`, and checks it against the release's checksums (a damaged download is refused);
-3. creates your node in `~/.local/share/osp`. It asks whether to share copies of posts you follow and whether to be listed by directories, then shows your recovery words and asks for three of them back;
+3. creates your node in `~/.local/share/osp`. It asks your name (as others see it), whether to share copies of posts you follow and whether to be listed by directories, then shows your recovery words and asks for three of them back;
 4. sets the node to read the alpha's directories, from the release's `directories.txt`. To change them later, edit `[[directory.known]]` in `~/.local/share/osp/config.toml`;
 5. installs the service (`osp service install`) and shows `osp status`.
 
 If `~/.local/bin` isn't on your PATH, run the program as `~/.local/bin/osp`.
+
+For the first few minutes, while Tor makes its first connections, a search may find nobody, and `osp directory read` may say a directory didn't answer. Try again a minute later.
 
 ## Removing a follower
 

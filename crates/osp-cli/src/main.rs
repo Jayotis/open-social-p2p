@@ -49,7 +49,7 @@ use tokio::net::UnixStream;
 #[derive(Parser)]
 #[command(
     name = "osp",
-    version,
+    version = osp_node::VERSION,
     about = "Run and control an Open Social P2P home node"
 )]
 struct Cli {
@@ -360,11 +360,13 @@ async fn main() -> Result<()> {
             directory,
         } => {
             let lookup = !no_address_lookup;
+            let ask_name = name.is_none();
             let mut config = init_config(name, &relay, bind, lookup, backup.is_some(), !no_tor);
             config.directory.known = known_directories(&directory);
             let answers = Answers {
                 share: answered(share, no_share),
                 list_me: answered(list_me, no_list_me),
+                ask_name,
             };
             if restore {
                 let old_key = match (retired, revoked) {
@@ -588,6 +590,8 @@ fn known_directories(ids: &[EndpointId]) -> Vec<osp_node::KnownDirectory> {
 struct Answers {
     share: Option<bool>,
     list_me: Option<bool>,
+    /// No `--name` was given, so a new node asks for one.
+    ask_name: bool,
 }
 
 /// A yes-or-no flag pair: `None` if neither was given, so it's asked.
@@ -601,6 +605,9 @@ fn answered(yes: bool, no: bool) -> Option<bool> {
 
 async fn init(home: &Path, mut config: Config, check_words: bool, answers: Answers) -> Result<()> {
     // Asked first, so words aren't shown for a node that isn't made.
+    if answers.ask_name {
+        config.name = ask_name()?;
+    }
     config.swarm.share_prefetched = ask_share(answers.share)?;
     config.directory.list_me = ask_list_me(answers.list_me, config.tor.enabled)?;
     let words = osp_node::backup::new_identity_words();
@@ -748,6 +755,34 @@ fn ask_old_key(from_backup: bool) -> Result<EarlierKeys> {
             "no" | "n" => return Ok(EarlierKeys::Retired),
             _ => println!("Please answer yes, no or not sure."),
         }
+    }
+}
+
+/// Asks for the name others see on your profile. With no answer at all, as
+/// from a script, or an empty one, it stays Anonymous.
+fn ask_name() -> Result<String> {
+    println!();
+    println!("The name others see on your posts and profile. You can change it later:");
+    println!("`name` in config.toml, then start the node again.");
+    loop {
+        print!("Your name (Enter for Anonymous): ");
+        std::io::Write::flush(&mut std::io::stdout())?;
+        let mut line = String::new();
+        if std::io::stdin().read_line(&mut line)? == 0 {
+            return Ok(Config::default().name);
+        }
+        let name = line.trim();
+        if name.is_empty() {
+            return Ok(Config::default().name);
+        }
+        if name.len() > osp_proto::types::MAX_NAME_BYTES || name.chars().any(char::is_control) {
+            println!(
+                "Please keep it to one line of up to {} bytes.",
+                osp_proto::types::MAX_NAME_BYTES
+            );
+            continue;
+        }
+        return Ok(name.to_string());
     }
 }
 
@@ -1192,8 +1227,22 @@ fn print(resp: ClientResponse, json: bool) -> Result<()> {
                 println!("{node}");
             }
         }
-        ClientResponse::DirectoriesRead { found } => {
-            println!("Read. This node holds {found} people it found through directories.");
+        ClientResponse::DirectoriesRead { found, failed } => {
+            for directory in &failed {
+                println!("Didn't answer: {directory}");
+            }
+            let people = if found == 1 { "person" } else { "people" };
+            let read = if failed.is_empty() {
+                "Read"
+            } else {
+                "Read the others"
+            };
+            println!("{read}. This node holds {found} {people} it found through directories.");
+            if !failed.is_empty() {
+                println!(
+                    "A new node's first connections over Tor can take a few minutes: try again soon."
+                );
+            }
         }
         ClientResponse::MachineName {
             machine,

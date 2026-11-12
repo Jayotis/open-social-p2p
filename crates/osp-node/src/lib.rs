@@ -33,6 +33,13 @@ mod trust;
 mod uploads;
 mod viewing;
 
+/// This build's version: the release's tag when the release job sets
+/// `OSP_RELEASE` (such as v0.1.0-alpha.3), or else the crate's version.
+pub const VERSION: &str = match option_env!("OSP_RELEASE") {
+    Some(tag) => tag,
+    None => env!("CARGO_PKG_VERSION"),
+};
+
 pub use config::{Config, DirectRule, IntroductionsConfig, KnownDirectory, RelayChoice};
 pub use db::BlobClass;
 pub use endpoints::PeerEndpoints;

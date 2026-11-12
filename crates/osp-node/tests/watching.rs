@@ -92,7 +92,7 @@ async fn listed_creator(
 async fn alice(root: &Path, directory: &Node, settings: SimSettings) -> Node {
     let alice = start_sim(root, config_knowing("Alice", directory, false), settings).await;
     match call(&alice, ClientRequest::ReadDirectories).await {
-        ClientResponse::DirectoriesRead { found } => assert!(found >= 1),
+        ClientResponse::DirectoriesRead { found, .. } => assert!(found >= 1),
         other => panic!("unexpected {other:?}"),
     }
     alice

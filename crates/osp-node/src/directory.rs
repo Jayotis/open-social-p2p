@@ -108,6 +108,14 @@ pub(crate) const SEARCH_READ_WAIT: Duration = Duration::from_secs(15);
 /// How soon it goes on after a read that failed or wasn't finished. Also the
 /// soonest a node with no machine left to meet reads again (`soonest_after`).
 const READ_AGAIN: Duration = Duration::from_secs(10 * 60);
+/// Just after a node starts, how soon it tries again after a read that some
+/// directory didn't answer, for its first `SOON_RETRIES` reads: a new Tor
+/// client's first contacts can take minutes, and a new tester would otherwise
+/// find nobody for 10 to 20 minutes. A search after such a read may also
+/// start one this soon. Later failures wait `READ_AGAIN`, so a directory
+/// that's off isn't asked every minute.
+pub(crate) const RETRY_SOON: Duration = Duration::from_secs(60);
+const SOON_RETRIES: u32 = 5;
 /// The kinds of entry this reader takes from a directory's lists, as a number
 /// that rises whenever a kind is added: 1 first took machines (ADR 0015's step
 /// 3). A reader passes over kinds it doesn't know, and its cursor moves on past
@@ -518,6 +526,9 @@ pub(crate) struct Read {
     pub finished: bool,
     /// Entries it took in, of any kind.
     pub entries: usize,
+    /// The directories that didn't answer, by their machine name's words,
+    /// and why.
+    pub failed: Vec<String>,
 }
 
 /// A node reading the directories it knows.
@@ -542,13 +553,14 @@ impl Core {
             return Ok(Read {
                 finished: true,
                 entries: 0,
+                failed: Vec::new(),
             });
         }
         let mut read = Read {
             finished: true,
             entries: 0,
+            failed: Vec::new(),
         };
-        let mut failed = None;
         let mut answered = false;
         for directory in &self.config.directory.known {
             if directory.machine == side.id() {
@@ -572,14 +584,24 @@ impl Core {
                         debug!(directory = %short, "reading a directory failed again: {e:#}");
                     }
                     read.finished = false;
-                    failed = Some(e);
+                    read.failed.push(format!(
+                        "{}: {}",
+                        machine::words(&directory.machine),
+                        e.root_cause()
+                    ));
                 }
             }
         }
-        match failed {
-            Some(e) if !answered => Err(e),
-            _ => Ok(read),
+        if !read.failed.is_empty() {
+            // The next read for a search may come after `RETRY_SOON`, not
+            // `use_read_gap`.
+            let gap = self.sim.use_read_gap.saturating_sub(RETRY_SOON);
+            *self.directories_read_at.lock().expect("poisoned") = Instant::now().checked_sub(gap);
+            if !answered {
+                bail!("no directory answered: {}", read.failed.join("; "));
+            }
         }
+        Ok(read)
     }
 
     /// Starts a read of the directories for someone using the node, unless it
@@ -936,14 +958,20 @@ pub(crate) async fn read_loop(core: Arc<Core>) {
     tokio::time::sleep(core.sim.first_read_wait.mul_f64(random_fraction())).await;
     // Whether this read is an early one, as no machine was left to meet.
     let mut early = false;
+    let mut soon_retries = SOON_RETRIES;
     loop {
         // Messages wait for Tor, and go nowhere else (ADR 0014).
         if let Some(tor) = &core.tor {
             tor.ready().await;
         }
         let read = core.read_directories().await.ok();
+        let some_failed = read.as_ref().is_none_or(|read| !read.failed.is_empty());
         let wait = match read.as_ref().is_some_and(|read| read.finished) {
             true => jitter(every),
+            false if some_failed && soon_retries > 0 => {
+                soon_retries -= 1;
+                jitter(RETRY_SOON.min(again))
+            }
             false => jitter(again),
         };
         let soonest = tokio::time::Instant::now() + backoff.after(early, read.as_ref());
@@ -1004,6 +1032,7 @@ mod tests {
         let nothing = Read {
             finished: true,
             entries: 0,
+            failed: Vec::new(),
         };
         let mut minutes = |early, read| backoff.after(early, read).as_secs() / 60;
         // The usual reads bringing nothing don't count.
@@ -1014,6 +1043,7 @@ mod tests {
         assert_eq!(waits, [10, 20, 40, 80, 160, 320, 360, 360, 360]);
         // One that brings something starts over, as does one that fails.
         let something = Read {
+            failed: Vec::new(),
             finished: true,
             entries: 1,
         };

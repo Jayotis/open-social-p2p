@@ -220,9 +220,10 @@ impl Core {
                     !self.config.directory.known.is_empty(),
                     "this node knows no directories: add them under [directory] in config.toml"
                 );
-                self.read_directories().await?;
+                let read = self.read_directories().await?;
                 ClientResponse::DirectoriesRead {
                     found: self.db.found_count()?,
+                    failed: read.failed,
                 }
             }
             ClientRequest::Followers => self.follower_list()?,
@@ -354,7 +355,7 @@ impl Core {
             storage: self.db.storage_summary()?,
             peers,
             nat,
-            version: env!("CARGO_PKG_VERSION").to_string(),
+            version: crate::VERSION.to_string(),
             uptime_secs: self.started.elapsed().as_secs(),
             devices: self.db.devices()?.len(),
             disk_free_bytes,
