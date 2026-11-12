@@ -102,6 +102,9 @@ pub struct SimSettings {
     pub first_read_wait: Duration,
     /// How often a node reads its directories. Tests shorten it.
     pub read_every: Duration,
+    /// Soonest a search or the feed starts another read of directories.
+    /// Tests shorten it.
+    pub use_read_gap: Duration,
     /// Below this much free disk, a node holds nobody from directories. Tests
     /// raise it.
     pub found_needs_free: u64,
@@ -150,6 +153,7 @@ impl Default for SimSettings {
             ask_listing_wait: directory::ASK_LISTING_WAIT,
             first_read_wait: directory::FIRST_READ_WAIT,
             read_every: directory::READ_EVERY,
+            use_read_gap: directory::USE_READ_GAP,
             found_needs_free: health::LOW_DISK_BYTES,
             max_found_people: directory::MAX_FOUND_PEOPLE,
             greets_back_per_hour: directory::MAX_GREETS_BACK_PER_HOUR,
@@ -270,6 +274,8 @@ pub(crate) struct Core {
     pub reading_directories: tokio::sync::Mutex<HashSet<EndpointId>>,
     /// Wakes the reading of directories, when the machines met all fail.
     pub read_directories_now: Notify,
+    /// When the last read of directories started, however it was started.
+    pub directories_read_at: Mutex<Option<Instant>>,
     /// Endpoints for fetching found posts' media unseen (ADR 0024).
     pub viewing: Viewing,
     pub sim: SimSettings,
@@ -569,6 +575,7 @@ impl Node {
             listed_now: Notify::new(),
             reading_directories: tokio::sync::Mutex::new(HashSet::new()),
             read_directories_now: Notify::new(),
+            directories_read_at: Mutex::new(None),
             viewing: Viewing::new(sim.viewing_reuse, sim.viewing_life),
             sim,
             #[cfg(feature = "sim")]

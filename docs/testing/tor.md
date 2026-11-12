@@ -102,7 +102,7 @@ osp follow IDENTITY      # the identity the search showed
 
 Following asks their own node first, and goes no further unless it speaks for them: a directory's copy can be out of date. Like any first contact, it [can take minutes](#a-first-contact-can-take-minutes). `osp following` shows if it failed.
 
-**How fresh it is.** A node reads its directories within 10 minutes of starting and then about every 6 hours, taking what changed since. After an update that takes a new kind of entry, it reads each from the start once. A directory reads each listed node once an hour. So a new post can take hours to be found, which is fine for finding people: once followed, posts come directly.
+**How fresh it is.** A node reads its directories within 10 minutes of starting and then about every 6 hours, taking what changed since. A search or opening the feed reads them too, no sooner than 10 minutes after the last read; a search waits up to 15 s for it. After an update that takes a new kind of entry, it reads each from the start once. A directory reads each listed node once an hour. So a new post can take up to an hour to be found, which is fine for finding people: once followed, posts come directly.
 
 **What a directory sees:** which machine name read its lists, and when, and which public ID asked to be listed. It sees no search words, and nothing ties the two names together except what any machine and public ID on one Tor can show ([ADR 0015](../decisions/0015-nodes-meet-first.md#consequences)).
 
