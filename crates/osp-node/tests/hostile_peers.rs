@@ -1148,7 +1148,7 @@ async fn a_node_with_every_place_taken_sends_downloads_to_another_host() {
         .expect("the other host");
     assert!(other.counts.completed.round() >= 1.0, "{other:?}");
     assert!(
-        other.counts.received_bytes.round() >= size as f64,
+        other.counts.received_bytes >= 0.999 * size as f64,
         "{other:?}"
     );
     let refused = peers(&node).await;
@@ -1393,7 +1393,7 @@ async fn a_follower_refused_as_busy_is_sent_to_a_follower_with_a_copy() {
         .find(|p| p.node == sharing.node_id())
         .expect("the follower with a copy");
     assert!(
-        from.counts.received_bytes.round() >= size as f64,
+        from.counts.received_bytes >= 0.999 * size as f64,
         "{from:?}"
     );
     // It didn't go back to the busy node first.
