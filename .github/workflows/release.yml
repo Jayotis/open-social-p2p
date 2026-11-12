@@ -59,7 +59,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
         run: |
-          sed "s/@VERSION@/$TAG/" scripts/install.sh > out/install.sh
+          # Only the default: the check for a copy not from a release keeps its placeholder.
+          sed "s/:-@VERSION@}/:-$TAG}/" scripts/install.sh > out/install.sh
+          grep -q "OSP_VERSION:-$TAG}" out/install.sh
           cd out
           sha256sum osp-linux-*.tar.gz > SHA256SUMS
           gh release create "$TAG" --draft --title "$TAG" \
