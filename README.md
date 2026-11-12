@@ -37,9 +37,9 @@ Design decisions are recorded in [docs/decisions/](docs/decisions/). The first p
 | [Contributing and open decisions](docs/07-contributing-and-open-decisions.md) | How to help and architectural questions needing review |
 | [Open feed and recommendation algorithm](docs/08-open-feed-algorithm.md) | Open-source feed modes, trending criteria, user controls and transparency |
 | [Distributed trending signals](docs/09-distributed-trending-signals.md) | P2P-assisted public trend discovery, data minimization and abuse resistance |
-| [Exploration, divergent perspectives and discovery scouts](docs/10-exploration-divergence-and-scouts.md) | Overlooked posts, cross-perspective discovery and recognition for early curators |
+| [Exploration, divergent perspectives and discovery hunters](docs/10-exploration-divergence-and-hunters.md) | Overlooked posts, cross-perspective discovery and recognition for early curators |
 | [Collective discovery history and referrals](docs/11-collective-discovery-history-and-referrals.md) | Voluntary public recommendations, offline word-of-mouth credit, private local history and P2P discovery snapshots |
-| [Peer reciprocity and recognition](docs/12-peer-reciprocity-and-recognition.md) | **Proposal (second draft):** nodes assess their own peers, generous tit-for-tat when busy, creator and scout levels, self-reported host stat |
+| [Peer reciprocity and recognition](docs/12-peer-reciprocity-and-recognition.md) | **Proposal (second draft):** nodes assess their own peers, generous tit-for-tat when busy, creator and hunter levels, self-reported host stat |
 | [Hosting roles and the follower swarm](docs/13-hosting-roles-and-follower-swarm.md) | **Proposal (second draft):** followers' nodes share prefetched copies, preservation nodes, demand-based expiry |
 | [Critical review of docs 12 and 13](docs/reviews/2026-10-21-review-of-docs-12-and-13.md) | Findings against the first drafts, with a disposition for each |
 | [Architecture decision records](docs/decisions/) | Accepted decisions: home node model, Rust and iroh, native social protocol, signed objects, media profile, desktop-first node, transport privacy defaults, device pairing and the client protocol |
