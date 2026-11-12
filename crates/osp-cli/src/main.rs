@@ -116,6 +116,11 @@ enum Command {
         /// Don't ask to be listed. Otherwise you're asked, unless Tor is off
         #[arg(long)]
         no_list_me: bool,
+        /// A directory this node reads, by its machine name and public ID, written under
+        /// [[directory.known]] in config.toml. Repeat it for more than one. There's no default:
+        /// an installer passes the ones to use
+        #[arg(long, num_args = 2, value_names = ["MACHINE", "NODE"], conflicts_with = "no_tor")]
+        directory: Vec<EndpointId>,
     },
     /// Run the node in the foreground (Ctrl-C to stop)
     Daemon,
@@ -336,9 +341,11 @@ async fn main() -> Result<()> {
             no_tor,
             list_me,
             no_list_me,
+            directory,
         } => {
             let lookup = !no_address_lookup;
-            let config = init_config(name, &relay, bind, lookup, backup.is_some(), !no_tor);
+            let mut config = init_config(name, &relay, bind, lookup, backup.is_some(), !no_tor);
+            config.directory.known = known_directories(&directory);
             let answers = Answers {
                 share: answered(share, no_share),
                 list_me: answered(list_me, no_list_me),
@@ -542,6 +549,16 @@ fn init_config(
     config.tor.enabled = tor;
     config.endpoints.enabled = tor;
     config
+}
+
+/// The directories given by `--directory MACHINE NODE`, which clap hands over
+/// as one flat list of pairs.
+fn known_directories(ids: &[EndpointId]) -> Vec<osp_node::KnownDirectory> {
+    ids.as_chunks::<2>()
+        .0
+        .iter()
+        .map(|&[machine, node]| osp_node::KnownDirectory { machine, node })
+        .collect()
 }
 
 /// What `osp init`'s flags already answer.
@@ -1603,6 +1620,35 @@ mod tests {
     use osp_proto::rpc::ResharedBy;
 
     use super::*;
+
+    #[test]
+    fn init_takes_directories_as_machine_and_node_pairs() {
+        let id = || osp_proto::SecretKey::generate().public().to_string();
+        let (m1, n1, m2, n2) = (id(), id(), id(), id());
+        let cli = Cli::try_parse_from([
+            "osp",
+            "init",
+            "--directory",
+            &m1,
+            &n1,
+            "--directory",
+            &m2,
+            &n2,
+        ])
+        .unwrap();
+        let Command::Init { directory, .. } = cli.command else {
+            panic!("not init");
+        };
+        let known = known_directories(&directory);
+        assert_eq!(known.len(), 2);
+        assert_eq!(known[0].machine.to_string(), m1);
+        assert_eq!(known[0].node.to_string(), n1);
+        assert_eq!(known[1].machine.to_string(), m2);
+        assert_eq!(known[1].node.to_string(), n2);
+        // Half a pair, or one with Tor off, isn't taken.
+        assert!(Cli::try_parse_from(["osp", "init", "--directory", &m1]).is_err());
+        assert!(Cli::try_parse_from(["osp", "init", "--no-tor", "--directory", &m1, &n1]).is_err());
+    }
 
     #[test]
     fn nothing_from_another_person_can_move_the_terminals_cursor() {

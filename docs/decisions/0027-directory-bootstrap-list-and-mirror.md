@@ -1,6 +1,6 @@
 # ADR 0027: A signed list of directories, and a mirror of their listings
 
-**Status:** Proposed (2026-11-09), approved in principle, revised after the maintainer's review (2026-11-09), for review again. The maintainer approves an offline-signed list of directories delivered by the installer, and directories' signed listings mirrored through Cloudflare. Adds to [ADR 0015](0015-nodes-meet-first.md)'s directories and [ADR 0014](0014-finding-people-and-private-messages.md)'s step 6.
+**Status:** Proposed (2026-11-09), approved in principle, revised after the maintainer's review (2026-11-09), for review again. Built after the invited alpha and before anything broader (the maintainer, 2026-11-12): the alpha's installer writes its directories into each tester's config instead ([docs/install.md](../install.md)). The maintainer approves an offline-signed list of directories delivered by the installer, and directories' signed listings mirrored through Cloudflare. Adds to [ADR 0015](0015-nodes-meet-first.md)'s directories and [ADR 0014](0014-finding-people-and-private-messages.md)'s step 6.
 
 Revised 2026-11-09, after the maintainer's review:
 

@@ -1,0 +1,67 @@
+name: Release
+
+# A tag such as v0.1.0 builds `osp` for Linux and makes a draft release with
+# the installer. The maintainer adds directories.txt to the draft (it isn't in
+# the repository: the first directories are temporary, ADR 0015), then
+# publishes it.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    # Ubuntu 22.04's glibc (2.35), so the program runs on Debian 12, Ubuntu
+    # 22.04, Raspberry Pi OS 12 and anything newer.
+    strategy:
+      matrix:
+        include:
+          - runner: ubuntu-22.04
+            arch: x86_64
+          - runner: ubuntu-22.04-arm
+            arch: aarch64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo build --release --locked -p osp-cli
+      - name: Check the glibc it needs
+        run: |
+          need=$(objdump -T target/release/osp | grep -o 'GLIBC_[0-9.]*' | sed 's/GLIBC_//' | sort -Vu | tail -1)
+          echo "needs glibc $need"
+          [ "$(printf '%s\n' "$need" 2.35 | sort -V | tail -1)" = 2.35 ]
+      - run: target/release/osp --version
+      - run: tar -czf osp-linux-${{ matrix.arch }}.tar.gz -C target/release osp
+      - uses: actions/upload-artifact@v4
+        with:
+          name: osp-linux-${{ matrix.arch }}
+          path: osp-linux-${{ matrix.arch }}.tar.gz
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v4
+        with:
+          path: out
+          merge-multiple: true
+      - name: Make the draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          sed "s/@VERSION@/$TAG/" scripts/install.sh > out/install.sh
+          cd out
+          sha256sum osp-linux-*.tar.gz > SHA256SUMS
+          gh release create "$TAG" --draft --title "$TAG" \
+            --notes "Add directories.txt before publishing. Install: see docs/install.md." \
+            osp-linux-*.tar.gz SHA256SUMS install.sh
