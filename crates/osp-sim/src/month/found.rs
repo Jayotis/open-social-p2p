@@ -53,6 +53,16 @@ pub struct Video {
     /// and what the 3 that served most did together.
     pub top_resharer: f64,
     pub top_three: f64,
+    /// What the sharers listed 4th to 16th served, as a share of their fair
+    /// share: each viewer's bytes from resharers split evenly over the hosts
+    /// it chose its first 3 from. `None` if there were fewer than 4.
+    pub late_of_fair: Option<f64>,
+    /// The same for the first 3 listed.
+    pub first_of_fair: Option<f64>,
+    /// Sharers listed after the 16th, whom no viewer could choose at once,
+    /// and the share of the video's bytes they served.
+    pub beyond_list: usize,
+    pub beyond_list_served: f64,
     /// Seconds from asking for sources to holding it.
     pub open_median: Option<f64>,
     pub open_slowest: Option<f64>,
@@ -102,6 +112,8 @@ struct Found {
     from_creator: Vec<f64>,
     from_resharers: Vec<f64>,
     served: Vec<f64>,
+    /// The hosts each viewer chose its first 3 from, at its last ask.
+    pools: Vec<Vec<usize>>,
 }
 
 /// A number drawn from `key`, `day` and `node`, the same for all three: the
@@ -138,6 +150,8 @@ impl Rules for Found {
             rng.shuffle(&mut listed);
             rng.shuffle(&mut named);
         }
+        let pool = if listed.is_empty() { &named } else { &listed };
+        self.pools[to] = pool.iter().copied().filter(|&n| n != to).collect();
         if listed.is_empty() {
             Sources {
                 at_once: named,
@@ -235,6 +249,7 @@ pub fn run(share_percent: f64, same_order: bool, seed: u64) -> Run {
                 from_creator: vec![0.0; n],
                 from_resharers: vec![0.0; n],
                 served: vec![0.0; n],
+                pools: vec![Vec::new(); n],
             };
             let fetches: Vec<Fetch> = viewers[v]
                 .iter()
@@ -268,6 +283,24 @@ pub fn run(share_percent: f64, same_order: bool, seed: u64) -> Run {
             served.sort_by(|a, b| b.total_cmp(a));
             let top = served.first().copied().unwrap_or(0.0);
             let top_three: f64 = served.iter().take(3).sum();
+            let mut fair = vec![0.0; n];
+            for &v in &order {
+                let pool = &rules.pools[v];
+                for &s in pool {
+                    fair[s] += rules.from_resharers[v] / pool.len() as f64;
+                }
+            }
+            let listed: Vec<usize> = rules.listed.iter().map(|&(_, n)| n).collect();
+            let of_fair = |group: &[usize]| {
+                (!group.is_empty()).then(|| {
+                    share(
+                        group.iter().map(|&s| rules.served[s]).sum(),
+                        group.iter().map(|&s| fair[s]).sum(),
+                    )
+                })
+            };
+            let (head, rest) = listed.split_at(3.min(listed.len()));
+            let (late, beyond) = rest.split_at((LISTED - 3).min(rest.len()));
             let mut opens: Vec<f64> = viewers[v]
                 .iter()
                 .filter_map(|&(wakes, node)| out.held[node].map(|t| t - wakes))
@@ -284,6 +317,10 @@ pub fn run(share_percent: f64, same_order: bool, seed: u64) -> Run {
                 creator_copies: sum(&order, &rules.from_creator) / VIDEO_BYTES,
                 top_resharer: share(top, all),
                 top_three: share(top_three, all),
+                late_of_fair: of_fair(late),
+                first_of_fair: of_fair(head),
+                beyond_list: beyond.len(),
+                beyond_list_served: share(beyond.iter().map(|&s| rules.served[s]).sum::<f64>() + 0.0, all),
                 open_median: opens.get(opens.len() / 2).copied(),
                 open_slowest: opens.last().copied(),
                 failed: order.len() - opens.len(),
