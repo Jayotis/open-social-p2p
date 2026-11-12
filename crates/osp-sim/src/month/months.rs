@@ -1647,8 +1647,8 @@ pub fn run(
     let at_end: Vec<usize> = (1..members.len())
         .filter(|&i| members[i].present(end))
         .collect();
-    for i in 0..peers.len() {
-        rules.partners[i].fade_to(end);
+    for partners in &mut rules.partners[..peers.len()] {
+        partners.fade_to(end);
     }
     let carrying = |kind: Kind| -> Vec<usize> {
         (0..members.len())
