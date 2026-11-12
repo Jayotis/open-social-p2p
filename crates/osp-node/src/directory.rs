@@ -11,7 +11,10 @@
 //! keeps who it finds, capped and out of the feed, so a search looks through
 //! them at home and no word anyone types leaves the node.
 
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use anyhow::{Context, Result, anyhow, bail, ensure};
 use iroh::{EndpointAddr, EndpointId};
@@ -24,7 +27,10 @@ use osp_proto::{
     },
     social::{SocialRequest, SocialResponse},
 };
-use tokio::sync::{Semaphore, mpsc};
+use tokio::{
+    sync::{Semaphore, mpsc},
+    task::JoinHandle,
+};
 use tracing::{debug, info, warn};
 
 use crate::{
@@ -92,6 +98,13 @@ pub(crate) const FIRST_READ_WAIT: Duration = Duration::from_secs(10 * 60);
 /// How often a node reads its directories. Discovery can wait, and each read
 /// costs Tor circuits.
 pub(crate) const READ_EVERY: Duration = Duration::from_secs(6 * 60 * 60);
+/// Soonest a node reads its directories again because someone is using it: a
+/// search or the feed starts a read, as what's new is wanted then (ADR 0015,
+/// amended 2026-11-12). Reads started otherwise count too.
+pub(crate) const USE_READ_GAP: Duration = Duration::from_secs(10 * 60);
+/// Longest a search waits for the read it started, then searches what the
+/// node holds. The read goes on.
+pub(crate) const SEARCH_READ_WAIT: Duration = Duration::from_secs(15);
 /// How soon it goes on after a read that failed or wasn't finished. Also the
 /// soonest a node with no machine left to meet reads again (`soonest_after`).
 const READ_AGAIN: Duration = Duration::from_secs(10 * 60);
@@ -512,6 +525,7 @@ impl Core {
     /// Reads each directory this node knows, under its machine name. One not
     /// answering doesn't stop the others; if none could be read, says why.
     pub(crate) async fn read_directories(&self) -> Result<Read> {
+        *self.directories_read_at.lock().expect("poisoned") = Some(Instant::now());
         let side = self.machine()?;
         if let Some(tor) = &self.tor {
             tor.check_ready()?;
@@ -566,6 +580,28 @@ impl Core {
             Some(e) if !answered => Err(e),
             _ => Ok(read),
         }
+    }
+
+    /// Starts a read of the directories for someone using the node, unless it
+    /// knows none or a read started in the last `use_read_gap`. Returns the
+    /// read's task, for a search to wait on.
+    pub(crate) fn read_directories_for_use(self: &Arc<Self>) -> Option<JoinHandle<()>> {
+        if self.config.directory.known.is_empty() || self.machine.is_none() {
+            return None;
+        }
+        {
+            let mut at = self.directories_read_at.lock().expect("poisoned");
+            if at.is_some_and(|at| at.elapsed() < self.sim.use_read_gap) {
+                return None;
+            }
+            *at = Some(Instant::now());
+        }
+        let core = self.clone();
+        Some(tokio::spawn(async move {
+            if let Err(e) = core.read_directories().await {
+                debug!("reading directories for a search or the feed failed: {e:#}");
+            }
+        }))
     }
 
     /// One conversation with a directory: a greeting, then pages from where

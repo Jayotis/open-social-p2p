@@ -32,7 +32,7 @@ use tracing::{debug, info, warn};
 use crate::{
     config::RelayChoice,
     db::{BlobClass, now_ms},
-    health, machine, media, network,
+    directory, health, machine, media, network,
     node::{Core, check_addr, remember},
     social::FOLLOWER_SILENCE,
 };
@@ -122,13 +122,24 @@ impl Core {
                     id: self.post(content, &attachments).await?,
                 }
             }
-            ClientRequest::Feed { limit } => ClientResponse::Feed {
-                items: self.feed(limit.min(500)).await?,
-            },
+            ClientRequest::Feed { limit } => {
+                // What a read brings shows at the next look.
+                self.read_directories_for_use();
+                ClientResponse::Feed {
+                    items: self.feed(limit.min(500)).await?,
+                }
+            }
             ClientRequest::Show { id } => ClientResponse::Item {
                 item: self.show(&id).await?,
             },
-            ClientRequest::Search { words, limit } => self.search(&words, limit.min(100)).await?,
+            ClientRequest::Search { words, limit } => {
+                // The read asks directories what's new in their lists, never
+                // for the words: the search itself stays on this node.
+                if let Some(read) = self.read_directories_for_use() {
+                    let _ = tokio::time::timeout(directory::SEARCH_READ_WAIT, read).await;
+                }
+                self.search(&words, limit.min(100)).await?
+            }
             ClientRequest::Reshare { id, host } => ClientResponse::Posted {
                 id: self.reshare(&id, host).await?,
             },

@@ -1049,6 +1049,54 @@ async fn left_alone_a_node_asks_to_be_listed_and_another_finds_it() {
     }
 }
 
+/// A search or opening the feed reads the directories, as what's new is wanted
+/// then, but no sooner than `use_read_gap` after the last read (ADR 0015).
+#[tokio::test(flavor = "multi_thread")]
+async fn searching_or_opening_the_feed_reads_directories_now_and_then() {
+    let dir = tempfile::tempdir().unwrap();
+    let net = SimNet::new(51);
+    let directory = start_directory(dir.path(), &net, SOON).await;
+    let alice = config_knowing("Alice", &directory, true);
+    let alice = start_with(dir.path(), "Alice", &net, alice).await;
+    post(&alice, "A table of green oak").await;
+    assert!(alice.ask_to_be_listed().await);
+    wait_for_entry(&net, &directory, 0, listing_of(alice.identity())).await;
+
+    // Their own reads are far off, so only using the node reads.
+    let far_off = Duration::from_secs(1_000_000);
+    let rarely = |gap| SimSettings {
+        first_read_wait: far_off,
+        read_every: far_off,
+        use_read_gap: gap,
+        ..sim(&net)
+    };
+    let carol = config_knowing("Carol", &directory, false);
+    let carol = start_sim(dir.path(), "Carol", carol, rarely(AN_HOUR)).await;
+    assert_eq!(found_posts(&carol, "oak").await, ["A table of green oak"]);
+
+    // Listed now, but Carol read within the hour.
+    post(&alice, "A chair of walnut").await;
+    let both = |entry: &ListingEntry| {
+        listing_of(alice.identity())(entry).filter(|listing| listing.texts.len() == 2)
+    };
+    wait_for_entry(&net, &directory, 0, both).await;
+    assert!(found_posts(&carol, "walnut").await.is_empty());
+
+    // The feed doesn't wait for its read, but the read goes on.
+    let dave = config_knowing("Dave", &directory, false);
+    let dave = start_sim(dir.path(), "Dave", dave, rarely(SOON)).await;
+    assert!(feed(&dave).await.is_empty());
+    let started = Instant::now();
+    while status(&dave).await.found_people == 0 {
+        assert!(started.elapsed() < Duration::from_secs(30), "never read");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(found_posts(&dave, "walnut").await, ["A chair of walnut"]);
+    for node in [alice, carol, dave, directory] {
+        node.shutdown().await.unwrap();
+    }
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_listing_replaces_what_it_brought_and_someone_gone_drops_out() {
     let dir = tempfile::tempdir().unwrap();
