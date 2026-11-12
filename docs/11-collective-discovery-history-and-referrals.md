@@ -73,7 +73,7 @@ P2P nodes **may voluntarily mirror selected snapshots** and offer them to others
 
 - **Under the Radar**: public work with low observed exposure; not necessarily new.
 - **Rising**: public work with recent attention beyond its previous baseline, with known coverage limits.
-- **Shared by Scouts**: recommendations by public curators the user chooses to follow.
+- **Shared by Hunters**: recommendations by public curators the user chooses to follow.
 - **Discovered in Another Community**: public works introduced across participating communities, without exposing who privately saw them.
 - **Offline Recommendations**: creator-linked public recommendations shared by QR or in conversation, with no mandatory tracking.
 
@@ -109,4 +109,4 @@ A person's **private browsing/watching record is not a public social graph**. It
 
 First demonstrate discovery using **explicit public recommendations only**. Do not turn on private-history-based statistics until an independently reviewed privacy design, manipulation tests, clear user consent and workable opt-out have been specified.
 
-Related design documents: [Open Feed](08-open-feed-algorithm.md), [Distributed Trending](09-distributed-trending-signals.md), [Exploration and Scouts](10-exploration-divergence-and-scouts.md), and [Security and Privacy](05-security-privacy-and-governance.md).
+Related design documents: [Open Feed](08-open-feed-algorithm.md), [Distributed Trending](09-distributed-trending-signals.md), [Exploration and Hunters](10-exploration-divergence-and-hunters.md), and [Security and Privacy](05-security-privacy-and-governance.md).

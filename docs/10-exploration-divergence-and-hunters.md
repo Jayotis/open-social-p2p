@@ -1,4 +1,4 @@
-# Exploration, Divergent Perspectives, and Discovery Scouts
+# Exploration, Divergent Perspectives, and Discovery Hunters
 
 **Status:** Architecture and product proposal for public review. No ranking model, discovery attribution system or app feature is implemented.
 
@@ -47,13 +47,13 @@ Avoid guessing a user's political, religious or other sensitive beliefs to class
 
 **Diversity does not mean manufactured symmetry:** two views are not automatically equally supported by evidence. Existing safety, moderation, topic relevance and provenance checks still apply. Do not reward harassment, fabricated claims or outrage merely because it is oppositional.
 
-### Trailblazers / Discovery Scouts
+### Trailblazers / Discovery Hunters
 
 Let people intentionally browse introductions and recommendations from members with a demonstrated history of finding, contextualizing and sharing interesting work *early*. Promote conscientious curation rather than follower count or self-declared expertise.
 
-A scout may be an enthusiastic hobbyist, community member, independent researcher, artist, specialist or librarian of links. The label is about their discovery activity, **not their truthfulness, credibility as an expert, or authority over others**.
+A hunter may be an enthusiastic hobbyist, community member, independent researcher, artist, specialist or librarian of links. The label is about their discovery activity, **not their truthfulness, credibility as an expert, or authority over others**.
 
-## Discovery attribution: creators first, scouts second
+## Discovery attribution: creators first, hunters second
 
 An illustrative chain:
 
@@ -68,12 +68,12 @@ Potential attribution fields for later specification: canonical original post/au
 
 Preserve an introduction path where technically feasible, but **do not expose a detailed viewer/share graph** or private relationship trail. Never publicize who merely viewed a file.
 
-## Measuring a scout's contribution (ideas, not adopted weights)
+## Measuring a hunter's contribution (ideas, not adopted weights)
 
 Potential evidence:
 - How many distinct public works were introduced early within a defined community.
 - Whether those works later earned *independent* attention after the introduction.
-- Whether a scout regularly introduces work from independent creators rather than repeatedly boosting their own material.
+- Whether a hunter regularly introduces work from independent creators rather than repeatedly boosting their own material.
 - How often the introduced material broadens the mix of topics and communities encountered.
 - Voluntary feedback on usefulness and context, rather than follower count alone.
 
@@ -84,7 +84,7 @@ Hard problems:
 - Self-reshares, paid promotion rings and bot networks can manufacture apparent success.
 - A numerical "influencer rank" can quickly become a monopoly, status contest or harassment target.
 
-**Recommendation:** begin with optional *discovery trails* and user-followable curator lists, not a universal public score or winner-takes-all "top influencer" leaderboard. If measurable scout recognition is eventually added, make methodology visible, allow correction and appeal, limit ranking feedback loops and test anti-manipulation carefully.
+**Recommendation:** begin with optional *discovery trails* and user-followable curator lists, not a universal public score or winner-takes-all "top influencer" leaderboard. If measurable hunter recognition is eventually added, make methodology visible, allow correction and appeal, limit ranking feedback loops and test anti-manipulation carefully.
 
 ## How the algorithm could accommodate exploration
 
@@ -94,7 +94,7 @@ There should be *separate pools of candidates*, not a single engagement score de
 - Time-sensitive public discussion.
 - Underexposed content, including older works.
 - Topic-relevant contrasting perspectives from beyond the user's existing subscriptions.
-- Explicitly chosen scouts, independent curators and smaller communities.
+- Explicitly chosen hunters, independent curators and smaller communities.
 
 The open algorithm can allocate **user-configurable exploration space** to candidate pools, then check eligibility, source context, variety and duplication. No specific percentages or weights are adopted yet. Users can turn exploration off, increase it or choose a standalone exploration feed; recommendations should be explicitly explained.
 
@@ -108,7 +108,7 @@ The P2P network can help participants **discover publicly announced content refe
 - Existing public ActivityPub follows, replies and reshares may be reused where allowed.
 - Discovery candidates can be gossiped or subscribed to in topic/community channels; avoid broadcasting everyone's personal reading history.
 - Nodes should not reveal viewers' home IP addresses or browsing data for ranking.
-- Number of media hosts, bytes transferred and raw content downloads are **not** endorsements or a scouting reputation signal.
+- Number of media hosts, bytes transferred and raw content downloads are **not** endorsements or a hunting reputation signal.
 - A user without a desktop companion must have access to discovery features.
 - Private-group posts, restricted-audience content and direct messages are excluded from public exploration.
 
