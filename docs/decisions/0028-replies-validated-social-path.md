@@ -4,7 +4,7 @@
 
 Adds public replies/comments to the native social protocol before federation. Builds on [ADR 0013](0013-trusted-followers.md), [ADR 0015](0015-nodes-meet-first.md), [ADR 0016](0016-machine-acquaintances.md), [ADR 0018](0018-earned-direct-connections.md), [ADR 0022](0022-lists-and-introductions-are-earned.md), [ADR 0024](0024-watching-found-posts-without-your-identity.md), [ADR 0019](0019-taking-posts-and-media-down.md), [doc 10](../10-exploration-divergence-and-scouts.md) and [doc 12](../12-peer-reciprocity-and-recognition.md).
 
-This record adopts **Hunter** as the product term for the role docs 10 and 12 currently call **Scout**. New code and new records use `hunter` / `Hunter`. A separate docs-only cleanup may rename the older proposal text; historical reviews and accepted ADR wording need not be rewritten merely for terminology.
+This record adopts **Hunter** as the product term for the role previously called **Scout**. Active product/proposal docs on this branch use Hunter; historical reviews and accepted ADR wording need not be rewritten merely for terminology. New code and new records use `hunter` / `Hunter`.
 
 ## Context
 
@@ -16,7 +16,7 @@ OSP already separates several kinds of evidence:
 
 - **Human trust:** the owner follows someone or explicitly marks a trusted follower (ADR 0013).
 - **First-hand network work:** a node credits only work it checked itself (ADRs 0018 and 0022).
-- **Public social recognition:** creator and Scout/Hunter recognition in doc 12 comes from signed public reshares and is computed by the viewer's own node, not claimed by the subject and not assigned centrally.
+- **Public social recognition:** creator and Hunter recognition in doc 12 comes from signed public reshares and is computed by the viewer's own node, not claimed by the subject and not assigned centrally.
 - **Private reading:** ADR 0024 lets a person fetch public media through a viewing endpoint without presenting their public identity to the creator.
 
 Replies use all four ideas without collapsing them into one score.
@@ -35,7 +35,7 @@ There is no global influencer list, no central reputation service, and no univer
 
 **Creator:** the identity that signed the root post.
 
-**Hunter:** the role docs 10 and 12 call Scout: a person whose public reshares repeatedly find work early that later receives independent public reshares.
+**Hunter:** the discovery role previously called Scout: a person whose public reshares repeatedly find work early that later receives independent public reshares.
 
 **Anchor:** a human relationship local to the creator's node. In v1, anchors are identities the owner follows and identities the owner has explicitly trusted under ADR 0013. Network peers, direct contacts, Known machines and worker-qualified nodes are **not** anchors merely because of their network state.
 
@@ -537,7 +537,7 @@ The future profile UI labels levels **"as seen from your network"**. No leaderbo
 
 ## Why recognition may admit comments but buys no network service
 
-Doc 12 rejected Creator/Scout recognition buying bandwidth priority because priority is zero-sum and virality should not buy network resources.
+Doc 12 rejected Creator/Hunter recognition buying bandwidth priority because priority is zero-sum and virality should not buy network resources.
 
 That still stands.
 
@@ -835,7 +835,7 @@ New implementation names use `Hunter`, `hunter_level`, `hunter_hits`, etc.
 
 Do not add new identifiers named `Scout`.
 
-Before the feature PR merges, update active proposal/product docs to say Hunter, with a brief "formerly Scout" note where necessary. Historical reviews and superseded ADR text may retain Scout so their original reasoning remains readable.
+Active proposal/product docs use Hunter. Historical reviews and accepted or superseded ADR text may retain Scout so their original reasoning remains readable.
 
 ## Deliberately not in v1
 
