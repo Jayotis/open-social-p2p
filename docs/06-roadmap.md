@@ -1,6 +1,6 @@
 # Development Roadmap
 
-**Status:** Stage 1 in progress. Milestones M0 to M3 are done, and M4 is under way; see below.
+**Status:** Stage 1 in progress. Milestones M0 to M3 are done, M4 is under way, and M5 is planned next to turn the working network into a fuller social product; see below.
 
 ## Stage 0 — Requirements and research (enough done to start Stage 1)
 
@@ -66,6 +66,18 @@ Stage 1 is split into milestones:
   - **Moving media off n0's relays, decided before the alpha and built after it** (accepted 2026-11-08, revising ADRs [0016](decisions/0016-machine-acquaintances.md), [0017](decisions/0017-one-hop-forwarding.md) and [0018](decisions/0018-earned-direct-connections.md)). Media's default stays `nobody`. Nodes that say yes carry encrypted video between pairs without a direct link, over two hops. Each end, with its owner's yes to earned links, picks the one next to it, so its address is seen only by that hop: a host only its direct peers, a viewer also machines that finished jobs for it. Newcomers carry in the middle, where they see neither end. The node that received the file credits each hop for the job, and that standing gets service and counts toward an earned direct link, never access to content. Nobody picks peers, relays or hops by hand. Newcomers get turns at being met, with a limit on crowds, and machines can ask those they've met for introductions, one step at a time; these two came first, without waiting for the hops (built 2026-11-08). Introductions are off by default, as in [their run](testing/meeting.md#introductions-results) they helped one operator's names more than newcomers. [ADR 0022](decisions/0022-lists-and-introductions-are-earned.md) (accepted 2026-11-08) replaces them: a machine's list and its introductions go only to machines that did work for it that it checked, and a newcomer that knows nobody starts by carrying. Built after carrying. ADR 0017's stage A measures the hops in `osp-sim` before the alpha, in a model of three months ([plan](testing/hops-model.md)), beside [ADR 0023](decisions/0023-followers-keep-working-together.md)'s proposal that followers fetch first from those they've worked with.
   - **An invited alpha:** a few people, on their own Linux machines, install the node with Tor, find each other through the directory, follow and watch, without swapping follow codes or showing strangers their address.
   - Not in M4: asking the nodes you follow (of little use while people follow few others), keyword search over a DHT (spam and poisoned results are hard to stop there), the open feed algorithm's ranking, trending signals, and a forwarding network of our own.
+
+- **M5 — social product and exploration (planned after M4's invited alpha):** M0–M4 prove that identities, home nodes, private control traffic, discovery and P2P media can work. M5 makes that machinery feel like a social network people can actually use, before federation or another large transport-design cycle. It uses transparent local and directory data first; personalized ranking and global-looking trend claims still wait for evidence and abuse testing.
+  - **Replies and conversations:** add signed public replies/comments and conversation threads to the native protocol and app. Set limits for strangers, deletion/tombstone behaviour and basic owner controls before turning them on. This is also the native interaction model Stage 2's ActivityPub bridge will later translate.
+  - **Reactions:** add a small public reaction model, starting simple rather than tying social approval to network standing. Whether OSP should have a dislike/downvote, and what reaction set it should expose, stays a product decision. Reactions do not automatically determine feed ranking.
+  - **Richer profiles:** make profiles useful social pages rather than identity records: profile image/avatar, bio/summary, links, the person's posts, media and reshares, plus follow and trust actions. Decide separately which public counts are useful and which create unnecessary popularity pressure. Domain verification from M4 stays distinct from profile presentation.
+  - **Explore, before recommendation:** give the app browseable, explainable lanes built from signed material the node already has or receives from directories—for example recent public posts, new people, videos and recent reshares. Ordering is local and transparent; no central service receives the person's searches or browsing history. The proposals in docs 08–11 remain the place to design later Suggested, Trending, Discover and exploration ranking.
+  - **Search as a product feature:** keep search local to the home node, but make it easier to understand and use: separate people/posts/video results, show whether a result came from local history or directory material, and make follow/open/share actions available from results. Exact lookup and broader directory coverage can grow without turning typed queries into a central search log.
+  - **My Node / Network:** add a user-facing view of what the home node is doing: health, Tor/privacy state, storage and bandwidth use, content it is hosting, bytes it has served, people/posts found through directories, and bounded summaries of machines/peers it knows. It must not expose other people's private viewing history, addresses or private peer records merely to make the screen interesting.
+  - **Profile editing and social controls in the app:** ordinary users should be able to edit their profile, manage discovery/hosting choices and understand their node without dropping to the CLI.
+  - **Product alpha:** after the M4 mechanism alpha, run an invited usability round around finding, posting, replying/reacting, browsing Explore and understanding the node. Record where testers need CLI help or cannot tell why content or a peer is visible.
+
+  **Gate:** an invited nontechnical user can install and pair, find people and public content, follow, post, reshare, reply/react, browse an initial Explore surface, inspect their node's basic state and manage their profile without needing the CLI for the normal journey.
 - **Before any public release:** identity backup and recovery ([ADR 0006](decisions/0006-desktop-first-always-on-node.md)). Built ([ADR 0009](decisions/0009-identity-backup-and-recovery.md)): recovery words, an optional encrypted backup file, and a `Moved` message so followers find a replacement node. Built ([ADR 0010](decisions/0010-signing-keys-and-revocation.md)): the identity key kept only as the recovery words, certifying a signing key on the node, so a copied signing key can be replaced or revoked, and followers drop what it signed.
 
 Original Stage 1 checklist:
@@ -86,24 +98,24 @@ Stage 1 uses a native protocol ([ADR 0003](decisions/0003-native-social-protocol
 
 - [ ] Decision record for the bridge: who runs gateways and who pays, how a home identity maps to a fediverse account and its keys, and what a gateway can see. Or adopt an emerging standard if one suits home nodes better.
 - [x] Identity backup and recovery first ([ADR 0006](decisions/0006-desktop-first-always-on-node.md), [ADR 0009](decisions/0009-identity-backup-and-recovery.md)): a fediverse account needs a stable identity.
-- [ ] Replies, likes and boosts in the native protocol, so interactions cross the bridge both ways.
+- [ ] Map M5's native replies, reactions and reshares to ActivityPub so interactions cross the bridge both ways.
 - [ ] Media for fediverse servers, which fetch over HTTPS: the gateway fetches from home nodes and replicas, with caching and cost limits.
 - [ ] Moderation, blocking and reporting for content arriving from other servers.
 - [ ] Show bridged followers and replies in the app.
 
 **Gate:** A Mastodon account can follow a home node, see its posts and media, and reply, without its user installing anything.
 
-## Stage 3 — Flutter and desktop early alpha (future)
+## Stage 3 — polished mobile and desktop early alpha (future)
 
-The app from M2 and M3 already pairs by QR code, shows the feed, plays video, posts and reshares, on Android and iPhone. This stage is about someone nontechnical getting through it all.
+By this point M2–M5 provide the home-node client, posting and media, discovery, profiles and the first social interactions. Stage 3 turns those working pieces into a coherent product for people who did not help design it, and brings the desktop experience up beside mobile.
 
-- [ ] Implement onboarding, posts, timeline, profiles and reshares.
-- [ ] Build guided companion setup and pairing.
-- [ ] Add availability indicators and hosting preferences.
-- [ ] Implement mobile-friendly playback and optional caching.
-- [ ] Accessibility and security testing on supported platforms.
+- [ ] Build guided install, companion setup, pairing and recovery journeys.
+- [ ] Polish timeline, profiles, conversations, Explore and node/network screens across supported clients.
+- [ ] Add clear availability, privacy and hosting controls without exposing protocol terminology unnecessarily.
+- [ ] Complete the desktop user experience and keep mobile-friendly playback and caching behaviour consistent.
+- [ ] Accessibility, usability and security testing on supported platforms.
 
-**Gate:** A nontechnical test user can complete core journeys.
+**Gate:** A nontechnical test user can complete the core journeys without maintainer help and can understand the important privacy/hosting choices they are making.
 
 ## Stage 4 — Communities, video and broader federation (future)
 
