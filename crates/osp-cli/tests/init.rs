@@ -44,7 +44,7 @@ fn shares(home: &Path) -> bool {
 #[test]
 fn init_asks_whether_to_share_and_needs_an_answer() {
     let dir = tempfile::tempdir().unwrap();
-    let new = ["--skip-word-check", "--no-list-me"];
+    let new = ["--skip-word-check", "--no-list-me", "--name", "Kim"];
 
     // No answer: nothing is made, and the words were never shown.
     let home = dir.path().join("none");
@@ -79,6 +79,39 @@ fn init_asks_whether_to_share_and_needs_an_answer() {
 }
 
 #[test]
+fn init_asks_for_a_name_unless_given() {
+    let dir = tempfile::tempdir().unwrap();
+    let new = ["--skip-word-check", "--no-share", "--no-list-me"];
+
+    let home = dir.path().join("typed");
+    let out = osp_init(&home, &new, "  Robin Quill  \n");
+    assert!(out.status.success(), "{out:?}");
+    assert!(String::from_utf8_lossy(&out.stdout).contains("Your name"));
+    assert_eq!(config(&home).name, "Robin Quill");
+
+    // Enter, or no answer at all as from a script, keeps the default.
+    for (case, input) in [("enter", "\n"), ("none", "")] {
+        let home = dir.path().join(case);
+        assert!(osp_init(&home, &new, input).status.success());
+        assert_eq!(config(&home).name, "Anonymous");
+    }
+
+    // A control character is asked again.
+    let home = dir.path().join("again");
+    let out = osp_init(&home, &new, "Ro\u{1b}[2Jbin\nRobin\n");
+    assert!(out.status.success(), "{out:?}");
+    assert!(String::from_utf8_lossy(&out.stdout).contains("one line"));
+    assert_eq!(config(&home).name, "Robin");
+
+    // --name answers without asking.
+    let home = dir.path().join("flag");
+    let out = osp_init(&home, &[&new[..], &["--name", "Kim"]].concat(), "");
+    assert!(out.status.success(), "{out:?}");
+    assert!(!String::from_utf8_lossy(&out.stdout).contains("Your name"));
+    assert_eq!(config(&home).name, "Kim");
+}
+
+#[test]
 fn restoring_asks_too() {
     let dir = tempfile::tempdir().unwrap();
     let words = osp_node::backup::new_identity_words().join(" ");
@@ -103,7 +136,7 @@ fn restoring_asks_too() {
 #[test]
 fn a_new_node_has_tor_on_and_is_asked_about_being_listed() {
     let dir = tempfile::tempdir().unwrap();
-    let new = ["--skip-word-check", "--share"];
+    let new = ["--skip-word-check", "--share", "--name", "Kim"];
 
     // No answer: nothing is made.
     let home = dir.path().join("none");
