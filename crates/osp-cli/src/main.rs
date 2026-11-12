@@ -40,8 +40,8 @@ use osp_proto::{
     framing::{read_frame, write_frame},
     machine::MAX_LISTED_POSTS,
     rpc::{
-        ClientRequest, ClientResponse, DeviceInfo, Direction, FeedItem, PeerRecord, Reached,
-        StatusInfo, TrustInfo,
+        ClientRequest, ClientResponse, DeviceInfo, Direction, FeedItem, FollowerInfo, PeerRecord,
+        Reached, StatusInfo, TrustInfo,
     },
 };
 use tokio::net::UnixStream;
@@ -210,6 +210,9 @@ enum Command {
     /// [endpoints] in config.toml, being built (ADR 0014)
     #[command(subcommand)]
     Direct(DirectCommand),
+    /// Your followers' nodes: list them, or remove one
+    #[command(subcommand)]
+    Followers(FollowersCommand),
     /// This node's machine name, tied to no person, under which it gets to know
     /// other nodes, being built (ADR 0015)
     #[command(subcommand)]
@@ -225,6 +228,19 @@ enum DirectoryCommand {
     /// Read the directories under [directory] in config.toml now, rather than
     /// waiting for the next read in the background
     Read,
+}
+
+/// A follower is given by name, where your node knows whose node it is, or by
+/// the start of its node's ID (`osp followers list`).
+#[derive(Subcommand)]
+enum FollowersCommand {
+    /// List your followers' nodes, and the nodes you removed
+    List,
+    /// Stop a node being your follower, and refuse it until you allow it again.
+    /// Your posts stay public: it can still read them, as anyone can
+    Remove { who: String },
+    /// Let a node you removed follow you again
+    Allow { who: String },
 }
 
 /// Nodes are given by their full public node ID.
@@ -466,6 +482,13 @@ async fn main() -> Result<()> {
             ClientRequest::MachineHello { machine }
         }
         Command::Directory(DirectoryCommand::Read) => ClientRequest::ReadDirectories,
+        Command::Followers(FollowersCommand::List) => ClientRequest::Followers,
+        Command::Followers(FollowersCommand::Remove { who }) => ClientRequest::RemoveFollower {
+            node: find_follower(&home, &who, false).await?,
+        },
+        Command::Followers(FollowersCommand::Allow { who }) => ClientRequest::AllowFollower {
+            node: find_follower(&home, &who, true).await?,
+        },
         Command::Direct(DirectCommand::List) => ClientRequest::DirectContacts,
         Command::Direct(DirectCommand::Allow { node }) => ClientRequest::AllowDirect { node },
         Command::Direct(DirectCommand::Remove { node }) => ClientRequest::RemoveDirect { node },
@@ -1059,6 +1082,47 @@ fn matches_person(who: &str, name: &str, actor: &PublicKey, node: Option<&Endpoi
             || node.is_some_and(|n| n.to_string().starts_with(&who)))
 }
 
+/// A follower's node by name or the start of its ID, or, with `removed`, a
+/// removed one's. A full node ID is taken as it is, so a node can be removed
+/// before it follows.
+async fn find_follower(home: &Path, who: &str, removed: bool) -> Result<EndpointId> {
+    if let Ok(node) = who.trim().parse::<EndpointId>() {
+        return Ok(node);
+    }
+    let (followers, gone) = match send(home, ClientRequest::Followers).await? {
+        ClientResponse::Followers { followers, removed } => (followers, removed),
+        ClientResponse::Error { message } => bail!(message),
+        other => bail!("unexpected reply {other:?}"),
+    };
+    let nodes = if removed {
+        gone.into_iter()
+            .filter(|n| matches_follower(who, None, None, n))
+            .collect()
+    } else {
+        followers
+            .iter()
+            .filter(|f| matches_follower(who, f.name.as_deref(), f.actor.as_ref(), &f.node))
+            .map(|f| f.node)
+            .collect()
+    };
+    let what = if removed { "removed node" } else { "follower" };
+    only_one(who, nodes, what, "osp followers list")
+}
+
+/// Whether `who` is a follower's name, or the start of its identity or node.
+fn matches_follower(
+    who: &str,
+    name: Option<&str>,
+    actor: Option<&PublicKey>,
+    node: &EndpointId,
+) -> bool {
+    let who = who.trim().to_lowercase();
+    !who.is_empty()
+        && (name.is_some_and(|n| !n.is_empty() && n.to_lowercase() == who)
+            || actor.is_some_and(|a| a.to_string().starts_with(&who))
+            || node.to_string().starts_with(&who))
+}
+
 /// The one thing found, once duplicates are dropped.
 fn only_one<T: PartialEq + Copy>(who: &str, found: Vec<T>, what: &str, see: &str) -> Result<T> {
     let mut unique = Vec::new();
@@ -1100,6 +1164,26 @@ fn print(resp: ClientResponse, json: bool) -> Result<()> {
         ClientResponse::Error { message } => bail!(message),
         ClientResponse::Ok => println!("Done."),
         ClientResponse::Status(status) => print_status(&status),
+        ClientResponse::Followers { followers, removed } => print_followers(&followers, &removed),
+        ClientResponse::FollowerRemoved { was_following } => {
+            if was_following {
+                println!("Removed. That node isn't told of your new posts or named to others any");
+                println!("more, and isn't trusted. Its subscriptions are refused until");
+                println!("`osp followers allow`. Your posts stay public: it can still read them,");
+                println!("as anyone can.");
+            } else {
+                println!(
+                    "That node wasn't following you. Its subscriptions are refused from now on."
+                );
+            }
+        }
+        ClientResponse::FollowerAllowed { was_removed } => {
+            if was_removed {
+                println!("Allowed: that node can follow you again, from its next subscription.");
+            } else {
+                println!("That node wasn't removed.");
+            }
+        }
         ClientResponse::DirectContacts { nodes } => {
             if nodes.is_empty() {
                 println!("No nodes allowed a direct connection.");
@@ -1515,6 +1599,52 @@ fn print_trusted(trusted: &[TrustInfo]) {
             uptime(t.secs_ago)
         );
         println!("  {}", follower_line(t));
+    }
+}
+
+fn print_followers(followers: &[FollowerInfo], removed: &[EndpointId]) {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as i64);
+    let ago = |ms: i64| uptime((now - ms).max(0) as u64 / 1000);
+    if followers.is_empty() {
+        println!("Nobody follows you yet.");
+    } else {
+        println!("Followers' nodes, oldest first:");
+    }
+    for f in followers {
+        // A name comes from someone else's profile, so it's made plain first.
+        let name = f.name.as_deref().map(plain).unwrap_or_default();
+        let who = if f.actor.is_none() {
+            "(whose node: not known)".to_string()
+        } else {
+            shown(&name).to_string()
+        };
+        let mut notes = Vec::new();
+        if f.shares {
+            notes.push("shares copies");
+        }
+        if f.trusted {
+            notes.push("trusted");
+        }
+        let notes = if notes.is_empty() {
+            String::new()
+        } else {
+            format!("  ({})", notes.join(", "))
+        };
+        println!(
+            "{who}  node {}  since {} ago, heard from {} ago{notes}",
+            f.node.fmt_short(),
+            ago(f.since_ms),
+            ago(f.seen_ms)
+        );
+    }
+    if !removed.is_empty() {
+        println!();
+        println!("Removed, refused until `osp followers allow`:");
+        for node in removed {
+            println!("{node}");
+        }
     }
 }
 

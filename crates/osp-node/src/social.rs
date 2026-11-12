@@ -789,6 +789,12 @@ impl Core {
         media: Option<&BoundEndpoint>,
         direct: Option<&BoundEndpoint>,
     ) -> Result<()> {
+        // Its owner removed this node as a follower. Its posts stay public, so
+        // the node can still read them, as anyone can.
+        ensure!(
+            !self.db.is_removed_follower(&addr.id)?,
+            "this node's owner removed yours as a follower"
+        );
         if let Some(bound) = media {
             self.check_endpoint(&addr.id, EndpointKind::Media, bound)?;
         }

@@ -192,6 +192,19 @@ pub enum ClientRequest {
     RemoveDirect {
         node: EndpointId,
     },
+    /// This node's followers, by node, and the nodes removed as followers.
+    Followers,
+    /// Stops `node` being a follower: it's no longer told of new posts,
+    /// named to others as holding copies, or trusted, and its subscriptions
+    /// are refused until `AllowFollower`. Posts stay public, so it can still
+    /// read them, as anyone can.
+    RemoveFollower {
+        node: EndpointId,
+    },
+    /// Lets a removed follower's node subscribe again.
+    AllowFollower {
+        node: EndpointId,
+    },
     /// This node's machine name (local socket only, ADR 0015). It isn't in
     /// `Status`, which phones get and people paste, as that holds the public
     /// ID too.
@@ -296,6 +309,19 @@ pub enum ClientResponse {
     /// Oldest first.
     DirectContacts {
         nodes: Vec<EndpointId>,
+    },
+    /// Both oldest first.
+    Followers {
+        followers: Vec<FollowerInfo>,
+        removed: Vec<EndpointId>,
+    },
+    /// Whether the node was a follower when removed.
+    FollowerRemoved {
+        was_following: bool,
+    },
+    /// Whether the node had been removed.
+    FollowerAllowed {
+        was_removed: bool,
     },
     MachineName {
         machine: EndpointId,
@@ -595,6 +621,23 @@ impl PeerCounts {
             refused_busy: self.refused_busy * factor,
         }
     }
+}
+
+/// A follower's node, with what this node knows of it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FollowerInfo {
+    pub node: EndpointId,
+    /// Whose node it is and their profile's name, where this node knows: it
+    /// follows them back on that node, or the node asked to be trusted. A
+    /// subscription itself doesn't say.
+    pub actor: Option<PublicKey>,
+    pub name: Option<String>,
+    pub since_ms: i64,
+    pub seen_ms: i64,
+    /// Whether it shares what it fetches ahead of time (ADR 0012).
+    pub shares: bool,
+    /// Whether it's a trusted follower (ADR 0013).
+    pub trusted: bool,
 }
 
 /// A request to be a trusted follower, or a node trusted (ADR 0013), with
