@@ -320,7 +320,10 @@ pub fn run(share_percent: f64, same_order: bool, seed: u64) -> Run {
                 late_of_fair: of_fair(late),
                 first_of_fair: of_fair(head),
                 beyond_list: beyond.len(),
-                beyond_list_served: share(beyond.iter().map(|&s| rules.served[s]).sum::<f64>() + 0.0, all),
+                beyond_list_served: share(
+                    beyond.iter().map(|&s| rules.served[s]).sum::<f64>() + 0.0,
+                    all,
+                ),
                 open_median: opens.get(opens.len() / 2).copied(),
                 open_slowest: opens.last().copied(),
                 failed: order.len() - opens.len(),
