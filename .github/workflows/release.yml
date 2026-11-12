@@ -31,12 +31,16 @@ jobs:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo build --release --locked -p osp-cli
+        env:
+          # `osp --version` and `osp status` say the release's tag.
+          OSP_RELEASE: ${{ github.ref_name }}
       - name: Check the glibc it needs
         run: |
           need=$(objdump -T target/release/osp | grep -o 'GLIBC_[0-9.]*' | sed 's/GLIBC_//' | sort -Vu | tail -1)
           echo "needs glibc $need"
           [ "$(printf '%s\n' "$need" 2.35 | sort -V | tail -1)" = 2.35 ]
-      - run: target/release/osp --version
+      - name: Check it says the tag
+        run: target/release/osp --version | grep -qF "${{ github.ref_name }}"
       - run: tar -czf osp-linux-${{ matrix.arch }}.tar.gz -C target/release osp
       - uses: actions/upload-artifact@v4
         with:

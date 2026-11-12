@@ -796,7 +796,7 @@ async fn found_people(node: &Node, words: &str) -> Vec<String> {
 /// from them.
 async fn read_directories(node: &Node) -> u64 {
     match call(node, ClientRequest::ReadDirectories).await {
-        ClientResponse::DirectoriesRead { found } => found,
+        ClientResponse::DirectoriesRead { found, .. } => found,
         other => panic!("unexpected {other:?}"),
     }
 }
@@ -2441,7 +2441,7 @@ async fn a_stranger_is_found_and_followed_over_tor() {
 
     let started = Instant::now();
     loop {
-        if let ClientResponse::DirectoriesRead { found: 1 } =
+        if let ClientResponse::DirectoriesRead { found: 1, .. } =
             carol.handle(ClientRequest::ReadDirectories).await
         {
             break;
@@ -2508,5 +2508,51 @@ async fn a_stranger_is_found_and_followed_over_tor() {
     }
     for machine in &machines {
         assert_logs_dont_name(machine);
+    }
+}
+
+/// A read that one directory doesn't answer reads the others, and says which
+/// didn't answer. With none answering, it fails and says so.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_read_says_which_directory_didnt_answer() {
+    let dir = tempfile::tempdir().unwrap();
+    let net = SimNet::new(31);
+    let directory = start_directory(dir.path(), &net, AN_HOUR).await;
+    let alice = config_knowing("Alice", &directory, true);
+    let alice = start_with(dir.path(), "Alice", &net, alice).await;
+    post(&alice, "A table of green walnut").await;
+    assert!(alice.ask_to_be_listed().await);
+    wait_for_entry(&net, &directory, 0, listing_of(alice.identity())).await;
+
+    // A directory that isn't there, as one that's off would be.
+    let gone = KnownDirectory {
+        machine: SecretKey::generate().public(),
+        node: SecretKey::generate().public(),
+    };
+    let mut carol = config_knowing("Carol", &directory, false);
+    carol.directory.known.push(gone.clone());
+    let carol = start_with(dir.path(), "Carol", &net, carol).await;
+    match call(&carol, ClientRequest::ReadDirectories).await {
+        ClientResponse::DirectoriesRead { found, failed } => {
+            assert_eq!(found, 1);
+            assert_eq!(failed.len(), 1, "{failed:?}");
+            // Named by the words of its machine name, as `osp machine show` does.
+            let words = failed[0].split(':').next().unwrap();
+            assert_eq!(words.split('-').count(), 3, "{failed:?}");
+        }
+        other => panic!("unexpected {other:?}"),
+    }
+
+    let mut dave = Config::local_test("Dave");
+    dave.directory.known = vec![gone];
+    let dave = start_with(dir.path(), "Dave", &net, dave).await;
+    let ClientResponse::Error { message } = dave.handle(ClientRequest::ReadDirectories).await
+    else {
+        panic!("a read nobody answered succeeded")
+    };
+    assert!(message.contains("no directory answered"), "{message}");
+
+    for node in [dave, carol, alice, directory] {
+        node.shutdown().await.unwrap();
     }
 }

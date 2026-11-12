@@ -339,6 +339,10 @@ pub enum ClientResponse {
     /// that it found through them.
     DirectoriesRead {
         found: u64,
+        /// The directories that didn't answer, by their machine name's
+        /// words, and why. The others were read.
+        #[serde(default)]
+        failed: Vec<String>,
     },
     /// What a machine said when greeted, and how long connecting and asking
     /// took.

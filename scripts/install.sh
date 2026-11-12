@@ -123,8 +123,8 @@ else
     done < "$work/directories.txt"
     ((${#directories[@]})) || stop "directories.txt names no directories"
     say ""
-    say "Creating your node. It asks two questions, shows your recovery words, then"
-    say "asks for some of them back. Have paper and a pen ready."
+    say "Creating your node. It asks your name and two questions, shows your recovery"
+    say "words, then asks for some of them back. Have paper and a pen ready."
     # Answers come from the terminal even when this script was piped in. Tests
     # answer with flags in OSP_INIT_FLAGS instead.
     if [[ -n "${OSP_INIT_FLAGS:-}" ]]; then
@@ -148,6 +148,9 @@ for _ in $(seq 30); do
 done
 "$BIN/osp" --home "$NODE_HOME" status || say "It isn't answering yet: try \`osp status\` in a minute."
 
+say ""
+say "Finding people: for the first few minutes, while Tor makes its first"
+say "connections, a search may find nobody. Try again a minute later."
 say ""
 case ":$PATH:" in
     *":$BIN:"*) ;;

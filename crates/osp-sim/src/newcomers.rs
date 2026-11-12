@@ -197,7 +197,7 @@ async fn arrive(n: Newcomer, (post, video): (ObjectId, BlobHash)) -> Result<(Nod
     };
     let opened = async {
         match call(&node, ClientRequest::ReadDirectories).await? {
-            ClientResponse::DirectoriesRead { found } => {
+            ClientResponse::DirectoriesRead { found, .. } => {
                 ensure!(found > 0, "the directory listed nobody")
             }
             other => bail!("unexpected {other:?}"),
