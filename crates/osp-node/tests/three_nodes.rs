@@ -283,7 +283,7 @@ async fn each_node_records_the_nodes_it_deals_with() {
     assert!((c.answered - c.requests).abs() < 1e-6, "{c:?}");
     assert!(c.answer_ms > 0.0 && c.unreached == 0.0, "{c:?}");
     assert!(c.completed.round() >= 1.0 && c.failed == 0.0, "{c:?}");
-    assert!(c.received_bytes.round() >= video.size as f64, "{c:?}");
+    assert!(c.received_bytes >= 0.999 * video.size as f64, "{c:?}");
     assert!(c.receive_ms > 0.0 && c.first_bytes.round() >= 1.0, "{c:?}");
 
     // Alice's node sent it to Bob's, which follows hers.
@@ -291,7 +291,7 @@ async fn each_node_records_the_nodes_it_deals_with() {
     assert!(to_bob.follower && !to_bob.followed, "{to_bob:?}");
     assert!(to_bob.counts.transfers.round() >= 1.0, "{to_bob:?}");
     assert!(
-        to_bob.counts.sent_bytes.round() >= video.size as f64,
+        to_bob.counts.sent_bytes >= 0.999 * video.size as f64,
         "{to_bob:?}"
     );
 
@@ -309,7 +309,7 @@ async fn each_node_records_the_nodes_it_deals_with() {
     let stranger = served(&alice, dave.node_id()).await;
     assert!(!stranger.contacted && !stranger.follower, "{stranger:?}");
     assert!(
-        stranger.counts.sent_bytes.round() >= video.size as f64,
+        stranger.counts.sent_bytes >= 0.999 * video.size as f64,
         "{stranger:?}"
     );
 

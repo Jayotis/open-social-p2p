@@ -558,7 +558,7 @@ async fn a_node_in_the_swarm_fetches_from_other_followers_first() {
     prefetched(&dave, &photo.blob).await;
     let from_bob = peer(&dave, bob.node_id()).await.expect("Bob's node");
     assert!(
-        from_bob.counts.received_bytes.round() >= photo.size as f64,
+        from_bob.counts.received_bytes >= 0.999 * photo.size as f64,
         "{from_bob:?}"
     );
     let from_alice = peer(&dave, alice.node_id()).await.expect("Alice's node");

@@ -2763,8 +2763,10 @@ mod tests {
             .unwrap();
         // The honest node sent the parts of the three that couldn't, each
         // as soon as it was free.
+        // Records fade with time, so all of it reads as a little less by the
+        // time it's checked (4,194,303.2 of 4,194,304 bytes on a slow CI run).
         let counts = f.record(honest.id());
-        assert!(counts.received_bytes.round() >= size as f64, "{counts:?}");
+        assert!(counts.received_bytes >= 0.999 * size as f64, "{counts:?}");
         assert_eq!(counts.completed.round(), 3.0, "{counts:?}");
         assert_eq!(f.record(busy.id()).busy.round(), 1.0);
         assert_eq!(f.record(refusing.id()).not_hosting.round(), 1.0);
@@ -2786,7 +2788,7 @@ mod tests {
             .await
             .unwrap();
         let counts = f.record(spare.id());
-        assert!(counts.received_bytes.round() >= other.len() as f64);
+        assert!(counts.received_bytes >= 0.999 * other.len() as f64);
         assert_eq!(counts.tries.round(), 1.0, "{counts:?}");
         assert_eq!(f.record(busy.id()).tries.round(), 1.0);
     }
