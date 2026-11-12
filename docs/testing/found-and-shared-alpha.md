@@ -14,8 +14,8 @@ And whether the mechanism behaves as built (below). If it does, ADR 0025's rotat
 
 ## Who's in it
 
-- **Kim,** the maintainer's listed node, posts one video of about a minute (720p, roughly 10 to 15 MB once transcoded). Nothing else about it is announced.
-- **Testers,** the alpha's invited people, each on their own node. Each gets a slot, at least 2 hours after the one before: a new sharer is listed 0 to 2 hours after sharing, so everyone who shared before a slot is listed by then.
+- **Kim,** the maintainer's listed node, posts one video of about a minute (720p, roughly 10 to 15 MB once transcoded). Nothing else about it is announced. It's an ordinary clip someone could plausibly share or ignore, with an ordinary caption: nothing calls it a test or asks for shares, as that would sway the very choice being observed. The search words are two or three distinctive ordinary words from the caption.
+- **Testers,** the alpha's invited people, each on their own node, listed by the directories (a condition of taking part: check 2 needs every hosting sharer listed, and a sharer who isn't would fail it for a reason that has nothing to do with ADR 0025). Each gets a slot, at least 2 hours after the one before: a new sharer is listed 0 to 2 hours after sharing, so everyone who shared before a slot is listed by then. Slots are scheduled 2½ hours apart, for a tester starting a little late or a directory read landing near the boundary.
 
 ## What each tester does, in their slot
 
@@ -27,20 +27,22 @@ After the last slot plus a day, each tester sends the maintainer the `Shared:` l
 
 ## The script testers get
 
-Draft, 2026-11-12, for the maintainer's review. The maintainer sends each tester this, with their slot's time and the words to search for. It describes each choice in the CLI's and ADR 0025's own words, and recommends none.
+Reviewed by the maintainer 2026-11-12. The maintainer sends each tester this, with their slot's time and the words to search for. It describes each choice in the CLI's and ADR 0025's own words, and recommends none.
 
-> **Before your slot.** Install your node ([docs/install.md](../install.md)) at least an hour before, so its first connections are done. If you want people who search to be able to find what you share, your node has to be listed by the directories: that's the "Ask directories to list you?" question at install, or `list_me` under `[directory]` in `~/.local/share/osp/config.toml` (then `systemctl --user restart osp`).
+> **Before your slot.** Install your node ([docs/install.md](../install.md)) at least an hour before, to give Tor and the directory setup time to settle.
+>
+> **For this exercise your node needs to be listed by the directories:** answer yes to "Ask directories to list you?" at install, or set `list_me = true` under `[directory]` in `~/.local/share/osp/config.toml`, then `systemctl --user restart osp`. Listing makes your profile and your latest public posts and shares visible to anyone reading those directories. If you don't want to be listed, please don't take part in this exercise.
 >
 > **In your slot:**
 >
-> 1. Search for the words you were sent: `osp search <words>`. If nothing shows, run `osp directory read`, wait a minute and search again. The video's line starts with its author's name, and ends with `id: …`.
-> 2. Open it: `osp fetch <id> --out ~/Videos`, and watch it if you like. Note whether it opened.
+> 1. Search for the words you were sent: `osp search <words>`. If nothing shows, run `osp directory read`, and search again when it finishes. The video's line starts with its author's name, and ends with `id: …`.
+> 2. Open it: `osp fetch <id> --out ~/Videos`, and watch as much or as little as you normally would. Note whether it opened.
 > 3. Decide whether to share it. Any of these is fine; choose what you'd do if nobody were asking:
 >    - **Don't share it.** Nothing to do.
 >    - **Share it:** `osp reshare <id>`. Your reshare is signed by you and shows your profile to anyone who sees it. Your node doesn't keep a copy for others.
->    - **Share it and host it:** `osp reshare <id> --host`. This also keeps a copy of its media and serves it to others. Anyone can see that you shared this and that your node serves it; your address stays hidden, as it's served through relays; others keep what they've seen even if you delete it later. It uses some of your upload, which `max_upload_mbps` in config.toml can cap.
+>    - **Share it and host it:** `osp reshare <id> --host`. This also keeps a copy of its media and serves it to others. Anyone can see that you shared this and that your node serves it. This public hosting copy is served from your relay-only media endpoint, so it doesn't reveal your home IP address. Others keep what they've seen even if you delete it later. It uses some of your upload, which `max_upload_mbps` in config.toml can cap.
 >
->    To take a share back later: `osp delete <id>`, with the ID `osp reshare` printed after "Published". It can't be undone, and copies people saved stay.
+>    To take a share back later: `osp delete <reshare-id>`. Use the new ID printed after "Published" when you shared, not the video's original ID. It can't be undone, and copies people saved stay.
 > 4. Write down the time and what you chose.
 >
 > **A day after the last slot,** if you choose to, send the maintainer your slot, what you chose, and the `Shared:` line from `osp status`. If you'd rather not, nothing is sent: the count stays on your node.
