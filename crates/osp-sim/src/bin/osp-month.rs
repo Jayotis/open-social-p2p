@@ -427,6 +427,19 @@ fn print_found(runs: &[found::Run]) {
             v.failed,
         );
     }
+    println!(
+        "fair share (recorded): video | first 3 listed, served of fair | 4th-16th listed, served of fair | listed after 16th: sharers, share served"
+    );
+    for v in &first.videos {
+        println!(
+            "{:>5} | {} | {} | {}, {}",
+            v.rank,
+            pct(v.first_of_fair),
+            pct(v.late_of_fair),
+            v.beyond_list,
+            pct(Some(v.beyond_list_served)),
+        );
+    }
     let count = |f: fn(&found::Marks) -> bool| runs.iter().filter(|r| f(&r.marks)).count();
     let judged = first.share_percent == 10.0;
     let say = |m: bool| {

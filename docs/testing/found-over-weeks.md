@@ -1,6 +1,6 @@
 # Found posts over weeks, in a model
 
-**Status:** Plan for [ADR 0025](../decisions/0025-shared-posts-are-found-and-hosted.md)'s step 5, fixed 2026-11-11 before any code or run; the maintainer accepted the pass marks the same day. Run the same day ([results](#results)): all three marks met at 10%, on every seed. But at every rate the 3 resharers listed first served 89 to 100% of a video, and the rest almost nothing. Each viewer now takes the hosts in its own order, which brought that to 22 to 89%; its own mark missed by a point on one seed, and the change was kept ([below](#each-viewer-in-its-own-order)). Changing one later needs a dated note here saying what changed and why.
+**Status:** Plan for [ADR 0025](../decisions/0025-shared-posts-are-found-and-hosted.md)'s step 5, fixed 2026-11-11 before any code or run; the maintainer accepted the pass marks the same day. Run the same day ([results](#results)): all three marks met at 10%, on every seed. But at every rate the 3 resharers listed first served 89 to 100% of a video, and the rest almost nothing. Each viewer now takes the hosts in its own order, which brought that to 22 to 89%; its own mark missed by a point on one seed, and the change was kept ([below](#each-viewer-in-its-own-order)). A later check: on the directory's list, late sharers serve their fair share; those past its 16th serve nothing until the rotation is built ([below](#fair-share-for-late-sharers)). Changing one later needs a dated note here saying what changed and why.
 
 Step 5 asks whether sharing with hosting is worth having: when strangers find a creator's video over weeks and some share it, do the sharers take the load off the creator? [Step 4](found-and-hosted.md#step-4-newcomers-in-osp-sim) ran real code for 200 newcomers over 3 hours. Weeks of thousands of viewers is too long for that, so this runs in `osp-month`'s model ([hops model](hops-model.md#why-a-model)), which follows each transfer by the rules and is checked against real runs (its mark 0).
 
@@ -95,3 +95,16 @@ Added 2026-11-11, after the results above, and fixed before the change was built
 On video 1 at 10%, the top resharer's share fell from 34% to 8%, and the top 3's from 100% to 23%. What's left comes from timing: a sharer listed early is a choice for every later viewer, one listed late for a few, so on a smaller video the first sharers still serve more.
 
 **Decision** (the maintainer, 2026-11-11): the change stays, with the miss recorded. Whether to give hosts listed later a better chance is a design question for later.
+
+## Fair share for late sharers
+
+A recorded figure, not a pass mark, 2026-11-11, one round, seeds as above. The question: do sharers listed later serve less only because fewer viewers come after them? Each viewer's bytes from resharers are split evenly over the hosts it chose its first 3 from: the directory's list when it asked, or, with none listed, those Kim's node named. A sharer's fair share is the sum of those splits, and the figure is what it served as a share of that.
+
+| Sharing, seed 1 | First 3 listed, served of fair | 4th to 16th listed | Listed after the 16th: sharers, share of bytes served |
+| --- | --- | --- | --- |
+| 5% | 89 to 107% | 86 to 108% | 0 to 33 per video, 0% |
+| 10% | 94 to 108% | 93 to 104% | 0 to 83 per video, 0% |
+| 20% | 84 to 108% | 96 to 105% | 11 to 147 per video, 0% |
+
+- **On the list, late sharers get their fair share.** What's left of the top 3's lead is timing: they were a choice for more viewers.
+- **Past the 16th, sharers serve nothing.** As built, a directory lists the first 16 qualifying for good (step 1's minimum, rotation waiting). On video 1 at 10%, 83 of its 99 sharers were never listed. Kim's node names 6 by its daily draw, but a viewer with a list tries them only after the 3 it starts with, and those were always enough. ADR 0025's rotation, a daily draw of the 16 when more qualify, is the decided answer. The model says it's needed within a month for a popular video at 5% sharing or more.
