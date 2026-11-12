@@ -145,6 +145,18 @@ async fn post_photo(node: &Node, dir: &Path, text: &str) -> (ObjectId, BlobHash)
     (id, item.attachments[0].attachment.blob)
 }
 
+/// Who reshared a found post, and whether they host it, as `osp show` says.
+async fn found_reshares(node: &Node, id: ObjectId) -> Vec<(PublicKey, bool)> {
+    match call(node, ClientRequest::Show { id }).await {
+        ClientResponse::Item { item } => item
+            .found_reshares
+            .iter()
+            .map(|by| (by.actor, by.hosting))
+            .collect(),
+        other => panic!("unexpected {other:?}"),
+    }
+}
+
 async fn reshare(node: &Node, id: ObjectId, host: bool) {
     call(node, ClientRequest::Reshare { id, host }).await;
 }
@@ -279,6 +291,11 @@ async fn a_hosting_reshare_is_listed_and_serves_a_newcomer_with_its_author_offli
     .await;
     let own = own_endpoints(&alice);
     read_directories(&alice).await;
+    // Alice sees who reshared the post she found, and that he hosts it.
+    assert_eq!(
+        found_reshares(&alice, post).await,
+        [(jimmy.identity(), true)]
+    );
     net.record_senders();
     let opening = Instant::now();
     alice.open_blob(&photo).await.unwrap();
@@ -402,6 +419,10 @@ async fn a_plain_reshare_is_never_marked_hosting_and_an_unlisted_resharer_isnt_l
     )
     .await;
     read_directories(&carol).await;
+    assert_eq!(
+        found_reshares(&carol, post).await,
+        [(jimmy.identity(), false)]
+    );
     reshare(&carol, post, true).await;
     // She asks, but her profile says she may not be listed.
     carol.ask_to_be_listed().await;

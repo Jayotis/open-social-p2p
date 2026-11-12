@@ -736,9 +736,24 @@ impl Core {
             .db
             .get_object(id)?
             .with_context(|| format!("unknown object {id}"))?;
-        self.feed_item(&obj)
+        let item = self
+            .feed_item(&obj)
             .await?
-            .context("object is not a post or its original isn't available")
+            .context("object is not a post or its original isn't available")?;
+        self.with_found(item)
+    }
+
+    /// Adds where a post came from, if a directory brought it, and the
+    /// reshares of it that came with it.
+    fn with_found(&self, mut item: FeedItem) -> Result<FeedItem> {
+        item.found_through = self
+            .db
+            .post_found_through(&item.id)?
+            .map(|directory| machine::words(&directory));
+        if item.reshared_by.is_none() {
+            item.found_reshares = self.found_reshares(&item.id)?;
+        }
+        Ok(item)
     }
 
     /// Looks through what this node has received. A reshare has no words of
@@ -762,15 +777,30 @@ impl Core {
         }
         let mut posts = Vec::new();
         for obj in self.db.search_posts(words, limit)? {
-            if let Some(mut item) = self.feed_item(&obj).await? {
-                item.found_through = self
-                    .db
-                    .post_found_through(&item.id)?
-                    .map(|directory| machine::words(&directory));
-                posts.push(item);
+            if let Some(item) = self.feed_item(&obj).await? {
+                posts.push(self.with_found(item)?);
             }
         }
         Ok(ClientResponse::Found { people, posts })
+    }
+
+    /// The reshares of a post that came with it through directories.
+    fn found_reshares(&self, post: &ObjectId) -> Result<Vec<ResharedBy>> {
+        let mut found = Vec::new();
+        for obj in self.db.found_reshares_of(post)? {
+            if let Ok(Payload::Announce(a)) = obj.verify()
+                && a.object == *post
+            {
+                found.push(ResharedBy {
+                    actor: a.actor,
+                    name: self.db.profile_name(&a.actor)?,
+                    announce: obj.id(),
+                    published: a.published,
+                    hosting: a.hosting,
+                });
+            }
+        }
+        Ok(found)
     }
 
     /// Turns a stored Note or Announce into a feed item; None if it can't be shown.
@@ -814,6 +844,7 @@ impl Core {
             reshared_by,
             found_through: None,
             deletable,
+            found_reshares: Vec::new(),
         }))
     }
 
