@@ -830,6 +830,13 @@ impl Node {
         self.core.db.is_resharer_host(post, resharer)
     }
 
+    /// Whether a hosting resharer's `Announce` and profile are signed by keys
+    /// it hasn't revoked, as this node checks before noting one (ADR 0025).
+    /// For tests.
+    pub fn check_resharer_keys(&self, reshare: &osp_proto::social::HostingReshare) -> Result<()> {
+        self.core.resharer_keys_current(reshare)
+    }
+
     /// Lets go of a stored blob, whatever it's kept for, as if it were lost.
     /// For tests.
     pub async fn let_go_of_blob(&self, hash: &BlobHash) -> Result<()> {

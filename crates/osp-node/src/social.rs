@@ -642,6 +642,7 @@ impl Core {
             checked_ms: now_ms(),
         };
         if self.db.is_resharer_host(&a.object, &remote)? {
+            self.resharer_keys_current(reshare)?;
             return self.db.note_resharer_host(&host, &blobs);
         }
         ensure!(
@@ -668,6 +669,7 @@ impl Core {
                 blob.fmt_short()
             );
         }
+        self.resharer_keys_current(reshare)?;
         self.db.note_resharer_host(&host, &blobs)?;
         info!(
             resharer = %a.actor.fmt_short(),
@@ -675,6 +677,25 @@ impl Core {
             listed = person.discoverable,
             "a resharer hosts a copy of a post"
         );
+        Ok(())
+    }
+
+    /// Checks that no key the resharer revoked signed its `Announce` or
+    /// profile, learning of a newer key certificate from either (ADR 0010).
+    /// Called only for a resharer this node keeps: one noted before, or one
+    /// whose copy just passed its check, so strangers can't fill the key
+    /// table. Both are checked again at the end, as the second's certificate
+    /// may revoke the key that signed the first.
+    pub(crate) fn resharer_keys_current(&self, reshare: &HostingReshare) -> Result<()> {
+        self.verify_received(&reshare.profile)?;
+        self.verify_received(&reshare.announce)?;
+        for obj in [&reshare.profile, &reshare.announce] {
+            ensure!(
+                !self.db.signed_by_revoked_key(obj)?,
+                "signed with a key that {} has revoked",
+                obj.signer().fmt_short()
+            );
+        }
         Ok(())
     }
 
