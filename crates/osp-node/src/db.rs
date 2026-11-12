@@ -339,6 +339,14 @@ const MIGRATIONS: &[&str] = &[
         PRIMARY KEY (blob, node)
     );
     CREATE INDEX resharer_hosts_by_post ON resharer_hosts(post);",
+    // The files of posts this node reshared with hosting (ADR 0025's step
+    // 5), and the bytes it has sent others of each, for `osp status`. The
+    // count stays on the node.
+    "CREATE TABLE shared_served (
+        blob  TEXT PRIMARY KEY,
+        post  TEXT NOT NULL,
+        bytes INTEGER NOT NULL DEFAULT 0
+    );",
 ];
 
 /// The search index (ADR 0014): a number for each post, by its object ID, and
@@ -2356,6 +2364,37 @@ impl Db {
             .conn()
             .query_row("SELECT COUNT(*) FROM found_people", [], |row| row.get(0))?;
         Ok(n as u64)
+    }
+
+    /// Notes `blob` as a file of `post`, which this node reshared with
+    /// hosting, so what it serves of it is counted.
+    pub fn note_shared(&self, blob: &BlobHash, post: &ObjectId) -> Result<()> {
+        self.conn().execute(
+            "INSERT OR IGNORE INTO shared_served (blob, post) VALUES (?1, ?2)",
+            params![blob.to_string(), post.to_string()],
+        )?;
+        Ok(())
+    }
+
+    /// Adds `bytes` sent of `blob` to its count, if it's a file of a post
+    /// this node reshared with hosting.
+    pub fn count_shared_served(&self, blob: &BlobHash, bytes: u64) -> Result<()> {
+        self.conn().execute(
+            "UPDATE shared_served SET bytes = bytes + ?2 WHERE blob = ?1",
+            params![blob.to_string(), bytes as i64],
+        )?;
+        Ok(())
+    }
+
+    /// How many posts this node reshared with hosting, and the bytes it has
+    /// sent others of their files.
+    pub fn shared_served(&self) -> Result<(u64, u64)> {
+        let (posts, bytes): (i64, i64) = self.conn().query_row(
+            "SELECT COUNT(DISTINCT post), COALESCE(SUM(bytes), 0) FROM shared_served",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        Ok((posts as u64, bytes as u64))
     }
 
     // ---- search (ADR 0014) ----
