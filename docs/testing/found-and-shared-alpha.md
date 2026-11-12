@@ -1,0 +1,52 @@
+# Found and shared, in the invited alpha
+
+**Status:** Plan for [ADR 0025](../decisions/0025-shared-posts-are-found-and-hosted.md)'s step 5, its scripted alpha exercise. Drafted and accepted by the maintainer 2026-11-11, with check 4 allowing for hosting checks. It runs in the invited alpha ([roadmap](../06-roadmap.md)), once testers have the installer ([ADR 0027](../decisions/0027-directory-bootstrap-list-and-mirror.md)). A dry run on the maintainer's own machines comes first. It runs on the minimum as built: the directory lists up to 16 hosting reshares, with no rotation (ADR 0025, amended 2026-11-11). Changing the plan after it starts needs a dated note here saying what changed and why.
+
+[The model](found-over-weeks.md) showed that sharing with hosting carries a video at 5 to 20% sharing, but those rates were guesses. This asks real people.
+
+## What it's for
+
+1. **Do people share with hosting** when nobody asks them to?
+2. **Do those who share later serve anything,** once others have shared before them?
+3. **What's the real sharing rate?**
+
+And whether the mechanism behaves as built (below). If it does, ADR 0025's rotation is the next thing built.
+
+## Who's in it
+
+- **Kim,** the maintainer's listed node, posts one video of about a minute (720p, roughly 10 to 15 MB once transcoded). Nothing else about it is announced.
+- **Testers,** the alpha's invited people, each on their own node. Each gets a slot, at least 2 hours after the one before: a new sharer is listed 0 to 2 hours after sharing, so everyone who shared before a slot is listed by then.
+
+## What each tester does, in their slot
+
+1. Searches for the video's words through the directory (`osp search`) and opens it (`osp fetch`).
+2. Decides whether to reshare it, with hosting or without, or not at all. The script says what each choice means, in the CLI's own words, and doesn't recommend one. Being asked to share would make the rate meaningless.
+3. Notes the time and their choice.
+
+After the last slot plus a day, each tester sends the maintainer the `Shared:` line from `osp status`, their choice and their slot, **if they choose to**. The count stays on their node otherwise.
+
+## What's recorded
+
+- **The sharing rate:** testers who reshared with hosting, out of those who opened the video. Also how many reshared without hosting.
+- **For each sharer,** by slot: bytes served from what they shared, and how many testers opened the video after they were listed.
+- **Kim's side:** what Kim's node served of the video, and each sharer's listing time from the directory.
+- **Opens:** whether each succeeded, as the tester reports.
+
+Small numbers: a handful of testers can't show a rate to a percent. The figures are recorded, not judged against a mark.
+
+## Whether the mechanism behaves
+
+Any of these failing goes to the maintainer before the rotation is built:
+
+1. **Every open succeeds.**
+2. **Every sharer with hosting is listed as hosting** within 2 hours of sharing.
+3. **Sharers serve:** if anyone opened the video after the first sharer was listed, sharers served more than nothing in all.
+4. **The count is believable:** no sharer counts more than the video's size times the testers who opened it after they shared, plus the bytes of the hosting checks of their copy. Each check reads one 1 KiB piece. Kim's node and each directory check when told, then once a day, so this allows 1 KiB × checkers × (days since sharing + 1). That's about 16 KiB for two checkers over a week.
+
+## What stays private
+
+Testers' names, nodes, choices and counts stay in the maintainer's private notes. Only totals and slot numbers go here.
+
+## Dry run
+
+Before the testers, the same script runs on the maintainer's three machines, one as Kim and two as testers, with one sharing with hosting. It checks the script's commands and that the `Shared:` count rises on the sharer. Results here, as totals.
