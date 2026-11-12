@@ -19,7 +19,7 @@ And whether the mechanism behaves as built (below). If it does, ADR 0025's rotat
 
 ## What each tester does, in their slot
 
-1. Searches for the video's words through the directory (`osp search`) and opens it (`osp fetch`).
+1. Reads the directories now (`osp directory read`), then searches for the video's words (`osp search`) and opens it (`osp fetch`). A node reads its directories by itself only every 6 hours or so, so without the first command a tester might not see sharers listed since their node's last read.
 2. Decides whether to reshare it, with hosting or without, or not at all. The script says what each choice means, in the CLI's own words, and doesn't recommend one. Being asked to share would make the rate meaningless.
 3. Notes the time and their choice.
 
@@ -50,3 +50,12 @@ Testers' names, nodes, choices and counts stay in the maintainer's private notes
 ## Dry run
 
 Before the testers, the same script runs on the maintainer's three machines, one as Kim and two as testers, with one sharing with hosting. It checks the script's commands and that the `Shared:` count rises on the sharer. Results here, as totals.
+
+**Run 2026-11-11 to 12:** Kim posted one 60 s, 11.6 MB video. Two testers took part, both in slots: the first shared with hosting and the second didn't share. All four checks passed:
+
+1. Both opens succeeded, 11 s each, and the files matched.
+2. The sharer was listed as hosting 7 minutes after sharing. Kim's node had noted them as a hosting resharer 33 s after sharing.
+3. The sharer served the second tester the whole video.
+4. The sharer's `Shared:` count was the video's size plus two 1 KiB hosting checks.
+
+What changed in the script: the first tester found the post about 5 hours after it was posted, and the second tester's node hadn't read the directory again before its slot. A node reads its directories only every 6 hours or so, and `osp sync` doesn't start a read. So testers now run `osp directory read` before searching (step 1 above). Run by hand on the second tester's node afterwards, it took 5 s and picked up the hosting listing. Also, `osp show` on the post doesn't say who hosts it (search doesn't show a found reshare's resharer yet), so the maintainer checks listings on the directory's side.
