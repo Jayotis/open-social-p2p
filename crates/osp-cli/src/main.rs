@@ -1321,6 +1321,13 @@ fn print_status(s: &StatusInfo) {
     if s.found_people > 0 {
         println!("Found:     {} people through directories", s.found_people);
     }
+    if s.shared.posts > 0 {
+        println!(
+            "Shared:    {} post(s) with hosting, {} served to others (counted here only)",
+            s.shared.posts,
+            size(s.shared.served_bytes)
+        );
+    }
     if let Some(own) = &s.endpoints {
         let media = match own.media {
             Some(media) => media.fmt_short().to_string(),

@@ -1536,8 +1536,9 @@ async fn enforce_serving_rules(
         // Requests for data: who asked, whether the rules allow it, whether
         // it is small, the large blob it is for and whether it asks for
         // only part of it, the ranges of the blob it asks for, and the
-        // channels for the answer and for news of the transfer.
-        let (peer, allowed, small, large, part, ranges, answer, updates) = match msg {
+        // channels for the answer and for news of the transfer; and the
+        // blob, if it asks for one, to count what's sent of a shared post.
+        let (peer, allowed, small, large, part, ranges, answer, updates, served) = match msg {
             ProviderMessage::GetRequestReceived(msg) => {
                 let peer = peers.get(&msg.inner.connection_id).copied().flatten();
                 let request = &msg.inner.request;
@@ -1556,7 +1557,8 @@ async fn enforce_serving_rules(
                 });
                 let large = (!small).then_some(request.hash);
                 let (ok, part) = (size.is_some(), !whole);
-                (peer, ok, small, large, part, ranges, msg.tx, msg.rx)
+                let served = ok.then_some(request.hash);
+                (peer, ok, small, large, part, ranges, msg.tx, msg.rx, served)
             }
             ProviderMessage::GetManyRequestReceived(msg) => {
                 let peer = peers.get(&msg.inner.connection_id).copied().flatten();
@@ -1567,7 +1569,7 @@ async fn enforce_serving_rules(
                     .iter()
                     .all(|h| may_serve(&db, *h, peer, share_prefetched).is_some());
                 let all = ChunkRanges::all();
-                (peer, ok, false, None, false, all, msg.tx, msg.rx)
+                (peer, ok, false, None, false, all, msg.tx, msg.rx, None)
             }
             ProviderMessage::ClientConnected(msg) => {
                 peers.insert(msg.inner.connection_id, msg.inner.endpoint_id);
@@ -1658,6 +1660,12 @@ async fn enforce_serving_rules(
                         RequestUpdate::Aborted(cut) => sent = Some(cut.stats.payload_bytes_sent),
                         _ => {}
                     }
+                }
+                if let (Some(hash), Some(bytes)) = (served, sent)
+                    && bytes > 0
+                    && let Err(e) = db.count_shared_served(&to_blob_hash(hash), bytes)
+                {
+                    debug!("counting what was served of a shared post: {e:#}");
                 }
                 if let (Some(peer), Some(bytes)) = (peer, sent) {
                     peers::record(&db, &public_of(&db, peer), Event::Served { bytes });

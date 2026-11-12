@@ -17,7 +17,7 @@ use osp_proto::{
     framing::{read_frame, write_frame},
     rpc::{
         AttachmentInfo, ClientRequest, ClientResponse, DirectoryStatus, FeedItem, FetchedFile,
-        PeerRecord, PersonInfo, ResharedBy, StatusInfo,
+        PeerRecord, PersonInfo, ResharedBy, SharedStatus, StatusInfo,
     },
     social::SocialRequest,
     types::{MAX_ATTACHMENTS, MAX_CONTENT_BYTES},
@@ -354,6 +354,13 @@ impl Core {
                 false => None,
             },
             found_people: self.db.found_count()?,
+            shared: {
+                let (posts, served_bytes) = self.db.shared_served()?;
+                SharedStatus {
+                    posts,
+                    served_bytes,
+                }
+            },
         })
     }
 
@@ -502,6 +509,7 @@ impl Core {
         if host {
             for (blob, size) in note.sized_blobs() {
                 self.ensure_blob(&blob, BlobClass::Replica, size).await?;
+                self.db.note_shared(&blob, &note_id)?;
             }
         }
         let me = self.signer.identity();

@@ -9,7 +9,7 @@ use std::{path::Path, time::Duration};
 use osp_node::{BlobClass, Config, Node};
 use osp_proto::{
     BlobHash, ObjectId,
-    rpc::{ClientRequest, ClientResponse},
+    rpc::{ClientRequest, ClientResponse, SharedStatus},
 };
 
 async fn start(root: &Path, name: &str) -> Node {
@@ -96,6 +96,13 @@ async fn feed_texts(node: &Node) -> Vec<String> {
     }
 }
 
+async fn shared(node: &Node) -> SharedStatus {
+    match call(node, ClientRequest::Status).await {
+        ClientResponse::Status(status) => status.shared,
+        other => panic!("unexpected {other:?}"),
+    }
+}
+
 fn delete(id: ObjectId) -> ClientRequest {
     ClientRequest::Delete { id }
 }
@@ -145,6 +152,75 @@ async fn a_deleted_post_goes_from_followers_and_through_reshares() {
     };
 
     for node in [alice, bob, carol] {
+        node.shutdown().await.unwrap();
+    }
+}
+
+/// ADR 0025's step 5: a resharer's status counts what it served of the
+/// posts it shared with hosting, and nothing else it serves.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_resharer_counts_what_it_served_of_what_it_shared() {
+    let dir = tempfile::tempdir().unwrap();
+    let alice = start(dir.path(), "Alice").await;
+    let bob = start(dir.path(), "Bob").await;
+    let carol = start(dir.path(), "Carol").await;
+
+    let (photo_post, photo) = post_photo(&alice, dir.path(), "a photo to pass on").await;
+    let (own_post, own_photo) = post_photo(&bob, dir.path(), "Bob's own photo").await;
+    follow(&bob, &alice).await;
+    feed_texts(&bob).await;
+    assert_eq!(shared(&bob).await, SharedStatus::default());
+    reshare(&bob, photo_post, true).await;
+    assert_eq!(
+        shared(&bob).await,
+        SharedStatus {
+            posts: 1,
+            served_bytes: 0
+        }
+    );
+
+    // With Alice gone, Carol can have the photo only from Bob. His own
+    // photo, served too, isn't counted.
+    alice.shutdown().await.unwrap();
+    follow(&carol, &bob).await;
+    feed_texts(&carol).await;
+    let size = |id| {
+        let carol = &carol;
+        async move {
+            let ClientResponse::Item { item } = call(carol, ClientRequest::Show { id }).await
+            else {
+                panic!("not shown")
+            };
+            item.attachments[0].attachment.size
+        }
+    };
+    let photo_size = size(photo_post).await;
+    size(own_post).await;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    while [photo, own_photo]
+        .iter()
+        .any(|p| carol.blob_class(p).unwrap().is_none())
+    {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "Carol lacks a photo"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    // The transfer's end reaches the count a moment after Carol has it.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let now = shared(&bob).await;
+        if now.served_bytes >= photo_size {
+            assert_eq!(now.posts, 1);
+            assert!(now.served_bytes < 2 * photo_size, "{now:?}");
+            break;
+        }
+        assert!(tokio::time::Instant::now() < deadline, "{now:?}");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    for node in [bob, carol] {
         node.shutdown().await.unwrap();
     }
 }

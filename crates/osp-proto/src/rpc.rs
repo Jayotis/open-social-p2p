@@ -399,6 +399,18 @@ pub struct StatusInfo {
     /// How many people this node holds that it found through directories.
     #[serde(default)]
     pub found_people: u64,
+    /// Posts this node reshared with hosting, and what it served of them.
+    #[serde(default)]
+    pub shared: SharedStatus,
+}
+
+/// What a node has served of the posts it reshared with hosting (ADR 0025's
+/// step 5). It's counted on the node and leaves it only if its owner sends
+/// it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SharedStatus {
+    pub posts: u64,
+    pub served_bytes: u64,
 }
 
 /// What a directory holds.
