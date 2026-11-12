@@ -4182,8 +4182,7 @@ fn build_search_index(conn: &Connection) -> Result<()> {
         })?;
         for row in rows {
             let (json, published_ms) = row?;
-            let obj: SignedObject =
-                serde_json::from_str(&json).context("corrupt stored object")?;
+            let obj: SignedObject = serde_json::from_str(&json).context("corrupt stored object")?;
             // Checked when it arrived; one that fails today's checks can't be
             // shown, so it isn't indexed.
             match obj.verify() {
@@ -4191,12 +4190,7 @@ fn build_search_index(conn: &Connection) -> Result<()> {
                     index_for_search(&tx, &obj.id().to_string(), &note.content, published_ms)?;
                 }
                 Ok(Payload::Person(person)) => {
-                    index_for_search(
-                        &tx,
-                        &person.actor.to_string(),
-                        &profile_text(&person),
-                        None,
-                    )?;
+                    index_for_search(&tx, &person.actor.to_string(), &profile_text(&person), None)?;
                 }
                 _ => continue,
             }

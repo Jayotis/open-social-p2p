@@ -2843,6 +2843,40 @@ mod tests {
         assert!(again < 0.6, "{again}");
     }
 
+    /// With no node left to ask, which happens when every node that sent
+    /// parts failed at the end, a fetch ends on what it holds.
+    #[tokio::test]
+    async fn a_fetch_with_no_node_left_ends_on_what_arrived() {
+        let f = Fixture::new().await;
+        let store = f.open_with_quotas(64).await;
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let nobody = Sources::default();
+
+        // All of it is here.
+        let whole = f.add(&store, 7, 3 * KB, BlobClass::Cache).await;
+        store
+            .fetch(to_hash(&whole), &nobody, 3 * KB, deadline, None)
+            .await
+            .unwrap();
+
+        // Half of it.
+        let data = noise(1);
+        let size = data.len() as u64;
+        let (node, hash) = f.provider(&data, None).await;
+        let _kept = store.keep_partial(&to_blob_hash(hash)).await.unwrap();
+        let half = Arc::new(Part::new(0..size / 2));
+        let (_, attempt) = store
+            .fetch_part(hash, Source::from(node.id()), half, deadline, None)
+            .await;
+        assert_eq!(attempt.outcome, Outcome::Completed);
+        let err = store
+            .fetch(hash, &nobody, size, deadline, None)
+            .await
+            .unwrap_err();
+        assert!(err.downcast_ref::<Unsent>().is_some(), "{err:#}");
+        assert!(!is_busy(&err), "{err:#}");
+    }
+
     #[tokio::test]
     async fn a_part_refused_as_busy_waits_for_a_node_that_sent_its_own() {
         let f = Fixture::new().await;
