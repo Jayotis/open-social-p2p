@@ -4,12 +4,12 @@
 
 ## Summary
 
-The network depends on three kinds of contribution: **hosting** (giving upload bandwidth), **creating** (making posts) and **scouting** (finding good posts and resharing them). This draft keeps those three separate instead of turning them into one score:
+The network depends on three kinds of contribution: **hosting** (giving upload bandwidth), **creating** (making posts) and **hunting** (finding good posts and resharing them). This draft keeps those three separate instead of turning them into one score:
 
 | Contribution | What it earns |
 | --- | --- |
 | **Creating** | Attribution on every copy and reshare, and a **creator level** others can check |
-| **Scouting** | "Found through…" recognition, and a **scout level** others can check |
+| **Hunting** | "Found through…" recognition, and a **hunter level** others can check |
 | **Hosting** | Better treatment from the specific nodes you have helped (local reciprocity), plus a **self-reported host stat** that grants nothing |
 
 There is no global credit, no public delivery receipt, and no central authority deciding anyone's standing. Each node learns about the peers it deals with, the way people learn whom they can rely on.
@@ -68,7 +68,7 @@ Peers are grouped by identity, using the node list in each signed profile ([ADR 
 
 Built from public signed reshares (`Announce` objects, [ADR 0003](decisions/0003-native-social-protocol-v0.md)): how many distinct identities reshared a person's posts over the last 90 days, counted 1.5× when the resharer also hosts.
 
-### Scout level
+### Hunter level
 
 Built from the same public data: how often a person's reshares were followed by other people's reshares of the same post within 7 days.
 
@@ -85,7 +85,7 @@ From its own ledger, a node can show "served 40 GB to 230 nodes in the last 30 d
 
 ### The profile card
 
-- Shows the creator level and scout level (0 to 5, last 90 days) and, optionally, the self-reported host stat.
+- Shows the creator level and hunter level (0 to 5, last 90 days) and, optionally, the self-reported host stat.
 - Levels are always computed by the **viewer's** node and labelled "as seen from your network". Nobody computes their own levels for others.
 - **In person:** the card's QR code opens the profile; the scanning node computes the levels itself.
 - There is no leaderboard.
@@ -96,7 +96,7 @@ From its own ledger, a node can show "served 40 GB to 230 nodes in the last 30 d
 | --- | --- |
 | Public delivery receipts | They reveal whose content each person consumes (A1) |
 | Global host credit and "vouched" credit | Fake accounts and rented servers could manufacture or buy it (A4, A5) |
-| Creator and scout standing buying network priority | Priority is zero-sum and would reward virality with bandwidth (A10, second review) |
+| Creator and hunter standing buying network priority | Priority is zero-sum and would reward virality with bandwidth (A10, second review) |
 | Newcomer grace period | Unnecessary once fresh identities get the stranger share, and it invited repeated re-registration (second review) |
 
 ## Data and protocol changes
@@ -111,12 +111,12 @@ From its own ledger, a node can show "served 40 GB to 230 nodes in the last 30 d
 1. **Measure:** record the peer assessment and show it in `osp status`. No behaviour changes yet.
 2. **Use it for source selection** and connection retention (milestone M3).
 3. **Generous tit-for-tat under contention,** once real measurements show busy nodes.
-4. **Creator and scout levels** and the profile card.
+4. **Creator and hunter levels** and the profile card.
 
 ## Relationship to earlier documents
 
 - [Doc 11](11-collective-discovery-history-and-referrals.md) rules out "automatic credit for transfer bandwidth". Local reciprocity is an operational decision each node makes about its own upload, not credit others can see, and the host stat is self-reported and earns nothing. This draft is consistent with doc 11.
-- [Doc 10](10-exploration-divergence-and-scouts.md) recommends against universal public scores. Levels are per viewer and there is no leaderboard, but levels are still scores. Review finding A8 records this as an accepted risk.
+- [Doc 10](10-exploration-divergence-and-hunters.md) recommends against universal public scores. Levels are per viewer and there is no leaderboard, but levels are still scores. Review finding A8 records this as an accepted risk.
 - [ADR 0006](decisions/0006-desktop-first-always-on-node.md) means every participant runs a node, so everyone can reciprocate.
 
 ## Validation
