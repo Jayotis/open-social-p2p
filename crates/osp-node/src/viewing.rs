@@ -35,6 +35,7 @@ use crate::{
     node::{Core, endpoint_builder_unpublished, on_simulated_network},
     relays::{self, RelayPolicy},
     store::{self, Source, Sources},
+    sync::random_fraction,
 };
 
 /// How long a viewing endpoint takes new requests, from when it was made. A
@@ -219,6 +220,14 @@ fn close(slots: Vec<Slot>) {
     }
 }
 
+/// Shuffles `list`: a viewer takes hosts in an order of its own.
+fn in_own_order<T>(list: &mut [T]) {
+    for i in (1..list.len()).rev() {
+        let j = ((random_fraction() * (i + 1) as f64) as usize).min(i);
+        list.swap(i, j);
+    }
+}
+
 impl Core {
     /// Fetches media of `note`, a found post that its owner hasn't followed or
     /// shared, through a viewing endpoint, from public sources only: the
@@ -239,7 +248,10 @@ impl Core {
             }
         };
         let authors = self.db.media_endpoints_of(&note.actor)?;
-        let hosts = self.db.found_hosts_of(id)?;
+        // In this viewer's own order, so viewers spread over the hosts rather
+        // than all taking the same first 3 (ADR 0025, amended after step 5).
+        let mut hosts = self.db.found_hosts_of(id)?;
+        in_own_order(&mut hosts);
         for person in hosts.into_iter().take(MAX_FOUND_HOSTS) {
             for bound in self.db.media_endpoints_of(&person)? {
                 add(&mut sources, Source::media(&bound));
@@ -271,7 +283,8 @@ impl Core {
         };
         // Then the sources not yet tried: those its author named, and its
         // author's own last, as they're the ones to spare.
-        let then = |named: Vec<Source>, tried: &[Source]| {
+        let then = |mut named: Vec<Source>, tried: &[Source]| {
+            in_own_order(&mut named);
             let mut rest = tried.to_vec();
             for source in named {
                 if source.node != self.endpoint.id()
@@ -387,6 +400,23 @@ mod tests {
 
     fn id(lease: &Lease<'_>) -> iroh::EndpointId {
         lease.inner.endpoint.id()
+    }
+
+    #[test]
+    fn each_viewer_takes_the_hosts_in_an_order_of_its_own() {
+        let listed: Vec<usize> = (0..16).collect();
+        let mut first = std::collections::HashSet::new();
+        for _ in 0..200 {
+            let mut hosts = listed.clone();
+            super::in_own_order(&mut hosts);
+            first.insert(hosts[0]);
+            hosts.sort();
+            assert_eq!(hosts, listed);
+        }
+        // Each comes first 1 time in 16, so one is missing from 200 draws
+        // about once in 25,000 runs, and 5 missing never in practice. In the
+        // listed order, only the first would ever come first.
+        assert!(first.len() >= 12, "{first:?}");
     }
 
     #[tokio::test]

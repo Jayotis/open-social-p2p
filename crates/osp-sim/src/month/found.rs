@@ -3,6 +3,8 @@
 //! Each video spreads on its own through `spread`, as in the hops model, by
 //! the rules as built: Alice takes the hosts the directory lists, the first
 //! 3 at once, then those Kim's media endpoint names, and Kim's own last.
+//! She shuffles each group first (ADR 0025, amended after this model's
+//! first run); with `same_order`, she takes them as given, as before.
 //!
 //! [plan]: ../../../docs/testing/found-over-weeks.md
 
@@ -60,6 +62,7 @@ pub struct Video {
 #[derive(Debug, Serialize)]
 pub struct Run {
     pub share_percent: f64,
+    pub same_order: bool,
     pub seed: u64,
     pub videos: Vec<Video>,
     pub marks: Marks,
@@ -85,6 +88,7 @@ pub struct Marks {
 /// viewer got from whom.
 struct Found {
     creator: usize,
+    same_order: bool,
     /// Whether each node shares this video with hosting once it holds it.
     shares: Vec<bool>,
     /// Each node's wait from holding its copy to being listed: it asks
@@ -110,7 +114,7 @@ fn daily(key: u64, day: u64, node: usize) -> u64 {
 }
 
 impl Rules for Found {
-    fn sources(&mut self, to: usize, _swarm: &Swarm, now: f64, _rng: &mut Rng) -> Sources {
+    fn sources(&mut self, to: usize, _swarm: &Swarm, now: f64, rng: &mut Rng) -> Sources {
         // Listed in the order they were, up to the directory's limit.
         let listed: Vec<usize> = self
             .listed
@@ -129,6 +133,11 @@ impl Rules for Found {
             .collect();
         named.sort_by_key(|&n| daily(self.draw, day, n));
         named.truncate(NAMED);
+        let mut listed = listed;
+        if !self.same_order {
+            rng.shuffle(&mut listed);
+            rng.shuffle(&mut named);
+        }
         if listed.is_empty() {
             Sources {
                 at_once: named,
@@ -196,7 +205,7 @@ fn share(part: f64, whole: f64) -> f64 {
     if whole > 0.0 { part / whole } else { 0.0 }
 }
 
-pub fn run(share_percent: f64, seed: u64) -> Run {
+pub fn run(share_percent: f64, same_order: bool, seed: u64) -> Run {
     let mut rng = Rng::new(seed);
     // Node 0 is the video's creator; newcomer i is node i + 1.
     let n = NEWCOMERS + 1;
@@ -215,6 +224,7 @@ pub fn run(share_percent: f64, seed: u64) -> Run {
             peers.extend((0..NEWCOMERS).map(|i| Peer::new(UP[i % 3], DOWN[i % 3])));
             let mut rules = Found {
                 creator: 0,
+                same_order,
                 shares: std::mem::take(&mut shares[v]),
                 listing_lag: (0..n)
                     .map(|_| rng.range(0.0, HOUR) + rng.range(0.0, HOUR))
@@ -293,6 +303,7 @@ pub fn run(share_percent: f64, seed: u64) -> Run {
     };
     Run {
         share_percent,
+        same_order,
         seed,
         videos,
         marks,
@@ -324,7 +335,7 @@ mod tests {
 
     #[test]
     fn with_nobody_sharing_the_creator_sends_every_copy() {
-        let run = run(0.0, 1);
+        let run = run(0.0, false, 1);
         for v in &run.videos {
             assert_eq!(v.sharers, 0);
             assert_eq!(v.failed, 0);
