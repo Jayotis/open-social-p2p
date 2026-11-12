@@ -586,8 +586,13 @@ async fn a_listing_has_the_latest_posts_and_a_reader_gets_only_what_changed() {
         second.texts,
         ["Post 7", "Post 6", "Post 5", "Post 4", "Post 3"]
     );
+    // Machines that greeted the directory may be listed too, as Alice's can be.
     let (entries, _) = read_lists(&net, &directory, 0).await;
-    assert_eq!(entries.len(), 1, "{entries:?}");
+    let people = entries
+        .iter()
+        .filter(|e| matches!(e.item, ListingItem::Person { .. }))
+        .count();
+    assert_eq!(people, 1, "{entries:?}");
 
     // Asking for none says where the end is, and a page holds what's asked.
     let reply = ask_machine(
