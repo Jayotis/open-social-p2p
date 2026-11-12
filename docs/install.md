@@ -27,6 +27,17 @@ It then:
 
 If `~/.local/bin` isn't on your PATH, run the program as `~/.local/bin/osp`.
 
+## Removing a follower
+
+`osp followers list` shows the nodes that follow you, with a name where your node knows whose node it is: someone you follow back, or a node that asked to be trusted. A subscription itself doesn't say who it's from.
+
+`osp followers remove <name or start of node ID>` stops a node being your follower:
+
+- it's no longer told of your new posts, named to your other followers as holding copies, or trusted;
+- its subscriptions are refused until `osp followers allow <node>`. Its node finds out the next time it subscribes (about once a day);
+- **your posts stay public:** it can still read them, as anyone can, through your node or a directory;
+- it's one node, not a person. Someone who makes a new node can follow you again from it.
+
 ## Updating
 
 Run the newer release's `install.sh` the same way. It stops the node, replaces `osp` (keeping the old one as `osp.prev`), and starts it again. Your node and its settings are left as they are.

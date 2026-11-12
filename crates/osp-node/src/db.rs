@@ -347,6 +347,12 @@ const MIGRATIONS: &[&str] = &[
         post  TEXT NOT NULL,
         bytes INTEGER NOT NULL DEFAULT 0
     );",
+    // 24: followers' nodes the owner removed, whose subscriptions are refused
+    // until the owner allows them again, and when.
+    "CREATE TABLE removed_followers (
+        node       TEXT PRIMARY KEY,
+        removed_ms INTEGER NOT NULL
+    );",
 ];
 
 /// The search index (ADR 0014): a number for each post, by its object ID, and
@@ -585,6 +591,15 @@ impl UploadState {
     pub fn is_finished(&self) -> bool {
         matches!(self, UploadState::Posted(_) | UploadState::Failed(_))
     }
+}
+
+/// A follower's node as stored (`Db::follower_rows`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FollowerRow {
+    pub node: EndpointId,
+    pub since_ms: i64,
+    pub seen_ms: i64,
+    pub shares: bool,
 }
 
 /// A follower holding a copy of a blob (`Db::swarm_members`).
@@ -1295,6 +1310,84 @@ impl Db {
         let mut stmt = conn.prepare("SELECT node_addr FROM followers")?;
         let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
         rows.map(|r| Ok(serde_json::from_str(&r?)?)).collect()
+    }
+
+    /// Each follower's node, when it first subscribed and was last heard
+    /// from, and whether it shares what it fetches ahead of time; oldest first.
+    pub fn follower_rows(&self) -> Result<Vec<FollowerRow>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT node, since, COALESCE(seen_ms, since), shares FROM followers ORDER BY since",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, bool>(3)?,
+            ))
+        })?;
+        rows.map(|r| {
+            let (node, since_ms, seen_ms, shares) = r?;
+            Ok(FollowerRow {
+                node: node.parse()?,
+                since_ms,
+                seen_ms,
+                shares,
+            })
+        })
+        .collect()
+    }
+
+    /// Removes a follower's node: forgets it as a follower, with its
+    /// endpoints, the copies it said it holds and any trust, and refuses its
+    /// subscriptions until `allow_follower`. Returns whether it was a follower.
+    pub fn remove_follower(&self, node: &EndpointId) -> Result<bool> {
+        let node = node.to_string();
+        let mut conn = self.conn();
+        let tx = conn.transaction()?;
+        let was = tx.execute("DELETE FROM followers WHERE node = ?1", params![node])? > 0;
+        // A node we follow as well asks for them again at its next sync.
+        tx.execute("DELETE FROM endpoints WHERE public = ?1", params![node])?;
+        tx.execute("DELETE FROM swarm WHERE node = ?1", params![node])?;
+        tx.execute("DELETE FROM trust WHERE node = ?1", params![node])?;
+        tx.execute(
+            "INSERT OR IGNORE INTO removed_followers (node, removed_ms) VALUES (?1, ?2)",
+            params![node, now_ms()],
+        )?;
+        tx.commit()?;
+        Ok(was)
+    }
+
+    /// Lets a removed follower's node subscribe again. Returns whether it
+    /// was removed.
+    pub fn allow_follower(&self, node: &EndpointId) -> Result<bool> {
+        let n = self.conn().execute(
+            "DELETE FROM removed_followers WHERE node = ?1",
+            params![node.to_string()],
+        )?;
+        Ok(n > 0)
+    }
+
+    /// Whether the owner removed this node as a follower.
+    pub fn is_removed_follower(&self, node: &EndpointId) -> Result<bool> {
+        Ok(self
+            .conn()
+            .query_row(
+                "SELECT 1 FROM removed_followers WHERE node = ?1",
+                params![node.to_string()],
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_some())
+    }
+
+    /// The nodes removed as followers, oldest first.
+    pub fn removed_followers(&self) -> Result<Vec<EndpointId>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare("SELECT node FROM removed_followers ORDER BY removed_ms")?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+        rows.map(|r| Ok(r?.parse()?)).collect()
     }
 
     // ---- identity keys (ADR 0010) ----

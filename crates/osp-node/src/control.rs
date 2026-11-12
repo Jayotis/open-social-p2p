@@ -10,14 +10,14 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail, ensure};
-use iroh::{EndpointAddr, PublicKey};
+use iroh::{EndpointAddr, EndpointId, PublicKey};
 use n0_future::{BufferedStreamExt, StreamExt, stream};
 use osp_proto::{
     Announce, Attachment, BlobRef, Delete, FollowTicket, Note, ObjectId, Payload, SignedObject,
     framing::{read_frame, write_frame},
     rpc::{
         AttachmentInfo, ClientRequest, ClientResponse, DirectoryStatus, FeedItem, FetchedFile,
-        PeerRecord, PersonInfo, ResharedBy, SharedStatus, StatusInfo,
+        FollowerInfo, PeerRecord, PersonInfo, ResharedBy, SharedStatus, StatusInfo,
     },
     social::SocialRequest,
     types::{MAX_ATTACHMENTS, MAX_CONTENT_BYTES},
@@ -225,6 +225,13 @@ impl Core {
                     found: self.db.found_count()?,
                 }
             }
+            ClientRequest::Followers => self.follower_list()?,
+            ClientRequest::RemoveFollower { node } => ClientResponse::FollowerRemoved {
+                was_following: self.db.remove_follower(&node)?,
+            },
+            ClientRequest::AllowFollower { node } => ClientResponse::FollowerAllowed {
+                was_removed: self.db.allow_follower(&node)?,
+            },
             ClientRequest::DirectContacts => ClientResponse::DirectContacts {
                 nodes: self.db.direct_contacts()?,
             },
@@ -830,6 +837,50 @@ impl Core {
                 bail!("{id} is a delete, not a post")
             }
         }
+    }
+
+    /// The followers' nodes, named where this node knows whose they are, and
+    /// the nodes removed as followers.
+    fn follower_list(&self) -> Result<ClientResponse> {
+        // Whose each node is: people followed back on it, then trust rows
+        // (what a node asking to be trusted said, unchecked).
+        let mut whose: HashMap<EndpointId, (PublicKey, String)> = HashMap::new();
+        let now = now_ms();
+        for row in self
+            .db
+            .trusted()?
+            .into_iter()
+            .chain(self.db.trust_requests(now)?)
+        {
+            whose.insert(row.node, (row.actor, row.name));
+        }
+        for follow in self.db.follows()? {
+            let name = self.db.profile_name(&follow.actor)?.unwrap_or_default();
+            whose.insert(follow.addr.id, (follow.actor, name));
+        }
+        let trusted: HashSet<EndpointId> =
+            self.db.trusted()?.into_iter().map(|row| row.node).collect();
+        let followers = self
+            .db
+            .follower_rows()?
+            .into_iter()
+            .map(|row| {
+                let (actor, name) = whose.remove(&row.node).unzip();
+                FollowerInfo {
+                    node: row.node,
+                    actor,
+                    name,
+                    since_ms: row.since_ms,
+                    seen_ms: row.seen_ms,
+                    shares: row.shares,
+                    trusted: trusted.contains(&row.node),
+                }
+            })
+            .collect();
+        Ok(ClientResponse::Followers {
+            followers,
+            removed: self.db.removed_followers()?,
+        })
     }
 }
 
