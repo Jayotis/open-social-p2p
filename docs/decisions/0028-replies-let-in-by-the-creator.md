@@ -1,6 +1,6 @@
 # ADR 0028: Replies, let in by the creator's node
 
-**Status:** Proposed (2026-11-11). Trimmed 2026-11-12 to what M5 builds first: replies, a creator's circle let in directly, and a request inbox for everyone else. Letting strangers in automatically by creator or hunter level and by social paths up to six steps long is left to a later record (see [Later](#later-letting-strangers-in-automatically)).
+**Status:** Accepted (2026-11-12). Proposed 2026-11-11, trimmed 2026-11-12 to what M5 builds first: replies, a creator's circle let in directly, and a request inbox for everyone else. Letting strangers in automatically by creator or hunter level and by social paths up to six steps long is left to a later record (see [Later](#later-letting-strangers-in-automatically)).
 
 Builds on [ADR 0013](0013-trusted-followers.md) (trusted followers), [ADR 0019](0019-taking-posts-and-media-down.md) (deleting), [ADR 0024](0024-watching-found-posts-without-your-identity.md) (viewing endpoints), and the [roadmap](../06-roadmap.md)'s M5, which moves replies forward from Stage 2.
 
