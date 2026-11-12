@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -5,6 +6,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:osp_app/node.dart';
 import 'package:osp_app/src/rust/api/osp.dart';
 import 'package:osp_app/uploads.dart';
+import 'package:osp_app/waiting_deletes.dart';
 import 'package:osp_app/widgets/post_card.dart';
 
 /// The Rust side, as far as deleting goes.
@@ -12,11 +14,34 @@ class FakeApp implements OspApp {
   final deleted = <String>[];
   var disconnects = 0;
 
+  /// While set, a delete never reaches the node: as when the phone
+  /// suspends the app with it on its way.
+  Completer<void>? stuck;
+
+  /// While set, a delete fails with this.
+  Object? fails;
+
   @override
-  Future<void> deletePost({required String id}) async => deleted.add(id);
+  Future<void> deletePost({required String id}) async {
+    if (stuck case final stuck?) await stuck.future;
+    if (fails case final fails?) throw fails;
+    deleted.add(id);
+  }
 
   @override
   Future<void> disconnect() async => disconnects++;
+
+  @override
+  Future<void> resumed() async {}
+
+  @override
+  Future<List<Post>> feed({required int limit}) async => [];
+
+  @override
+  Future<NodeStatus> status() async => throw Exception('not in this test');
+
+  @override
+  SavedFeed? savedFeed() => null;
 
   @override
   dynamic noSuchMethod(Invocation invocation) =>
@@ -39,16 +64,20 @@ void main() {
   late FakeApp app;
   late HomeNode node;
 
+  /// A node on this phone, as when the app starts: kept deletes come back.
+  HomeNode phoneNode() => HomeNode.forTests(
+    app,
+    UploadsFolder(
+      Directory('${root.path}/uploads'),
+      pickerDir: Directory('${root.path}/cache'),
+    ),
+    WaitingDeletes(File('${root.path}/waiting-deletes.json')),
+  );
+
   setUp(() {
     root = Directory.systemTemp.createTempSync('delete_test');
     app = FakeApp();
-    node = HomeNode.forTests(
-      app,
-      UploadsFolder(
-        Directory('${root.path}/uploads'),
-        pickerDir: Directory('${root.path}/cache'),
-      ),
-    );
+    node = phoneNode();
     node.reachability = Reachability.online;
     node.posts = [
       post('mine', deletable: 'id-mine'),
@@ -134,5 +163,79 @@ void main() {
     // Nothing is left to send when the minute would have been up.
     await tester.pump(const Duration(minutes: 2));
     expect(app.deleted, ['id-mine']);
+  });
+
+  const ann = NodeInfo(name: 'Ann', identity: 'ann', paired: '');
+
+  testWidgets(
+    'a delete the phone stopped on its way is sent at the next start',
+    (tester) async {
+      node.paired = ann;
+      await open(tester);
+      await delete(tester, 'mine', 'Delete your post');
+      app.stuck = Completer();
+      node.didChangeAppLifecycleState(AppLifecycleState.paused);
+      await tester.pump();
+      expect(app.deleted, isEmpty);
+
+      // Back before it got there: it isn't sent twice.
+      node.didChangeAppLifecycleState(AppLifecycleState.resumed);
+      await tester.pump();
+      node.didChangeAppLifecycleState(AppLifecycleState.paused);
+      await tester.pump();
+
+      // The phone stopped the app. When it starts again, the delete goes.
+      final stopped = node;
+      app.stuck = null;
+      node = phoneNode()..paired = ann;
+      node.didChangeAppLifecycleState(AppLifecycleState.resumed);
+      await tester.pump(Duration.zero);
+      expect(app.deleted, ['id-mine']);
+      // And once only.
+      node.didChangeAppLifecycleState(AppLifecycleState.paused);
+      node.didChangeAppLifecycleState(AppLifecycleState.resumed);
+      await tester.pump(const Duration(minutes: 2));
+      expect(app.deleted, ['id-mine']);
+      stopped.dispose();
+      node.dispose();
+    },
+  );
+
+  testWidgets('a waiting delete is still hidden, and waits out its minute, '
+      'after a restart', (tester) async {
+    await open(tester);
+    await delete(tester, 'mine', 'Delete your post');
+    await tester.pump(const Duration(seconds: 20));
+    // The phone stopped the app, its timers with it.
+    node.dispose();
+    node = phoneNode()
+      ..paired = ann
+      ..posts = node.posts;
+    node.didChangeAppLifecycleState(AppLifecycleState.resumed);
+    await tester.pump();
+    expect(node.visiblePosts.map((p) => p.text), isNot(contains('mine')));
+    await tester.pump(const Duration(seconds: 30));
+    expect(app.deleted, isEmpty);
+    await tester.pump(const Duration(seconds: 15));
+    expect(app.deleted, ['id-mine']);
+    node.dispose();
+  });
+
+  testWidgets('one undone, or one the owner was told failed, is forgotten', (
+    tester,
+  ) async {
+    await open(tester);
+    await delete(tester, 'mine', 'Delete your post');
+    await tester.tap(find.text('Undo'));
+    await tester.pump();
+    app.fails = Exception('the node said no');
+    await delete(tester, 'reshared', 'Delete your reshare');
+    await tester.pump(const Duration(minutes: 2));
+    expect(app.deleted, isEmpty);
+    app.fails = null;
+    expect(
+      WaitingDeletes(File('${root.path}/waiting-deletes.json')).read(),
+      isEmpty,
+    );
   });
 }

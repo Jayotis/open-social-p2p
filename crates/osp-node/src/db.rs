@@ -353,19 +353,26 @@ const MIGRATIONS: &[&str] = &[
         node       TEXT PRIMARY KEY,
         removed_ms INTEGER NOT NULL
     );",
+    // 25: the search index (`SEARCH_SCHEMA`) gained each post's date. It's
+    // built again when the database is opened.
+    "DROP TABLE IF EXISTS search_text; DROP TABLE IF EXISTS search_items;",
 ];
 
 /// The search index (ADR 0014): a number for each post, by its object ID, and
 /// each profile, by its identity, and FTS5's index of their words by that
-/// number. The words themselves stay only in the signed objects.
+/// number. The words themselves stay only in the signed objects. A post's
+/// date (`objects.published_ms`) is kept by its number too, so a search can
+/// order what it finds without looking each match up in `objects`; a
+/// profile has none.
 ///
 /// It's derived from `objects` and `profiles`, so it isn't in `MIGRATIONS`:
 /// `Db::open` builds it whenever it's missing. To change it, say for another
 /// tokenizer, a migration drops both tables.
 const SEARCH_SCHEMA: &str = "
 CREATE TABLE search_items (
-    id  INTEGER PRIMARY KEY,
-    key TEXT NOT NULL UNIQUE
+    id           INTEGER PRIMARY KEY,
+    key          TEXT NOT NULL UNIQUE,
+    published_ms INTEGER
 );
 CREATE VIRTUAL TABLE search_text USING fts5(
     text,
@@ -2517,15 +2524,25 @@ impl Db {
 
     /// Stored posts matching what a person typed: the best match first, and
     /// among equals the newest.
+    ///
+    ///
+    /// Every other request waits while it runs, and a common word can match
+    /// most posts, so it ranks the matches by what the index holds (their
+    /// words and dates), and reads only the best from `objects`.
     pub fn search_posts(&self, words: &str, limit: u32) -> Result<Vec<SignedObject>> {
         self.search(
             words,
             limit,
-            "SELECT objects.signed FROM search_text
-             JOIN search_items ON search_items.id = search_text.rowid
-             JOIN objects ON objects.id = search_items.key
-             WHERE search_text MATCH ?1
-             ORDER BY bm25(search_text), objects.published_ms DESC LIMIT ?2",
+            "SELECT objects.signed FROM (
+               SELECT search_items.key AS key, bm25(search_text) AS rank,
+                      search_items.published_ms AS published_ms
+               FROM search_text
+               JOIN search_items ON search_items.id = search_text.rowid
+               WHERE search_text MATCH ?1 AND search_items.published_ms IS NOT NULL
+               ORDER BY rank, published_ms DESC LIMIT ?2
+             ) AS best
+             JOIN objects ON objects.id = best.key
+             ORDER BY best.rank, best.published_ms DESC",
         )
     }
 
@@ -3712,7 +3729,7 @@ fn upsert_profile(conn: &Connection, person: &Person, obj: &SignedObject) -> Res
          ON CONFLICT(actor) DO UPDATE SET name = excluded.name, signed = excluded.signed",
         params![actor, person.name, signed],
     )?;
-    index_for_search(conn, &actor, &profile_text(person))
+    index_for_search(conn, &actor, &profile_text(person), None)
 }
 
 /// Stores a signed object, and its words for a search. Returns false if it was
@@ -3750,7 +3767,7 @@ fn insert_object(
     if n > 0 {
         add_refs(conn, &id, payload)?;
         if let Payload::Note(note) = payload {
-            index_for_search(conn, &id, &note.content)?;
+            index_for_search(conn, &id, &note.content, Some(published))?;
         }
     }
     Ok(n > 0)
@@ -4105,13 +4122,19 @@ fn profile_text(person: &Person) -> String {
 }
 
 /// Puts `text` in the search index for one post or profile, in place of what
-/// the index held for it.
-fn index_for_search(conn: &Connection, key: &str, text: &str) -> Result<()> {
+/// the index held for it. `published_ms` is a post's date, `None` for a
+/// profile.
+fn index_for_search(
+    conn: &Connection,
+    key: &str,
+    text: &str,
+    published_ms: Option<i64>,
+) -> Result<()> {
     let id: i64 = conn.query_row(
-        "INSERT INTO search_items (key) VALUES (?1)
-         ON CONFLICT (key) DO UPDATE SET key = key
+        "INSERT INTO search_items (key, published_ms) VALUES (?1, ?2)
+         ON CONFLICT (key) DO UPDATE SET published_ms = excluded.published_ms
          RETURNING id",
-        params![key],
+        params![key, published_ms],
         |row| row.get(0),
     )?;
     conn.execute(
@@ -4151,21 +4174,23 @@ fn build_search_index(conn: &Connection) -> Result<()> {
     let mut indexed = 0;
     {
         let mut stmt = tx.prepare(
-            "SELECT signed FROM objects WHERE kind = 'Note'
-             UNION ALL SELECT signed FROM profiles",
+            "SELECT signed, published_ms FROM objects WHERE kind = 'Note'
+             UNION ALL SELECT signed, NULL FROM profiles",
         )?;
-        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
-        for json in rows {
-            let obj: SignedObject =
-                serde_json::from_str(&json?).context("corrupt stored object")?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, Option<i64>>(1)?))
+        })?;
+        for row in rows {
+            let (json, published_ms) = row?;
+            let obj: SignedObject = serde_json::from_str(&json).context("corrupt stored object")?;
             // Checked when it arrived; one that fails today's checks can't be
             // shown, so it isn't indexed.
             match obj.verify() {
                 Ok(Payload::Note(note)) => {
-                    index_for_search(&tx, &obj.id().to_string(), &note.content)?;
+                    index_for_search(&tx, &obj.id().to_string(), &note.content, published_ms)?;
                 }
                 Ok(Payload::Person(person)) => {
-                    index_for_search(&tx, &person.actor.to_string(), &profile_text(&person))?;
+                    index_for_search(&tx, &person.actor.to_string(), &profile_text(&person), None)?;
                 }
                 _ => continue,
             }
@@ -6249,5 +6274,39 @@ mod tests {
         assert_eq!(found_posts(&db, "one"), ["one good post"]);
         assert_eq!(indexed(&db, "good"), 1);
         assert_eq!(indexed(&db, "changed"), 0);
+    }
+
+    #[test]
+    fn a_search_index_from_before_dates_is_built_again_when_opened() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.db");
+        let key = SecretKey::generate();
+        {
+            let db = Db::open(&path).unwrap();
+            store_note(&db, &key, "ash early", EARLIER);
+            store_note(&db, &key, "ash later", LATER);
+            // The index as it was before migration 25: no dates.
+            db.conn()
+                .execute_batch(
+                    "DROP TABLE search_text; DROP TABLE search_items;
+                     CREATE TABLE search_items (id INTEGER PRIMARY KEY, key TEXT NOT NULL UNIQUE);
+                     CREATE VIRTUAL TABLE search_text USING fts5(
+                         text, content = '', contentless_delete = 1,
+                         tokenize = 'unicode61 remove_diacritics 2');
+                     PRAGMA user_version = 24;",
+                )
+                .unwrap();
+        }
+        let db = Db::open(&path).unwrap();
+        assert_eq!(found_posts(&db, "ash"), ["ash later", "ash early"]);
+        let undated: i64 = db
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM search_items WHERE published_ms IS NULL",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(undated, 0);
     }
 }

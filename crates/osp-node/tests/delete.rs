@@ -287,3 +287,45 @@ async fn a_follower_that_was_away_hears_at_its_next_sync() {
         node.shutdown().await.unwrap();
     }
 }
+
+/// ADR 0019's "a fetch under way when the delete arrives": a file is kept
+/// only while a post here names it, so one whose post went while it came
+/// is let go once it's here.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_file_whose_post_went_while_it_came_is_let_go() {
+    let dir = tempfile::tempdir().unwrap();
+    let alice = start(dir.path(), "Alice").await;
+    let bob = start(dir.path(), "Bob").await;
+    let (photo_post, photo) = post_photo(&alice, dir.path(), "a photo").await;
+    let ClientResponse::Item { item } = call(&alice, ClientRequest::Show { id: photo_post }).await
+    else {
+        panic!("not shown")
+    };
+    let size = item.attachments[0].attachment.size;
+    let from = [alice.addr().await];
+
+    // Bob has no post naming it: it comes, and goes.
+    let err = bob
+        .download_if_named(&photo, size, &from)
+        .await
+        .unwrap_err();
+    assert!(
+        err.to_string().contains("deleted while it downloaded"),
+        "{err:#}"
+    );
+    assert_eq!(bob.blob_class(&photo).unwrap(), None);
+
+    // Once he has the post, it's kept.
+    follow(&bob, &alice).await;
+    assert_eq!(feed_texts(&bob).await, ["a photo"]);
+    bob.let_go_of_blob(&photo).await.unwrap();
+    assert_eq!(
+        bob.download_if_named(&photo, size, &from).await.unwrap(),
+        size
+    );
+    assert!(bob.blob_class(&photo).unwrap().is_some());
+
+    for node in [alice, bob] {
+        node.shutdown().await.unwrap();
+    }
+}

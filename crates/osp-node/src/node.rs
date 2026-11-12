@@ -881,6 +881,19 @@ impl Node {
             .await
     }
 
+    /// Downloads a blob as `download_blob_from` does, then keeps it only if a
+    /// post here names it, as every download for a post does: one whose post
+    /// was deleted while it came is let go (ADR 0019). For tests.
+    pub async fn download_if_named(
+        &self,
+        hash: &BlobHash,
+        size: u64,
+        providers: &[EndpointAddr],
+    ) -> Result<u64> {
+        let size = self.download_blob_from(hash, size, providers).await?;
+        self.core.still_named(hash, size).await
+    }
+
     /// Promises `bytes` of disk space, as an upload in progress does, until
     /// the returned guard is dropped. For tests: it fills the disk as far
     /// as the node can tell, without writing anything.
