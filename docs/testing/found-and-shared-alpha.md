@@ -25,6 +25,26 @@ And whether the mechanism behaves as built (below). If it does, ADR 0025's rotat
 
 After the last slot plus a day, each tester sends the maintainer the `Shared:` line from `osp status`, their choice and their slot, **if they choose to**. The count stays on their node otherwise.
 
+## The script testers get
+
+Draft, 2026-11-12, for the maintainer's review. The maintainer sends each tester this, with their slot's time and the words to search for. It describes each choice in the CLI's and ADR 0025's own words, and recommends none.
+
+> **Before your slot.** Install your node ([docs/install.md](../install.md)) at least an hour before, so its first connections are done. If you want people who search to be able to find what you share, your node has to be listed by the directories: that's the "Ask directories to list you?" question at install, or `list_me` under `[directory]` in `~/.local/share/osp/config.toml` (then `systemctl --user restart osp`).
+>
+> **In your slot:**
+>
+> 1. Search for the words you were sent: `osp search <words>`. If nothing shows, run `osp directory read`, wait a minute and search again. The video's line starts with its author's name, and ends with `id: …`.
+> 2. Open it: `osp fetch <id> --out ~/Videos`, and watch it if you like. Note whether it opened.
+> 3. Decide whether to share it. Any of these is fine; choose what you'd do if nobody were asking:
+>    - **Don't share it.** Nothing to do.
+>    - **Share it:** `osp reshare <id>`. Your reshare is signed by you and shows your profile to anyone who sees it. Your node doesn't keep a copy for others.
+>    - **Share it and host it:** `osp reshare <id> --host`. This also keeps a copy of its media and serves it to others. Anyone can see that you shared this and that your node serves it; your address stays hidden, as it's served through relays; others keep what they've seen even if you delete it later. It uses some of your upload, which `max_upload_mbps` in config.toml can cap.
+>
+>    To take a share back later: `osp delete <id>`, with the ID `osp reshare` printed after "Published". It can't be undone, and copies people saved stay.
+> 4. Write down the time and what you chose.
+>
+> **A day after the last slot,** if you choose to, send the maintainer your slot, what you chose, and the `Shared:` line from `osp status`. If you'd rather not, nothing is sent: the count stays on your node.
+
 ## What's recorded
 
 - **The sharing rate:** testers who reshared with hosting, out of those who opened the video. Also how many reshared without hosting.
