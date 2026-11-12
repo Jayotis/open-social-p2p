@@ -593,6 +593,10 @@ impl UploadState {
     }
 }
 
+/// The most reshares shown with a found post: a directory lists up to 16
+/// hosting each (ADR 0025).
+pub const MAX_FOUND_RESHARES_SHOWN: u32 = 16;
+
 /// A follower's node as stored (`Db::follower_rows`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FollowerRow {
@@ -2234,6 +2238,25 @@ impl Db {
         let mut stmt = conn.prepare("SELECT DISTINCT actor FROM found_hosts WHERE note = ?1")?;
         let rows = stmt.query_map(params![post.to_string()], |row| row.get::<_, String>(0))?;
         rows.map(|actor| Ok(actor?.parse()?)).collect()
+    }
+
+    /// The reshares of `post` that came with it through directories: those
+    /// marked hosting, and those of a post with files. A reshare of a post
+    /// with only words, not hosting, isn't linked to it here. Newest first,
+    /// at most `MAX_FOUND_RESHARES_SHOWN`.
+    pub fn found_reshares_of(&self, post: &ObjectId) -> Result<Vec<SignedObject>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT signed FROM objects WHERE id IN (
+                 SELECT via FROM found_hosts WHERE note = ?1
+                 UNION SELECT post FROM found_blobs WHERE note = ?1)
+             ORDER BY published_ms DESC LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(params![post.to_string(), MAX_FOUND_RESHARES_SHOWN], |row| {
+            row.get::<_, String>(0)
+        })?;
+        rows.map(|r| serde_json::from_str(&r?).context("corrupt stored object"))
+            .collect()
     }
 
     // ---- a directory's checks of listed reshares (ADR 0025) ----

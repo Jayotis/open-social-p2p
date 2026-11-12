@@ -727,6 +727,10 @@ pub struct FeedItem {
     /// this is one, or else their own post.
     #[serde(default)]
     pub deletable: Option<ObjectId>,
+    /// For a post found through a directory, the reshares of it that came
+    /// with it, newest first: who reshared it, and who hosts a copy (ADR 0025).
+    #[serde(default)]
+    pub found_reshares: Vec<ResharedBy>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

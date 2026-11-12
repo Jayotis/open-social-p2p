@@ -1708,6 +1708,21 @@ fn item_text(item: &FeedItem) -> String {
     if let Some(directory) = &item.found_through {
         let _ = writeln!(out, "  found through directory {directory}");
     }
+    if !item.found_reshares.is_empty() {
+        let names: Vec<String> = item
+            .found_reshares
+            .iter()
+            .map(|by| {
+                let name = by
+                    .name
+                    .clone()
+                    .unwrap_or_else(|| by.actor.fmt_short().to_string());
+                let hosting = if by.hosting { " (hosting)" } else { "" };
+                format!("{}{hosting}", plain(&name))
+            })
+            .collect();
+        let _ = writeln!(out, "  reshared by {}", names.join(", "));
+    }
     for line in item.content.lines() {
         let _ = writeln!(out, "  {}", plain(line));
     }
@@ -1800,6 +1815,13 @@ mod tests {
             }),
             found_through: Some("oak-ash-elm".into()),
             deletable: None,
+            found_reshares: vec![ResharedBy {
+                actor,
+                name: Some(format!("Jimmy{escape}")),
+                announce: osp_proto::ObjectId::of(b"found reshare"),
+                published: "2026-11-02".into(),
+                hosting: true,
+            }],
         };
         let shown = item_text(&item);
         let bad: Vec<_> = shown
@@ -1814,5 +1836,6 @@ mod tests {
             shown.contains("found through directory oak-ash-elm"),
             "{shown}"
         );
+        assert!(shown.contains("(hosting)"), "{shown}");
     }
 }
