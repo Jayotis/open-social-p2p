@@ -59,6 +59,8 @@ Still to evaluate:
 
 ## Building the prototype
 
+The invited alpha's testers install a release instead: see [docs/install.md](docs/install.md).
+
 Requirements: Rust (stable), Tor (a new node uses it unless made with `osp init --no-tor`), ffmpeg, and libheif-examples for iPhone photos (HEIC).
 
 ```sh
