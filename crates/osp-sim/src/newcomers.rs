@@ -125,6 +125,11 @@ pub(crate) async fn start_directory(s: &Scenario, net: &SimNet, listings: usize)
         machine_names: true,
         tor_delay: s.tor_delay(),
         new_listings_per_hour: listings.max(SimSettings::default().new_listings_per_hour),
+        // Newcomers arrive over hours, not weeks: with ADR 0025's week of
+        // listing before hosting, and its cap on new names, none would host
+        // through the directory, and the run measures sharers serving.
+        hosting_after_listed: Duration::ZERO,
+        new_name_for: Duration::ZERO,
         ..SimSettings::default()
     };
     start(

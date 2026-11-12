@@ -438,6 +438,20 @@ pub struct ReshareCheck {
     pub checked_ms: i64,
 }
 
+/// A listed reshare that says it hosts its post, for the day's pick of the
+/// post's hosts (ADR 0025).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostingClaim {
+    pub announce: ObjectId,
+    pub actor: PublicKey,
+    /// When its resharer first asked to be listed; None if they aren't now.
+    pub listed_ms: Option<i64>,
+    /// Its copy's checks pass: one passed, and not 2 failed in a row since.
+    pub passing: bool,
+    /// Listed as hosting now.
+    pub hosting: bool,
+}
+
 /// A resharer that told this node it hosts one of its posts (ADR 0025).
 #[derive(Debug, Clone, PartialEq)]
 pub struct ResharerHost {
@@ -2356,15 +2370,47 @@ impl Db {
         Ok(())
     }
 
-    /// How many of `post`'s reshares are listed as hosting, but `announce`.
-    pub fn hosting_reshares_of(&self, post: &ObjectId, announce: &ObjectId) -> Result<usize> {
-        let n: i64 = self.conn().query_row(
-            "SELECT COUNT(*) FROM reshare_checks
-             WHERE post = ?1 AND announce != ?2 AND hosting = 1",
-            params![post.to_string(), announce.to_string()],
-            |row| row.get(0),
+    /// The listed reshares of `post` that say they host it (ADR 0025), each
+    /// with when its resharer first asked to be listed, whether its checks
+    /// pass (one passed, and not `fails_unmark` failed in a row since), and
+    /// whether it's listed as hosting now.
+    pub fn hosting_claims(&self, post: &ObjectId, fails_unmark: u32) -> Result<Vec<HostingClaim>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT reshare_checks.announce, reshare_checks.actor, listed.asked_ms,
+                    reshare_checks.passed = 1 AND reshare_checks.fails < ?2,
+                    reshare_checks.hosting
+             FROM reshare_checks LEFT JOIN listed ON listed.actor = reshare_checks.actor
+             WHERE reshare_checks.post = ?1 AND reshare_checks.claims = 1",
         )?;
-        Ok(n as usize)
+        let rows = stmt.query_map(params![post.to_string(), fails_unmark], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<i64>>(2)?,
+                row.get::<_, bool>(3)?,
+                row.get::<_, bool>(4)?,
+            ))
+        })?;
+        rows.map(|row| {
+            let (announce, actor, listed_ms, passing, hosting) = row?;
+            Ok(HostingClaim {
+                announce: announce.parse()?,
+                actor: actor.parse()?,
+                listed_ms,
+                passing,
+                hosting,
+            })
+        })
+        .collect()
+    }
+
+    /// The posts with a listed reshare that says it hosts them.
+    pub fn posts_with_hosting_claims(&self) -> Result<Vec<ObjectId>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare("SELECT DISTINCT post FROM reshare_checks WHERE claims = 1")?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+        rows.map(|post| post?.parse()).collect()
     }
 
     /// Forgets the checks of `actor`'s reshares that aren't listed any more.
