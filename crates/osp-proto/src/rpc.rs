@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     object::ObjectId,
+    social::ReplyPolicy,
     types::{Attachment, BlobHash},
 };
 
@@ -175,6 +176,35 @@ pub enum ClientRequest {
         actor: PublicKey,
         note: String,
     },
+    /// The replies kept to one of this node's own posts (ADR 0028), in thread
+    /// order: published and hidden ones, and the post's policy.
+    Thread {
+        post: ObjectId,
+    },
+    /// Replies waiting for the owner, newest first (ADR 0028).
+    ReplyRequests,
+    /// Answers a reply waiting among the requests.
+    AnswerReply {
+        reply: ObjectId,
+        answer: ReplyAnswer,
+    },
+    /// Hides a published reply from its thread, or shows a hidden one again.
+    HideReply {
+        reply: ObjectId,
+        hidden: bool,
+    },
+    /// Sets who may reply to one of this node's own posts.
+    SetReplyPolicy {
+        post: ObjectId,
+        policy: ReplyPolicy,
+    },
+    /// Allows someone to reply to this node's posts from now on, blocks them,
+    /// or with no `choice` forgets either.
+    SetReplier {
+        actor: PublicKey,
+        #[serde(default)]
+        choice: Option<ReplierChoice>,
+    },
     /// Reaches a node over Tor and asks for its profile, timing both (local
     /// socket only, ADR 0014). Reuses the connection the last one opened.
     TorPing {
@@ -300,6 +330,15 @@ pub enum ClientResponse {
     Trust {
         requests: Vec<TrustInfo>,
         trusted: Vec<TrustInfo>,
+    },
+    /// The replies kept to one of this node's posts, in thread order.
+    Thread {
+        policy: ReplyPolicy,
+        replies: Vec<ReplyInfo>,
+    },
+    /// Replies waiting, newest first.
+    ReplyRequests {
+        requests: Vec<ReplyInfo>,
     },
     /// How long connecting took, if this ping connected, and the request.
     TorPinged {
@@ -669,6 +708,55 @@ pub struct TrustInfo {
     /// How many of this node's files it holds a copy of, as checked when it
     /// said so (`Hosting`).
     pub copies: usize,
+}
+
+/// A reply to one of this node's posts (ADR 0028).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReplyInfo {
+    pub id: ObjectId,
+    /// The post it answers.
+    pub post: ObjectId,
+    pub actor: PublicKey,
+    /// The name in the profile that came with it. Not checked.
+    pub name: String,
+    pub content: String,
+    /// The date the replier gave it.
+    pub published: String,
+    pub state: ReplyStatus,
+    /// For a request, why it's there, from what this node knows: "you don't
+    /// follow them", say.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub why: Option<String>,
+}
+
+/// Where a reply to one of this node's posts stands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReplyStatus {
+    Published,
+    Hidden,
+    Request,
+}
+
+/// The owner's answer to a reply waiting among the requests.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReplyAnswer {
+    /// Publish this one.
+    Publish,
+    /// Publish it, and let its replier in from now on.
+    PublishAndAllow,
+    Decline,
+    /// Decline it, hide the replier's published replies, and refuse new ones.
+    Block,
+}
+
+/// What the owner chose for a replier.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReplierChoice {
+    Allow,
+    Block,
 }
 
 /// How a node reached this one.

@@ -566,7 +566,7 @@ impl Core {
                 continue;
             }
             match self.verify_received(&entry.object) {
-                Ok(Payload::Note(_)) => posts.push(entry.object),
+                Ok(Payload::Note(note)) if !note.is_reply() => posts.push(entry.object),
                 Ok(Payload::Announce(a)) if reshares.len() < MAX_LISTED_RESHARES => {
                     if self.db.is_tombstoned(&a.object)? {
                         continue;
@@ -575,7 +575,9 @@ impl Core {
                         continue;
                     };
                     match self.verify_received(post) {
-                        Ok(Payload::Note(note)) if post.signer() == a.object_actor => {
+                        Ok(Payload::Note(note))
+                            if post.signer() == a.object_actor && !note.is_reply() =>
+                        {
                             reshares.push((entry.object, a, post.clone(), note));
                         }
                         Ok(_) => debug!("skipping a reshare of something that isn't its post"),
@@ -850,7 +852,10 @@ impl Core {
         }
         for post in &posts {
             ensure!(post.signer() == actor, "a post signed by someone else");
-            ensure!(matches!(post.verify()?, Payload::Note(_)), "not a post");
+            ensure!(
+                matches!(post.verify()?, Payload::Note(n) if !n.is_reply()),
+                "not a post"
+            );
         }
         // Each reshare is its owner's, of a post signed by the author it
         // names, and the directory's hosting mark only on one that says so.
@@ -871,7 +876,10 @@ impl Core {
                 r.post.signer() == a.object_actor,
                 "a reshared post signed by someone else"
             );
-            ensure!(matches!(r.post.verify()?, Payload::Note(_)), "not a post");
+            ensure!(
+                matches!(r.post.verify()?, Payload::Note(n) if !n.is_reply()),
+                "not a post"
+            );
         }
         self.verify_received(profile)?;
         let mut checked = Vec::new();

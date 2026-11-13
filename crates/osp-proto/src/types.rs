@@ -176,6 +176,8 @@ impl Payload {
 
 /// Longest post text, in bytes.
 pub const MAX_CONTENT_BYTES: usize = 10_000;
+/// Longest reply text, in bytes (ADR 0028).
+pub const MAX_REPLY_BYTES: usize = 4_000;
 /// Most photos or videos in one post.
 pub const MAX_ATTACHMENTS: usize = 4;
 /// Largest media file an attachment may declare. Ten minutes of video in
@@ -255,6 +257,27 @@ pub struct Note {
 }
 
 impl Note {
+    /// Whether this note answers another post (ADR 0028). A reply goes only to
+    /// the post's creator, never into an outbox, a feed, search or a
+    /// directory's lists.
+    pub fn is_reply(&self) -> bool {
+        self.in_reply_to.is_some()
+    }
+
+    /// Checks what a reply must be beyond any note (ADR 0028): it answers a
+    /// post, its text isn't empty once trimmed and is within
+    /// [`MAX_REPLY_BYTES`], and it has no attachments.
+    pub fn check_reply(&self) -> Result<()> {
+        ensure!(self.is_reply(), "that isn't a reply");
+        ensure!(self.attachment.is_empty(), "a reply can't have attachments");
+        ensure!(!self.content.trim().is_empty(), "the reply is empty");
+        ensure!(
+            self.content.len() <= MAX_REPLY_BYTES,
+            "the reply is longer than {MAX_REPLY_BYTES} bytes"
+        );
+        Ok(())
+    }
+
     /// Every blob this note refers to: media and thumbnails.
     pub fn blobs(&self) -> impl Iterator<Item = BlobHash> + '_ {
         self.attachment.iter().flat_map(|a| a.blobs())

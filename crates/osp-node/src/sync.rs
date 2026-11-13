@@ -302,6 +302,10 @@ impl Core {
                     Ok(Payload::Key(_)) => {
                         warn!(%actor, "skipping a key certificate; they come inside objects")
                     }
+                    // A reply goes only to its post's creator (ADR 0028).
+                    Ok(Payload::Note(note)) if note.is_reply() => {
+                        warn!(%actor, "skipping a reply in an outbox")
+                    }
                     Ok(payload) => checked.push((entry.object, payload)),
                     Err(e) => warn!(%actor, "skipping an invalid outbox entry: {e:#}"),
                 }
@@ -347,6 +351,9 @@ impl Core {
                         if self.db.profile(&person.actor)?.is_none() {
                             self.db.upsert_profile(person, &obj)?;
                         }
+                    }
+                    Payload::Note(note) if note.is_reply() => {
+                        debug!(%actor, "ignoring a reshare of a reply")
                     }
                     Payload::Note(note) if wanted_posts.contains(&obj.id()) => {
                         if self.store_object(&obj, &payload, Some(note), hold).await? {

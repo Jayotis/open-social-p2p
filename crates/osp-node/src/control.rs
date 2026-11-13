@@ -17,7 +17,7 @@ use osp_proto::{
     framing::{read_frame, write_frame},
     rpc::{
         AttachmentInfo, ClientRequest, ClientResponse, DirectoryStatus, FeedItem, FetchedFile,
-        FollowerInfo, PeerRecord, PersonInfo, ResharedBy, SharedStatus, StatusInfo,
+        FollowerInfo, PeerRecord, PersonInfo, ReplierChoice, ResharedBy, SharedStatus, StatusInfo,
     },
     social::SocialRequest,
     types::{MAX_ATTACHMENTS, MAX_CONTENT_BYTES},
@@ -31,7 +31,7 @@ use tracing::{debug, info, warn};
 
 use crate::{
     config::RelayChoice,
-    db::{BlobClass, now_ms},
+    db::{BlobClass, Choice, now_ms},
     directory, health, machine, media, network,
     node::{Core, check_addr, remember},
     social::FOLLOWER_SILENCE,
@@ -265,6 +265,30 @@ impl Core {
             }
             ClientRequest::AskTrust { actor, note } => {
                 self.ask_trust(&actor, &note).await?;
+                ClientResponse::Ok
+            }
+            ClientRequest::Thread { post } => self.own_thread(&post)?,
+            ClientRequest::ReplyRequests => ClientResponse::ReplyRequests {
+                requests: self.reply_request_list()?,
+            },
+            ClientRequest::AnswerReply { reply, answer } => {
+                self.answer_reply_request(&reply, answer)?;
+                ClientResponse::Ok
+            }
+            ClientRequest::HideReply { reply, hidden } => {
+                self.hide_reply(&reply, hidden)?;
+                ClientResponse::Ok
+            }
+            ClientRequest::SetReplyPolicy { post, policy } => {
+                self.set_reply_policy(&post, policy)?;
+                ClientResponse::Ok
+            }
+            ClientRequest::SetReplier { actor, choice } => {
+                let choice = choice.map(|c| match c {
+                    ReplierChoice::Allow => Choice::Allowed,
+                    ReplierChoice::Block => Choice::Blocked,
+                });
+                self.set_replier(&actor, choice)?;
                 ClientResponse::Ok
             }
             ClientRequest::Pair { .. }

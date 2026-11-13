@@ -103,6 +103,76 @@ pub enum SocialRequest {
     /// list the sending node. If it says they may not be listed, this asks to
     /// be dropped.
     AskListing { profile: SignedObject },
+    /// "Here's my owner's reply to one of your posts" (ADR 0028). `reply` is a
+    /// signed `Note` whose `in_reply_to` names a post in this node's outbox;
+    /// `profile` is its replier's signed profile, which must list the sending
+    /// node. Answered with [`SocialResponse::Reply`]; sending the same reply
+    /// again gives its current state.
+    SubmitReply {
+        reply: SignedObject,
+        profile: SignedObject,
+    },
+    /// "My owner deleted their reply" (ADR 0028): their signed `Delete` of it,
+    /// and their profile as with `SubmitReply`. The creator's node drops the
+    /// reply and keeps the `Delete`, so an old copy can't come back.
+    DeleteReply {
+        delete: SignedObject,
+        profile: SignedObject,
+    },
+}
+
+/// Who a post lets reply (ADR 0028).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReplyPolicy {
+    /// Nobody.
+    Off,
+    /// Those the creator follows, their trusted followers, and those the
+    /// creator allowed.
+    Circle,
+    /// The circle directly; anyone else goes to the creator's requests.
+    #[default]
+    Network,
+}
+
+impl ReplyPolicy {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ReplyPolicy::Off => "off",
+            ReplyPolicy::Circle => "circle",
+            ReplyPolicy::Network => "network",
+        }
+    }
+}
+
+impl std::str::FromStr for ReplyPolicy {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> anyhow::Result<Self> {
+        Ok(match s {
+            "off" => ReplyPolicy::Off,
+            "circle" => ReplyPolicy::Circle,
+            "network" => ReplyPolicy::Network,
+            _ => anyhow::bail!("a reply policy is off, circle or network, not {s:?}"),
+        })
+    }
+}
+
+/// What became of a reply on its creator's node (ADR 0028).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReplyState {
+    /// In the post's thread, for anyone to read.
+    Published,
+    /// Waiting among the creator's requests.
+    AwaitingApproval,
+    /// Refused, declined, hidden or past a limit: one answer for all, so a
+    /// replier can't tell they're blocked.
+    NotPublished,
+    /// The post takes no replies.
+    Closed,
+    /// The reply, or the post it answers, was deleted.
+    Deleted,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -131,6 +201,10 @@ pub enum SocialResponse {
     },
     Objects {
         objects: Vec<SignedObject>,
+    },
+    /// The answer to `SubmitReply` and `DeleteReply` (ADR 0028).
+    Reply {
+        state: ReplyState,
     },
     /// This node's media endpoint, and its direct one if its rule allows.
     Endpoints {

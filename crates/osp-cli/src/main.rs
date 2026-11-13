@@ -41,8 +41,9 @@ use osp_proto::{
     machine::MAX_LISTED_POSTS,
     rpc::{
         ClientRequest, ClientResponse, DeviceInfo, Direction, FeedItem, FollowerInfo, PeerRecord,
-        Reached, StatusInfo, TrustInfo,
+        Reached, ReplierChoice, ReplyAnswer, ReplyInfo, ReplyStatus, StatusInfo, TrustInfo,
     },
+    social::ReplyPolicy,
 };
 use tokio::net::UnixStream;
 
@@ -171,6 +172,40 @@ enum Command {
     /// Delete one of your posts or reshares, everywhere the software reaches.
     /// It can't be undone, and copies people saved stay
     Delete { id: ObjectId },
+    /// Show the replies to one of your posts, and who may reply to it
+    Replies { post: ObjectId },
+    /// List the replies waiting for you to look at them, newest first
+    ReplyRequests,
+    /// Publish a reply waiting among your requests
+    ReplyPublish {
+        reply: ObjectId,
+        /// Also let its replier in from now on, without asking you
+        #[arg(long)]
+        allow: bool,
+    },
+    /// Decline a reply waiting among your requests. Its replier isn't told
+    ReplyDecline {
+        reply: ObjectId,
+        /// Also block its replier: their replies on your posts are hidden, and new
+        /// ones refused
+        #[arg(long)]
+        block: bool,
+    },
+    /// Hide a published reply from its thread, or with --show, show it again. It
+    /// isn't deleted: the words are its replier's
+    ReplyHide {
+        reply: ObjectId,
+        #[arg(long)]
+        show: bool,
+    },
+    /// Set who may reply to one of your posts: off (nobody), circle (people you
+    /// follow, your trusted followers and those you allowed) or network (your
+    /// circle at once, anyone else to your requests)
+    ReplyPolicy { post: ObjectId, policy: ReplyPolicy },
+    /// Let someone reply to your posts without asking you, or block them, by
+    /// their identity
+    #[command(subcommand)]
+    Repliers(RepliersCommand),
     /// Download a post's media, optionally saving it to a directory
     Fetch {
         id: ObjectId,
@@ -221,6 +256,16 @@ enum Command {
     /// being built (ADR 0015)
     #[command(subcommand)]
     Directory(DirectoryCommand),
+}
+
+#[derive(Subcommand)]
+enum RepliersCommand {
+    /// Publish their replies on your posts without asking you
+    Allow { actor: PublicKey },
+    /// Hide their replies on your posts and refuse new ones. They aren't told
+    Block { actor: PublicKey },
+    /// Forget that you allowed or blocked them
+    Forget { actor: PublicKey },
 }
 
 #[derive(Subcommand)]
@@ -524,6 +569,35 @@ async fn main() -> Result<()> {
             out_dir: out.map(|p| std::path::absolute(&p)).transpose()?,
         },
         Command::Sync => ClientRequest::Sync,
+        Command::Replies { post } => ClientRequest::Thread { post },
+        Command::ReplyRequests => ClientRequest::ReplyRequests,
+        Command::ReplyPublish { reply, allow } => ClientRequest::AnswerReply {
+            reply,
+            answer: match allow {
+                true => ReplyAnswer::PublishAndAllow,
+                false => ReplyAnswer::Publish,
+            },
+        },
+        Command::ReplyDecline { reply, block } => ClientRequest::AnswerReply {
+            reply,
+            answer: match block {
+                true => ReplyAnswer::Block,
+                false => ReplyAnswer::Decline,
+            },
+        },
+        Command::ReplyHide { reply, show } => ClientRequest::HideReply {
+            reply,
+            hidden: !show,
+        },
+        Command::ReplyPolicy { post, policy } => ClientRequest::SetReplyPolicy { post, policy },
+        Command::Repliers(command) => {
+            let (actor, choice) = match command {
+                RepliersCommand::Allow { actor } => (actor, Some(ReplierChoice::Allow)),
+                RepliersCommand::Block { actor } => (actor, Some(ReplierChoice::Block)),
+                RepliersCommand::Forget { actor } => (actor, None),
+            };
+            ClientRequest::SetReplier { actor, choice }
+        }
     };
     let resp = send(&home, request).await?;
     print(resp, cli.json)
@@ -1198,6 +1272,31 @@ fn print(resp: ClientResponse, json: bool) -> Result<()> {
     match resp {
         ClientResponse::Error { message } => bail!(message),
         ClientResponse::Ok => println!("Done."),
+        ClientResponse::Thread { policy, replies } => {
+            let who = match policy {
+                ReplyPolicy::Off => "nobody",
+                ReplyPolicy::Circle => "your circle",
+                ReplyPolicy::Network => "your circle, and anyone else through your requests",
+            };
+            println!("Who may reply: {who} ({}).", policy.as_str());
+            if replies.is_empty() {
+                println!("No replies yet.");
+            }
+            replies.iter().for_each(print_reply);
+        }
+        ClientResponse::ReplyRequests { requests } => {
+            if requests.is_empty() {
+                println!("No replies are waiting for you.");
+            } else {
+                println!(
+                    "Replies waiting for you, newest first. Each name is what that person says."
+                );
+                requests.iter().for_each(print_reply);
+                println!();
+                println!("`osp reply-publish <reply>` (--allow to let them in from now on), or");
+                println!("`osp reply-decline <reply>` (--block to block them); they aren't told.");
+            }
+        }
         ClientResponse::Status(status) => print_status(&status),
         ClientResponse::Followers { followers, removed } => print_followers(&followers, &removed),
         ClientResponse::FollowerRemoved { was_following } => {
@@ -1598,6 +1697,28 @@ fn print_peers(peers: &[PeerRecord]) {
             );
         }
     }
+}
+
+/// A reply as shown in a terminal, its words made plain.
+fn print_reply(r: &ReplyInfo) {
+    let hidden = match r.state {
+        ReplyStatus::Hidden => "  [hidden]",
+        _ => "",
+    };
+    println!();
+    println!(
+        "{} ({}) · {}{hidden}",
+        shown(&plain(&r.name)),
+        r.actor.fmt_short(),
+        plain(&r.published)
+    );
+    if let Some(why) = &r.why {
+        println!("  {why}");
+    }
+    for line in r.content.lines() {
+        println!("  {}", plain(line));
+    }
+    println!("  reply {}", r.id);
 }
 
 fn print_trust_requests(requests: &[TrustInfo]) {

@@ -484,6 +484,12 @@ impl Core {
                 self.asked_listing(remote, &profile)?;
                 SocialResponse::Ok
             }
+            SocialRequest::SubmitReply { reply, profile } => SocialResponse::Reply {
+                state: self.submitted_reply(remote, &reply, &profile)?,
+            },
+            SocialRequest::DeleteReply { delete, profile } => SocialResponse::Reply {
+                state: self.deleted_reply(remote, &delete, &profile)?,
+            },
         })
     }
 
@@ -686,16 +692,7 @@ impl Core {
     /// table. Both are checked again at the end, as the second's certificate
     /// may revoke the key that signed the first.
     pub(crate) fn resharer_keys_current(&self, reshare: &HostingReshare) -> Result<()> {
-        self.verify_received(&reshare.profile)?;
-        self.verify_received(&reshare.announce)?;
-        for obj in [&reshare.profile, &reshare.announce] {
-            ensure!(
-                !self.db.signed_by_revoked_key(obj)?,
-                "signed with a key that {} has revoked",
-                obj.signer().fmt_short()
-            );
-        }
-        Ok(())
+        self.keys_current(&[&reshare.profile, &reshare.announce])
     }
 
     /// The host for the one place in a `WhoHosts` reply for a recently

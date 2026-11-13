@@ -255,6 +255,8 @@ pub(crate) struct Core {
     pub swarm_samples: PerHour,
     /// Followers and resharers whose copies were checked (`Hosting`) this hour.
     pub hosting_checks: PerHour,
+    /// New replies each node sent this hour (ADR 0028).
+    pub reply_senders: PerHour,
     /// How often each host was named in `WhoHosts` (ADR 0025).
     pub named_hosts: NamedHosts,
     /// When followers last sent us a request, and how.
@@ -573,6 +575,7 @@ impl Node {
             sync_retries: Mutex::new(HashMap::new()),
             swarm_samples: PerHour::default(),
             hosting_checks: PerHour::default(),
+            reply_senders: PerHour::default(),
             named_hosts: NamedHosts::default(),
             heard: Heard::default(),
             tell_moved_lock: tokio::sync::Mutex::new(()),
