@@ -260,6 +260,18 @@ impl Db {
         )
     }
 
+    /// How many requests are waiting.
+    pub fn reply_request_count(&self, now: i64) -> Result<usize> {
+        let conn = self.conn();
+        forget_old_requests(&conn, now)?;
+        let n: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM received_replies WHERE state = 'request'",
+            [],
+            |row| row.get(0),
+        )?;
+        Ok(n as usize)
+    }
+
     /// Published and hidden replies to `post`, in thread order.
     pub fn kept_thread(&self, post: &ObjectId) -> Result<Vec<ReplyRow>> {
         let conn = self.conn();
@@ -559,6 +571,7 @@ mod tests {
         db.add_received_reply(&published, true).unwrap();
         let now = super::super::now_ms();
         assert!(db.reply_requests(now).unwrap().is_empty());
+        assert_eq!(db.reply_request_count(now).unwrap(), 0);
         assert_eq!(db.received_reply_state(&waiting.id, now).unwrap(), None);
         assert_eq!(
             db.received_reply_state(&published.id, now).unwrap(),
@@ -581,6 +594,8 @@ mod tests {
         let waiting = received(&SecretKey::generate(), post, "waiting", now);
         db.add_received_reply(&waiting, false).unwrap();
         db.move_reply(&ids[1], Held::Hidden, now).unwrap();
+        // Only the request counts as waiting.
+        assert_eq!(db.reply_request_count(now).unwrap(), 1);
 
         let page = db.thread(&post, 0, 2).unwrap();
         let got: Vec<_> = page.iter().map(|r| r.reply.id).collect();

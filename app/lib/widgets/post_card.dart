@@ -4,6 +4,7 @@ import '../format.dart';
 import '../node.dart';
 import '../screens/image_screen.dart';
 import '../screens/player_screen.dart';
+import '../screens/thread_screen.dart';
 import '../src/rust/api/osp.dart';
 
 /// One post in the feed: author, text, photos and videos, and reshare.
@@ -164,8 +165,8 @@ class PostCard extends StatelessWidget {
             ),
           for (final media in post.media)
             _MediaTile(node: node, post: post, media: media),
-          Row(
-            mainAxisAlignment: MainAxisAlignment.end,
+          OverflowBar(
+            alignment: MainAxisAlignment.end,
             children: [
               if (post.deletable != null)
                 TextButton.icon(
@@ -181,6 +182,17 @@ class PostCard extends StatelessWidget {
                     : null,
                 icon: const Icon(Icons.repeat),
                 label: const Text('Reshare'),
+              ),
+              TextButton.icon(
+                onPressed: node.reachability == Reachability.online
+                    ? () => Navigator.of(context).push(
+                        MaterialPageRoute(
+                          builder: (_) => ThreadScreen(node: node, post: post),
+                        ),
+                      )
+                    : null,
+                icon: const Icon(Icons.chat_bubble_outline),
+                label: const Text('Replies'),
               ),
               const SizedBox(width: 8),
             ],

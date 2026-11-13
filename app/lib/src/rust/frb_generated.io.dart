@@ -103,6 +103,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   Uint8List dco_decode_list_prim_u_8_strict(dynamic raw);
 
   @protected
+  List<Reply> dco_decode_list_reply(dynamic raw);
+
+  @protected
+  List<SentReply> dco_decode_list_sent_reply(dynamic raw);
+
+  @protected
   List<TrustEntry> dco_decode_list_trust_entry(dynamic raw);
 
   @protected
@@ -145,7 +151,16 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   PostStage dco_decode_post_stage(dynamic raw);
 
   @protected
+  Reply dco_decode_reply(dynamic raw);
+
+  @protected
   SavedFeed dco_decode_saved_feed(dynamic raw);
+
+  @protected
+  SentReply dco_decode_sent_reply(dynamic raw);
+
+  @protected
+  Thread dco_decode_thread(dynamic raw);
 
   @protected
   TrustEntry dco_decode_trust_entry(dynamic raw);
@@ -252,6 +267,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   Uint8List sse_decode_list_prim_u_8_strict(SseDeserializer deserializer);
 
   @protected
+  List<Reply> sse_decode_list_reply(SseDeserializer deserializer);
+
+  @protected
+  List<SentReply> sse_decode_list_sent_reply(SseDeserializer deserializer);
+
+  @protected
   List<TrustEntry> sse_decode_list_trust_entry(SseDeserializer deserializer);
 
   @protected
@@ -298,7 +319,16 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   PostStage sse_decode_post_stage(SseDeserializer deserializer);
 
   @protected
+  Reply sse_decode_reply(SseDeserializer deserializer);
+
+  @protected
   SavedFeed sse_decode_saved_feed(SseDeserializer deserializer);
+
+  @protected
+  SentReply sse_decode_sent_reply(SseDeserializer deserializer);
+
+  @protected
+  Thread sse_decode_thread(SseDeserializer deserializer);
 
   @protected
   TrustEntry sse_decode_trust_entry(SseDeserializer deserializer);
@@ -430,6 +460,15 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_list_reply(List<Reply> self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_list_sent_reply(
+    List<SentReply> self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_list_trust_entry(
     List<TrustEntry> self,
     SseSerializer serializer,
@@ -490,7 +529,16 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_encode_post_stage(PostStage self, SseSerializer serializer);
 
   @protected
+  void sse_encode_reply(Reply self, SseSerializer serializer);
+
+  @protected
   void sse_encode_saved_feed(SavedFeed self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_sent_reply(SentReply self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_thread(Thread self, SseSerializer serializer);
 
   @protected
   void sse_encode_trust_entry(TrustEntry self, SseSerializer serializer);

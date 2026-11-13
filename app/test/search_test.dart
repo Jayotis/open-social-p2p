@@ -42,6 +42,7 @@ class FakeApp implements OspApp {
 Post post(String text, {String? foundThrough}) => Post(
   id: 'id-$text',
   author: 'Bob',
+  authorIdentity: 'id-Bob',
   published: '2026-01-01T00:00:00Z',
   text: text,
   media: const [],

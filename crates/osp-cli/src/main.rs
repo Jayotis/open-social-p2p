@@ -1633,6 +1633,11 @@ fn print_status(s: &StatusInfo) {
             "Trust:     {n} requests to be a trusted follower waiting (`osp trust requests`)"
         ),
     }
+    match s.reply_requests {
+        0 => {}
+        1 => println!("Replies:   a reply waiting for you (`osp reply-requests`)"),
+        n => println!("Replies:   {n} replies waiting for you (`osp reply-requests`)"),
+    }
     if s.problems.is_empty() {
         println!("Health:    no problems");
     }

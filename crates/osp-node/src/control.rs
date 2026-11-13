@@ -404,6 +404,7 @@ impl Core {
             transfer_places,
             upload_measured_mbps,
             trust_requests: self.db.trust_request_count(now_ms())?,
+            reply_requests: self.db.reply_request_count(now_ms())?,
             tor: self.tor.as_ref().map(|tor| tor.status()),
             endpoints: self.endpoints.as_ref().map(|own| Box::new(own.status())),
             machine: self.machine.is_some(),

@@ -480,6 +480,9 @@ pub struct StatusInfo {
     /// Requests to be a trusted follower waiting for an answer (ADR 0013).
     #[serde(default)]
     pub trust_requests: usize,
+    /// Replies waiting among the requests (ADR 0028).
+    #[serde(default)]
+    pub reply_requests: usize,
     /// The node's Tor, when it's on (ADR 0014).
     #[serde(default)]
     pub tor: Option<TorStatus>,
