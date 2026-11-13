@@ -53,3 +53,4 @@ pub use meet::{Acquaintance, IntroductionCounts, MeetingTimes, Stage};
 pub use node::SimSettings;
 pub use node::{Node, Restored};
 pub use trust::plain;
+pub use vouches::Gathered;

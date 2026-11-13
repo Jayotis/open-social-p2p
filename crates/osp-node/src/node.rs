@@ -59,7 +59,7 @@ use crate::{
     trust,
     uploads::{LiveUpload, UploadKey},
     viewing::{self, Viewing},
-    vouches,
+    vouches::{self, Gathered},
 };
 
 /// Limits that only the simulated network harness (`osp-sim`) changes,
@@ -264,6 +264,9 @@ pub(crate) struct Core {
     pub new_resharers: PerHour,
     /// Found-early credits each node sent this hour (ADR 0029).
     pub credit_senders: PerHour,
+    /// Questions about who vouched for the owner each node asked this hour
+    /// (ADR 0029).
+    pub vouch_questions: PerHour,
     /// Wakes the telling of credits given and reshares made (ADR 0029).
     pub tell_vouches_now: Notify,
     /// How often each host was named in `WhoHosts` (ADR 0025).
@@ -587,6 +590,7 @@ impl Node {
             reply_senders: PerHour::default(),
             new_resharers: PerHour::default(),
             credit_senders: PerHour::default(),
+            vouch_questions: PerHour::default(),
             tell_vouches_now: Notify::new(),
             named_hosts: NamedHosts::default(),
             heard: Heard::default(),
@@ -692,6 +696,7 @@ impl Node {
         let resharers = tokio::spawn(hosting::resharers_loop(core.clone()));
         let replies = tokio::spawn(replying::send_loop(core.clone()));
         let vouches = tokio::spawn(vouches::vouches_loop(core.clone()));
+        let side = tokio::spawn(vouches::gather_loop(core.clone()));
         let mut tasks = vec![
             serving_rules,
             sync_loop,
@@ -703,6 +708,7 @@ impl Node {
             resharers,
             replies,
             vouches,
+            side,
         ];
         tasks.extend(directory_tasks);
         if core.config.network.relay != RelayChoice::Disabled {
@@ -852,6 +858,24 @@ impl Node {
     /// early (ADR 0029). For tests.
     pub fn found_early_credits(&self) -> Result<Vec<ObjectId>> {
         self.core.db.vouch_posts(crate::db::VouchKind::FoundEarly)
+    }
+
+    /// Gathers the owner's side now, as the node does once a day (ADR 0029).
+    /// For tests.
+    pub async fn gather_side_now(&self) -> Result<Gathered> {
+        self.core.gather_side().await
+    }
+
+    /// The owner's side as last gathered: each voucher and how many steps
+    /// back from the owner, nearest first (ADR 0029). For tests.
+    pub fn side(&self) -> Result<Vec<(PublicKey, u8)>> {
+        Ok(self
+            .core
+            .db
+            .side()?
+            .into_iter()
+            .map(|v| (v.voucher, v.step))
+            .collect())
     }
 
     /// Whom this node's owner credited with finding `post` early (ADR 0029).

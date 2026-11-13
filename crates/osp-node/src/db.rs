@@ -27,7 +27,7 @@ mod sent_replies;
 mod vouches;
 pub(crate) use replies::{Choice, Held, ReceivedReply, ReplyRow};
 pub(crate) use sent_replies::SentReply;
-pub(crate) use vouches::{GivenCredit, NewVouch, VouchKind};
+pub(crate) use vouches::{GivenCredit, NewVouch, SideVouch, VouchKind};
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS objects (
@@ -460,6 +460,20 @@ const MIGRATIONS: &[&str] = &[
     );
     CREATE TABLE told_reshares (
         announce TEXT PRIMARY KEY
+    );",
+    // 29: this node's owner's side (ADR 0029): who vouched for them, who
+    // vouched for those, and so on, 3 steps back. Each voucher once, at the
+    // nearest step found, with the signed vouch that places them. Replaced
+    // whole at each daily gathering, whose time is kept so a restart doesn't
+    // gather again early.
+    "CREATE TABLE side_vouches (
+        voucher TEXT PRIMARY KEY,
+        step    INTEGER NOT NULL,
+        signed  TEXT NOT NULL
+    );
+    CREATE TABLE side_gathered (
+        id INTEGER PRIMARY KEY CHECK (id = 0),
+        ms INTEGER NOT NULL
     );",
 ];
 
@@ -6456,6 +6470,7 @@ mod tests {
                      DROP TABLE sent_replies;
                      DROP TABLE vouches; DROP TABLE voucher_profiles;
                      DROP TABLE credits_given; DROP TABLE told_reshares;
+                     DROP TABLE side_vouches; DROP TABLE side_gathered;
                      PRAGMA user_version = 24;",
                 )
                 .unwrap();
