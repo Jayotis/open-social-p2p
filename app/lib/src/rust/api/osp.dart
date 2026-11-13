@@ -450,6 +450,10 @@ class Post {
   /// one, or else their own post. `None` for anyone else's.
   final String? deletable;
 
+  /// For one of the owner's own posts, how many people's nodes said they
+  /// reshared it (ADR 0029). `None` for anyone else's.
+  final int? resharers;
+
   const Post({
     required this.id,
     required this.author,
@@ -461,6 +465,7 @@ class Post {
     required this.resharerHosts,
     this.foundThrough,
     this.deletable,
+    this.resharers,
   });
 
   @override
@@ -474,7 +479,8 @@ class Post {
       resharedBy.hashCode ^
       resharerHosts.hashCode ^
       foundThrough.hashCode ^
-      deletable.hashCode;
+      deletable.hashCode ^
+      resharers.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -490,7 +496,8 @@ class Post {
           resharedBy == other.resharedBy &&
           resharerHosts == other.resharerHosts &&
           foundThrough == other.foundThrough &&
-          deletable == other.deletable;
+          deletable == other.deletable &&
+          resharers == other.resharers;
 }
 
 class PostProgress {

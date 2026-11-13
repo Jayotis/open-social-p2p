@@ -2085,8 +2085,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   Post dco_decode_post(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 10)
-      throw Exception('unexpected arr length: expect 10 but see ${arr.length}');
+    if (arr.length != 11)
+      throw Exception('unexpected arr length: expect 11 but see ${arr.length}');
     return Post(
       id: dco_decode_String(arr[0]),
       author: dco_decode_String(arr[1]),
@@ -2098,6 +2098,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       resharerHosts: dco_decode_bool(arr[7]),
       foundThrough: dco_decode_opt_String(arr[8]),
       deletable: dco_decode_opt_String(arr[9]),
+      resharers: dco_decode_opt_box_autoadd_u_32(arr[10]),
     );
   }
 
@@ -2677,6 +2678,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_resharerHosts = sse_decode_bool(deserializer);
     var var_foundThrough = sse_decode_opt_String(deserializer);
     var var_deletable = sse_decode_opt_String(deserializer);
+    var var_resharers = sse_decode_opt_box_autoadd_u_32(deserializer);
     return Post(
       id: var_id,
       author: var_author,
@@ -2688,6 +2690,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       resharerHosts: var_resharerHosts,
       foundThrough: var_foundThrough,
       deletable: var_deletable,
+      resharers: var_resharers,
     );
   }
 
@@ -3242,6 +3245,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_bool(self.resharerHosts, serializer);
     sse_encode_opt_String(self.foundThrough, serializer);
     sse_encode_opt_String(self.deletable, serializer);
+    sse_encode_opt_box_autoadd_u_32(self.resharers, serializer);
   }
 
   @protected

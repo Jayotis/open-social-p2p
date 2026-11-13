@@ -138,6 +138,20 @@ pub enum SocialRequest {
     /// "Who vouched for your owner?" (ADR 0029). Asked by anyone, about
     /// public acts. Answered with [`SocialResponse::Vouches`].
     WhoVouched,
+    /// "Here's who vouched for my owner" (ADR 0029): the replier's side, sent
+    /// only once the creator's node answered `reply` with `show_vouches`. At
+    /// most [`MAX_SIDE_VOUCHES`] signed vouches, each for the replier or for
+    /// a voucher of theirs. The one request that may be up to
+    /// [`MAX_SIDE_REQUEST_LEN`] long. Answered with [`SocialResponse::Reply`].
+    ShowVouches {
+        reply: ObjectId,
+        side: Vec<SignedObject>,
+    },
+    /// "Which of these can you place within 2 steps of your owner?" (ADR
+    /// 0029), from the node of someone its owner follows or who follows its
+    /// owner. At most [`MAX_SIDE_VOUCHES`] identities. Answered with
+    /// [`SocialResponse::Placed`]; never passed on.
+    PlaceWithin { identities: Vec<PublicKey> },
 }
 
 /// Most vouches one answer to `WhoVouched` holds (ADR 0029).
@@ -145,6 +159,19 @@ pub const MAX_VOUCHES_ANSWERED: usize = 32;
 
 /// Most vouches a node keeps of its owner's side, 3 steps back (ADR 0029).
 pub const MAX_SIDE_VOUCHES: usize = 256;
+
+/// Largest frame of a `ShowVouches` request, in bytes: a full side is about
+/// 150 KB. Every other request stays within [`MAX_REQUEST_LEN`].
+pub const MAX_SIDE_REQUEST_LEN: u32 = 256 * 1024;
+
+/// One identity a node placed near its owner, in answer to `PlaceWithin`:
+/// 0 steps is its owner, 1 someone its owner follows or trusts, 2 someone
+/// they reshared lately.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlacedAt {
+    pub actor: PublicKey,
+    pub steps: u8,
+}
 
 /// A vouch for someone, with its voucher's signed profile, so their node
 /// can be reached (ADR 0029).
@@ -237,9 +264,19 @@ pub enum SocialResponse {
     Objects {
         objects: Vec<SignedObject>,
     },
-    /// The answer to `SubmitReply` and `DeleteReply` (ADR 0028).
+    /// The answer to `SubmitReply`, `DeleteReply` and `ShowVouches` (ADR
+    /// 0028). With `show_vouches`, the reply waits among the creator's
+    /// requests, and showing who vouched for the replier may let it in (ADR
+    /// 0029): send `ShowVouches`.
     Reply {
         state: ReplyState,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        show_vouches: bool,
+    },
+    /// The answer to `PlaceWithin`: those of the identities asked about
+    /// that this node places within 2 steps of its owner.
+    Placed {
+        placed: Vec<PlacedAt>,
     },
     /// The answer to `WhoVouched`: at most [`MAX_VOUCHES_ANSWERED`] vouches
     /// for this node's owner, one per voucher, newest first.

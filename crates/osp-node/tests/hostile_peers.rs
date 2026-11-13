@@ -184,12 +184,22 @@ async fn oversized_requests_are_refused_at_once() {
     let addr = node.addr().await;
 
     let peer = stranger(&addr, SOCIAL_ALPN).await;
-    assert_oversized_refused(&peer, social::MAX_REQUEST_LEN).await;
+    assert_oversized_refused(&peer, social::MAX_SIDE_REQUEST_LEN).await;
     // The connection still works for proper requests.
     assert!(matches!(
         ask(&peer, &SocialRequest::GetProfile).await,
         SocialResponse::Profile { .. }
     ));
+    // Only a replier's side may be longer than `MAX_REQUEST_LEN` (ADR 0029).
+    let long = SocialRequest::PlaceWithin {
+        identities: vec![SecretKey::generate().public(); 2_000],
+    };
+    match ask(&peer, &long).await {
+        SocialResponse::Error { message } => {
+            assert!(message.contains("at most 65536"), "{message}")
+        }
+        other => panic!("unexpected {other:?}"),
+    }
 
     // An unknown device may only pair, so it gets the much smaller limit.
     let device = stranger(&addr, CLIENT_ALPN).await;

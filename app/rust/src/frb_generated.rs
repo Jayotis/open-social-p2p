@@ -2881,6 +2881,7 @@ impl SseDecode for crate::api::osp::Post {
         let mut var_resharerHosts = <bool>::sse_decode(deserializer);
         let mut var_foundThrough = <Option<String>>::sse_decode(deserializer);
         let mut var_deletable = <Option<String>>::sse_decode(deserializer);
+        let mut var_resharers = <Option<u32>>::sse_decode(deserializer);
         return crate::api::osp::Post {
             id: var_id,
             author: var_author,
@@ -2892,6 +2893,7 @@ impl SseDecode for crate::api::osp::Post {
             resharer_hosts: var_resharerHosts,
             found_through: var_foundThrough,
             deletable: var_deletable,
+            resharers: var_resharers,
         };
     }
 }
@@ -3326,6 +3328,7 @@ impl flutter_rust_bridge::IntoDart for crate::api::osp::Post {
             self.resharer_hosts.into_into_dart().into_dart(),
             self.found_through.into_into_dart().into_dart(),
             self.deletable.into_into_dart().into_dart(),
+            self.resharers.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
@@ -3840,6 +3843,7 @@ impl SseEncode for crate::api::osp::Post {
         <bool>::sse_encode(self.resharer_hosts, serializer);
         <Option<String>>::sse_encode(self.found_through, serializer);
         <Option<String>>::sse_encode(self.deletable, serializer);
+        <Option<u32>>::sse_encode(self.resharers, serializer);
     }
 }
 

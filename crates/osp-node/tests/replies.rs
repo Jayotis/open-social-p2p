@@ -189,7 +189,7 @@ fn profile_listing(identity: &SecretKey, nodes: Vec<EndpointId>) -> SignedObject
 
 fn state(resp: SocialResponse) -> ReplyState {
     match resp {
-        SocialResponse::Reply { state } => state,
+        SocialResponse::Reply { state, .. } => state,
         other => panic!("unexpected {other:?}"),
     }
 }

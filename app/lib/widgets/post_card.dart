@@ -147,6 +147,16 @@ class PostCard extends StatelessWidget {
             title: Text(post.author),
             subtitle: published != null ? Text(formatAgo(published)) : null,
           ),
+          if ((post.resharers ?? 0) > 0)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+              child: Text(
+                post.resharers == 1
+                    ? 'Reshared by 1 person'
+                    : 'Reshared by ${post.resharers} people',
+                style: theme.textTheme.bodySmall,
+              ),
+            ),
           if (post.foundThrough != null)
             Padding(
               padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),

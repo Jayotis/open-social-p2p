@@ -48,7 +48,12 @@ class FakeApp implements OspApp {
       throw UnimplementedError('${invocation.memberName}');
 }
 
-Post post(String text, {String? deletable, String? resharedBy}) => Post(
+Post post(
+  String text, {
+  String? deletable,
+  String? resharedBy,
+  int? resharers,
+}) => Post(
   id: 'id-$text',
   author: 'Ann',
   authorIdentity: 'id-Ann',
@@ -58,6 +63,7 @@ Post post(String text, {String? deletable, String? resharedBy}) => Post(
   resharedBy: resharedBy,
   resharerHosts: false,
   deletable: deletable,
+  resharers: resharers,
 );
 
 void main() {
@@ -81,7 +87,7 @@ void main() {
     node = phoneNode();
     node.reachability = Reachability.online;
     node.posts = [
-      post('mine', deletable: 'id-mine'),
+      post('mine', deletable: 'id-mine', resharers: 2),
       post('theirs'),
       post('reshared', deletable: 'my-reshare', resharedBy: 'Ann'),
     ];
@@ -123,6 +129,11 @@ void main() {
   ) async {
     await open(tester);
     expect(find.text('Delete'), findsNWidgets(2));
+  });
+
+  testWidgets('your own post says how many reshared it', (tester) async {
+    await open(tester);
+    expect(find.text('Reshared by 2 people'), findsOneWidget);
   });
 
   testWidgets('a delete waits a minute, and Undo keeps the post', (
