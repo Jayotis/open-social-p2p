@@ -394,6 +394,11 @@ impl Core {
                         }
                         continue;
                     }
+                    // Sent only to its finder's node, never in an outbox (ADR 0029).
+                    Payload::FoundEarly(_) => {
+                        debug!(%actor, "skipping a found-early credit in an outbox");
+                        continue;
+                    }
                     _ => {}
                 }
                 // Deleted by its author, or the post it reshares: an old
@@ -445,7 +450,8 @@ impl Core {
                     Payload::Person(_)
                     | Payload::Key(_)
                     | Payload::Delete(_)
-                    | Payload::ForwardDelete(_) => {}
+                    | Payload::ForwardDelete(_)
+                    | Payload::FoundEarly(_) => {}
                 }
             }
             self.db.set_follow_synced(&follow.actor, cursor)?;

@@ -24,8 +24,10 @@ use crate::{meet, peers, trust};
 
 mod replies;
 mod sent_replies;
+mod vouches;
 pub(crate) use replies::{Choice, Held, ReceivedReply, ReplyRow};
 pub(crate) use sent_replies::SentReply;
+pub(crate) use vouches::{GivenCredit, NewVouch, VouchKind};
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS objects (
@@ -424,6 +426,41 @@ const MIGRATIONS: &[&str] = &[
         sent_ms       INTEGER NOT NULL
     );
     CREATE INDEX sent_replies_next_try ON sent_replies(next_try_ms);",
+    // 28: who vouched for this node's owner (ADR 0029). Each vouch: a reshare
+    // of one of the owner's posts, or a found-early credit from the author of
+    // a post the owner reshared; the post, the voucher, the signed object,
+    // when it was first and last heard of, and the post's date, by which the
+    // oldest go first. Each voucher's newest signed profile, so their node
+    // can be reached. The credits this node's owner gave its posts' early
+    // finders, and whether each finder's node has it. And which of the
+    // owner's reshares their authors' nodes were told of.
+    "CREATE TABLE vouches (
+        kind     TEXT NOT NULL,
+        post     TEXT NOT NULL,
+        voucher  TEXT NOT NULL,
+        signed   TEXT NOT NULL,
+        first_ms INTEGER NOT NULL,
+        heard_ms INTEGER NOT NULL,
+        post_ms  INTEGER NOT NULL,
+        PRIMARY KEY (kind, post, voucher)
+    );
+    CREATE INDEX vouches_by_post_ms ON vouches(kind, post_ms);
+    CREATE INDEX vouches_by_voucher ON vouches(voucher);
+    CREATE TABLE voucher_profiles (
+        actor        TEXT PRIMARY KEY,
+        profile      TEXT NOT NULL,
+        published_ms INTEGER NOT NULL
+    );
+    CREATE TABLE credits_given (
+        post   TEXT NOT NULL,
+        finder TEXT NOT NULL,
+        signed TEXT NOT NULL,
+        told   INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (post, finder)
+    );
+    CREATE TABLE told_reshares (
+        announce TEXT PRIMARY KEY
+    );",
 ];
 
 /// The search index (ADR 0014): a number for each post, by its object ID, and
@@ -6417,6 +6454,8 @@ mod tests {
                      DROP TABLE reply_policies; DROP TABLE received_replies;
                      DROP TABLE repliers; DROP TABLE reply_deletes;
                      DROP TABLE sent_replies;
+                     DROP TABLE vouches; DROP TABLE voucher_profiles;
+                     DROP TABLE credits_given; DROP TABLE told_reshares;
                      PRAGMA user_version = 24;",
                 )
                 .unwrap();

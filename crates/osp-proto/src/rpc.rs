@@ -901,6 +901,10 @@ pub struct FeedItem {
     /// with it, newest first: who reshared it, and who hosts a copy (ADR 0025).
     #[serde(default)]
     pub found_reshares: Vec<ResharedBy>,
+    /// For one of the owner's own posts, how many people's nodes said they
+    /// reshared it (ADR 0029).
+    #[serde(default)]
+    pub resharers: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

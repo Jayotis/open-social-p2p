@@ -1952,6 +1952,13 @@ fn item_text(item: &FeedItem) -> String {
     if let Some(directory) = &item.found_through {
         let _ = writeln!(out, "  found through directory {directory}");
     }
+    match item.resharers {
+        Some(1) => out.push_str("  reshared by 1 person\n"),
+        Some(n) if n > 1 => {
+            let _ = writeln!(out, "  reshared by {n} people");
+        }
+        _ => {}
+    }
     if !item.found_reshares.is_empty() {
         let names: Vec<String> = item
             .found_reshares
@@ -2066,6 +2073,7 @@ mod tests {
                 published: "2026-11-02".into(),
                 hosting: true,
             }],
+            resharers: None,
         };
         let shown = item_text(&item);
         let bad: Vec<_> = shown
