@@ -389,3 +389,109 @@ async fn a_flood_of_new_resharers_stops_at_the_limit() {
 
     kim.shutdown().await.unwrap();
 }
+
+/// The vouchers in an answer to `WhoVouched`, checking each comes with its
+/// voucher's profile.
+fn vouchers(resp: SocialResponse) -> Vec<PublicKey> {
+    let SocialResponse::Vouches { vouches } = resp else {
+        panic!("unexpected {resp:?}")
+    };
+    vouches
+        .iter()
+        .map(|carried| {
+            let voucher = carried.vouch.signer();
+            assert_eq!(carried.profile.signer(), voucher);
+            voucher
+        })
+        .collect()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn who_vouched_is_answered_newest_first_one_per_voucher() {
+    let dir = tempfile::tempdir().unwrap();
+    let kim = start(dir.path(), "Kim").await;
+    let first = post(&kim, "first").await;
+    let second = post(&kim, "second").await;
+    let peer = Peer::new(&kim.addr().await).await;
+    let me = kim.identity();
+    let now = osp_proto::now_rfc3339();
+    let resharers: Vec<SecretKey> = (0..40).map(|_| SecretKey::generate()).collect();
+    for resharer in &resharers {
+        ok(peer.reshared(resharer, first, me, &now).await);
+        // Heard of one after another, so the order is plain.
+        tokio::time::sleep(Duration::from_millis(2)).await;
+    }
+    // The first resharer reshares the second post too: newest, but once.
+    ok(peer.reshared(&resharers[0], second, me, &now).await);
+
+    let answered = vouchers(peer.ask(&SocialRequest::WhoVouched).await);
+    let mut expected = vec![resharers[0].public()];
+    expected.extend(resharers[9..].iter().rev().map(|k| k.public()));
+    assert_eq!(answered, expected);
+
+    // Ten questions an hour from one node.
+    for _ in 1..10 {
+        vouchers(peer.ask(&SocialRequest::WhoVouched).await);
+    }
+    let message = refused(peer.ask(&SocialRequest::WhoVouched).await);
+    assert!(message.contains("no more of your questions"), "{message}");
+
+    kim.shutdown().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_node_gathers_its_owners_side_three_steps_back() {
+    let dir = tempfile::tempdir().unwrap();
+    let jimmy = start(dir.path(), "Jimmy").await;
+    let bob = start(dir.path(), "Bob").await;
+    let carol = start(dir.path(), "Carol").await;
+
+    // Nobody vouched for Jimmy yet: nothing to gather, nobody asked.
+    let gathered = jimmy.gather_side_now().await.unwrap();
+    assert_eq!((gathered.side, gathered.asked), (0, 0));
+
+    // Bob reshares Jimmy's post; Carol reshares Bob's.
+    let jimmys = post(&jimmy, "by Jimmy").await;
+    follow(&bob, &jimmy).await;
+    call(&bob, ClientRequest::Sync).await;
+    reshare(&bob, jimmys).await;
+    let bobs = post(&bob, "by Bob").await;
+    follow(&carol, &bob).await;
+    call(&carol, ClientRequest::Sync).await;
+    reshare(&carol, bobs).await;
+    wait_for(
+        "Jimmy's and Bob's nodes to hear of the reshares",
+        || async {
+            resharers(&jimmy, jimmys).await == Some(1) && resharers(&bob, bobs).await == Some(1)
+        },
+    )
+    .await;
+
+    // Dan, on a node made by hand, reshares Carol's.
+    let carols = post(&carol, "by Carol").await;
+    let peer = Peer::new(&carol.addr().await).await;
+    let dan = SecretKey::generate();
+    ok(peer
+        .reshared(&dan, carols, carol.identity(), &osp_proto::now_rfc3339())
+        .await);
+
+    // So Jimmy's node can reach Bob's and Carol's, with DNS lookup off.
+    follow(&jimmy, &bob).await;
+    follow(&jimmy, &carol).await;
+
+    let gathered = jimmy.gather_side_now().await.unwrap();
+    assert_eq!(
+        jimmy.side().unwrap(),
+        [
+            (bob.identity(), 1),
+            (carol.identity(), 2),
+            (dan.public(), 3)
+        ]
+    );
+    // Bob's node and Carol's: Dan's, 3 steps back, isn't asked.
+    assert_eq!((gathered.side, gathered.asked), (3, 2));
+
+    for node in [jimmy, bob, carol] {
+        node.shutdown().await.unwrap();
+    }
+}

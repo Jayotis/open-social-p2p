@@ -7,18 +7,18 @@
 //! `FoundEarly` for each and sends it to that finder's node, which keeps it as
 //! a vouch for its owner. This is how a hunter is vouched for.
 
-use std::time::Duration;
+use std::{collections::HashSet, time::Duration};
 
 use anyhow::{Context, Result, bail, ensure};
 use iroh::{EndpointAddr, EndpointId, PublicKey};
 use osp_proto::{
     FoundEarly, ObjectId, Payload, SignedObject,
-    social::{SocialRequest, SocialResponse},
+    social::{CarriedVouch, MAX_SIDE_VOUCHES, MAX_VOUCHES_ANSWERED, SocialRequest, SocialResponse},
 };
 use tracing::{debug, info, warn};
 
 use crate::{
-    db::{GivenCredit, NewVouch, VouchKind, now_ms},
+    db::{GivenCredit, NewVouch, SideVouch, VouchKind, now_ms},
     node::Core,
     social::profile_date,
     sync::{jitter, random_fraction},
@@ -45,6 +45,17 @@ pub(crate) const FINDERS_CREDITED: usize = 3;
 const RESHARES_TOLD_A_PASS: usize = 100;
 /// How often untold reshares and credits are tried again.
 const TOLD_AGAIN_EVERY: Duration = Duration::from_secs(24 * 60 * 60);
+/// "Who vouched for you" answered for one node an hour.
+pub(crate) const MAX_VOUCH_QUESTIONS_PER_HOUR: u32 = 10;
+/// How far back from the owner their side reaches: who vouched for them is 1.
+const SIDE_STEPS: u8 = 3;
+/// Nodes asked in one gathering of the owner's side, at most. Once a day,
+/// so under 100 requests a day (ADR 0029).
+pub(crate) const MAX_GATHER_REQUESTS: usize = 80;
+/// How often the owner's side is gathered, give or take a tenth.
+const GATHER_EVERY: Duration = Duration::from_secs(24 * 60 * 60);
+/// How long one node gets to answer "who vouched for you".
+const QUESTION_TIMEOUT: Duration = Duration::from_secs(60);
 
 impl Core {
     /// The node `remote` says its owner reshared one of this node's owner's
@@ -282,10 +293,183 @@ impl Core {
 
     /// The home nodes a voucher's kept profile lists.
     fn voucher_nodes(&self, actor: &PublicKey) -> Result<Vec<EndpointId>> {
-        Ok(match self.db.voucher_profile(actor)?.map(|p| p.verify()) {
-            Some(Ok(Payload::Person(person))) => person.nodes,
-            _ => Vec::new(),
-        })
+        Ok(self
+            .db
+            .voucher_profile(actor)?
+            .map(|p| profile_nodes(&p))
+            .unwrap_or_default())
+    }
+
+    /// "Who vouched for your owner?" from the node `remote`: the newest vouch
+    /// of each voucher, at most `MAX_VOUCHES_ANSWERED`, each with its
+    /// voucher's profile. Vouches and profiles signed with keys their
+    /// identities revoked are left out.
+    pub(crate) fn who_vouched(&self, remote: EndpointId) -> Result<Vec<CarriedVouch>> {
+        ensure!(
+            self.vouch_questions
+                .allow(remote, MAX_VOUCH_QUESTIONS_PER_HOUR),
+            "this node answers no more of your questions about vouches this hour; try again later"
+        );
+        let mut vouches = Vec::new();
+        for kept in self.db.newest_vouches(MAX_SIDE_VOUCHES)? {
+            if vouches.len() >= MAX_VOUCHES_ANSWERED {
+                break;
+            }
+            if self.db.signed_by_revoked_key(&kept.signed)?
+                || self.db.signed_by_revoked_key(&kept.profile)?
+            {
+                continue;
+            }
+            vouches.push(CarriedVouch {
+                vouch: kept.signed,
+                profile: kept.profile,
+            });
+        }
+        Ok(vouches)
+    }
+
+    /// Gathers the owner's side (ADR 0029): who vouched for them (kept
+    /// here), then, asking their nodes, who vouched for those, then one step
+    /// further back. Each voucher once, at the nearest step; at most
+    /// `MAX_SIDE_VOUCHES` in all and `MAX_GATHER_REQUESTS` questions. Nodes
+    /// that don't answer, or answer with what doesn't check out, are passed
+    /// over. Replaces the side kept before.
+    pub(crate) async fn gather_side(&self) -> Result<Gathered> {
+        let me = self.signer.identity();
+        let mut placed = HashSet::from([me]);
+        let mut side = Vec::new();
+        // Whom to ask about next: each with the profile that names their nodes.
+        let mut frontier = Vec::new();
+        for kept in self.db.newest_vouches(MAX_SIDE_VOUCHES)? {
+            if self.db.signed_by_revoked_key(&kept.signed)? || !placed.insert(kept.voucher) {
+                continue;
+            }
+            side.push(SideVouch {
+                voucher: kept.voucher,
+                step: 1,
+                signed: kept.signed,
+            });
+            frontier.push((kept.voucher, kept.profile));
+        }
+        let mut asked = 0;
+        for step in 2..=SIDE_STEPS {
+            let mut next = Vec::new();
+            for (subject, profile) in frontier {
+                if side.len() >= MAX_SIDE_VOUCHES || asked >= MAX_GATHER_REQUESTS {
+                    break;
+                }
+                let Some(&node) = profile_nodes(&profile).first() else {
+                    continue;
+                };
+                asked += 1;
+                let vouches = match self.ask_who_vouched(node).await {
+                    Ok(vouches) => vouches,
+                    Err(e) => {
+                        debug!(
+                            voucher = %subject.fmt_short(),
+                            "couldn't ask who vouched for a voucher: {e:#}"
+                        );
+                        continue;
+                    }
+                };
+                for carried in vouches.into_iter().take(MAX_VOUCHES_ANSWERED) {
+                    if side.len() >= MAX_SIDE_VOUCHES {
+                        break;
+                    }
+                    let voucher = match check_carried(&carried, &subject) {
+                        Ok(voucher) => voucher,
+                        Err(e) => {
+                            debug!(
+                                node = %node.fmt_short(),
+                                "a node answered with a vouch that doesn't check out: {e:#}"
+                            );
+                            continue;
+                        }
+                    };
+                    if self.db.signed_by_revoked_key(&carried.vouch)? || !placed.insert(voucher) {
+                        continue;
+                    }
+                    side.push(SideVouch {
+                        voucher,
+                        step,
+                        signed: carried.vouch,
+                    });
+                    next.push((voucher, carried.profile));
+                }
+            }
+            frontier = next;
+        }
+        side.truncate(MAX_SIDE_VOUCHES);
+        self.db.replace_side(&side, now_ms())?;
+        let gathered = Gathered {
+            side: side.len(),
+            asked,
+        };
+        info!(
+            side = gathered.side,
+            asked = gathered.asked,
+            "gathered who vouched for this node's owner"
+        );
+        Ok(gathered)
+    }
+
+    async fn ask_who_vouched(&self, node: EndpointId) -> Result<Vec<CarriedVouch>> {
+        let addr = EndpointAddr::new(node);
+        let ask = self.social_request(&addr, &SocialRequest::WhoVouched);
+        match tokio::time::timeout(QUESTION_TIMEOUT, ask)
+            .await
+            .context("no answer in time")??
+        {
+            SocialResponse::Vouches { vouches } => Ok(vouches),
+            other => bail!("unexpected reply to WhoVouched: {other:?}"),
+        }
+    }
+}
+
+/// What a gathering of the owner's side came to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Gathered {
+    /// People on the side.
+    pub side: usize,
+    /// Nodes asked.
+    pub asked: usize,
+}
+
+/// Who signed a vouch, and whom it's for. Checks its signatures.
+pub(crate) fn vouch_parts(signed: &SignedObject) -> Result<(PublicKey, PublicKey)> {
+    let (voucher, subject) = match signed.verify()? {
+        Payload::Announce(a) => (a.actor, a.object_actor),
+        Payload::FoundEarly(f) => (f.actor, f.finder),
+        other => bail!("a {} isn't a vouch", other.kind()),
+    };
+    ensure!(
+        signed.signer() == voucher,
+        "the vouch isn't signed by its voucher"
+    );
+    ensure!(voucher != subject, "nobody vouches for themselves");
+    Ok((voucher, subject))
+}
+
+/// Checks a vouch an answer to `WhoVouched` carried: that it verifies, is
+/// for `subject`, and comes with its voucher's profile. Returns the voucher.
+fn check_carried(carried: &CarriedVouch, subject: &PublicKey) -> Result<PublicKey> {
+    let (voucher, of) = vouch_parts(&carried.vouch)?;
+    ensure!(of == *subject, "the vouch is for someone else");
+    ensure!(
+        carried.profile.signer() == voucher,
+        "the profile isn't the voucher's"
+    );
+    let Payload::Person(_) = carried.profile.verify()? else {
+        bail!("that isn't a profile");
+    };
+    Ok(voucher)
+}
+
+/// The home nodes a profile lists, if it checks out.
+fn profile_nodes(profile: &SignedObject) -> Vec<EndpointId> {
+    match profile.verify() {
+        Ok(Payload::Person(person)) => person.nodes,
+        _ => Vec::new(),
     }
 }
 
@@ -328,5 +512,112 @@ pub(crate) async fn vouches_loop(core: std::sync::Arc<Core>) {
             warn!("telling authors of our reshares failed: {e:#}");
         }
         wait = jitter(TOLD_AGAIN_EVERY);
+    }
+}
+
+/// Gathers the owner's side once a day, at a time of its own: first a while
+/// after starting, if the last was a day ago or more.
+pub(crate) async fn gather_loop(core: std::sync::Arc<Core>) {
+    loop {
+        let since = match core.db.side_gathered_ms() {
+            Ok(Some(ms)) => Duration::from_millis(now_ms().saturating_sub(ms).max(0) as u64),
+            _ => GATHER_EVERY,
+        };
+        let every = GATHER_EVERY.mul_f64(0.9 + 0.2 * random_fraction());
+        let wait =
+            every.saturating_sub(since) + Duration::from_secs(10 * 60).mul_f64(random_fraction());
+        tokio::time::sleep(wait).await;
+        if let Some(tor) = &core.tor {
+            tor.ready().await;
+        }
+        if let Err(e) = core.gather_side().await {
+            warn!("gathering who vouched for this node's owner failed: {e:#}");
+            tokio::time::sleep(Duration::from_secs(60 * 60)).await;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use iroh::SecretKey;
+    use osp_proto::{Announce, Note, Person};
+
+    use super::*;
+
+    fn profile(who: &SecretKey) -> SignedObject {
+        let person = Payload::Person(Person {
+            actor: who.public(),
+            name: "Someone".into(),
+            summary: None,
+            discoverable: false,
+            nodes: vec![],
+            media_endpoints: vec![],
+            published: osp_proto::now_rfc3339(),
+        });
+        SignedObject::sign(who, &person).unwrap()
+    }
+
+    fn reshare(who: &SecretKey, of: PublicKey) -> SignedObject {
+        let a = Payload::Announce(Announce {
+            actor: who.public(),
+            object: ObjectId::of(b"a post"),
+            object_actor: of,
+            published: osp_proto::now_rfc3339(),
+            hosting: false,
+        });
+        SignedObject::sign(who, &a).unwrap()
+    }
+
+    fn carried(vouch: SignedObject, profile: SignedObject) -> CarriedVouch {
+        CarriedVouch { vouch, profile }
+    }
+
+    #[test]
+    fn a_carried_vouch_counts_only_if_it_is_for_whom_it_says_with_its_vouchers_profile() {
+        let (bob, carol, dan) = (
+            SecretKey::generate(),
+            SecretKey::generate(),
+            SecretKey::generate(),
+        );
+        let good = carried(reshare(&carol, bob.public()), profile(&carol));
+        assert_eq!(check_carried(&good, &bob.public()).unwrap(), carol.public());
+
+        // For someone else than asked about.
+        let err = check_carried(&good, &dan.public()).unwrap_err();
+        assert!(err.to_string().contains("for someone else"), "{err:#}");
+        // With someone else's profile.
+        let wrong = carried(reshare(&carol, bob.public()), profile(&dan));
+        let err = check_carried(&wrong, &bob.public()).unwrap_err();
+        assert!(err.to_string().contains("isn't the voucher's"), "{err:#}");
+        // Something else where the profile goes.
+        let not_profile = carried(reshare(&carol, bob.public()), reshare(&carol, dan.public()));
+        let err = check_carried(&not_profile, &bob.public()).unwrap_err();
+        assert!(err.to_string().contains("isn't a profile"), "{err:#}");
+        // Not a vouch.
+        let note = Payload::Note(Note {
+            actor: carol.public(),
+            content: "hi".into(),
+            published: osp_proto::now_rfc3339(),
+            attachment: vec![],
+            in_reply_to: None,
+        });
+        let note = carried(SignedObject::sign(&carol, &note).unwrap(), profile(&carol));
+        let err = check_carried(&note, &bob.public()).unwrap_err();
+        assert!(err.to_string().contains("isn't a vouch"), "{err:#}");
+        // For oneself.
+        let own = carried(reshare(&bob, bob.public()), profile(&bob));
+        let err = check_carried(&own, &bob.public()).unwrap_err();
+        assert!(err.to_string().contains("themselves"), "{err:#}");
+    }
+
+    #[test]
+    fn a_vouch_that_doesnt_verify_doesnt_count() {
+        let (bob, carol) = (SecretKey::generate(), SecretKey::generate());
+        let mut vouch = reshare(&carol, bob.public());
+        let mut json = serde_json::to_value(&vouch).unwrap();
+        // Signed by Carol, but claimed by someone else.
+        json["signer"] = serde_json::to_value(bob.public()).unwrap();
+        vouch = serde_json::from_value(json).unwrap();
+        assert!(check_carried(&carried(vouch, profile(&carol)), &bob.public()).is_err());
     }
 }

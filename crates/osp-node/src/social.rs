@@ -501,6 +501,9 @@ impl Core {
                 self.found_early(remote, &credit, &profile)?;
                 SocialResponse::Ok
             }
+            SocialRequest::WhoVouched => SocialResponse::Vouches {
+                vouches: self.who_vouched(remote)?,
+            },
         })
     }
 

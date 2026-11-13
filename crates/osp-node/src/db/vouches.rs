@@ -47,6 +47,23 @@ pub(crate) struct GivenCredit {
     pub signed: SignedObject,
 }
 
+/// A vouch kept for the owner, with its voucher's profile.
+#[derive(Debug, Clone)]
+pub(crate) struct KeptVouch {
+    pub voucher: PublicKey,
+    pub signed: SignedObject,
+    pub profile: SignedObject,
+}
+
+/// One person on the owner's side (ADR 0029): `voucher`, `step` steps back
+/// from the owner, placed by the signed vouch `signed`.
+#[derive(Debug, Clone)]
+pub(crate) struct SideVouch {
+    pub voucher: PublicKey,
+    pub step: u8,
+    pub signed: SignedObject,
+}
+
 impl Db {
     /// Whether any vouch from `voucher` is kept.
     pub fn knows_voucher(&self, voucher: &PublicKey) -> Result<bool> {
@@ -304,6 +321,96 @@ impl Db {
             params![announce.to_string()],
         )?;
         Ok(())
+    }
+
+    // ---- the owner's side ----
+
+    /// The newest vouch of each voucher for the owner, with the voucher's
+    /// profile, newest first, at most `limit` vouchers. Those without a kept
+    /// profile are left out.
+    pub fn newest_vouches(&self, limit: usize) -> Result<Vec<KeptVouch>> {
+        let conn = self.conn();
+        // SQLite takes the other columns from the row with the largest `first_ms`.
+        let mut stmt = conn.prepare(
+            "SELECT v.voucher, v.signed, p.profile, MAX(v.first_ms) AS newest
+             FROM vouches v JOIN voucher_profiles p ON p.actor = v.voucher
+             GROUP BY v.voucher ORDER BY newest DESC LIMIT ?1",
+        )?;
+        let rows = stmt.query_map(params![limit as i64], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            let (voucher, signed, profile) = row?;
+            out.push(KeptVouch {
+                voucher: voucher.parse()?,
+                signed: serde_json::from_str(&signed).context("corrupt stored vouch")?,
+                profile: serde_json::from_str(&profile).context("corrupt stored profile")?,
+            });
+        }
+        Ok(out)
+    }
+
+    /// Replaces the owner's side with a newly gathered one, gathered at `now_ms`.
+    pub fn replace_side(&self, side: &[SideVouch], now_ms: i64) -> Result<()> {
+        let conn = self.conn();
+        let tx = conn.unchecked_transaction()?;
+        tx.execute("DELETE FROM side_vouches", [])?;
+        for v in side {
+            tx.execute(
+                "INSERT OR IGNORE INTO side_vouches (voucher, step, signed) VALUES (?1, ?2, ?3)",
+                params![
+                    v.voucher.to_string(),
+                    v.step,
+                    serde_json::to_string(&v.signed)?
+                ],
+            )?;
+        }
+        tx.execute(
+            "INSERT INTO side_gathered (id, ms) VALUES (0, ?1)
+             ON CONFLICT(id) DO UPDATE SET ms = excluded.ms",
+            params![now_ms],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// The owner's side as last gathered, nearest first.
+    pub fn side(&self) -> Result<Vec<SideVouch>> {
+        let conn = self.conn();
+        let mut stmt =
+            conn.prepare("SELECT voucher, step, signed FROM side_vouches ORDER BY step, rowid")?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, u8>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            let (voucher, step, signed) = row?;
+            out.push(SideVouch {
+                voucher: voucher.parse()?,
+                step,
+                signed: serde_json::from_str(&signed).context("corrupt stored vouch")?,
+            });
+        }
+        Ok(out)
+    }
+
+    /// When the owner's side was last gathered.
+    pub fn side_gathered_ms(&self) -> Result<Option<i64>> {
+        Ok(self
+            .conn()
+            .query_row("SELECT ms FROM side_gathered WHERE id = 0", [], |row| {
+                row.get(0)
+            })
+            .optional()?)
     }
 
     /// Whether the owner's outbox holds a reshare of `post`.

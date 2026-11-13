@@ -135,6 +135,25 @@ pub enum SocialRequest {
         credit: SignedObject,
         profile: SignedObject,
     },
+    /// "Who vouched for your owner?" (ADR 0029). Asked by anyone, about
+    /// public acts. Answered with [`SocialResponse::Vouches`].
+    WhoVouched,
+}
+
+/// Most vouches one answer to `WhoVouched` holds (ADR 0029).
+pub const MAX_VOUCHES_ANSWERED: usize = 32;
+
+/// Most vouches a node keeps of its owner's side, 3 steps back (ADR 0029).
+pub const MAX_SIDE_VOUCHES: usize = 256;
+
+/// A vouch for someone, with its voucher's signed profile, so their node
+/// can be reached (ADR 0029).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CarriedVouch {
+    /// A signed `Announce` resharing the person's post, or a signed
+    /// `FoundEarly` crediting them.
+    pub vouch: SignedObject,
+    pub profile: SignedObject,
 }
 
 /// Who a post lets reply (ADR 0028).
@@ -221,6 +240,11 @@ pub enum SocialResponse {
     /// The answer to `SubmitReply` and `DeleteReply` (ADR 0028).
     Reply {
         state: ReplyState,
+    },
+    /// The answer to `WhoVouched`: at most [`MAX_VOUCHES_ANSWERED`] vouches
+    /// for this node's owner, one per voucher, newest first.
+    Vouches {
+        vouches: Vec<CarriedVouch>,
     },
     /// This node's media endpoint, and its direct one if its rule allows.
     Endpoints {
