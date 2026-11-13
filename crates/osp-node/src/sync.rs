@@ -141,6 +141,7 @@ impl Core {
                         new_objects += n;
                         candidates.extend(blobs);
                         self.lock_sync_retries().remove(&follow.actor);
+                        self.retry_replies_to(&follow.actor);
                         for seq in forwards {
                             let core = self.clone();
                             tokio::spawn(async move { core.notify_followers(seq).await });
@@ -473,6 +474,15 @@ impl Core {
         if self.db.signed_by_revoked_key(delete)? {
             warn!(%author, "skipping a delete signed by a key revoked since");
             return Ok(());
+        }
+        // The owner's replies to it are over (ADR 0028), even if the post
+        // itself never reached this node.
+        match self.db.sent_replies_post_deleted(&d.object, &d.actor) {
+            Ok(0) => {}
+            Ok(n) => {
+                info!(%author, post = %d.object.fmt_short(), replies = n, "a post replied to was deleted")
+            }
+            Err(e) => warn!(%author, "couldn't mark replies to a deleted post: {e:#}"),
         }
         let me = self.signer.identity();
         let deleted = match self.db.apply_delete(delete, d, always, &me) {
