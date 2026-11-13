@@ -252,6 +252,55 @@ pub enum MediaHostsResponse {
     },
 }
 
+/// ALPN on which a creator's media endpoint serves the published replies to
+/// its posts (ADR 0028). Readers ask from a viewing endpoint, through the
+/// relay, so the creator's node doesn't learn who reads (ADR 0024).
+pub const REPLIES_ALPN: &[u8] = b"osp/replies/0";
+
+/// Most replies in one page of a thread.
+pub const MAX_THREAD_PAGE: usize = 50;
+
+/// Most bytes of replies and profiles in one page of a thread, once encoded.
+pub const MAX_THREAD_PAGE_BYTES: usize = 256 * 1024;
+
+/// "The replies to your post `post` after place `after`", on a creator's
+/// media endpoint. `after` is 0 for the start of the thread, or the `seq` of
+/// the last reply read.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RepliesRequest {
+    pub post: ObjectId,
+    #[serde(default)]
+    pub after: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "result", rename_all = "snake_case")]
+pub enum RepliesResponse {
+    /// Published replies, oldest first, at most [`MAX_THREAD_PAGE`] and
+    /// [`MAX_THREAD_PAGE_BYTES`]. `more` if the thread goes on past them.
+    Replies {
+        policy: ReplyPolicy,
+        replies: Vec<ThreadReply>,
+        more: bool,
+    },
+    /// The post was deleted: the creator's signed `Delete` (ADR 0019).
+    Deleted {
+        delete: SignedObject,
+    },
+    Error {
+        message: String,
+    },
+}
+
+/// One published reply in a thread, with the profile its replier sent.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ThreadReply {
+    /// Its place in the thread: ask `after` it for the ones that follow.
+    pub seq: u64,
+    pub reply: SignedObject,
+    pub profile: SignedObject,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OutboxEntry {
     pub seq: u64,

@@ -131,7 +131,11 @@ impl Viewing {
     /// The viewing endpoint for a new request for `author`'s media: the one
     /// made for them in the last `reuse_for`, or a new one. With
     /// `MAX_VIEWING` in use for others, waits for one to be free.
-    async fn lease<F>(&self, author: PublicKey, make: impl Fn() -> F) -> Result<Lease<'_>>
+    pub(crate) async fn lease<F>(
+        &self,
+        author: PublicKey,
+        make: impl Fn() -> F,
+    ) -> Result<Lease<'_>>
     where
         F: Future<Output = Result<Endpoint>>,
     {
@@ -362,7 +366,7 @@ impl Core {
 
     /// A new viewing endpoint: a key made for it, relay-only, published
     /// nowhere. It finds sources by their IDs but doesn't publish its own.
-    async fn viewing_endpoint(&self) -> Result<Endpoint> {
+    pub(crate) async fn viewing_endpoint(&self) -> Result<Endpoint> {
         let net = &self.config.network;
         if net.relay == crate::config::RelayChoice::Disabled && !on_simulated_network(&self.sim) {
             bail!("viewing endpoints need a relay, and relays are off");

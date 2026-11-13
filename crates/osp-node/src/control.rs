@@ -144,7 +144,9 @@ impl Core {
                 id: self.reshare(&id, host).await?,
             },
             ClientRequest::Delete { id } => {
-                self.delete(&id).await?;
+                if !self.delete_reply(&id).await? {
+                    self.delete(&id).await?;
+                }
                 ClientResponse::Ok
             }
             ClientRequest::Fetch { id, out_dir } => {
@@ -160,12 +162,20 @@ impl Core {
             // for it (ADR 0014): what arrives is in the feed when it looks again.
             ClientRequest::Sync if !local && self.messages_over_tor() => {
                 self.sync_now.notify_one();
+                let core = self.clone();
+                tokio::spawn(async move { core.send_waiting_replies(true).await });
                 ClientResponse::Synced { new_objects: 0 }
             }
             // A phone doesn't wait for prefetching: it can read media as soon as it's needed.
-            ClientRequest::Sync => ClientResponse::Synced {
-                new_objects: self.sync_all(local).await?,
-            },
+            ClientRequest::Sync => {
+                // Replies still waiting are tried at once (ADR 0028).
+                if let Err(e) = self.send_waiting_replies(true).await {
+                    warn!("sending waiting replies failed: {e:#}");
+                }
+                ClientResponse::Synced {
+                    new_objects: self.sync_all(local).await?,
+                }
+            }
             ClientRequest::NewPairing => {
                 ensure!(local, "devices can only be paired from the node itself");
                 self.new_pairing().await?
@@ -267,7 +277,15 @@ impl Core {
                 self.ask_trust(&actor, &note).await?;
                 ClientResponse::Ok
             }
-            ClientRequest::Thread { post } => self.own_thread(&post)?,
+            ClientRequest::Reply { post, content } => ClientResponse::ReplySent {
+                reply: self
+                    .reply(&post, content, crate::replying::reply_wait(local))
+                    .await?,
+            },
+            ClientRequest::Thread { post, after } => self.read_thread(&post, after).await?,
+            ClientRequest::SentReplies => ClientResponse::SentReplies {
+                replies: self.sent_reply_list()?,
+            },
             ClientRequest::ReplyRequests => ClientResponse::ReplyRequests {
                 requests: self.reply_request_list()?,
             },
@@ -874,7 +892,7 @@ impl Core {
     }
 
     /// The post an ID refers to: the Note itself, or the Note an Announce reshares.
-    fn resolve_note(&self, id: &ObjectId) -> Result<(ObjectId, Note)> {
+    pub(crate) fn resolve_note(&self, id: &ObjectId) -> Result<(ObjectId, Note)> {
         let obj = self
             .db
             .get_object(id)?

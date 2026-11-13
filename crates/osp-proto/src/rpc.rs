@@ -176,11 +176,27 @@ pub enum ClientRequest {
         actor: PublicKey,
         note: String,
     },
-    /// The replies kept to one of this node's own posts (ADR 0028), in thread
-    /// order: published and hidden ones, and the post's policy.
+    /// Replies to `post` (or `content` text) as this node's owner (ADR 0028).
+    /// The reply is kept here and sent to the post's creator's node, again
+    /// and again for 30 days until it answers. A reshare's ID answers the
+    /// post it shares.
+    Reply {
+        post: ObjectId,
+        content: String,
+    },
+    /// The replies to a post, in thread order (ADR 0028). For one of this
+    /// node's own posts, all those kept, published and hidden, and its
+    /// policy. For anyone else's, one page of the published ones after
+    /// `after`, read from its creator's media endpoint without showing who
+    /// reads.
     Thread {
         post: ObjectId,
+        #[serde(default)]
+        after: u64,
     },
+    /// The owner's replies to others' posts, newest first, and where each
+    /// stands.
+    SentReplies,
     /// Replies waiting for the owner, newest first (ADR 0028).
     ReplyRequests,
     /// Answers a reply waiting among the requests.
@@ -331,10 +347,21 @@ pub enum ClientResponse {
         requests: Vec<TrustInfo>,
         trusted: Vec<TrustInfo>,
     },
-    /// The replies kept to one of this node's posts, in thread order.
+    /// The replies to a post, in thread order. `more` if another page
+    /// follows: ask `after` the last one's `seq`.
     Thread {
         policy: ReplyPolicy,
         replies: Vec<ReplyInfo>,
+        #[serde(default)]
+        more: bool,
+    },
+    /// A reply was signed and kept, and where it stands.
+    ReplySent {
+        reply: SentReplyInfo,
+    },
+    /// The owner's replies to others' posts, newest first.
+    SentReplies {
+        replies: Vec<SentReplyInfo>,
     },
     /// Replies waiting, newest first.
     ReplyRequests {
@@ -727,6 +754,54 @@ pub struct ReplyInfo {
     /// follow them", say.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub why: Option<String>,
+    /// Its place in the thread, for reading on `after` it. 0 for a request.
+    #[serde(default)]
+    pub seq: u64,
+}
+
+/// One of the owner's replies to someone else's post, as their node has it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SentReplyInfo {
+    pub id: ObjectId,
+    /// The post it answers.
+    pub post: ObjectId,
+    /// Whose post that is.
+    pub creator: PublicKey,
+    /// Empty once it's being deleted.
+    pub content: String,
+    pub published: String,
+    pub status: SentStatus,
+    /// Why the creator's node refused it, or why it's still being tried.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    /// While it's being sent: seconds until the next try.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_try_secs: Option<u64>,
+}
+
+/// Where one of the owner's replies stands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SentStatus {
+    /// Not answered yet; tried again later.
+    Sending,
+    /// In the post's thread.
+    Published,
+    /// Waiting for the creator to look.
+    AwaitingApproval,
+    /// The creator's node didn't publish it, for whatever reason it keeps
+    /// to itself.
+    NotPublished,
+    /// The post takes no replies.
+    Closed,
+    /// The post was deleted.
+    Deleted,
+    /// The creator's node said what was wrong with it (`error`).
+    Refused,
+    /// Its creator's node didn't answer in 30 days.
+    GaveUp,
+    /// The owner deleted it, and their `Delete` is still being sent.
+    Deleting,
 }
 
 /// Where a reply to one of this node's posts stands.

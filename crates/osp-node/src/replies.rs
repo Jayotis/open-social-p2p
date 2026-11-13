@@ -91,7 +91,10 @@ impl Core {
             Payload::Announce(_) => bail!("that answers a reshare; answer the post it shares"),
             _ => bail!("{} isn't one of this node's posts", root.fmt_short()),
         }
-        if !self.reply_senders.allow(remote, MAX_NEW_FROM_NODE_PER_HOUR) {
+        // The owner replying on their own node isn't held to a limit.
+        if remote != self.endpoint.id()
+            && !self.reply_senders.allow(remote, MAX_NEW_FROM_NODE_PER_HOUR)
+        {
             debug!(node = %remote.fmt_short(), "too many new replies from one node this hour");
             return Ok(ReplyState::NotPublished);
         }
@@ -326,6 +329,7 @@ impl Core {
         Ok(ClientResponse::Thread {
             policy: self.reply_policy(post)?,
             replies,
+            more: false,
         })
     }
 
@@ -346,7 +350,7 @@ impl Core {
     }
 }
 
-fn reply_info(row: &ReplyRow, why: Option<String>) -> Result<ReplyInfo> {
+pub(crate) fn reply_info(row: &ReplyRow, why: Option<String>) -> Result<ReplyInfo> {
     let Payload::Note(note) = row.reply.signed.verify()? else {
         bail!("a stored reply isn't a note");
     };
@@ -367,6 +371,7 @@ fn reply_info(row: &ReplyRow, why: Option<String>) -> Result<ReplyInfo> {
             Held::Request | Held::Declined => ReplyStatus::Request,
         },
         why,
+        seq: row.seq.unwrap_or(0).max(0) as u64,
     })
 }
 

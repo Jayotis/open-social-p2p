@@ -166,9 +166,12 @@ impl ProtocolHandler for SocialProtocol {
     }
 }
 
+/// What a node too busy to read a request answers. Not an answer to it.
+pub(crate) const BUSY: &str = "this node is busy; try again later";
+
 async fn tell_busy(mut send: SendStream) {
     let resp = SocialResponse::Error {
-        message: "this node is busy; try again later".to_string(),
+        message: BUSY.to_string(),
     };
     let _ = tokio::time::timeout(BUSY_TIMEOUT, async {
         write_frame(&mut send, &resp).await?;
@@ -849,17 +852,27 @@ impl Core {
         addr: &EndpointAddr,
         req: &SocialRequest,
     ) -> Result<SocialResponse> {
+        let resp = self.social_answer(addr, req).await?;
+        if let SocialResponse::Error { message } = &resp {
+            bail!("{} replied: {message}", addr.id.fmt_short());
+        }
+        Ok(resp)
+    }
+
+    /// As `social_request`, but an `Error` reply is given back as it came,
+    /// so the caller can tell a refusal from a node that didn't answer.
+    pub(crate) async fn social_answer(
+        &self,
+        addr: &EndpointAddr,
+        req: &SocialRequest,
+    ) -> Result<SocialResponse> {
         if let Some(tor) = &self.tor {
             tor.check_ready()?;
         }
         let (reached, result) = self.ask_node(addr, req).await;
         let took = result.as_ref().ok().map(|(_, took)| *took);
         peers::record(&self.db, &addr.id, Event::Request { reached, took });
-        let (resp, _) = result?;
-        if let SocialResponse::Error { message } = &resp {
-            bail!("{} replied: {message}", addr.id.fmt_short());
-        }
-        Ok(resp)
+        Ok(result?.0)
     }
 
     /// Sends a request, and says whether the node could be reached, and how
