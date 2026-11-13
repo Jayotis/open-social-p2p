@@ -20,15 +20,22 @@ use iroh::{
 };
 use osp_node::{Config, Node};
 use osp_proto::{
-    Announce, FoundEarly, ObjectId, Payload, Person, PublicKey, SOCIAL_ALPN, SignedObject,
+    Announce, FoundEarly, Note, ObjectId, Payload, Person, PublicKey, SOCIAL_ALPN, SignedObject,
     framing::{read_frame, write_frame},
-    rpc::{ClientRequest, ClientResponse},
-    social::{SocialRequest, SocialResponse},
+    rpc::{ClientRequest, ClientResponse, ReplyInfo, SentStatus},
+    social::{PlacedAt, ReplyState, SocialRequest, SocialResponse},
 };
 
 async fn start(root: &Path, name: &str) -> Node {
+    start_with(root, name, false).await
+}
+
+/// Starts a node, with `vouchers` on or off (ADR 0029).
+async fn start_with(root: &Path, name: &str, vouchers: bool) -> Node {
     let home = root.join(name.to_lowercase());
-    Node::init(&home, &Config::local_test(name)).unwrap();
+    let mut config = Config::local_test(name);
+    config.replies.vouchers = vouchers;
+    Node::init(&home, &config).unwrap();
     Node::spawn(&home).await.unwrap()
 }
 
@@ -149,6 +156,49 @@ impl Peer {
     /// `identity`'s profile, listing this node.
     fn profile(&self, identity: &SecretKey) -> SignedObject {
         profile_listing(identity, vec![self.endpoint.id()])
+    }
+
+    /// Follows the node it's connected to.
+    async fn subscribe(&self) {
+        let req = SocialRequest::Subscribe {
+            addr: self.endpoint.addr(),
+            shares_prefetched: false,
+            media: None,
+            direct: None,
+        };
+        ok(self.ask(&req).await);
+    }
+
+    /// Sends `identity`'s reply to `post`, and gives it and the answer.
+    async fn reply(
+        &self,
+        identity: &SecretKey,
+        post: ObjectId,
+        text: &str,
+    ) -> (SignedObject, SocialResponse) {
+        let note = Payload::Note(Note {
+            actor: identity.public(),
+            content: text.into(),
+            published: osp_proto::now_rfc3339(),
+            attachment: vec![],
+            in_reply_to: Some(post),
+        });
+        let reply = SignedObject::sign(identity, &note).unwrap();
+        let req = SocialRequest::SubmitReply {
+            reply: reply.clone(),
+            profile: self.profile(identity),
+        };
+        let resp = self.ask(&req).await;
+        (reply, resp)
+    }
+
+    /// Shows who vouched for the replier of `reply`.
+    async fn show(&self, reply: &SignedObject, side: Vec<SignedObject>) -> SocialResponse {
+        let req = SocialRequest::ShowVouches {
+            reply: reply.id(),
+            side,
+        };
+        self.ask(&req).await
     }
 
     /// Tells of `identity`'s reshare of `author`'s `post`.
@@ -492,6 +542,320 @@ async fn a_node_gathers_its_owners_side_three_steps_back() {
     assert_eq!((gathered.side, gathered.asked), (3, 2));
 
     for node in [jimmy, bob, carol] {
+        node.shutdown().await.unwrap();
+    }
+}
+
+/// The answer to a reply: its state, and whether its side is asked for.
+fn answered(resp: SocialResponse) -> (ReplyState, bool) {
+    match resp {
+        SocialResponse::Reply {
+            state,
+            show_vouches,
+        } => (state, show_vouches),
+        other => panic!("unexpected {other:?}"),
+    }
+}
+
+async fn requests(node: &Node) -> Vec<ReplyInfo> {
+    match call(node, ClientRequest::ReplyRequests).await {
+        ClientResponse::ReplyRequests { requests } => requests,
+        other => panic!("unexpected {other:?}"),
+    }
+}
+
+/// `voucher`'s reshare of a post of `of`'s: a vouch for them.
+fn vouch(voucher: &SecretKey, of: PublicKey) -> SignedObject {
+    announce(
+        voucher,
+        ObjectId::of(b"a post of theirs"),
+        of,
+        &osp_proto::now_rfc3339(),
+    )
+}
+
+/// Someone `kim`'s owner trusts, on a node made by hand that follows hers.
+async fn trusted_follower(kim: &Node) -> (SecretKey, Peer) {
+    let peer = Peer::new(&kim.addr().await).await;
+    peer.subscribe().await;
+    let who = SecretKey::generate();
+    let req = SocialRequest::AskTrust {
+        profile: peer.profile(&who),
+        note: "a friend".into(),
+    };
+    ok(peer.ask(&req).await);
+    let node = peer.endpoint.id();
+    call(kim, ClientRequest::AnswerTrust { node, allow: true }).await;
+    (who, peer)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_strangers_side_is_asked_for_and_each_vouch_checked() {
+    let dir = tempfile::tempdir().unwrap();
+    let kim = start_with(dir.path(), "Kim", true).await;
+    let open = post(&kim, "anyone may reply").await;
+    let mut circle = Vec::new();
+    for _ in 0..3 {
+        circle.push(trusted_follower(&kim).await);
+    }
+
+    // Someone in Kim's circle is published without being asked.
+    let (alice, alice_node) = &circle[0];
+    let (_, resp) = alice_node.reply(alice, open, "from the circle").await;
+    assert_eq!(answered(resp), (ReplyState::Published, false));
+
+    // Jimmy, a stranger, waits, and is asked who vouched for him: again if
+    // his node sends the reply again.
+    let jimmy = SecretKey::generate();
+    let jimmys_node = Peer::new(&kim.addr().await).await;
+    let (first, resp) = jimmys_node.reply(&jimmy, open, "hello Kim").await;
+    assert_eq!(answered(resp), (ReplyState::AwaitingApproval, true));
+    let req = SocialRequest::SubmitReply {
+        reply: first.clone(),
+        profile: jimmys_node.profile(&jimmy),
+    };
+    assert_eq!(
+        answered(jimmys_node.ask(&req).await),
+        (ReplyState::AwaitingApproval, true)
+    );
+
+    // Another node can't show it for him.
+    let other = Peer::new(&kim.addr().await).await;
+    let message = refused(other.show(&first, vec![]).await);
+    assert!(message.contains("from your node"), "{message}");
+
+    // Two of Kim's circle vouched for him. A third vouch doesn't verify,
+    // a fourth is for someone else: neither counts.
+    let mut tampered = serde_json::to_value(vouch(&circle[2].0, jimmy.public())).unwrap();
+    tampered["signer"] = serde_json::to_value(circle[1].0.public()).unwrap();
+    let side = vec![
+        vouch(&circle[0].0, jimmy.public()),
+        vouch(&circle[1].0, jimmy.public()),
+        serde_json::from_value(tampered).unwrap(),
+        vouch(&circle[2].0, SecretKey::generate().public()),
+    ];
+    assert_eq!(
+        answered(jimmys_node.show(&first, side).await),
+        (ReplyState::AwaitingApproval, false)
+    );
+    // Shown once only.
+    let message = refused(jimmys_node.show(&first, vec![]).await);
+    assert!(message.contains("didn't ask"), "{message}");
+    let waiting = requests(&kim).await;
+    assert_eq!(waiting.len(), 1);
+    assert_eq!(
+        waiting[0].why.as_deref(),
+        Some("2 steps away; 2 people in your circle's world vouched for them")
+    );
+
+    // Three of Kim's circle: published.
+    let (second, resp) = jimmys_node.reply(&jimmy, open, "hello again").await;
+    assert_eq!(answered(resp), (ReplyState::AwaitingApproval, true));
+    let side = circle
+        .iter()
+        .map(|(who, _)| vouch(who, jimmy.public()))
+        .collect();
+    assert_eq!(
+        answered(jimmys_node.show(&second, side).await),
+        (ReplyState::Published, false)
+    );
+
+    kim.shutdown().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn with_vouchers_off_no_side_is_asked_for() {
+    let dir = tempfile::tempdir().unwrap();
+    let kim = start(dir.path(), "Kim").await;
+    let open = post(&kim, "anyone may reply").await;
+    let alice = trusted_follower(&kim).await;
+    let jimmy = SecretKey::generate();
+    let jimmys_node = Peer::new(&kim.addr().await).await;
+    let (reply, resp) = jimmys_node.reply(&jimmy, open, "hello Kim").await;
+    assert_eq!(answered(resp), (ReplyState::AwaitingApproval, false));
+    let side = vec![vouch(&alice.0, jimmy.public())];
+    let message = refused(jimmys_node.show(&reply, side).await);
+    assert!(message.contains("didn't ask"), "{message}");
+    assert_eq!(
+        requests(&kim).await[0].why.as_deref(),
+        Some("you don't follow them")
+    );
+
+    kim.shutdown().await.unwrap();
+}
+
+/// Whom `peer` hears `identities` placed at, from the node it's connected to.
+async fn placed(peer: &Peer, identities: &[PublicKey]) -> SocialResponse {
+    let req = SocialRequest::PlaceWithin {
+        identities: identities.to_vec(),
+    };
+    peer.ask(&req).await
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_node_places_for_its_followers_and_those_followed_within_the_limit() {
+    let dir = tempfile::tempdir().unwrap();
+    let kim = start(dir.path(), "Kim").await;
+    let alice = start(dir.path(), "Alice").await;
+    let bob = start(dir.path(), "Bob").await;
+    // Kim follows Alice, who reshared Bob's post.
+    let bobs = post(&bob, "by Bob").await;
+    follow(&alice, &bob).await;
+    call(&alice, ClientRequest::Sync).await;
+    reshare(&alice, bobs).await;
+    follow(&kim, &alice).await;
+    call(&kim, ClientRequest::Sync).await;
+
+    let asked = [
+        kim.identity(),
+        alice.identity(),
+        bob.identity(),
+        SecretKey::generate().public(),
+    ];
+    // A stranger isn't answered.
+    let peer = Peer::new(&kim.addr().await).await;
+    let message = refused(placed(&peer, &asked).await);
+    assert!(message.contains("answers only the nodes"), "{message}");
+
+    // A follower is, from what Kim's node holds, 60 times an hour.
+    peer.subscribe().await;
+    let SocialResponse::Placed { placed: answer } = placed(&peer, &asked).await else {
+        panic!("not answered")
+    };
+    let at = |actor: PublicKey, steps: u8| PlacedAt { actor, steps };
+    assert_eq!(
+        answer,
+        [
+            at(kim.identity(), 0),
+            at(alice.identity(), 1),
+            at(bob.identity(), 2)
+        ]
+    );
+    for _ in 1..60 {
+        assert!(matches!(
+            placed(&peer, &asked).await,
+            SocialResponse::Placed { .. }
+        ));
+    }
+    let message = refused(placed(&peer, &asked).await);
+    assert!(message.contains("no more of your questions"), "{message}");
+
+    for node in [kim, alice, bob] {
+        node.shutdown().await.unwrap();
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_reply_is_let_in_where_the_sides_meet_through_the_circle() {
+    let dir = tempfile::tempdir().unwrap();
+    let kim = start_with(dir.path(), "Kim", true).await;
+    let alice = start(dir.path(), "Alice").await;
+    let bob = start(dir.path(), "Bob").await;
+    let dan = start(dir.path(), "Dan").await;
+    let jimmy = start(dir.path(), "Jimmy").await;
+
+    // Kim follows Alice and Bob; Alice follows Dan. Syncing, Kim's node
+    // subscribes to Alice's, which then answers its questions.
+    follow(&kim, &alice).await;
+    follow(&kim, &bob).await;
+    follow(&alice, &dan).await;
+    call(&kim, ClientRequest::Sync).await;
+
+    // Alice, Bob and Dan reshare Jimmy's post, and Jimmy's node gathers
+    // his side: those three, 1 step back.
+    let jimmys = post(&jimmy, "by Jimmy").await;
+    for node in [&alice, &bob, &dan] {
+        follow(node, &jimmy).await;
+        call(node, ClientRequest::Sync).await;
+        reshare(node, jimmys).await;
+        // So Jimmy's node can reach theirs, with DNS lookup off.
+        follow(&jimmy, node).await;
+    }
+    wait_for("Jimmy's node to hear of the reshares", || async {
+        resharers(&jimmy, jimmys).await == Some(3)
+    })
+    .await;
+    jimmy.gather_side_now().await.unwrap();
+    assert_eq!(jimmy.side().unwrap().len(), 3);
+
+    // Jimmy replies to Kim's post. Kim's node places Alice and Bob itself,
+    // 2 steps from Kim through them: 2 meeting points of the 3 needed. Then
+    // Alice's node places Dan, whom she follows: 3 steps. Published.
+    let kims = post(&kim, "by Kim").await;
+    follow(&jimmy, &kim).await;
+    call(&jimmy, ClientRequest::Sync).await;
+    let req = ClientRequest::Reply {
+        post: kims,
+        content: "hello Kim".into(),
+    };
+    let ClientResponse::ReplySent { reply } = call(&jimmy, req).await else {
+        panic!("not sent")
+    };
+    assert_eq!(reply.status, SentStatus::Published, "{reply:?}");
+    assert!(requests(&kim).await.is_empty());
+
+    for node in [kim, alice, bob, dan, jimmy] {
+        node.shutdown().await.unwrap();
+    }
+}
+
+/// The case that showed Kim's node mustn't count as a place of its own. Kim
+/// follows Alice; Alice follows X and reshared X's post, and trusts four
+/// people. Jimmy's side holds X and those four, 2 steps back from him. Kim's
+/// node places X through Alice's reshare, and Alice's node places all five:
+/// five meeting points at 4 steps, every one through Alice. That stays a
+/// request. Once Dave, also followed by Kim, follows X, Dave's node places X
+/// too: a second root, and the next reply is published.
+#[tokio::test(flavor = "multi_thread")]
+async fn four_steps_through_alice_alone_waits_and_a_second_root_lets_it_in() {
+    let dir = tempfile::tempdir().unwrap();
+    let kim = start_with(dir.path(), "Kim", true).await;
+    let alice = start(dir.path(), "Alice").await;
+    let dave = start(dir.path(), "Dave").await;
+    let x = start(dir.path(), "X").await;
+
+    let xs = post(&x, "by X").await;
+    follow(&alice, &x).await;
+    call(&alice, ClientRequest::Sync).await;
+    reshare(&alice, xs).await;
+    let mut trusted = Vec::new();
+    for _ in 0..4 {
+        trusted.push(trusted_follower(&alice).await.0);
+    }
+    follow(&kim, &alice).await;
+    follow(&kim, &dave).await;
+    call(&kim, ClientRequest::Sync).await;
+
+    // Jimmy's side: S vouched for him; X and Alice's four vouched for S.
+    let jimmy = SecretKey::generate();
+    let s = SecretKey::generate();
+    let mut side = vec![vouch(&s, jimmy.public())];
+    side.push(x.sign_reshare_of(s.public()).unwrap());
+    side.extend(trusted.iter().map(|t| vouch(t, s.public())));
+
+    let open = post(&kim, "anyone may reply").await;
+    let jimmys_node = Peer::new(&kim.addr().await).await;
+    let (first, resp) = jimmys_node.reply(&jimmy, open, "hello Kim").await;
+    assert_eq!(answered(resp), (ReplyState::AwaitingApproval, true));
+    assert_eq!(
+        answered(jimmys_node.show(&first, side.clone()).await),
+        (ReplyState::AwaitingApproval, false)
+    );
+    assert_eq!(
+        requests(&kim).await[0].why.as_deref(),
+        Some("4 steps away; 5 people in your circle's world vouched for them")
+    );
+
+    // Dave follows X: Dave's node places X, through Dave.
+    follow(&dave, &x).await;
+    let (second, resp) = jimmys_node.reply(&jimmy, open, "hello again").await;
+    assert_eq!(answered(resp), (ReplyState::AwaitingApproval, true));
+    assert_eq!(
+        answered(jimmys_node.show(&second, side).await),
+        (ReplyState::Published, false)
+    );
+
+    for node in [kim, alice, dave, x] {
         node.shutdown().await.unwrap();
     }
 }

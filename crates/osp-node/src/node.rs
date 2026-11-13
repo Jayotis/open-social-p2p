@@ -267,6 +267,9 @@ pub(crate) struct Core {
     /// Questions about who vouched for the owner each node asked this hour
     /// (ADR 0029).
     pub vouch_questions: PerHour,
+    /// Questions about whom the owner's world places each node asked this
+    /// hour (ADR 0029).
+    pub place_questions: PerHour,
     /// Wakes the telling of credits given and reshares made (ADR 0029).
     pub tell_vouches_now: Notify,
     /// How often each host was named in `WhoHosts` (ADR 0025).
@@ -591,6 +594,7 @@ impl Node {
             new_resharers: PerHour::default(),
             credit_senders: PerHour::default(),
             vouch_questions: PerHour::default(),
+            place_questions: PerHour::default(),
             tell_vouches_now: Notify::new(),
             named_hosts: NamedHosts::default(),
             heard: Heard::default(),
@@ -858,6 +862,20 @@ impl Node {
     /// early (ADR 0029). For tests.
     pub fn found_early_credits(&self) -> Result<Vec<ObjectId>> {
         self.core.db.vouch_posts(crate::db::VouchKind::FoundEarly)
+    }
+
+    /// A reshare by the owner of a post of `of`'s, signed but not posted: a
+    /// vouch for them (ADR 0029). For tests.
+    pub fn sign_reshare_of(&self, of: PublicKey) -> Result<SignedObject> {
+        self.core
+            .signer
+            .sign(&osp_proto::Payload::Announce(osp_proto::Announce {
+                actor: self.core.signer.identity(),
+                object: ObjectId::of(b"a post for a test vouch"),
+                object_actor: of,
+                published: osp_proto::now_rfc3339(),
+                hosting: false,
+            }))
     }
 
     /// Gathers the owner's side now, as the node does once a day (ADR 0029).

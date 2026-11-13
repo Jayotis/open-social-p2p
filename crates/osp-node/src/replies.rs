@@ -18,6 +18,7 @@ use osp_proto::{
 use tracing::{debug, info};
 
 use crate::{
+    admission::Found,
     db::{Choice, Held, ReceivedReply, ReplyRow, now_ms},
     node::Core,
     social::profile_date,
@@ -58,12 +59,14 @@ impl Core {
     /// A reply that fails a check is refused with an error. One past a limit,
     /// from someone blocked, or refused by the post's policy gets
     /// `NotPublished`, the same for all, so nobody can tell they're blocked.
+    /// Also says whether the replier's node is asked to show who vouched for
+    /// its owner (ADR 0029): for a stranger's request, with `vouchers` on.
     pub(crate) fn submitted_reply(
         &self,
         remote: EndpointId,
         reply: &SignedObject,
         profile: &SignedObject,
-    ) -> Result<ReplyState> {
+    ) -> Result<(ReplyState, bool)> {
         let Payload::Note(note) = reply.verify()? else {
             bail!("that isn't a reply");
         };
@@ -71,18 +74,21 @@ impl Core {
         self.check_replier(remote, note.actor, profile)?;
         let id = reply.id();
         let now = now_ms();
+        let root = note.in_reply_to.context("that isn't a reply")?;
         // Sent before: its state now, and no limit counts it again.
         if self.db.reply_deleted(&id)? {
-            return Ok(ReplyState::Deleted);
+            return Ok((ReplyState::Deleted, false));
         }
         if let Some(held) = self.db.received_reply_state(&id, now)? {
-            return Ok(state_of(held));
+            let show = held == Held::Request
+                && self.asks_for_side(self.reply_policy(&root)?)
+                && self.db.side_asked(&id)?;
+            return Ok((state_of(held), show));
         }
-        let root = note.in_reply_to.context("that isn't a reply")?;
         let me = self.signer.identity();
         let Some(post) = self.db.outbox_object(&root)? else {
             if self.db.delete_of(&root, &me)?.is_some() {
-                return Ok(ReplyState::Deleted);
+                return Ok((ReplyState::Deleted, false));
             }
             bail!("{} isn't one of this node's posts", root.fmt_short());
         };
@@ -96,18 +102,18 @@ impl Core {
             && !self.reply_senders.allow(remote, MAX_NEW_FROM_NODE_PER_HOUR)
         {
             debug!(node = %remote.fmt_short(), "too many new replies from one node this hour");
-            return Ok(ReplyState::NotPublished);
+            return Ok((ReplyState::NotPublished, false));
         }
         let policy = self.reply_policy(&root)?;
         if policy == ReplyPolicy::Off {
-            return Ok(ReplyState::Closed);
+            return Ok((ReplyState::Closed, false));
         }
         let circle = match self.db.replier_choice(&note.actor)? {
-            Some(Choice::Blocked) => return Ok(ReplyState::NotPublished),
+            Some(Choice::Blocked) => return Ok((ReplyState::NotPublished, false)),
             _ => self.in_circle(&note.actor)?,
         };
         if circle.is_none() && policy == ReplyPolicy::Circle {
-            return Ok(ReplyState::NotPublished);
+            return Ok((ReplyState::NotPublished, false));
         }
         // To be kept: checked against the keys this node knows of now, as an
         // object it keeps (ADR 0010).
@@ -122,14 +128,20 @@ impl Core {
             received_ms: now,
         };
         let held = self.db.add_received_reply(&received, circle.is_some())?;
+        // A stranger's request may be let in by who vouched for them.
+        let show = held == Some(Held::Request) && circle.is_none() && self.asks_for_side(policy);
+        if show {
+            self.db.ask_side(&id)?;
+        }
         info!(
             replier = %note.actor.fmt_short(),
             post = %root.fmt_short(),
             ?circle,
             ?held,
+            show,
             "received a reply"
         );
-        Ok(held.map_or(ReplyState::NotPublished, state_of))
+        Ok((held.map_or(ReplyState::NotPublished, state_of), show))
     }
 
     /// Takes a replier's `Delete` of their reply, from `remote`, with their
@@ -337,8 +349,13 @@ impl Core {
     pub(crate) fn reply_request_list(&self) -> Result<Vec<ReplyInfo>> {
         let mut requests = Vec::new();
         for row in self.db.reply_requests(now_ms())? {
+            let found = self
+                .db
+                .found(&row.reply.id)?
+                .and_then(|json| serde_json::from_str::<Found>(&json).ok());
             let why = match self.in_circle(&row.reply.actor)? {
                 Some(_) => "the thread was full".to_string(),
+                None if let Some(found) = found => found.describe(),
                 None if self.db.is_follower(&row.reply.node)? => {
                     "you don't follow them; they follow you".to_string()
                 }

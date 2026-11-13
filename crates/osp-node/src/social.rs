@@ -16,10 +16,10 @@ use iroh::{
 };
 use osp_proto::{
     BlobHash, BoundEndpoint, EndpointKind, Payload, Person, SOCIAL_ALPN, SignedObject,
-    framing::{read_frame, read_frame_max, write_frame},
+    framing::{read_frame, read_frame_sized, write_frame},
     social::{
-        HostingReshare, MAX_GET_OBJECTS, MAX_OUTBOX_PAGE, MAX_REQUEST_LEN, OutboxEntry,
-        SocialRequest, SocialResponse,
+        HostingReshare, MAX_GET_OBJECTS, MAX_OUTBOX_PAGE, MAX_REQUEST_LEN, MAX_SIDE_REQUEST_LEN,
+        OutboxEntry, SocialRequest, SocialResponse,
     },
 };
 use tokio::sync::Semaphore;
@@ -182,17 +182,25 @@ async fn tell_busy(mut send: SendStream) {
 }
 
 async fn serve_stream(
-    core: &Core,
+    core: &Arc<Core>,
     remote: EndpointId,
     mut send: SendStream,
     mut recv: RecvStream,
 ) -> Result<()> {
-    let req: SocialRequest = read_frame_max(&mut recv, MAX_REQUEST_LEN).await?;
-    let resp = match core.answer_social(remote, req).await {
-        Ok(resp) => resp,
-        Err(e) => SocialResponse::Error {
-            message: format!("{e:#}"),
-        },
+    // Only a replier's side may be longer than every other request (ADR 0029).
+    let (req, len): (SocialRequest, u32) =
+        read_frame_sized(&mut recv, MAX_SIDE_REQUEST_LEN).await?;
+    let resp = if len > MAX_REQUEST_LEN && !matches!(req, SocialRequest::ShowVouches { .. }) {
+        SocialResponse::Error {
+            message: format!("a request of {len} bytes; at most {MAX_REQUEST_LEN}"),
+        }
+    } else {
+        match core.answer_social(remote, req).await {
+            Ok(resp) => resp,
+            Err(e) => SocialResponse::Error {
+                message: format!("{e:#}"),
+            },
+        }
     };
     write_frame(&mut send, &resp).await?;
     send.finish()?;
@@ -201,7 +209,7 @@ async fn serve_stream(
 
 impl Core {
     async fn answer_social(
-        &self,
+        self: &Arc<Self>,
         remote: EndpointId,
         req: SocialRequest,
     ) -> Result<SocialResponse> {
@@ -487,11 +495,23 @@ impl Core {
                 self.asked_listing(remote, &profile)?;
                 SocialResponse::Ok
             }
-            SocialRequest::SubmitReply { reply, profile } => SocialResponse::Reply {
-                state: self.submitted_reply(remote, &reply, &profile)?,
-            },
+            SocialRequest::SubmitReply { reply, profile } => {
+                let (state, show_vouches) = self.submitted_reply(remote, &reply, &profile)?;
+                SocialResponse::Reply {
+                    state,
+                    show_vouches,
+                }
+            }
             SocialRequest::DeleteReply { delete, profile } => SocialResponse::Reply {
                 state: self.deleted_reply(remote, &delete, &profile)?,
+                show_vouches: false,
+            },
+            SocialRequest::ShowVouches { reply, side } => SocialResponse::Reply {
+                state: self.shown_vouches(remote, &reply, &side).await?,
+                show_vouches: false,
+            },
+            SocialRequest::PlaceWithin { identities } => SocialResponse::Placed {
+                placed: self.asked_to_place(remote, &identities)?,
             },
             SocialRequest::Reshared { announce, profile } => {
                 self.reshared(remote, &announce, &profile)?;

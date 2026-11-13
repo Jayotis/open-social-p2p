@@ -40,6 +40,16 @@ where
     R: AsyncRead + Unpin,
     T: DeserializeOwned,
 {
+    Ok(read_frame_sized(reader, max).await?.0)
+}
+
+/// Like [`read_frame_max`], and also says how many bytes the frame held, for
+/// a protocol that lets only some requests be as long as `max`.
+pub async fn read_frame_sized<R, T>(reader: &mut R, max: u32) -> Result<(T, u32)>
+where
+    R: AsyncRead + Unpin,
+    T: DeserializeOwned,
+{
     let len = reader.read_u32().await?;
     ensure!(
         len <= max,
@@ -50,7 +60,10 @@ where
     let mut buf = Vec::with_capacity(len.min(64 * 1024) as usize);
     reader.take(u64::from(len)).read_to_end(&mut buf).await?;
     ensure!(buf.len() == len as usize, "frame ended early");
-    serde_json::from_slice(&buf).context("malformed frame")
+    Ok((
+        serde_json::from_slice(&buf).context("malformed frame")?,
+        len,
+    ))
 }
 
 #[cfg(test)]

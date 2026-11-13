@@ -155,6 +155,9 @@ pub struct Post {
     /// What the owner may delete here (ADR 0019): their reshare, if this is
     /// one, or else their own post. `None` for anyone else's.
     pub deletable: Option<String>,
+    /// For one of the owner's own posts, how many people's nodes said they
+    /// reshared it (ADR 0029). `None` for anyone else's.
+    pub resharers: Option<u32>,
 }
 
 /// A reply to a post (ADR 0028).
@@ -880,6 +883,7 @@ fn post(item: FeedItem) -> Post {
         resharer_hosts,
         found_through: item.found_through,
         deletable: item.deletable.map(|id| id.to_string()),
+        resharers: item.resharers,
     }
 }
 

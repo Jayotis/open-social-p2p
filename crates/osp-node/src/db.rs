@@ -475,6 +475,11 @@ const MIGRATIONS: &[&str] = &[
         id INTEGER PRIMARY KEY CHECK (id = 0),
         ms INTEGER NOT NULL
     );",
+    // 30: a stranger's reply and who vouched for them (ADR 0029): whether
+    // their node was asked to show its owner's side (0 not asked, 1 asked,
+    // 2 shown), and what the meeting with the owner's world found, as JSON.
+    "ALTER TABLE received_replies ADD COLUMN side_asked INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE received_replies ADD COLUMN found TEXT;",
 ];
 
 /// The search index (ADR 0014): a number for each post, by its object ID, and

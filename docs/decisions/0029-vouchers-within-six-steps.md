@@ -1,6 +1,6 @@
 # ADR 0029: Vouchers within six steps of the creator
 
-**Status:** Accepted (2026-11-12; amended 2026-11-13: a replier's side is sent only when asked for, and who answers the circle question). Takes up what [ADR 0028](0028-replies-let-in-by-the-creator.md) left for later: letting strangers' replies in without the creator having to look. On by default once its `osp-sim` round passes (the maintainer, 2026-11-12). Uses [doc 12](../12-peer-reciprocity-and-recognition.md)'s creator and hunter recognition in a narrow form, for this one use; doc 12's levels and their other uses stay a proposal.
+**Status:** Accepted (2026-11-12; amended 2026-11-13: a replier's side is sent only when asked for, who answers the circle question, and that every meeting counts through a person in the circle, not Kim's node). Takes up what [ADR 0028](0028-replies-let-in-by-the-creator.md) left for later: letting strangers' replies in without the creator having to look. On by default once its `osp-sim` round passes (the maintainer, 2026-11-12). Uses [doc 12](../12-peer-reciprocity-and-recognition.md)'s creator and hunter recognition in a narrow form, for this one use; doc 12's levels and their other uses stay a proposal.
 
 ## Context
 
@@ -75,10 +75,12 @@ Each **meeting point** is a different person on Kim's side found in Jimmy's side
 
 What counts is **how many different meeting points** there are, not how many vouches. Throwaway identities behind one careless reshare all meet Kim's side at that one person, so they count as one.
 
+Each meeting is **through someone in Kim's circle**: Alice herself, whoever Alice reshared, and whatever Alice's node answers are all through Alice, whether Kim's node found them or Alice's did. Kim's node isn't a place of its own, so one careless friend never counts twice.
+
 | Jimmy's distance from Kim | Meeting points needed | Reached through |
 | --- | ---: | --- |
 | 2 or 3 steps | 3 | Kim's node, or her circle |
-| 4 steps | 5 | at least 2 different people in her circle, or her node and one |
+| 4 steps | 5 | at least 2 different people in her circle |
 | 5 or 6 steps | 10 | at least 2 different people in her circle |
 
 At or above the mark, under `network`, the reply is **published**. Below it, the reply goes to Kim's requests with what was found: "4 steps away, 3 people in your circle's world vouched for them".

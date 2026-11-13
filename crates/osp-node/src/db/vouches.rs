@@ -4,8 +4,8 @@
 //! owner's reshares their authors' nodes were told of.
 
 use anyhow::{Context, Result};
-use iroh::PublicKey;
-use osp_proto::{ObjectId, SignedObject};
+use iroh::{EndpointAddr, EndpointId, PublicKey};
+use osp_proto::{ObjectId, Payload, SignedObject};
 use rusqlite::{OptionalExtension, params};
 
 use super::Db;
@@ -411,6 +411,45 @@ impl Db {
                 row.get(0)
             })
             .optional()?)
+    }
+
+    /// Who reshared whom since `since_ms`, among those the owner follows: each
+    /// reshare as (resharer, author of the post), by the reshares' own dates.
+    pub fn followed_reshared_since(&self, since_ms: i64) -> Result<Vec<(PublicKey, PublicKey)>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT signed FROM objects
+             WHERE kind = 'Announce' AND published_ms >= ?1
+               AND actor IN (SELECT actor FROM follows)",
+        )?;
+        let rows = stmt.query_map(params![since_ms], |row| row.get::<_, String>(0))?;
+        let mut reshares = Vec::new();
+        for json in rows {
+            let obj: SignedObject =
+                serde_json::from_str(&json?).context("corrupt stored object")?;
+            // Checked when it was stored; only its contents are needed here.
+            if let Ok(Payload::Announce(a)) = serde_json::from_slice(obj.payload_bytes()) {
+                reshares.push((a.actor, a.object_actor));
+            }
+        }
+        Ok(reshares)
+    }
+
+    /// Those the owner follows, each with the node followed, those followed
+    /// longest first.
+    pub fn followed_longest(&self) -> Result<Vec<(PublicKey, EndpointId)>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare("SELECT actor, node_addr FROM follows ORDER BY rowid")?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            let (actor, addr) = row?;
+            let addr: EndpointAddr = serde_json::from_str(&addr)?;
+            out.push((actor.parse()?, addr.id));
+        }
+        Ok(out)
     }
 
     /// Whether the owner's outbox holds a reshare of `post`.

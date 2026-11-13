@@ -102,7 +102,7 @@ impl Core {
         let signed = self.signer.sign(&Payload::Note(reply))?;
         let id = signed.id();
         if note.actor == me {
-            let state = self.submitted_reply(self.endpoint.id(), &signed, &self.profile)?;
+            let (state, _) = self.submitted_reply(self.endpoint.id(), &signed, &self.profile)?;
             info!(post = %root.fmt_short(), "replied to an own post");
             return own_info(&signed, root, me, status_of(state));
         }
@@ -284,8 +284,15 @@ impl Core {
             self.db.sent_reply_unanswered(id, next, &why)
         };
         match answer {
-            Ok(Ok(SocialResponse::Reply { state })) => {
-                debug!(reply = %id.fmt_short(), ?state, "a reply's creator's node answered");
+            Ok(Ok(SocialResponse::Reply {
+                state,
+                show_vouches,
+            })) => {
+                debug!(reply = %id.fmt_short(), ?state, show_vouches, "a reply's creator's node answered");
+                let state = match show_vouches && row.delete.is_none() {
+                    true => self.show_vouches(node, id).await.unwrap_or(state),
+                    false => state,
+                };
                 self.db.sent_reply_answered(id, status_of(state), None)
             }
             Ok(Ok(SocialResponse::Error { message })) if message == BUSY => unanswered(message),
@@ -301,6 +308,49 @@ impl Core {
             ),
             Ok(Err(e)) => unanswered(format!("{e:#}")),
             Err(_) => unanswered("no answer in time".to_string()),
+        }
+    }
+}
+
+impl Core {
+    /// Shows the creator's node `node` who vouched for the owner, as it asked
+    /// on getting their reply `id` (ADR 0029): the owner's side as last
+    /// gathered. Says what became of the reply; `None` if there's no side to
+    /// show or no answer, and the reply waits among the creator's requests.
+    async fn show_vouches(&self, node: EndpointId, id: &ObjectId) -> Option<ReplyState> {
+        let side: Vec<_> = match self.db.side() {
+            Ok(side) => side.into_iter().map(|v| v.signed).collect(),
+            Err(e) => {
+                warn!("couldn't read the owner's side: {e:#}");
+                return None;
+            }
+        };
+        if side.is_empty() {
+            return None;
+        }
+        let req = SocialRequest::ShowVouches { reply: *id, side };
+        let answer = tokio::time::timeout(
+            TRY_TIMEOUT,
+            self.social_answer(&EndpointAddr::new(node), &req),
+        )
+        .await;
+        match answer {
+            Ok(Ok(SocialResponse::Reply { state, .. })) => {
+                info!(reply = %id.fmt_short(), ?state, "showed who vouched for the owner");
+                Some(state)
+            }
+            Ok(Ok(other)) => {
+                debug!("unexpected answer to ShowVouches: {other:?}");
+                None
+            }
+            Ok(Err(e)) => {
+                debug!("couldn't show who vouched for the owner: {e:#}");
+                None
+            }
+            Err(_) => {
+                debug!("no answer in time to ShowVouches");
+                None
+            }
         }
     }
 }

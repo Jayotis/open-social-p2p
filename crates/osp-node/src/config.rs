@@ -260,6 +260,12 @@ pub struct RepliesConfig {
     /// allowed; `network`, your circle at once and anyone else to your
     /// requests.
     pub default_policy: ReplyPolicy,
+    /// Whether a stranger's reply to a post open to the `network` is let in
+    /// when enough people in your circle's world vouched for them (ADR
+    /// 0029). Below the mark it goes to your requests with what was found. Off
+    /// until its simulation round passes. Recording reshares, crediting early
+    /// finders and answering others' questions about vouches run either way.
+    pub vouchers: bool,
 }
 
 /// Sending media to other nodes.

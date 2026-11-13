@@ -379,6 +379,66 @@ impl Db {
         tx.commit()?;
         Ok(true)
     }
+
+    // ---- who vouched for a stranger who replied (ADR 0029) ----
+
+    /// Notes that the replier's node of the request `id` was asked to show
+    /// who vouched for them.
+    pub fn ask_side(&self, id: &ObjectId) -> Result<()> {
+        self.conn().execute(
+            "UPDATE received_replies SET side_asked = 1
+             WHERE id = ?1 AND state = 'request' AND side_asked = 0",
+            params![id.to_string()],
+        )?;
+        Ok(())
+    }
+
+    /// Whether the replier's node of `id` was asked to show who vouched for
+    /// them and hasn't yet.
+    pub fn side_asked(&self, id: &ObjectId) -> Result<bool> {
+        Ok(self
+            .conn()
+            .query_row(
+                "SELECT 1 FROM received_replies WHERE id = ?1 AND side_asked = 1",
+                params![id.to_string()],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()?
+            .is_some())
+    }
+
+    /// Takes the replier's side of `id` once: true if it was asked for and
+    /// not shown before, and notes it shown.
+    pub fn take_side(&self, id: &ObjectId) -> Result<bool> {
+        let n = self.conn().execute(
+            "UPDATE received_replies SET side_asked = 2 WHERE id = ?1 AND side_asked = 1",
+            params![id.to_string()],
+        )?;
+        Ok(n > 0)
+    }
+
+    /// Keeps what the meeting of a replier's side with the owner's world
+    /// found, as JSON.
+    pub fn set_found(&self, id: &ObjectId, found: &str) -> Result<()> {
+        self.conn().execute(
+            "UPDATE received_replies SET found = ?2 WHERE id = ?1",
+            params![id.to_string(), found],
+        )?;
+        Ok(())
+    }
+
+    /// What the meeting for the reply `id` found, as JSON, if there was one.
+    pub fn found(&self, id: &ObjectId) -> Result<Option<String>> {
+        Ok(self
+            .conn()
+            .query_row(
+                "SELECT found FROM received_replies WHERE id = ?1",
+                params![id.to_string()],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .optional()?
+            .flatten())
+    }
 }
 
 /// Everything about replies to `post`, which its owner deleted: the thread is
