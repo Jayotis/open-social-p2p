@@ -54,7 +54,7 @@ pub(crate) const MAX_CIRCLE_ASKED: usize = 16;
 pub(crate) const MAX_PLACE_QUESTIONS_PER_HOUR: u32 = 60;
 /// How long the circle's nodes get to answer, all together: the replier's
 /// node waits for the answer to its `ShowVouches`.
-const CIRCLE_WAIT: Duration = Duration::from_secs(30);
+pub(crate) const CIRCLE_WAIT: Duration = Duration::from_secs(30);
 
 /// One person on Kim's side: `person`, `steps` steps from Kim, through
 /// `root`, the person in her circle it comes through, whichever node found it.
@@ -563,7 +563,7 @@ impl Core {
         }
         let identities: Vec<PublicKey> = people.iter().copied().collect();
         let asked = ask.len();
-        let asks = stream::iter(ask)
+        let mut asks = stream::iter(ask)
             .map(|(person, node)| {
                 let core = self.clone();
                 let identities = identities.clone();
@@ -572,11 +572,14 @@ impl Core {
                     (person, node, answer)
                 }
             })
-            .buffered_unordered(MAX_CIRCLE_ASKED)
-            .collect::<Vec<_>>();
-        let answers = tokio::time::timeout(CIRCLE_WAIT, asks)
-            .await
-            .unwrap_or_default();
+            .buffered_unordered(MAX_CIRCLE_ASKED);
+        // Each answer as it comes: one node that never answers, say over
+        // Tor for longer than `CIRCLE_WAIT`, loses only its own.
+        let deadline = tokio::time::Instant::now() + CIRCLE_WAIT;
+        let mut answers = Vec::new();
+        while let Ok(Some(answer)) = tokio::time::timeout_at(deadline, asks.next()).await {
+            answers.push(answer);
+        }
         let mut placed = Vec::new();
         for (person, node, answer) in answers {
             match answer {

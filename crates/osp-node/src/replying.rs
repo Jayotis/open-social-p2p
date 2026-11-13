@@ -290,7 +290,12 @@ impl Core {
             })) => {
                 debug!(reply = %id.fmt_short(), ?state, show_vouches, "a reply's creator's node answered");
                 let state = match show_vouches && row.delete.is_none() {
-                    true => self.show_vouches(node, id).await.unwrap_or(state),
+                    true => match self.show_vouches(node, id).await {
+                        Ok(shown) => shown.unwrap_or(state),
+                        // Tried again, as a reply is: sent again, it's
+                        // asked for again until its meeting is done.
+                        Err(why) => return unanswered(why),
+                    },
                     false => state,
                 };
                 self.db.sent_reply_answered(id, status_of(state), None)
@@ -316,17 +321,22 @@ impl Core {
     /// Shows the creator's node `node` who vouched for the owner, as it asked
     /// on getting their reply `id` (ADR 0029): the owner's side as last
     /// gathered. Says what became of the reply; `None` if there's no side to
-    /// show or no answer, and the reply waits among the creator's requests.
-    async fn show_vouches(&self, node: EndpointId, id: &ObjectId) -> Option<ReplyState> {
+    /// show or the creator's node refused it, and the reply waits among the
+    /// creator's requests. An error if the creator's node didn't answer.
+    async fn show_vouches(
+        &self,
+        node: EndpointId,
+        id: &ObjectId,
+    ) -> Result<Option<ReplyState>, String> {
         let side: Vec<_> = match self.db.side() {
             Ok(side) => side.into_iter().map(|v| v.signed).collect(),
             Err(e) => {
                 warn!("couldn't read the owner's side: {e:#}");
-                return None;
+                return Ok(None);
             }
         };
         if side.is_empty() {
-            return None;
+            return Ok(None);
         }
         let req = SocialRequest::ShowVouches { reply: *id, side };
         let answer = tokio::time::timeout(
@@ -337,20 +347,14 @@ impl Core {
         match answer {
             Ok(Ok(SocialResponse::Reply { state, .. })) => {
                 info!(reply = %id.fmt_short(), ?state, "showed who vouched for the owner");
-                Some(state)
+                Ok(Some(state))
             }
             Ok(Ok(other)) => {
                 debug!("unexpected answer to ShowVouches: {other:?}");
-                None
+                Ok(None)
             }
-            Ok(Err(e)) => {
-                debug!("couldn't show who vouched for the owner: {e:#}");
-                None
-            }
-            Err(_) => {
-                debug!("no answer in time to ShowVouches");
-                None
-            }
+            Ok(Err(e)) => Err(format!("couldn't show who vouched: {e:#}")),
+            Err(_) => Err("no answer in time to showing who vouched".to_string()),
         }
     }
 }

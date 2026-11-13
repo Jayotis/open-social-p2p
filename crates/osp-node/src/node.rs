@@ -481,6 +481,9 @@ impl Node {
         // Posts held back from the feed waited for prefetches the last run
         // planned, which are forgotten now: show them.
         db.show_all_held()?;
+        // Sides shown while the last run stopped, before their meeting
+        // ended: the replier's node shows them again (ADR 0029).
+        db.untake_unmet_sides()?;
         // Transcodes and uploads a stopped node left part way: the uploads
         // that can be resumed are kept in `home.uploads()` instead.
         let _ = std::fs::remove_dir_all(home.work());

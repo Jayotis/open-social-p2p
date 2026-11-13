@@ -1360,7 +1360,13 @@ pub(crate) async fn request_on(conn: &Connection, req: &SocialRequest) -> Result
     let (mut send, mut recv) = conn.open_bi().await?;
     write_frame(&mut send, req).await?;
     send.finish()?;
-    tokio::time::timeout(REQUEST_TIMEOUT, read_frame(&mut recv))
+    // Showing who vouched is answered once the creator's node has asked its
+    // circle, which may take all of `CIRCLE_WAIT` (ADR 0029).
+    let wait = match req {
+        SocialRequest::ShowVouches { .. } => REQUEST_TIMEOUT + crate::admission::CIRCLE_WAIT,
+        _ => REQUEST_TIMEOUT,
+    };
+    tokio::time::timeout(wait, read_frame(&mut recv))
         .await
         .context("no reply in time")?
 }
