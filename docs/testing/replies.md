@@ -54,7 +54,7 @@ Not run on real nodes, and left to the automated tests: sending the same reply t
 ### Found on the way
 
 - **Fixed:** the requests screen's four buttons didn't fit on one row of a phone, so they stacked in a column. They now wrap onto two rows, as the post card's buttons do.
-- **Retries over a bad Tor stretch:** a creator's node that comes back while Tor can't reach it costs the replier the 1- and 5-minute tries, and the next is 30 minutes away. `osp sync` tries at once.
-- **Replies to a deleted post:** the replier's node keeps listing them as published or waiting after the post's `Delete` arrives.
+- **Fixed: retries over a bad Tor stretch.** A creator's node that came back while Tor couldn't reach it cost the replier the 1- and 5-minute tries, and the next was 30 minutes away. Now, once a sync with the creator's node works again, the replier's node sends the replies waiting for them at once.
+- **Fixed: replies to a deleted post.** The replier's node kept listing them as published or waiting after the post's `Delete` arrived. They now stand as "the post was deleted", with nothing more to try.
 - **`osp reply` on the node itself** waits for the first try's answer, up to 2 minutes. The app waits at most 10 s, then shows the reply as being sent.
 - One phone's clock was an hour ahead, so every time it showed was an hour out. Not the app's doing.

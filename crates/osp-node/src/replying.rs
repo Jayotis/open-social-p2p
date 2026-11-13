@@ -204,6 +204,26 @@ impl Core {
             .collect()
     }
 
+    /// `creator`'s node was just reached, so the owner's replies to them
+    /// waiting for a later try go now: a node that couldn't be reached for a
+    /// while, say over Tor after its restart, needn't wait out the retry
+    /// steps once it can be.
+    pub(crate) fn retry_replies_to(self: &Arc<Self>, creator: &PublicKey) {
+        match self.db.sent_replies_due_now_to(creator, now_ms()) {
+            Ok(0) => {}
+            Ok(n) => {
+                debug!(creator = %creator.fmt_short(), replies = n, "reached a creator again; sending replies now");
+                let core = self.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = core.send_waiting_replies(false).await {
+                        warn!("sending waiting replies failed: {e:#}");
+                    }
+                });
+            }
+            Err(e) => warn!("couldn't bring replies forward: {e:#}"),
+        }
+    }
+
     /// Tries each reply or `Delete` that's due, or with `all` every one still
     /// waiting. Returns how many were tried.
     pub(crate) async fn send_waiting_replies(self: &Arc<Self>, all: bool) -> Result<usize> {

@@ -136,6 +136,38 @@ impl Db {
         )?)
     }
 
+    /// A sync with `creator`'s node just worked, so it can be reached again:
+    /// those waiting for a later try to them are due `now`. Returns how many.
+    pub fn sent_replies_due_now_to(&self, creator: &PublicKey, now: i64) -> Result<usize> {
+        Ok(self.conn().execute(
+            "UPDATE sent_replies SET next_try_ms = ?2
+             WHERE creator = ?1 AND next_try_ms IS NOT NULL AND next_try_ms > ?2",
+            params![creator.to_string(), now],
+        )?)
+    }
+
+    /// `creator` deleted their post `post` (ADR 0019): replies to it stand
+    /// as `deleted`, with nothing more to send. One whose `Delete` was still
+    /// being sent is forgotten, as the creator's node drops the thread.
+    /// Returns how many changed.
+    pub fn sent_replies_post_deleted(&self, post: &ObjectId, creator: &PublicKey) -> Result<usize> {
+        let mut conn = self.conn();
+        let tx = conn.transaction()?;
+        let p = params![post.to_string(), creator.to_string()];
+        let forgotten = tx.execute(
+            "DELETE FROM sent_replies
+             WHERE post = ?1 AND creator = ?2 AND delete_signed IS NOT NULL",
+            p,
+        )?;
+        let marked = tx.execute(
+            "UPDATE sent_replies SET state = 'deleted', error = NULL, next_try_ms = NULL
+             WHERE post = ?1 AND creator = ?2 AND state != 'deleted'",
+            p,
+        )?;
+        tx.commit()?;
+        Ok(forgotten + marked)
+    }
+
     /// The creator's node answered: nothing more to send. A `Delete` that
     /// was answered `Deleted` leaves nothing to keep.
     pub fn sent_reply_answered(
@@ -318,6 +350,17 @@ mod tests {
             }),
         )
         .id();
+        kept_to(db, key, now, post, SecretKey::generate().public())
+    }
+
+    /// One kept, answering `post` by `creator`.
+    fn kept_to(
+        db: &Db,
+        key: &SecretKey,
+        now: i64,
+        post: ObjectId,
+        creator: PublicKey,
+    ) -> SentReply {
         let reply = signed(
             key,
             Payload::Note(Note {
@@ -332,7 +375,7 @@ mod tests {
         let row = SentReply {
             id: reply.id(),
             post,
-            creator: SecretKey::generate().public(),
+            creator,
             creator_node: SecretKey::generate().public(),
             signed: Some(reply),
             delete: None,
@@ -409,5 +452,68 @@ mod tests {
         db.sent_reply_deleting(&other.id, &delete, now).unwrap();
         db.sent_reply_unanswered(&other.id, None, "off").unwrap();
         assert!(db.sent_replies().unwrap().is_empty());
+    }
+    #[test]
+    fn a_creator_reached_again_makes_their_replies_due_at_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(&dir.path().join("t.db")).unwrap();
+        let key = SecretKey::generate();
+        let now = 1_000_000;
+        let kim = kept(&db, &key, now);
+        let other = kept(&db, &key, now);
+        db.sent_reply_answered(&other.id, SentStatus::AwaitingApproval, None)
+            .unwrap();
+        assert_eq!(db.sent_replies_due_now_to(&kim.creator, now).unwrap(), 1);
+        let due: Vec<_> = db
+            .sent_replies_due(now)
+            .unwrap()
+            .iter()
+            .map(|r| r.id)
+            .collect();
+        assert_eq!(due, [kim.id]);
+        // Someone else reached changes nothing of Kim's, and nothing answered.
+        assert_eq!(db.sent_replies_due_now_to(&other.creator, now).unwrap(), 0);
+    }
+
+    #[test]
+    fn replies_to_a_deleted_post_stand_as_deleted() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(&dir.path().join("t.db")).unwrap();
+        let key = SecretKey::generate();
+        let now = 1_000_000;
+        let first = kept(&db, &key, now);
+        let (post, kim) = (first.post, first.creator);
+        db.sent_reply_answered(&first.id, SentStatus::Published, None)
+            .unwrap();
+        let waiting = kept_to(&db, &key, now, post, kim);
+        let deleting = kept_to(&db, &key, now, post, kim);
+        let delete = signed(
+            &key,
+            Payload::Delete(Delete {
+                actor: key.public(),
+                object: deleting.id,
+                published: osp_proto::now_rfc3339(),
+            }),
+        );
+        db.sent_reply_deleting(&deleting.id, &delete, now).unwrap();
+        let elsewhere = kept(&db, &key, now);
+
+        // A `Delete` naming the post but signed by someone else is no
+        // creator's: nothing changes.
+        let stranger = SecretKey::generate().public();
+        assert_eq!(db.sent_replies_post_deleted(&post, &stranger).unwrap(), 0);
+
+        assert_eq!(db.sent_replies_post_deleted(&post, &kim).unwrap(), 3);
+        for id in [first.id, waiting.id] {
+            let got = db.sent_reply(&id).unwrap().unwrap();
+            assert_eq!((got.status, got.next_try_ms), (SentStatus::Deleted, None));
+        }
+        assert!(db.sent_reply(&deleting.id).unwrap().is_none());
+        assert_eq!(
+            db.sent_reply(&elsewhere.id).unwrap().unwrap().status,
+            SentStatus::Sending
+        );
+        // Heard again, it's nothing new.
+        assert_eq!(db.sent_replies_post_deleted(&post, &kim).unwrap(), 0);
     }
 }

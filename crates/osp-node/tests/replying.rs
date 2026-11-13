@@ -37,6 +37,15 @@ async fn start(root: &Path, net: &SimNet, name: &str) -> Node {
     restart(root, net, name).await
 }
 
+/// Someone whose node polls those it follows every 5 s, not hourly.
+async fn start_polling(root: &Path, net: &SimNet, name: &str) -> Node {
+    let mut config = Config::local_test(name);
+    config.endpoints.enabled = true;
+    config.sync.interval_secs = 5;
+    Node::init(&home(root, name), &config).unwrap();
+    restart(root, net, name).await
+}
+
 async fn restart(root: &Path, net: &SimNet, name: &str) -> Node {
     Node::spawn_sim(&home(root, name), sim(net)).await.unwrap()
 }
@@ -153,6 +162,49 @@ async fn a_reply_to_a_creator_whos_off_is_kept_through_a_restart_and_arrives_onc
     assert_eq!(replies.len(), 1);
     assert_eq!(replies[0].content, "Jimmy's reply");
     assert_eq!(sent(&jimmy).await[0].status, SentStatus::Published);
+
+    for node in [jimmy, kim] {
+        node.shutdown().await.unwrap();
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_creator_reached_again_gets_waiting_replies_and_a_deleted_post_ends_them() {
+    let dir = tempfile::tempdir().unwrap();
+    let net = SimNet::new(82);
+    let kim = start(dir.path(), &net, "Kim").await;
+    let jimmy = start_polling(dir.path(), &net, "Jimmy").await;
+    let kims = post(&kim, "Kim's post").await;
+    follow(&jimmy, &kim).await;
+
+    // Kim's node is off: Jimmy's reply waits a minute for its next try.
+    kim.shutdown().await.unwrap();
+    let first = reply(&jimmy, kims, "Jimmy's reply").await;
+    assert_eq!(first.status, SentStatus::Sending);
+
+    // Kim's node is back. Jimmy's node syncs her on its own, with no
+    // `osp sync`, and sends the reply then, not when the minute is up.
+    let kim = restart(dir.path(), &net, "Kim").await;
+    let back = std::time::Instant::now();
+    let status = loop {
+        let status = sent(&jimmy).await[0].status;
+        if status != SentStatus::Sending || back.elapsed().as_secs() >= 45 {
+            break status;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    };
+    assert_eq!(status, SentStatus::AwaitingApproval);
+    assert_eq!(requests(&kim).await.len(), 1);
+
+    // Kim deletes the post. Once Jimmy's node hears, his reply stands as
+    // the post deleted, with nothing more to try.
+    call(&kim, ClientRequest::Delete { id: kims }).await;
+    call(&jimmy, ClientRequest::Sync).await;
+    let kept = sent(&jimmy).await;
+    assert_eq!(
+        (kept[0].status, kept[0].next_try_secs),
+        (SentStatus::Deleted, None)
+    );
 
     for node in [jimmy, kim] {
         node.shutdown().await.unwrap();
