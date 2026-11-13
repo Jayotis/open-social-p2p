@@ -51,6 +51,7 @@ class FakeApp implements OspApp {
 Post post(String text, {String? deletable, String? resharedBy}) => Post(
   id: 'id-$text',
   author: 'Ann',
+  authorIdentity: 'id-Ann',
   published: '2026-01-01T00:00:00Z',
   text: text,
   media: const [],

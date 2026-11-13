@@ -393,7 +393,11 @@ impl Client {
     /// of `Error` becomes an `Err` with the node's message.
     pub async fn request(&self, req: &ClientRequest) -> Result<ClientResponse> {
         let timeout = match req {
-            ClientRequest::Fetch { .. } | ClientRequest::Sync => BLOB_REPLY_TIMEOUT,
+            // Someone else's thread is read from their node (ADR 0028),
+            // which can take a while.
+            ClientRequest::Fetch { .. } | ClientRequest::Sync | ClientRequest::Thread { .. } => {
+                BLOB_REPLY_TIMEOUT
+            }
             _ => REPLY_TIMEOUT,
         };
         let (mut send, mut recv) = self.send_request(req).await?;

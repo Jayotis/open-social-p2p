@@ -7,6 +7,7 @@ import '../widgets/node_banner.dart';
 import '../widgets/post_card.dart';
 import 'compose_screen.dart';
 import 'people_screen.dart';
+import 'reply_requests_screen.dart';
 import 'search_screen.dart';
 import 'status_screen.dart';
 import 'trust_screen.dart';
@@ -29,6 +30,9 @@ class FeedScreen extends StatelessWidget {
     final posts = node.visiblePosts;
     // Requests to be a trusted follower waiting for an answer.
     final asking = node.status?.trustRequests ?? 0;
+    // Replies to the owner's posts waiting for an answer.
+    final replies = node.status?.replyRequests ?? 0;
+    final waiting = asking + replies;
     return Scaffold(
       appBar: AppBar(
         title: const Text('Feed'),
@@ -45,13 +49,14 @@ class FeedScreen extends StatelessWidget {
           ),
           PopupMenuButton<String>(
             icon: Badge(
-              isLabelVisible: asking > 0,
-              label: Text('$asking'),
+              isLabelVisible: waiting > 0,
+              label: Text('$waiting'),
               child: const Icon(Icons.more_vert),
             ),
             onSelected: (choice) => switch (choice) {
               'people' => _open(context, PeopleScreen(node: node)),
               'trust' => _open(context, TrustScreen(node: node)),
+              'replies' => _open(context, ReplyRequestsScreen(node: node)),
               _ => _open(context, StatusScreen(node: node)),
             },
             itemBuilder: (_) => [
@@ -66,6 +71,15 @@ class FeedScreen extends StatelessWidget {
                   label: Text('$asking'),
                   offset: const Offset(16, -4),
                   child: const Text('Trusted followers'),
+                ),
+              ),
+              PopupMenuItem(
+                value: 'replies',
+                child: Badge(
+                  isLabelVisible: replies > 0,
+                  label: Text('$replies'),
+                  offset: const Offset(16, -4),
+                  child: const Text('Replies waiting'),
                 ),
               ),
               const PopupMenuItem(

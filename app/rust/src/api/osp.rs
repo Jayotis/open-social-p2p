@@ -14,7 +14,11 @@ use flutter_rust_bridge::frb;
 use osp_client::{
     device_key_from_hex,
     osp_proto::{
-        rpc::{ClientRequest, ClientResponse, FeedItem, Reached, TrustInfo},
+        rpc::{
+            ClientRequest, ClientResponse, FeedItem, Reached, ReplierChoice, ReplyAnswer,
+            ReplyInfo, ReplyStatus, SentReplyInfo, SentStatus, TrustInfo,
+        },
+        social::ReplyPolicy,
         BlobHash, MediaKind, ObjectId,
     },
     Client, ClientOptions, NoContact, Pairing,
@@ -67,6 +71,8 @@ pub struct NodeStatus {
     pub rtt_ms: Option<u32>,
     /// Requests to be a trusted follower waiting for an answer.
     pub trust_requests: u32,
+    /// Replies to the owner's posts waiting for an answer (ADR 0028).
+    pub reply_requests: u32,
     /// Messages between nodes go through Tor, so they take seconds, and a
     /// first contact up to a few minutes.
     pub over_tor: bool,
@@ -133,6 +139,8 @@ pub struct FoundPerson {
 pub struct Post {
     pub id: String,
     pub author: String,
+    /// The author's identity: the owner's own for their posts.
+    pub author_identity: String,
     /// RFC 3339.
     pub published: String,
     pub text: String,
@@ -147,6 +155,54 @@ pub struct Post {
     /// What the owner may delete here (ADR 0019): their reshare, if this is
     /// one, or else their own post. `None` for anyone else's.
     pub deletable: Option<String>,
+}
+
+/// A reply to a post (ADR 0028).
+pub struct Reply {
+    pub id: String,
+    /// The post it answers.
+    pub post: String,
+    /// The replier's identity.
+    pub identity: String,
+    /// The name in the profile that came with it. Not checked.
+    pub name: String,
+    pub text: String,
+    /// The date the replier gave it (RFC 3339).
+    pub published: String,
+    /// `published`, `hidden` or `request`.
+    pub state: String,
+    /// For a request, why it's there: "you don't follow them", say.
+    pub why: Option<String>,
+    /// Its place in the thread, to read on after it.
+    pub seq: i64,
+}
+
+/// A post's replies, a page at a time.
+pub struct Thread {
+    /// `off`, `circle` or `network`. Only the owner's own posts say.
+    pub policy: String,
+    pub replies: Vec<Reply>,
+    /// Another page follows: ask after the last reply's `seq`.
+    pub more: bool,
+}
+
+/// One of the owner's replies to someone else's post, and where it stands.
+pub struct SentReply {
+    pub id: String,
+    /// The post it answers.
+    pub post: String,
+    /// Whose post that is.
+    pub creator: String,
+    /// Empty once it's being deleted.
+    pub text: String,
+    pub published: String,
+    /// `sending`, `published`, `awaiting_approval`, `not_published`,
+    /// `closed`, `deleted`, `refused`, `gave_up` or `deleting`.
+    pub status: String,
+    /// Why the creator's node refused it, or why it's still being tried.
+    pub error: Option<String>,
+    /// While it's being sent: seconds until the next try.
+    pub next_try_secs: Option<i64>,
 }
 
 pub struct Media {
@@ -267,6 +323,7 @@ impl OspApp {
                 .unwrap_or_else(|| "none".to_string()),
             rtt_ms: conn.and_then(|c| c.rtt_ms).map(|r| r as u32),
             trust_requests: s.trust_requests as u32,
+            reply_requests: s.reply_requests as u32,
             over_tor: s.tor.is_some(),
         })
     }
@@ -438,6 +495,124 @@ impl OspApp {
             .collect();
         followed.sort_by_key(|f| f.name.to_lowercase());
         Ok(followed)
+    }
+
+    /// Replies to `post_id` as the owner (ADR 0028). The node keeps it and
+    /// sends it to the post's creator, trying again for 30 days. A reshare's
+    /// ID answers the post it shares.
+    pub async fn reply(&self, post_id: String, text: String) -> Result<SentReply> {
+        let post: ObjectId = post_id.parse()?;
+        let ClientResponse::ReplySent { reply } = self
+            .client
+            .request(&ClientRequest::Reply {
+                post,
+                content: text,
+            })
+            .await?
+        else {
+            bail!("unexpected reply to Reply");
+        };
+        Ok(sent_reply(reply))
+    }
+
+    /// One page of a post's replies, after `after` (0 for the first). For the
+    /// owner's own posts, all of them, hidden ones too, and the policy.
+    /// Anyone else's are read from their node without saying who reads.
+    pub async fn thread(&self, post_id: String, after: i64) -> Result<Thread> {
+        let post: ObjectId = post_id.parse()?;
+        let ClientResponse::Thread {
+            policy,
+            replies,
+            more,
+        } = self
+            .client
+            .request(&ClientRequest::Thread {
+                post,
+                after: after.max(0) as u64,
+            })
+            .await?
+        else {
+            bail!("unexpected reply to Thread");
+        };
+        Ok(Thread {
+            policy: policy.as_str().to_string(),
+            replies: replies.into_iter().map(reply_info).collect(),
+            more,
+        })
+    }
+
+    /// The owner's replies to others' posts, newest first.
+    pub async fn sent_replies(&self) -> Result<Vec<SentReply>> {
+        let ClientResponse::SentReplies { replies } =
+            self.client.request(&ClientRequest::SentReplies).await?
+        else {
+            bail!("unexpected reply to SentReplies");
+        };
+        Ok(replies.into_iter().map(sent_reply).collect())
+    }
+
+    /// Replies to the owner's posts waiting for an answer, newest first.
+    pub async fn reply_requests(&self) -> Result<Vec<Reply>> {
+        let ClientResponse::ReplyRequests { requests } =
+            self.client.request(&ClientRequest::ReplyRequests).await?
+        else {
+            bail!("unexpected reply to ReplyRequests");
+        };
+        Ok(requests.into_iter().map(reply_info).collect())
+    }
+
+    /// Answers a waiting reply: `publish`, `publish_and_allow`, `decline` or
+    /// `block`. The replier isn't told which.
+    pub async fn answer_reply(&self, reply: String, answer: String) -> Result<()> {
+        let reply: ObjectId = reply.parse()?;
+        let answer = match answer.as_str() {
+            "publish" => ReplyAnswer::Publish,
+            "publish_and_allow" => ReplyAnswer::PublishAndAllow,
+            "decline" => ReplyAnswer::Decline,
+            "block" => ReplyAnswer::Block,
+            _ => bail!("no such answer: {answer:?}"),
+        };
+        self.client
+            .request(&ClientRequest::AnswerReply { reply, answer })
+            .await?;
+        Ok(())
+    }
+
+    /// Hides a published reply to one of the owner's posts, or shows it again.
+    /// Nothing is deleted.
+    pub async fn hide_reply(&self, reply: String, hidden: bool) -> Result<()> {
+        let reply: ObjectId = reply.parse()?;
+        self.client
+            .request(&ClientRequest::HideReply { reply, hidden })
+            .await?;
+        Ok(())
+    }
+
+    /// Sets who may reply to one of the owner's posts: `off`, `circle` or
+    /// `network`.
+    pub async fn set_reply_policy(&self, post_id: String, policy: String) -> Result<()> {
+        let post: ObjectId = post_id.parse()?;
+        let policy: ReplyPolicy = policy.parse()?;
+        self.client
+            .request(&ClientRequest::SetReplyPolicy { post, policy })
+            .await?;
+        Ok(())
+    }
+
+    /// Lets someone reply to the owner's posts from now on (`allow`), blocks
+    /// them (`block`), or with `None` forgets either.
+    pub async fn set_replier(&self, identity: String, choice: Option<String>) -> Result<()> {
+        let actor = identity.parse()?;
+        let choice = match choice.as_deref() {
+            None => None,
+            Some("allow") => Some(ReplierChoice::Allow),
+            Some("block") => Some(ReplierChoice::Block),
+            Some(other) => bail!("no such choice: {other:?}"),
+        };
+        self.client
+            .request(&ClientRequest::SetReplier { actor, choice })
+            .await?;
+        Ok(())
     }
 
     /// Requests to be a trusted follower waiting, newest first, and who is
@@ -618,6 +793,49 @@ fn trust_entry(t: TrustInfo) -> TrustEntry {
     }
 }
 
+fn reply_info(r: ReplyInfo) -> Reply {
+    Reply {
+        id: r.id.to_string(),
+        post: r.post.to_string(),
+        identity: r.actor.to_string(),
+        name: r.name,
+        text: r.content,
+        published: r.published,
+        state: match r.state {
+            ReplyStatus::Published => "published",
+            ReplyStatus::Hidden => "hidden",
+            ReplyStatus::Request => "request",
+        }
+        .to_string(),
+        why: r.why,
+        seq: r.seq as i64,
+    }
+}
+
+fn sent_reply(r: SentReplyInfo) -> SentReply {
+    SentReply {
+        id: r.id.to_string(),
+        post: r.post.to_string(),
+        creator: r.creator.to_string(),
+        text: r.content,
+        published: r.published,
+        status: match r.status {
+            SentStatus::Sending => "sending",
+            SentStatus::Published => "published",
+            SentStatus::AwaitingApproval => "awaiting_approval",
+            SentStatus::NotPublished => "not_published",
+            SentStatus::Closed => "closed",
+            SentStatus::Deleted => "deleted",
+            SentStatus::Refused => "refused",
+            SentStatus::GaveUp => "gave_up",
+            SentStatus::Deleting => "deleting",
+        }
+        .to_string(),
+        error: r.error,
+        next_try_secs: r.next_try_secs.map(|s| s as i64),
+    }
+}
+
 fn node_info(p: Pairing) -> NodeInfo {
     NodeInfo {
         name: p.name,
@@ -639,6 +857,7 @@ fn post(item: FeedItem) -> Post {
     };
     Post {
         id: item.id.to_string(),
+        author_identity: item.actor.to_string(),
         author,
         published: item.published,
         text: item.content,

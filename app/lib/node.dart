@@ -61,6 +61,10 @@ class HomeNode extends ChangeNotifier with WidgetsBindingObserver {
   List<Post> get visiblePosts =>
       posts.where((p) => !_deleting.containsKey(p.deletable)).toList();
 
+  /// Whether a delete of [id] is waiting or on its way: a reply's, say.
+  bool isDeleting(String id) =>
+      _deleting.containsKey(id) || _sending.contains(id);
+
   /// Whether the app is in the background, where the connection is let go.
   bool _inBackground = false;
 

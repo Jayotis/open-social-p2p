@@ -6,7 +6,7 @@
 import '../frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `node_info`, `post`, `progress`, `report_to`, `run_post`, `trust_entry`
+// These functions are ignored because they are not marked as `pub`: `node_info`, `post`, `progress`, `reply_info`, `report_to`, `run_post`, `sent_reply`, `trust_entry`
 // These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `clone`, `clone`
 
 /// A new device key, as 64 hex digits, for the app to keep in the phone's
@@ -23,6 +23,10 @@ bool isFollowTicket({required String text}) =>
 
 // Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<OspApp>>
 abstract class OspApp implements RustOpaqueInterface {
+  /// Answers a waiting reply: `publish`, `publish_and_allow`, `decline` or
+  /// `block`. The replier isn't told which.
+  Future<void> answerReply({required String reply, required String answer});
+
   /// Allows or declines the request from `node`. The node isn't told.
   Future<void> answerTrust({required String node, required bool allow});
 
@@ -62,6 +66,10 @@ abstract class OspApp implements RustOpaqueInterface {
   /// Forgets the node on this phone. Unpair it on the node too
   /// (`osp unpair`) to revoke its access.
   Future<void> forget();
+
+  /// Hides a published reply to one of the owner's posts, or shows it again.
+  /// Nothing is deleted.
+  Future<void> hideReply({required String reply, required bool hidden});
 
   /// The node owner's follow ticket, to show as a QR code.
   Future<String> invite();
@@ -104,6 +112,14 @@ abstract class OspApp implements RustOpaqueInterface {
   /// The end of the app's log, for the status screen.
   String recentLog({required int lines});
 
+  /// Replies to `post_id` as the owner (ADR 0028). The node keeps it and
+  /// sends it to the post's creator, trying again for 30 days. A reshare's
+  /// ID answers the post it shares.
+  Future<SentReply> reply({required String postId, required String text});
+
+  /// Replies to the owner's posts waiting for an answer, newest first.
+  Future<List<Reply>> replyRequests();
+
   /// Reshares a post; with `host`, the node also keeps and serves its media.
   Future<void> reshare({required String postId, required bool host});
 
@@ -117,11 +133,27 @@ abstract class OspApp implements RustOpaqueInterface {
   /// leaves the node.
   Future<Found> search({required String words, required int limit});
 
+  /// The owner's replies to others' posts, newest first.
+  Future<List<SentReply>> sentReplies();
+
+  /// Lets someone reply to the owner's posts from now on (`allow`), blocks
+  /// them (`block`), or with `None` forgets either.
+  Future<void> setReplier({required String identity, String? choice});
+
+  /// Sets who may reply to one of the owner's posts: `off`, `circle` or
+  /// `network`.
+  Future<void> setReplyPolicy({required String postId, required String policy});
+
   Future<NodeStatus> status();
 
   /// Asks the node to sync everyone it follows now. Returns how many new
   /// objects arrived.
   Future<int> sync_();
+
+  /// One page of a post's replies, after `after` (0 for the first). For the
+  /// owner's own posts, all of them, hidden ones too, and the policy.
+  /// Anyone else's are read from their node without saying who reads.
+  Future<Thread> thread({required String postId, required PlatformInt64 after});
 
   /// Trusts someone the node follows, without a request.
   Future<void> trust({required String identity});
@@ -330,6 +362,9 @@ class NodeStatus {
   /// Requests to be a trusted follower waiting for an answer.
   final int trustRequests;
 
+  /// Replies to the owner's posts waiting for an answer (ADR 0028).
+  final int replyRequests;
+
   /// Messages between nodes go through Tor, so they take seconds, and a
   /// first contact up to a few minutes.
   final bool overTor;
@@ -347,6 +382,7 @@ class NodeStatus {
     required this.path,
     this.rttMs,
     required this.trustRequests,
+    required this.replyRequests,
     required this.overTor,
   });
 
@@ -364,6 +400,7 @@ class NodeStatus {
       path.hashCode ^
       rttMs.hashCode ^
       trustRequests.hashCode ^
+      replyRequests.hashCode ^
       overTor.hashCode;
 
   @override
@@ -383,12 +420,16 @@ class NodeStatus {
           path == other.path &&
           rttMs == other.rttMs &&
           trustRequests == other.trustRequests &&
+          replyRequests == other.replyRequests &&
           overTor == other.overTor;
 }
 
 class Post {
   final String id;
   final String author;
+
+  /// The author's identity: the owner's own for their posts.
+  final String authorIdentity;
 
   /// RFC 3339.
   final String published;
@@ -412,6 +453,7 @@ class Post {
   const Post({
     required this.id,
     required this.author,
+    required this.authorIdentity,
     required this.published,
     required this.text,
     required this.media,
@@ -425,6 +467,7 @@ class Post {
   int get hashCode =>
       id.hashCode ^
       author.hashCode ^
+      authorIdentity.hashCode ^
       published.hashCode ^
       text.hashCode ^
       media.hashCode ^
@@ -440,6 +483,7 @@ class Post {
           runtimeType == other.runtimeType &&
           id == other.id &&
           author == other.author &&
+          authorIdentity == other.authorIdentity &&
           published == other.published &&
           text == other.text &&
           media == other.media &&
@@ -509,6 +553,72 @@ enum PostStage {
   failed,
 }
 
+/// A reply to a post (ADR 0028).
+class Reply {
+  final String id;
+
+  /// The post it answers.
+  final String post;
+
+  /// The replier's identity.
+  final String identity;
+
+  /// The name in the profile that came with it. Not checked.
+  final String name;
+  final String text;
+
+  /// The date the replier gave it (RFC 3339).
+  final String published;
+
+  /// `published`, `hidden` or `request`.
+  final String state;
+
+  /// For a request, why it's there: "you don't follow them", say.
+  final String? why;
+
+  /// Its place in the thread, to read on after it.
+  final PlatformInt64 seq;
+
+  const Reply({
+    required this.id,
+    required this.post,
+    required this.identity,
+    required this.name,
+    required this.text,
+    required this.published,
+    required this.state,
+    this.why,
+    required this.seq,
+  });
+
+  @override
+  int get hashCode =>
+      id.hashCode ^
+      post.hashCode ^
+      identity.hashCode ^
+      name.hashCode ^
+      text.hashCode ^
+      published.hashCode ^
+      state.hashCode ^
+      why.hashCode ^
+      seq.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is Reply &&
+          runtimeType == other.runtimeType &&
+          id == other.id &&
+          post == other.post &&
+          identity == other.identity &&
+          name == other.name &&
+          text == other.text &&
+          published == other.published &&
+          state == other.state &&
+          why == other.why &&
+          seq == other.seq;
+}
+
 /// The feed as last fetched, for when the node can't be reached.
 class SavedFeed {
   final List<Post> posts;
@@ -528,6 +638,95 @@ class SavedFeed {
           runtimeType == other.runtimeType &&
           posts == other.posts &&
           saved == other.saved;
+}
+
+/// One of the owner's replies to someone else's post, and where it stands.
+class SentReply {
+  final String id;
+
+  /// The post it answers.
+  final String post;
+
+  /// Whose post that is.
+  final String creator;
+
+  /// Empty once it's being deleted.
+  final String text;
+  final String published;
+
+  /// `sending`, `published`, `awaiting_approval`, `not_published`,
+  /// `closed`, `deleted`, `refused`, `gave_up` or `deleting`.
+  final String status;
+
+  /// Why the creator's node refused it, or why it's still being tried.
+  final String? error;
+
+  /// While it's being sent: seconds until the next try.
+  final PlatformInt64? nextTrySecs;
+
+  const SentReply({
+    required this.id,
+    required this.post,
+    required this.creator,
+    required this.text,
+    required this.published,
+    required this.status,
+    this.error,
+    this.nextTrySecs,
+  });
+
+  @override
+  int get hashCode =>
+      id.hashCode ^
+      post.hashCode ^
+      creator.hashCode ^
+      text.hashCode ^
+      published.hashCode ^
+      status.hashCode ^
+      error.hashCode ^
+      nextTrySecs.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is SentReply &&
+          runtimeType == other.runtimeType &&
+          id == other.id &&
+          post == other.post &&
+          creator == other.creator &&
+          text == other.text &&
+          published == other.published &&
+          status == other.status &&
+          error == other.error &&
+          nextTrySecs == other.nextTrySecs;
+}
+
+/// A post's replies, a page at a time.
+class Thread {
+  /// `off`, `circle` or `network`. Only the owner's own posts say.
+  final String policy;
+  final List<Reply> replies;
+
+  /// Another page follows: ask after the last reply's `seq`.
+  final bool more;
+
+  const Thread({
+    required this.policy,
+    required this.replies,
+    required this.more,
+  });
+
+  @override
+  int get hashCode => policy.hashCode ^ replies.hashCode ^ more.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is Thread &&
+          runtimeType == other.runtimeType &&
+          policy == other.policy &&
+          replies == other.replies &&
+          more == other.more;
 }
 
 /// A request to be a trusted follower, or someone trusted (ADR 0013).
