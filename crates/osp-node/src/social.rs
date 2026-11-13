@@ -493,6 +493,14 @@ impl Core {
             SocialRequest::DeleteReply { delete, profile } => SocialResponse::Reply {
                 state: self.deleted_reply(remote, &delete, &profile)?,
             },
+            SocialRequest::Reshared { announce, profile } => {
+                self.reshared(remote, &announce, &profile)?;
+                SocialResponse::Ok
+            }
+            SocialRequest::FoundEarly { credit, profile } => {
+                self.found_early(remote, &credit, &profile)?;
+                SocialResponse::Ok
+            }
         })
     }
 

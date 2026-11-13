@@ -31,7 +31,7 @@ use tracing::{debug, info, warn};
 
 use crate::{
     config::RelayChoice,
-    db::{BlobClass, Choice, now_ms},
+    db::{BlobClass, Choice, VouchKind, now_ms},
     directory, health, machine, media, network,
     node::{Core, check_addr, remember},
     social::FOLLOWER_SILENCE,
@@ -584,15 +584,18 @@ impl Core {
                 hosting: host,
             }))
             .await?;
-        // The whole copy is here, each chunk checked: the author's node may
-        // name it (ADR 0025). If it can't be told now, it is tomorrow.
-        if host
-            && note.actor != me
+        // The author's node keeps it as a vouch (ADR 0029). And with the
+        // whole copy here, each chunk checked, it may name it (ADR 0025). If
+        // either can't be told now, it is tomorrow.
+        if note.actor != me
             && let Some(announce) = self.db.outbox_object(&id)?
         {
             let core = self.clone();
             tokio::spawn(async move {
-                if let Err(e) = core.tell_author_hosting(&announce).await {
+                if let Err(e) = core.tell_author_reshared(&announce).await {
+                    debug!("couldn't tell the author's node of our reshare: {e:#}");
+                }
+                if host && let Err(e) = core.tell_author_hosting(&announce).await {
                     debug!("couldn't tell the author's node we host a copy: {e:#}");
                 }
             });
@@ -611,8 +614,10 @@ impl Core {
             .with_context(|| format!("{} isn't one of your posts or reshares", id.fmt_short()))?;
         let reshared = match obj.verify()? {
             Payload::Note(_) => {
-                // Its resharers aren't named any more (ADR 0025).
+                // Its resharers aren't named any more (ADR 0025), nor
+                // count as vouching for the owner (ADR 0029).
                 self.db.forget_resharer_hosts(id, None)?;
+                self.db.forget_vouches_of(id)?;
                 None
             }
             Payload::Announce(a) => Some(a.object),
@@ -878,6 +883,10 @@ impl Core {
             Some(by) if by.actor == me => Some(by.announce),
             _ => (note.actor == me).then_some(id),
         };
+        let resharers = match note.actor == me {
+            true => Some(self.db.vouches_for(VouchKind::Reshare, &id)? as u32),
+            false => None,
+        };
         Ok(Some(FeedItem {
             id,
             actor: note.actor,
@@ -889,6 +898,7 @@ impl Core {
             found_through: None,
             deletable,
             found_reshares: Vec::new(),
+            resharers,
         }))
     }
 
@@ -911,6 +921,7 @@ impl Core {
             Payload::Delete(_) | Payload::ForwardDelete(_) => {
                 bail!("{id} is a delete, not a post")
             }
+            Payload::FoundEarly(_) => bail!("{id} is a found-early credit, not a post"),
         }
     }
 

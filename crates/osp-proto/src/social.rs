@@ -119,6 +119,22 @@ pub enum SocialRequest {
         delete: SignedObject,
         profile: SignedObject,
     },
+    /// "My owner reshared one of your posts" (ADR 0029), from the resharer's
+    /// node, for every reshare, hosting or not. `announce` is the signed
+    /// `Announce`; `profile` is the resharer's signed profile, which must list
+    /// the sending node. The author's node keeps it as a vouch for its owner.
+    Reshared {
+        announce: SignedObject,
+        profile: SignedObject,
+    },
+    /// "My owner credits yours with finding one of their posts early" (ADR
+    /// 0029), from the post's author's node. `credit` is the signed
+    /// `FoundEarly`; `profile` is the author's signed profile, which must
+    /// list the sending node. The finder's node keeps it as a vouch.
+    FoundEarly {
+        credit: SignedObject,
+        profile: SignedObject,
+    },
 }
 
 /// Who a post lets reply (ADR 0028).

@@ -90,6 +90,7 @@ pub enum Payload {
     Key(Key),
     Delete(Delete),
     ForwardDelete(ForwardDelete),
+    FoundEarly(FoundEarly),
 }
 
 impl Payload {
@@ -102,6 +103,7 @@ impl Payload {
             Payload::Key(k) => k.actor,
             Payload::Delete(d) => d.actor,
             Payload::ForwardDelete(f) => f.actor,
+            Payload::FoundEarly(f) => f.actor,
         }
     }
 
@@ -114,6 +116,7 @@ impl Payload {
             Payload::Key(_) => "Key",
             Payload::Delete(_) => "Delete",
             Payload::ForwardDelete(_) => "ForwardDelete",
+            Payload::FoundEarly(_) => "FoundEarly",
         }
     }
 
@@ -125,6 +128,7 @@ impl Payload {
             Payload::Key(k) => &k.published,
             Payload::Delete(d) => &d.published,
             Payload::ForwardDelete(f) => &f.published,
+            Payload::FoundEarly(f) => &f.published,
         }
     }
 
@@ -168,7 +172,8 @@ impl Payload {
             Payload::Announce(_)
             | Payload::Key(_)
             | Payload::Delete(_)
-            | Payload::ForwardDelete(_) => {}
+            | Payload::ForwardDelete(_)
+            | Payload::FoundEarly(_) => {}
         }
         Ok(())
     }
@@ -382,6 +387,18 @@ pub struct Announce {
     /// True when the resharer's node keeps a copy of the media and serves it.
     #[serde(default)]
     pub hosting: bool,
+}
+
+/// A found-early credit (ADR 0029): the author of `post` credits `finder`
+/// with being one of the first to reshare it, in the order the author's node
+/// heard them. Not AS2. Never in an outbox: the author's node sends it to the
+/// finder's, which keeps it as a vouch for its owner.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct FoundEarly {
+    pub actor: PublicKey,
+    pub post: ObjectId,
+    pub finder: PublicKey,
+    pub published: String,
 }
 
 /// A key certificate (ADR 0010): the identity names the key that signs its

@@ -59,6 +59,7 @@ use crate::{
     trust,
     uploads::{LiveUpload, UploadKey},
     viewing::{self, Viewing},
+    vouches,
 };
 
 /// Limits that only the simulated network harness (`osp-sim`) changes,
@@ -258,6 +259,13 @@ pub(crate) struct Core {
     pub hosting_checks: PerHour,
     /// New replies each node sent this hour (ADR 0028).
     pub reply_senders: PerHour,
+    /// New resharers this hour, from everyone together, under this node's
+    /// own ID (ADR 0029).
+    pub new_resharers: PerHour,
+    /// Found-early credits each node sent this hour (ADR 0029).
+    pub credit_senders: PerHour,
+    /// Wakes the telling of credits given and reshares made (ADR 0029).
+    pub tell_vouches_now: Notify,
     /// How often each host was named in `WhoHosts` (ADR 0025).
     pub named_hosts: NamedHosts,
     /// When followers last sent us a request, and how.
@@ -577,6 +585,9 @@ impl Node {
             swarm_samples: PerHour::default(),
             hosting_checks: PerHour::default(),
             reply_senders: PerHour::default(),
+            new_resharers: PerHour::default(),
+            credit_senders: PerHour::default(),
+            tell_vouches_now: Notify::new(),
             named_hosts: NamedHosts::default(),
             heard: Heard::default(),
             tell_moved_lock: tokio::sync::Mutex::new(()),
@@ -680,6 +691,7 @@ impl Node {
         let reshares = tokio::spawn(sync::reshares_loop(core.clone()));
         let resharers = tokio::spawn(hosting::resharers_loop(core.clone()));
         let replies = tokio::spawn(replying::send_loop(core.clone()));
+        let vouches = tokio::spawn(vouches::vouches_loop(core.clone()));
         let mut tasks = vec![
             serving_rules,
             sync_loop,
@@ -690,6 +702,7 @@ impl Node {
             reshares,
             resharers,
             replies,
+            vouches,
         ];
         tasks.extend(directory_tasks);
         if core.config.network.relay != RelayChoice::Disabled {
@@ -833,6 +846,24 @@ impl Node {
     /// (ADR 0019). For tests.
     pub fn knows_deleted(&self, id: &ObjectId) -> Result<bool> {
         self.core.db.is_tombstoned(id)
+    }
+
+    /// The posts whose authors credited this node's owner with finding them
+    /// early (ADR 0029). For tests.
+    pub fn found_early_credits(&self) -> Result<Vec<ObjectId>> {
+        self.core.db.vouch_posts(crate::db::VouchKind::FoundEarly)
+    }
+
+    /// Whom this node's owner credited with finding `post` early (ADR 0029).
+    /// For tests.
+    pub fn credited_finders(&self, post: &ObjectId) -> Result<Vec<PublicKey>> {
+        Ok(self
+            .core
+            .db
+            .credits_for(post)?
+            .into_iter()
+            .map(|c| c.finder)
+            .collect())
     }
 
     /// Asks the authors this node's owner reshared but doesn't follow whether

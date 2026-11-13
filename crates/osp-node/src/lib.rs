@@ -35,6 +35,7 @@ mod tor;
 mod trust;
 mod uploads;
 mod viewing;
+mod vouches;
 
 /// This build's version: the release's tag when the release job sets
 /// `OSP_RELEASE` (such as v0.1.0-alpha.3), or else the crate's version.

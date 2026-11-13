@@ -1,6 +1,6 @@
 # ADR 0029: Vouchers within six steps of the creator
 
-**Status:** Accepted (2026-11-12). Takes up what [ADR 0028](0028-replies-let-in-by-the-creator.md) left for later: letting strangers' replies in without the creator having to look. On by default once its `osp-sim` round passes (the maintainer, 2026-11-12). Uses [doc 12](../12-peer-reciprocity-and-recognition.md)'s creator and hunter recognition in a narrow form, for this one use; doc 12's levels and their other uses stay a proposal.
+**Status:** Accepted (2026-11-12; amended 2026-11-13: a replier's side is sent only when asked for, and who answers the circle question). Takes up what [ADR 0028](0028-replies-let-in-by-the-creator.md) left for later: letting strangers' replies in without the creator having to look. On by default once its `osp-sim` round passes (the maintainer, 2026-11-12). Uses [doc 12](../12-peer-reciprocity-and-recognition.md)'s creator and hunter recognition in a narrow form, for this one use; doc 12's levels and their other uses stay a proposal.
 
 ## Context
 
@@ -40,15 +40,17 @@ The author's node hears reshares in the order they come. When a post has **10 di
 
 ### 2. Jimmy's node gathers his side, in the background
 
-Once a day, Jimmy's node asks the nodes of those who vouched for him: "who vouched for you?" Each answers from its record (step 1), at most 32 vouches, newest first. Then it does the same one step further back.
+Once a day, Jimmy's node asks the nodes of those who vouched for him: "who vouched for you?" Each answers from its record (step 1), at most 32 vouches, newest first, each with its voucher's signed profile so Jimmy's node can reach their node. Then it does the same one step further back.
 
 It keeps at most **256 vouches** in all, nearest first. These are public acts, so any node answers anyone, limited to 10 questions an hour from one node.
 
 This is the nodes getting to know each other while their owners do other things. Jimmy's node comes to know the nodes of those who vouched for him.
 
-### 3. A reply carries Jimmy's side
+### 3. A reply shows Jimmy's side when asked
 
-With ADR 0028's `SubmitReply`, Jimmy's node sends his side: up to 256 signed vouches, about 150 KB. Kim's node checks each one: it verifies, it isn't signed by a revoked key, and it's a vouch for whom it says.
+Jimmy's node sends his reply with ADR 0028's `SubmitReply`, as now. Most replies come from Kim's circle and need nothing more. When Kim's node would send the reply to her requests and vouchers are on, it answers "show who vouched for you", and Jimmy's node sends his side in a second request: up to 256 signed vouches, about 150 KB (this one request may be up to 256 KiB; every other stays within 64 KiB). Kim's node checks each one: it verifies, it isn't signed by a key Kim's node knows was revoked, and it's a vouch for whom it says.
+
+Kim's node only knows revocations of identities it holds. A revoked key of someone far out still vouches until Kim's node learns of it: one meeting point of the 3 to 10 needed, so low harm.
 
 ### 4. Kim's node looks for where the two sides meet
 
@@ -61,7 +63,7 @@ It looks for those people among Jimmy's side.
 
 **Then, if that isn't enough, it asks Kim's circle.** It asks up to **16 nodes** of people in her circle: trusted followers first, then those it's followed longest. Each gets one question: "which of these identities can you place within 2 steps of your owner?", with the identities of Jimmy's side (not the vouches). Each answers from what it already holds: which ones, and at how many steps from its owner.
 
-- A node only answers nodes that follow its owner, at most 60 questions an hour.
+- A node only answers nodes whose owner follows its owner, or whom its owner follows, at most 60 questions an hour. So Alice's node answers Kim's if Kim follows Alice, or if Alice follows Kim (as each of Kim's trusted followers does). Alice's node never learns whether Kim trusted her (ADR 0013).
 - No node it asks asks anyone else. The question goes one step out and stops.
 - Alice's node answering is Alice's node vouching: Kim chose to follow her. A meeting through Alice is at 1 + Alice's steps.
 
@@ -83,12 +85,14 @@ At or above the mark, under `network`, the reply is **published**. Below it, the
 
 A popular creator or hunter has many vouchers in many places, so from far away they still meet Kim's world at many points. Someone with one lucky reshare meets it at one.
 
-It's on by default, and can be turned off in `config.toml`:
+It's on by default once its `osp-sim` round passes, and can be turned off in `config.toml`:
 
 ```toml
 [replies]
 vouchers = true
 ```
+
+The setting only says whether Kim's node lets replies in this way. Recording reshares, giving credits, answering "who vouched for you" and gathering one's own side always run, since other people's replies depend on them.
 
 ### 6. What it's for, and not
 
@@ -137,7 +141,8 @@ Tests, at least:
 - A carried vouch that doesn't verify, is signed by a revoked key, or isn't for whom it says, doesn't count.
 - 200 throwaway identities vouching for each other and for Jimmy, behind one careless reshare by someone in Kim's world, give one meeting point.
 - The table: at each distance, one short of the mark goes to requests; at the mark it's published; through only one person in Kim's circle, 4 steps and more go to requests.
-- A circle node asked doesn't ask anyone else; it answers only nodes following its owner, within the limit.
+- A circle node asked doesn't ask anyone else; it answers only nodes whose owner follows its owner or whom its owner follows, within the limit.
+- A reply from the circle is published without its side being asked for; a stranger's side is asked for only with vouchers on.
 
 One `osp-sim` round, a few hundred people in 10 communities, following and resharing:
 
