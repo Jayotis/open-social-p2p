@@ -192,26 +192,32 @@ class _RequestCard extends StatelessWidget {
               'that the reply is signed by that profile, not who is behind it.',
               style: small,
             ),
-            OverflowBar(
-              alignment: MainAxisAlignment.end,
-              children: [
-                TextButton(
-                  onPressed: busy ? null : () => onAnswer('block'),
-                  child: const Text('Block'),
-                ),
-                TextButton(
-                  onPressed: busy ? null : () => onAnswer('decline'),
-                  child: const Text('Decline'),
-                ),
-                TextButton(
-                  onPressed: busy ? null : () => onAnswer('publish'),
-                  child: const Text('Publish'),
-                ),
-                TextButton(
-                  onPressed: busy ? null : () => onAnswer('publish_and_allow'),
-                  child: const Text('Publish and allow'),
-                ),
-              ],
+            // Wraps onto a second row on a phone, rather than a column.
+            SizedBox(
+              width: double.infinity,
+              child: Wrap(
+                alignment: WrapAlignment.end,
+                children: [
+                  TextButton(
+                    onPressed: busy ? null : () => onAnswer('block'),
+                    child: const Text('Block'),
+                  ),
+                  TextButton(
+                    onPressed: busy ? null : () => onAnswer('decline'),
+                    child: const Text('Decline'),
+                  ),
+                  TextButton(
+                    onPressed: busy ? null : () => onAnswer('publish'),
+                    child: const Text('Publish'),
+                  ),
+                  TextButton(
+                    onPressed: busy
+                        ? null
+                        : () => onAnswer('publish_and_allow'),
+                    child: const Text('Publish and allow'),
+                  ),
+                ],
+              ),
             ),
           ],
         ),

@@ -165,8 +165,8 @@ class PostCard extends StatelessWidget {
             ),
           for (final media in post.media)
             _MediaTile(node: node, post: post, media: media),
-          OverflowBar(
-            alignment: MainAxisAlignment.end,
+          Wrap(
+            alignment: WrapAlignment.end,
             children: [
               if (post.deletable != null)
                 TextButton.icon(
