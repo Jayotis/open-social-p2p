@@ -4,6 +4,7 @@ use std::{fmt, net::SocketAddr, path::Path};
 
 use anyhow::{Context, Result};
 use iroh::EndpointId;
+use osp_proto::social::ReplyPolicy;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -24,6 +25,7 @@ pub struct Config {
     pub endpoints: EndpointsConfig,
     pub machine: MachineConfig,
     pub directory: DirectoryConfig,
+    pub replies: RepliesConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -249,6 +251,17 @@ impl fmt::Display for DirectRule {
     }
 }
 
+/// Replies to your posts (ADR 0028).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RepliesConfig {
+    /// Who may reply to a post you haven't set a policy for: `off`, nobody;
+    /// `circle`, those you follow, your trusted followers and those you
+    /// allowed; `network`, your circle at once and anyone else to your
+    /// requests.
+    pub default_policy: ReplyPolicy,
+}
+
 /// Sending media to other nodes.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
@@ -274,6 +287,7 @@ impl Default for Config {
             endpoints: EndpointsConfig::default(),
             machine: MachineConfig::default(),
             directory: DirectoryConfig::default(),
+            replies: RepliesConfig::default(),
         }
     }
 }
@@ -349,6 +363,7 @@ impl Config {
             endpoints: EndpointsConfig::default(),
             machine: MachineConfig::default(),
             directory: DirectoryConfig::default(),
+            replies: RepliesConfig::default(),
         }
     }
 

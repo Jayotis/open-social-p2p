@@ -22,6 +22,9 @@ use tracing::info;
 
 use crate::{meet, peers, trust};
 
+mod replies;
+pub(crate) use replies::{Choice, Held, ReceivedReply, ReplyRow};
+
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS objects (
     id           TEXT PRIMARY KEY,
@@ -356,6 +359,46 @@ const MIGRATIONS: &[&str] = &[
     // 25: the search index (`SEARCH_SCHEMA`) gained each post's date. It's
     // built again when the database is opened.
     "DROP TABLE IF EXISTS search_text; DROP TABLE IF EXISTS search_items;",
+    // 26: replies to this node's posts (ADR 0028), kept apart from `objects` so
+    // they never reach the outbox, the feed, search or a directory's lists.
+    // Each post's policy, where its owner set one. Each reply received: the
+    // post it answers, its replier and the node that sent it, whether it's
+    // published, hidden, a request or declined, its place in the thread (given
+    // each time it's published, so readers further on still get it), the
+    // signed reply and the profile that came with it, and when it arrived.
+    // Repliers the owner allowed or blocked. And repliers' `Delete`s of
+    // replies held here, so an old copy can't come back.
+    "CREATE TABLE reply_policies (
+        post   TEXT PRIMARY KEY,
+        policy TEXT NOT NULL
+    );
+    CREATE TABLE received_replies (
+        id          TEXT PRIMARY KEY,
+        post        TEXT NOT NULL,
+        actor       TEXT NOT NULL,
+        node        TEXT NOT NULL,
+        state       TEXT NOT NULL,
+        thread_seq  INTEGER UNIQUE,
+        signed      TEXT NOT NULL,
+        profile     TEXT NOT NULL,
+        received_ms INTEGER NOT NULL
+    );
+    CREATE INDEX received_replies_by_post ON received_replies(post, thread_seq);
+    CREATE INDEX received_replies_by_actor ON received_replies(actor, post);
+    CREATE INDEX received_replies_by_state ON received_replies(state, received_ms);
+    CREATE TABLE repliers (
+        actor  TEXT PRIMARY KEY,
+        choice TEXT NOT NULL,
+        at_ms  INTEGER NOT NULL
+    );
+    CREATE TABLE reply_deletes (
+        reply       TEXT PRIMARY KEY,
+        post        TEXT NOT NULL,
+        actor       TEXT NOT NULL,
+        signed      TEXT NOT NULL,
+        received_ms INTEGER NOT NULL
+    );
+    CREATE INDEX reply_deletes_by_post ON reply_deletes(post);",
 ];
 
 /// The search index (ADR 0014): a number for each post, by its object ID, and
@@ -898,6 +941,7 @@ impl Db {
                 tx.execute("DELETE FROM found_blobs WHERE post = ?1", params![id])?;
                 tx.execute("DELETE FROM refetch WHERE id = ?1", params![id])?;
                 remove_from_search(&tx, id)?;
+                replies::forget_replies_to(&tx, id)?;
             }
             for blob in note.iter().flat_map(|n| n.blobs()) {
                 let blob_hex = blob.to_string();
@@ -3791,6 +3835,12 @@ fn insert_object(
     if is_deleted(conn, &obj.id(), payload)? {
         return Ok(false);
     }
+    // Replies are kept apart (ADR 0028), never where a feed, an outbox, search
+    // or a directory's lists would find them.
+    ensure!(
+        !matches!(payload, Payload::Note(note) if note.is_reply()),
+        "a reply isn't stored as a post"
+    );
     // Clamp author-claimed time so a future-dated post can't pin itself to the top.
     let published = osp_proto::parse_rfc3339_ms(payload.published())
         .unwrap_or(received)
@@ -6339,6 +6389,8 @@ mod tests {
                      CREATE VIRTUAL TABLE search_text USING fts5(
                          text, content = '', contentless_delete = 1,
                          tokenize = 'unicode61 remove_diacritics 2');
+                     DROP TABLE reply_policies; DROP TABLE received_replies;
+                     DROP TABLE repliers; DROP TABLE reply_deletes;
                      PRAGMA user_version = 24;",
                 )
                 .unwrap();
