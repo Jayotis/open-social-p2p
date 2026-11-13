@@ -312,6 +312,9 @@ pub(crate) struct Core {
     /// node are, or will be, ready.
     #[cfg(feature = "sim")]
     pub tor_ready: Mutex<HashMap<EndpointId, Instant>>,
+    /// Every meeting of a replier's side, for the simulator (ADR 0029).
+    #[cfg(feature = "sim")]
+    pub meetings: Mutex<Vec<crate::admission::Meeting>>,
 }
 
 impl Node {
@@ -616,6 +619,8 @@ impl Node {
             sim,
             #[cfg(feature = "sim")]
             tor_ready: Mutex::new(HashMap::new()),
+            #[cfg(feature = "sim")]
+            meetings: Mutex::new(Vec::new()),
         });
 
         core.start_uploads()?;
@@ -894,6 +899,24 @@ impl Node {
             .into_iter()
             .map(|v| (v.voucher, v.step))
             .collect())
+    }
+
+    /// Tells authors' nodes of reshares, and finders of credits, not told yet,
+    /// as the node does each day for those it couldn't tell at once (ADR
+    /// 0029). For tests.
+    pub fn tell_vouches_now(&self) {
+        self.core.tell_vouches_now.notify_one();
+    }
+
+    /// Every meeting of a replier's side this node made, oldest first (ADR
+    /// 0029). For the simulator.
+    #[cfg(feature = "sim")]
+    pub fn meetings(&self) -> Vec<crate::admission::Meeting> {
+        self.core
+            .meetings
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     /// Whom this node's owner credited with finding `post` early (ADR 0029).

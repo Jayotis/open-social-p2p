@@ -252,7 +252,7 @@ impl fmt::Display for DirectRule {
 }
 
 /// Replies to your posts (ADR 0028).
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct RepliesConfig {
     /// Who may reply to a post you haven't set a policy for: `off`, nobody;
@@ -262,10 +262,19 @@ pub struct RepliesConfig {
     pub default_policy: ReplyPolicy,
     /// Whether a stranger's reply to a post open to the `network` is let in
     /// when enough people in your circle's world vouched for them (ADR
-    /// 0029). Below the mark it goes to your requests with what was found. Off
-    /// until its simulation round passes. Recording reshares, crediting early
-    /// finders and answering others' questions about vouches run either way.
+    /// 0029). Below the mark it goes to your requests with what was found. On
+    /// by default. Recording reshares, crediting early finders and answering
+    /// others' questions about vouches run either way.
     pub vouchers: bool,
+}
+
+impl Default for RepliesConfig {
+    fn default() -> Self {
+        Self {
+            default_policy: ReplyPolicy::default(),
+            vouchers: true,
+        }
+    }
 }
 
 /// Sending media to other nodes.

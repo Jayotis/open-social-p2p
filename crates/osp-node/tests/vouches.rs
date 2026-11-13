@@ -801,7 +801,8 @@ async fn a_reply_is_let_in_where_the_sides_meet_through_the_circle() {
 
 /// The case that showed Kim's node mustn't count as a place of its own. Kim
 /// follows Alice; Alice follows X and reshared X's post, and trusts four
-/// people. Jimmy's side holds X and those four, 2 steps back from him. Kim's
+/// people. Jimmy's side holds X and those four, 2 steps back from him, each
+/// through a different person who vouched for him. Kim's
 /// node places X through Alice's reshare, and Alice's node places all five:
 /// five meeting points at 4 steps, every one through Alice. That stays a
 /// request. Once Dave, also followed by Kim, follows X, Dave's node places X
@@ -826,12 +827,18 @@ async fn four_steps_through_alice_alone_waits_and_a_second_root_lets_it_in() {
     follow(&kim, &dave).await;
     call(&kim, ClientRequest::Sync).await;
 
-    // Jimmy's side: S vouched for him; X and Alice's four vouched for S.
+    // Jimmy's side: five people vouched for him; X vouched for the first,
+    // and each of Alice's four for one of the others.
     let jimmy = SecretKey::generate();
-    let s = SecretKey::generate();
-    let mut side = vec![vouch(&s, jimmy.public())];
-    side.push(x.sign_reshare_of(s.public()).unwrap());
-    side.extend(trusted.iter().map(|t| vouch(t, s.public())));
+    let between: Vec<SecretKey> = (0..5).map(|_| SecretKey::generate()).collect();
+    let mut side: Vec<SignedObject> = between.iter().map(|s| vouch(s, jimmy.public())).collect();
+    side.push(x.sign_reshare_of(between[0].public()).unwrap());
+    side.extend(
+        trusted
+            .iter()
+            .zip(&between[1..])
+            .map(|(t, s)| vouch(t, s.public())),
+    );
 
     let open = post(&kim, "anyone may reply").await;
     let jimmys_node = Peer::new(&kim.addr().await).await;
