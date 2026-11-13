@@ -71,6 +71,8 @@ pub(crate) struct ReceivedReply {
 pub(crate) struct ReplyRow {
     pub reply: ReceivedReply,
     pub held: Held,
+    /// Its place in the thread, once it's been published.
+    pub seq: Option<i64>,
 }
 
 impl Db {
@@ -268,6 +270,18 @@ impl Db {
         )
     }
 
+    /// Up to `limit` published replies to `post` placed after `after`, in
+    /// thread order: what readers get (ADR 0028).
+    pub fn thread(&self, post: &ObjectId, after: i64, limit: usize) -> Result<Vec<ReplyRow>> {
+        let conn = self.conn();
+        reply_rows(
+            &conn,
+            "WHERE post = ?1 AND state = 'published' AND thread_seq > ?2
+             ORDER BY thread_seq LIMIT ?3",
+            params![post.to_string(), after, limit as i64],
+        )
+    }
+
     /// Moves a kept reply to `held`: publishing gives it a new place at the
     /// end of its thread, if the thread has room. Says what it was before.
     pub fn move_reply(&self, id: &ObjectId, held: Held, now: i64) -> Result<Held> {
@@ -395,7 +409,7 @@ fn reply_rows(
     params: impl rusqlite::Params,
 ) -> Result<Vec<ReplyRow>> {
     let mut stmt = conn.prepare(&format!(
-        "SELECT id, post, actor, node, state, signed, profile, received_ms
+        "SELECT id, post, actor, node, state, signed, profile, received_ms, thread_seq
          FROM received_replies {rest}"
     ))?;
     let rows = stmt.query_map(params, |row| {
@@ -408,10 +422,11 @@ fn reply_rows(
             row.get::<_, String>(5)?,
             row.get::<_, String>(6)?,
             row.get::<_, i64>(7)?,
+            row.get::<_, Option<i64>>(8)?,
         ))
     })?;
     rows.map(|row| {
-        let (id, post, actor, node, state, signed, profile, received_ms) = row?;
+        let (id, post, actor, node, state, signed, profile, received_ms, seq) = row?;
         Ok(ReplyRow {
             reply: ReceivedReply {
                 id: id.parse()?,
@@ -423,6 +438,7 @@ fn reply_rows(
                 received_ms,
             },
             held: Held::parse(&state)?,
+            seq,
         })
     })
     .collect()
@@ -548,6 +564,39 @@ mod tests {
             db.received_reply_state(&published.id, now).unwrap(),
             Some(Held::Published)
         );
+    }
+
+    #[test]
+    fn readers_get_published_replies_a_page_at_a_time_in_thread_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(&dir.path().join("t.db")).unwrap();
+        let post = a_post();
+        let now = super::super::now_ms();
+        let mut ids = Vec::new();
+        for i in 0..5 {
+            let r = received(&SecretKey::generate(), post, &format!("{i}"), now);
+            db.add_received_reply(&r, true).unwrap();
+            ids.push(r.id);
+        }
+        let waiting = received(&SecretKey::generate(), post, "waiting", now);
+        db.add_received_reply(&waiting, false).unwrap();
+        db.move_reply(&ids[1], Held::Hidden, now).unwrap();
+
+        let page = db.thread(&post, 0, 2).unwrap();
+        let got: Vec<_> = page.iter().map(|r| r.reply.id).collect();
+        assert_eq!(got, [ids[0], ids[2]]);
+        let after = page[1].seq.unwrap();
+        let rest: Vec<_> = db
+            .thread(&post, after, 10)
+            .unwrap()
+            .iter()
+            .map(|r| r.reply.id)
+            .collect();
+        assert_eq!(rest, [ids[3], ids[4]]);
+        // Shown again, it comes after the rest, so a reader further on gets it.
+        db.move_reply(&ids[1], Held::Published, now).unwrap();
+        let last = db.thread(&post, 0, 10).unwrap().pop().unwrap();
+        assert_eq!(last.reply.id, ids[1]);
     }
 
     #[test]

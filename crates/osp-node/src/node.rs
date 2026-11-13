@@ -51,9 +51,10 @@ use crate::{
     meet::{self, Acquaintance, IntroductionCounts, MeetingTimes},
     network::{self, ConnTracker},
     relays::{self, Checked, RelayPolicy},
+    replying,
     social::{self, Heard, NamedHosts, PerHour, SocialProtocol},
     store::{self, ContentStore, Sources},
-    sync,
+    sync, threads,
     tor::TorSide,
     trust,
     uploads::{LiveUpload, UploadKey},
@@ -616,6 +617,10 @@ impl Node {
                             osp_proto::social::MEDIA_HOSTS_ALPN,
                             hosting::MediaHostsProtocol::new(core.clone()),
                         )
+                        .accept(
+                            osp_proto::social::REPLIES_ALPN,
+                            threads::RepliesProtocol::new(core.clone()),
+                        )
                         .spawn(),
                 );
             }
@@ -674,6 +679,7 @@ impl Node {
         let sweep_uploads = tokio::spawn(core.clone().sweep_uploads_loop());
         let reshares = tokio::spawn(sync::reshares_loop(core.clone()));
         let resharers = tokio::spawn(hosting::resharers_loop(core.clone()));
+        let replies = tokio::spawn(replying::send_loop(core.clone()));
         let mut tasks = vec![
             serving_rules,
             sync_loop,
@@ -683,6 +689,7 @@ impl Node {
             sweep_uploads,
             reshares,
             resharers,
+            replies,
         ];
         tasks.extend(directory_tasks);
         if core.config.network.relay != RelayChoice::Disabled {

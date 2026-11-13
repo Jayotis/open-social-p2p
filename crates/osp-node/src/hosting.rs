@@ -196,7 +196,7 @@ impl Core {
 
     /// Acts on a `Delete` of a found post that its author's media endpoint
     /// sent, once it checks out, so the post goes and its tombstone stays.
-    async fn found_deleted(
+    pub(crate) async fn found_deleted(
         &self,
         delete: &SignedObject,
         post: &ObjectId,

@@ -23,7 +23,9 @@ use tracing::info;
 use crate::{meet, peers, trust};
 
 mod replies;
+mod sent_replies;
 pub(crate) use replies::{Choice, Held, ReceivedReply, ReplyRow};
+pub(crate) use sent_replies::SentReply;
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS objects (
@@ -399,6 +401,29 @@ const MIGRATIONS: &[&str] = &[
         received_ms INTEGER NOT NULL
     );
     CREATE INDEX reply_deletes_by_post ON reply_deletes(post);",
+    // 27: the owner's replies to others' posts (ADR 0028), kept from when
+    // they're signed and sent to the creator's node until it answers. The
+    // post and its creator, and the node to send to when no newer profile
+    // names one. The signed reply, gone once the owner deletes it, and then
+    // their `Delete` while that's being sent. Where it stands, and what the
+    // creator's node said if it refused. Tries so far, when to try next
+    // (none once answered), when this sending began (tries stop 30 days
+    // after), and when it was signed.
+    "CREATE TABLE sent_replies (
+        id            TEXT PRIMARY KEY,
+        post          TEXT NOT NULL,
+        creator       TEXT NOT NULL,
+        creator_node  TEXT NOT NULL,
+        signed        TEXT,
+        delete_signed TEXT,
+        state         TEXT NOT NULL,
+        error         TEXT,
+        tries         INTEGER NOT NULL DEFAULT 0,
+        next_try_ms   INTEGER,
+        since_ms      INTEGER NOT NULL,
+        sent_ms       INTEGER NOT NULL
+    );
+    CREATE INDEX sent_replies_next_try ON sent_replies(next_try_ms);",
 ];
 
 /// The search index (ADR 0014): a number for each post, by its object ID, and
@@ -6391,6 +6416,7 @@ mod tests {
                          tokenize = 'unicode61 remove_diacritics 2');
                      DROP TABLE reply_policies; DROP TABLE received_replies;
                      DROP TABLE repliers; DROP TABLE reply_deletes;
+                     DROP TABLE sent_replies;
                      PRAGMA user_version = 24;",
                 )
                 .unwrap();

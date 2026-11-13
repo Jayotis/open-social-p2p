@@ -41,7 +41,8 @@ use osp_proto::{
     machine::MAX_LISTED_POSTS,
     rpc::{
         ClientRequest, ClientResponse, DeviceInfo, Direction, FeedItem, FollowerInfo, PeerRecord,
-        Reached, ReplierChoice, ReplyAnswer, ReplyInfo, ReplyStatus, StatusInfo, TrustInfo,
+        Reached, ReplierChoice, ReplyAnswer, ReplyInfo, ReplyStatus, SentReplyInfo, SentStatus,
+        StatusInfo, TrustInfo,
     },
     social::ReplyPolicy,
 };
@@ -172,8 +173,23 @@ enum Command {
     /// Delete one of your posts or reshares, everywhere the software reaches.
     /// It can't be undone, and copies people saved stay
     Delete { id: ObjectId },
-    /// Show the replies to one of your posts, and who may reply to it
-    Replies { post: ObjectId },
+    /// Reply to someone's post. Your node keeps trying their node for 30 days
+    /// until it answers; `osp sent-replies` shows where each reply stands
+    Reply {
+        post: ObjectId,
+        /// What you say, at most 4,000 bytes
+        text: String,
+    },
+    /// Show the replies to a post, and who may reply to it. Others' posts are
+    /// read without showing who you are, a page at a time
+    Replies {
+        post: ObjectId,
+        /// Show the page after this place in the thread
+        #[arg(long, default_value_t = 0)]
+        after: u64,
+    },
+    /// List your replies to others' posts, newest first, and where each stands
+    SentReplies,
     /// List the replies waiting for you to look at them, newest first
     ReplyRequests,
     /// Publish a reply waiting among your requests
@@ -569,7 +585,12 @@ async fn main() -> Result<()> {
             out_dir: out.map(|p| std::path::absolute(&p)).transpose()?,
         },
         Command::Sync => ClientRequest::Sync,
-        Command::Replies { post } => ClientRequest::Thread { post },
+        Command::Reply { post, text } => ClientRequest::Reply {
+            post,
+            content: text,
+        },
+        Command::Replies { post, after } => ClientRequest::Thread { post, after },
+        Command::SentReplies => ClientRequest::SentReplies,
         Command::ReplyRequests => ClientRequest::ReplyRequests,
         Command::ReplyPublish { reply, allow } => ClientRequest::AnswerReply {
             reply,
@@ -1272,17 +1293,32 @@ fn print(resp: ClientResponse, json: bool) -> Result<()> {
     match resp {
         ClientResponse::Error { message } => bail!(message),
         ClientResponse::Ok => println!("Done."),
-        ClientResponse::Thread { policy, replies } => {
+        ClientResponse::Thread {
+            policy,
+            replies,
+            more,
+        } => {
             let who = match policy {
                 ReplyPolicy::Off => "nobody",
-                ReplyPolicy::Circle => "your circle",
-                ReplyPolicy::Network => "your circle, and anyone else through your requests",
+                ReplyPolicy::Circle => "the creator's circle",
+                ReplyPolicy::Network => "the creator's circle, and anyone else the creator lets in",
             };
             println!("Who may reply: {who} ({}).", policy.as_str());
             if replies.is_empty() {
                 println!("No replies yet.");
             }
             replies.iter().for_each(print_reply);
+            if more && let Some(last) = replies.last() {
+                println!();
+                println!("More follow: add `--after {}`.", last.seq);
+            }
+        }
+        ClientResponse::ReplySent { reply } => print_sent_reply(&reply),
+        ClientResponse::SentReplies { replies } => {
+            if replies.is_empty() {
+                println!("You haven't replied to anyone's posts.");
+            }
+            replies.iter().for_each(print_sent_reply);
         }
         ClientResponse::ReplyRequests { requests } => {
             if requests.is_empty() {
@@ -1717,6 +1753,39 @@ fn print_reply(r: &ReplyInfo) {
     }
     for line in r.content.lines() {
         println!("  {}", plain(line));
+    }
+    println!("  reply {}", r.id);
+}
+
+/// One of your replies, and where it stands.
+fn print_sent_reply(r: &SentReplyInfo) {
+    let status = match r.status {
+        SentStatus::Sending => "not answered yet; your node tries again",
+        SentStatus::Published => "published",
+        SentStatus::AwaitingApproval => "waiting for the creator to look",
+        SentStatus::NotPublished => "not published",
+        SentStatus::Closed => "the post takes no replies",
+        SentStatus::Deleted => "the post was deleted",
+        SentStatus::Refused => "refused",
+        SentStatus::GaveUp => "their node didn't answer in 30 days",
+        SentStatus::Deleting => "deleted; telling their node",
+    };
+    println!();
+    println!(
+        "To {}'s post {} · {}",
+        r.creator.fmt_short(),
+        r.post.fmt_short(),
+        plain(&r.published)
+    );
+    for line in r.content.lines() {
+        println!("  {}", plain(line));
+    }
+    match (&r.error, r.next_try_secs) {
+        (Some(error), _) if r.status == SentStatus::Refused => {
+            println!("  {status}: {}", plain(error))
+        }
+        (_, Some(secs)) => println!("  {status}, in {}", uptime(secs)),
+        _ => println!("  {status}"),
     }
     println!("  reply {}", r.id);
 }

@@ -58,7 +58,7 @@ async fn post(node: &Node, text: &str) -> ObjectId {
 }
 
 async fn thread(node: &Node, post: ObjectId) -> Vec<ReplyInfo> {
-    match call(node, ClientRequest::Thread { post }).await {
+    match call(node, ClientRequest::Thread { post, after: 0 }).await {
         ClientResponse::Thread { replies, .. } => replies,
         other => panic!("unexpected {other:?}"),
     }
@@ -606,7 +606,12 @@ async fn hidden_deleted_and_closed_by_deleting_the_post() {
     call(&kim, ClientRequest::Delete { id: kims }).await;
     let (_, late) = node.reply(&jimmy, kims, "late").await;
     assert_eq!(late, ReplyState::Deleted);
-    let gone = kim.handle(ClientRequest::Thread { post: kims }).await;
+    let gone = kim
+        .handle(ClientRequest::Thread {
+            post: kims,
+            after: 0,
+        })
+        .await;
     assert!(matches!(gone, ClientResponse::Error { .. }), "{gone:?}");
 }
 
