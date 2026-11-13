@@ -45,6 +45,8 @@ pub const VERSION: &str = match option_env!("OSP_RELEASE") {
     None => env!("CARGO_PKG_VERSION"),
 };
 
+#[cfg(feature = "sim")]
+pub use admission::Meeting;
 pub use config::{Config, DirectRule, IntroductionsConfig, KnownDirectory, RelayChoice};
 pub use db::BlobClass;
 pub use endpoints::PeerEndpoints;

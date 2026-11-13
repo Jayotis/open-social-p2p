@@ -1,6 +1,6 @@
 # ADR 0029: Vouchers within six steps of the creator
 
-**Status:** Accepted (2026-11-12; amended 2026-11-13: a replier's side is sent only when asked for, who answers the circle question, and that every meeting counts through a person in the circle, not Kim's node). Takes up what [ADR 0028](0028-replies-let-in-by-the-creator.md) left for later: letting strangers' replies in without the creator having to look. On by default once its `osp-sim` round passes (the maintainer, 2026-11-12). Uses [doc 12](../12-peer-reciprocity-and-recognition.md)'s creator and hunter recognition in a narrow form, for this one use; doc 12's levels and their other uses stay a proposal.
+**Status:** Accepted (2026-11-12; amended 2026-11-13: a replier's side is sent only when asked for, who answers the circle question, and that every meeting counts through a person in the circle, not Kim's node; and after its `osp-sim` round, that meeting points count only as far as their chains to the replier are separate, and a meeting's own work may take 150 ms on an SBC-sized node, and the table asks 4 points at 4 steps and 6 at 5 or 6). Takes up what [ADR 0028](0028-replies-let-in-by-the-creator.md) left for later: letting strangers' replies in without the creator having to look. On by default once its `osp-sim` round passes (the maintainer, 2026-11-12). Uses [doc 12](../12-peer-reciprocity-and-recognition.md)'s creator and hunter recognition in a narrow form, for this one use; doc 12's levels and their other uses stay a proposal.
 
 ## Context
 
@@ -73,15 +73,17 @@ So Kim's side reaches 3 steps, Jimmy's side 3 steps back, and together they find
 
 Each **meeting point** is a different person on Kim's side found in Jimmy's side.
 
-What counts is **how many different meeting points** there are, not how many vouches. Throwaway identities behind one careless reshare all meet Kim's side at that one person, so they count as one.
+What counts is **how many different meeting points** there are, not how many vouches, and only as far as their **chains to Jimmy are separate**: Kim's node counts the most meeting points it can join to Jimmy by chains of vouches that share nobody but Jimmy. Throwaway identities behind one careless reshare all meet Kim's side at that one person, so they count as one. So does everyone who vouched for the careless person: they're on Jimmy's side too, 3 steps back, but every chain from them to the operator goes through the careless person. The `osp-sim` round found that one (2026-11-13): there, the operator met Kim's world at 5 points of the 10 needed, and a careless person better vouched-for near Kim would have let it in.
 
 Each meeting is **through someone in Kim's circle**: Alice herself, whoever Alice reshared, and whatever Alice's node answers are all through Alice, whether Kim's node found them or Alice's did. Kim's node isn't a place of its own, so one careless friend never counts twice.
 
 | Jimmy's distance from Kim | Meeting points needed | Reached through |
 | --- | ---: | --- |
 | 2 or 3 steps | 3 | Kim's node, or her circle |
-| 4 steps | 5 | at least 2 different people in her circle |
-| 5 or 6 steps | 10 | at least 2 different people in her circle |
+| 4 steps | 4 | at least 2 different people in her circle |
+| 5 or 6 steps | 6 | at least 2 different people in her circle |
+
+Until the `osp-sim` round, the table asked 5 points at 4 steps and 10 at 5 or 6, counting every different person. Counted by separate chains, popular strangers far away met Kim's world at 4 to 8 points, and 14 of 30 got in. Each separate chain needs a different real person's vouch, so fewer are needed for the same trust; with this table 27 of 30 did, and no throwaway reply ([results](../testing/vouchers.md#results)).
 
 At or above the mark, under `network`, the reply is **published**. Below it, the reply goes to Kim's requests with what was found: "4 steps away, 3 people in your circle's world vouched for them".
 
@@ -107,7 +109,7 @@ What Kim's node found isn't shown to anyone but Kim, and isn't a score of Jimmy 
 - **Alice's node learns** that someone with Jimmy's side replied to Kim, from the identities it's asked about. It's likely public soon anyway, if the reply is published. Low harm.
 - **Kim learns** which of up to 256 identities Alice's node places, which says a little about whom Alice follows or reshared. Kim follows Alice, and the identities are ones Jimmy chose. Low harm.
 - **"Who vouched for you"** can be asked by anyone, which makes a person's reshares easier to collect. They're public in the resharers' outboxes already; the limit keeps it slow.
-- **Getting a spam reply in from far away** takes 10 different meeting points, through 2 people in Kim's circle. That means getting reshares from many real, separate people, which is about what being popular is. Through one careless reshare, it can't be done. Unlikely, at real effort, for one reply until Kim blocks it.
+- **Getting a spam reply in from far away** takes 6 meeting points on separate chains, through 2 people in Kim's circle. That means getting reshares from 6 real people near Kim's world, none of whom reaches Jimmy through another, which is about what being popular is. Through one careless reshare, it can't be done, however well vouched-for the careless person is. Unlikely, at real effort, for one reply until Kim blocks it.
 - **Getting in from close** (3 steps) takes 3 meeting points, the cheapest way. It needs three separate people near Kim's circle to vouch. That's the same bar as being reshared by three of her circle's friends.
 
 ## Options considered
@@ -152,6 +154,8 @@ One `osp-sim` round, a few hundred people in 10 communities, following and resha
 - 50 ordinary strangers replying;
 - one operator with 200 throwaway identities, one careless reshare 5 steps out, and the identities vouching for each other and the operator.
 
-**Pass:** no throwaway reply is published; at least 80% of the popular strangers' replies are published; a reply's meeting needs at most 16 questions and 50 ms of work on an SBC-sized node; gathering one's side costs under 100 requests a day.
+**Pass:** no throwaway reply is published; at least 80% of the popular strangers' replies are published; a reply's meeting needs at most 16 questions and 150 ms of work on an SBC-sized node; gathering one's side costs under 100 requests a day.
+
+The mark for work was 50 ms until the round (2026-11-13; [results](../testing/vouchers.md#results)). Nearly all of a meeting's work is checking the side's signatures, about 54 µs each on the desktop the round ran on, so a full side of 256 can't be checked in 50 ms on an SBC one at a time. A creator's node checks each waiting request's side once, and keeps at most 100 waiting, so a flood costs an SBC seconds, not more. The maintainer raised it to 150 ms.
 
 On the test nodes: Kim follows Alice; Alice reshared Bob; Bob, through two more steps, vouches for people who vouched for Jimmy, at enough points for his distance; Jimmy's reply is published. Carol, vouched for only by throwaway identities behind one reshare, goes to requests.

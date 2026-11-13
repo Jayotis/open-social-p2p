@@ -38,6 +38,7 @@ pub mod deleting;
 pub mod meeting;
 pub mod month;
 pub mod newcomers;
+pub mod vouching;
 
 /// Bytes per second of video the node's encoder makes from noise: its
 /// 1,500 kbit/s ceiling, plus audio and the container. Measured on a
