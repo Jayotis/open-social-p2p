@@ -417,6 +417,16 @@ impl Db {
         Ok(n > 0)
     }
 
+    /// At start: sides taken whose meeting never ended, as the node stopped
+    /// during it, may be shown again.
+    pub fn untake_unmet_sides(&self) -> Result<usize> {
+        Ok(self.conn().execute(
+            "UPDATE received_replies SET side_asked = 1
+             WHERE side_asked = 2 AND found IS NULL AND state = 'request'",
+            [],
+        )?)
+    }
+
     /// Keeps what the meeting of a replier's side with the owner's world
     /// found, as JSON.
     pub fn set_found(&self, id: &ObjectId, found: &str) -> Result<()> {
@@ -592,6 +602,31 @@ mod tests {
             db.add_received_reply(&other, true).unwrap(),
             Some(Held::Published)
         );
+    }
+
+    #[test]
+    fn a_side_taken_whose_meeting_never_ended_may_be_shown_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(&dir.path().join("t.db")).unwrap();
+        let post = a_post();
+        let now = super::super::now_ms();
+        let [stopped, met] = ["stopped", "met"].map(|text| {
+            let r = received(&SecretKey::generate(), post, text, now);
+            assert_eq!(
+                db.add_received_reply(&r, false).unwrap(),
+                Some(Held::Request)
+            );
+            db.ask_side(&r.id).unwrap();
+            assert!(db.take_side(&r.id).unwrap());
+            r.id
+        });
+        db.set_found(&met, "{}").unwrap();
+        assert!(!db.take_side(&stopped).unwrap());
+
+        // The node starts again: only the meeting that never ended is undone.
+        assert_eq!(db.untake_unmet_sides().unwrap(), 1);
+        assert!(db.take_side(&stopped).unwrap());
+        assert!(!db.take_side(&met).unwrap());
     }
 
     #[test]

@@ -799,6 +799,113 @@ async fn a_reply_is_let_in_where_the_sides_meet_through_the_circle() {
     }
 }
 
+/// Someone `kim`'s owner trusts, whose node takes her node's questions and
+/// never answers: as a node over Tor can, for longer than the circle is
+/// given. Keep it alive for the test.
+async fn silent_trusted_follower(kim: &Node) -> (Peer, n0_future::task::JoinHandle<()>) {
+    let lookup = MemoryLookup::new();
+    lookup.add_endpoint_info(kim.addr().await);
+    let endpoint = Endpoint::builder(presets::Minimal)
+        .secret_key(SecretKey::generate())
+        .address_lookup(lookup)
+        .relay_mode(RelayMode::Disabled)
+        .clear_ip_transports()
+        .bind_addr("127.0.0.1:0".parse::<SocketAddr>().unwrap())
+        .unwrap()
+        .alpns(vec![SOCIAL_ALPN.to_vec()])
+        .bind()
+        .await
+        .unwrap();
+    // Takes connections and the streams on them, and answers none.
+    let hold = |conn: Connection| async move {
+        let mut streams = Vec::new();
+        while let Ok(stream) = conn.accept_bi().await {
+            streams.push(stream);
+        }
+    };
+    let conn = endpoint
+        .connect(kim.addr().await, SOCIAL_ALPN)
+        .await
+        .unwrap();
+    let silent = {
+        let endpoint = endpoint.clone();
+        let conn = conn.clone();
+        n0_future::task::spawn(async move {
+            let on_ours = n0_future::task::spawn(hold(conn));
+            while let Some(incoming) = endpoint.accept().await {
+                if let Ok(conn) = incoming.await {
+                    n0_future::task::spawn(hold(conn));
+                }
+            }
+            on_ours.abort();
+        })
+    };
+    let peer = Peer { endpoint, conn };
+    peer.subscribe().await;
+    let who = SecretKey::generate();
+    let req = SocialRequest::AskTrust {
+        profile: peer.profile(&who),
+        note: "a friend".into(),
+    };
+    ok(peer.ask(&req).await);
+    let node = peer.endpoint.id();
+    call(kim, ClientRequest::AnswerTrust { node, allow: true }).await;
+    (peer, silent)
+}
+
+/// As `a_reply_is_let_in_where_the_sides_meet_through_the_circle`, with one
+/// more in Kim's circle whose node never answers. Alice's answer still counts.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_circle_node_that_never_answers_loses_nobody_elses_answer() {
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter("osp_node::admission=debug,osp_node::replying=debug,warn")
+        .with_test_writer()
+        .try_init();
+    let dir = tempfile::tempdir().unwrap();
+    let kim = start_with(dir.path(), "Kim", true).await;
+    let alice = start(dir.path(), "Alice").await;
+    let bob = start(dir.path(), "Bob").await;
+    let dan = start(dir.path(), "Dan").await;
+    let jimmy = start(dir.path(), "Jimmy").await;
+
+    follow(&kim, &alice).await;
+    follow(&kim, &bob).await;
+    follow(&alice, &dan).await;
+    call(&kim, ClientRequest::Sync).await;
+    // Trusted followers are asked first.
+    let (_silent, _held) = silent_trusted_follower(&kim).await;
+
+    let jimmys = post(&jimmy, "by Jimmy").await;
+    for node in [&alice, &bob, &dan] {
+        follow(node, &jimmy).await;
+        call(node, ClientRequest::Sync).await;
+        reshare(node, jimmys).await;
+        follow(&jimmy, node).await;
+    }
+    wait_for("Jimmy's node to hear of the reshares", || async {
+        resharers(&jimmy, jimmys).await == Some(3)
+    })
+    .await;
+    jimmy.gather_side_now().await.unwrap();
+    assert_eq!(jimmy.side().unwrap().len(), 3);
+
+    let kims = post(&kim, "by Kim").await;
+    follow(&jimmy, &kim).await;
+    call(&jimmy, ClientRequest::Sync).await;
+    let req = ClientRequest::Reply {
+        post: kims,
+        content: "hello Kim".into(),
+    };
+    let ClientResponse::ReplySent { reply } = call(&jimmy, req).await else {
+        panic!("not sent")
+    };
+    assert_eq!(reply.status, SentStatus::Published, "{reply:?}");
+
+    for node in [kim, alice, bob, dan, jimmy] {
+        node.shutdown().await.unwrap();
+    }
+}
+
 /// The case that showed Kim's node mustn't count as a place of its own. Kim
 /// follows Alice; Alice follows X and reshared X's post, and trusts four
 /// people. Jimmy's side holds X and those four, 2 steps back from him, each
