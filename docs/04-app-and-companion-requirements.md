@@ -1,6 +1,6 @@
 # Application and Desktop Companion Requirements
 
-**Status:** Product requirements draft, not a UI or implementation specification. The connection model below follows [ADR 0001](decisions/0001-home-node-architecture.md) and [ADR 0006](decisions/0006-desktop-first-always-on-node.md).
+**Status:** Product requirements draft, not a UI or implementation specification. The connection model below follows [ADR 0001](decisions/0001-home-node-architecture.md) and [ADR 0006](decisions/0006-desktop-first-always-on-node.md). The phone app's structure for the Product Alpha (Home, the Universe and You) is decided in ADRs [0030](decisions/0030-product-alpha-before-testers.md) to [0039](decisions/0039-sharing-your-universe.md).
 
 ## Connection model
 
