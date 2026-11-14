@@ -159,8 +159,11 @@ class _Empty extends StatelessWidget {
       Reachability.offline =>
         'Nothing saved on this phone yet. Pull down to try again.',
       Reachability.online =>
-        "Nothing here yet. Follow someone (menu → Follow and be followed), "
-            'or post something with the pencil button.',
+        'Nothing here yet: your feed shows the people you follow, and you '
+            'follow nobody yet.\n\nTap the magnifier at the top to find people '
+            'your node found through directories, and what they post. Follow '
+            'someone there, or with their invite code (menu → Follow and be '
+            'followed). Or post something with the pencil button.',
     };
     // A scrollable child, so pull-to-refresh works on an empty feed too.
     return ListView(
