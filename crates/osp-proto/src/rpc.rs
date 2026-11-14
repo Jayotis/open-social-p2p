@@ -153,6 +153,13 @@ pub enum ClientRequest {
     },
     /// What this node measured about the peer nodes it deals with (ADR 0011).
     Peers,
+    /// Who vouched for this node's owner, and their side as last gathered
+    /// (ADR 0029). With `gather`, also starts gathering the side now, in the
+    /// background, unless a gathering is under way.
+    Vouches {
+        #[serde(default)]
+        gather: bool,
+    },
     /// Requests to be a trusted follower still waiting for an answer, newest
     /// first, and the nodes trusted (ADR 0013).
     TrustRequests,
@@ -342,6 +349,15 @@ pub enum ClientResponse {
     Peers {
         peers: Vec<PeerRecord>,
     },
+    /// Vouchers most recently heard of first; the side nearest first.
+    Vouches {
+        vouchers: Vec<VoucherInfo>,
+        side: Vec<SideInfo>,
+        /// How long ago the side was last gathered, if ever.
+        gathered_secs_ago: Option<u64>,
+        /// Whether a gathering is under way, or was just started.
+        gathering: bool,
+    },
     /// Requests waiting, newest first, and the nodes trusted.
     Trust {
         requests: Vec<TrustInfo>,
@@ -441,6 +457,10 @@ pub struct BackupInfo {
     /// Nodes allowed a direct connection by the rule `approved` (ADR 0014).
     #[serde(default)]
     pub direct_contacts: usize,
+    /// Vouches for this identity (ADR 0029): reshares of its posts, and
+    /// found-early credits.
+    #[serde(default)]
+    pub vouches: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -603,6 +623,25 @@ pub enum Direction {
     Outgoing,
     Incoming,
     Both,
+}
+
+/// Someone who vouched for this node's owner (ADR 0029).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VoucherInfo {
+    pub actor: PublicKey,
+    /// From their profile, when it's kept.
+    pub name: Option<String>,
+    /// How many of the owner's posts they reshared.
+    pub reshares: u32,
+    /// How many posts' authors credited the owner, if they're such an author.
+    pub credits: u32,
+}
+
+/// Someone on the owner's side: `step` steps back from them (ADR 0029).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SideInfo {
+    pub actor: PublicKey,
+    pub step: u8,
 }
 
 /// What a node measured about one peer node (ADR 0011), and what it knows of it.

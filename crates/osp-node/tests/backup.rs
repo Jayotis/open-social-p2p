@@ -52,6 +52,14 @@ async fn post(node: &Node, text: &str) {
     call(node, req).await;
 }
 
+/// How many resharers `node` counts for its own post `id` (ADR 0029).
+async fn resharers(node: &Node, id: ObjectId) -> Option<u32> {
+    match call(node, ClientRequest::Show { id }).await {
+        ClientResponse::Item { item } => item.resharers,
+        other => panic!("unexpected {other:?}"),
+    }
+}
+
 async fn follow(follower: &Node, followed: &Node) {
     let ClientResponse::Ticket { ticket } = call(followed, ClientRequest::Invite).await else {
         panic!("no ticket")
@@ -516,7 +524,7 @@ async fn a_backup_brings_back_posts_follows_followers_and_media() {
     follow(&alice, &bob).await;
     call(&alice, ClientRequest::Sync).await;
     post(&alice, "hello").await;
-    let (_, alices_photo) = post_photo(&alice, dir.path(), "alice", "testsrc").await;
+    let (alices_post, alices_photo) = post_photo(&alice, dir.path(), "alice", "testsrc").await;
     let reshare = ClientRequest::Reshare {
         id: bobs_post,
         host: true,
@@ -546,10 +554,23 @@ async fn a_backup_brings_back_posts_follows_followers_and_media() {
     };
     call(&alice, direct).await;
 
+    // Carol reshares Alice's photo: a vouch for Alice (ADR 0029), which
+    // Carol's node tells only once.
+    let reshare = ClientRequest::Reshare {
+        id: alices_post,
+        host: false,
+    };
+    call(&carol, reshare).await;
+    wait_until("Alice's node to hear of Carol's reshare", async || {
+        resharers(&alice, alices_post).await == Some(1)
+    })
+    .await;
+
     let file = dir.path().join("alice.ospbackup");
     let info = export(&alice, &file, true).await;
     assert_eq!((info.posts, info.follows, info.followers), (3, 1, 1));
     assert_eq!((info.trusted, info.direct_contacts), (1, 1));
+    assert_eq!(info.vouches, 1);
     assert!(info.media_files >= 1);
     assert_eq!(info.media_missing, 0);
     assert_eq!(info.bytes, std::fs::metadata(&file).unwrap().len());
@@ -570,7 +591,11 @@ async fn a_backup_brings_back_posts_follows_followers_and_media() {
     );
     assert_eq!(from_file.media_files, info.media_files);
     assert_eq!((from_file.trusted, from_file.direct_contacts), (1, 1));
+    assert_eq!(from_file.vouches, 1);
     let alice = Node::spawn(&home).await.unwrap();
+
+    // Carol's reshare still vouches for her.
+    assert_eq!(resharers(&alice, alices_post).await, Some(1));
 
     // Whom she trusted, and let connect directly, she still does.
     let ClientResponse::Trust { trusted, .. } = call(&alice, ClientRequest::TrustRequests).await

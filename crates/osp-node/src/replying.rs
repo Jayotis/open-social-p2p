@@ -11,7 +11,7 @@
 //! `Delete` is sent the same way (`DeleteReply`). Kim replying to her own
 //! post needs no network: her node takes it as any reply.
 
-use std::{sync::Arc, time::Duration};
+use std::{collections::HashSet, sync::Arc, time::Duration};
 
 use anyhow::{Context, Result, bail, ensure};
 use iroh::{EndpointAddr, EndpointId, PublicKey};
@@ -250,6 +250,11 @@ impl Core {
     /// Sends the reply `id`, or its `Delete`, once, and notes the answer or
     /// when to try again.
     async fn try_sent_reply(&self, id: &ObjectId) -> Result<()> {
+        // One try at a time: another, say on reaching the creator again while
+        // the first is still showing who vouched, waits for it, then finds it
+        // answered and sends nothing. Sent again, the creator's node would
+        // answer anew, and the first's answer overwrite it.
+        let _trying = self.trying_replies.start(*id).await;
         let Some(row) = self.db.sent_reply(id)? else {
             return Ok(());
         };
@@ -359,6 +364,48 @@ impl Core {
     }
 }
 
+/// The replies with a try under way.
+#[derive(Default)]
+pub(crate) struct InFlight {
+    ids: std::sync::Mutex<HashSet<ObjectId>>,
+    ended: tokio::sync::Notify,
+}
+
+/// A try of one reply; dropping it ends the try.
+pub(crate) struct Trying<'a> {
+    of: &'a InFlight,
+    id: ObjectId,
+}
+
+impl InFlight {
+    /// Starts a try of `id`, once any try of it under way has ended.
+    pub(crate) async fn start(&self, id: ObjectId) -> Trying<'_> {
+        loop {
+            // Registered before looking, so a try ending meanwhile wakes it.
+            let mut ended = std::pin::pin!(self.ended.notified());
+            ended.as_mut().enable();
+            if self
+                .ids
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(id)
+            {
+                return Trying { of: self, id };
+            }
+            ended.await;
+        }
+    }
+}
+
+impl Drop for Trying<'_> {
+    fn drop(&mut self) {
+        let mut ids = self.of.ids.lock().unwrap_or_else(|e| e.into_inner());
+        ids.remove(&self.id);
+        drop(ids);
+        self.of.ended.notify_waiters();
+    }
+}
+
 /// Tries replies again as they fall due, for as long as the node runs.
 pub(crate) async fn send_loop(core: Arc<Core>) {
     loop {
@@ -434,5 +481,25 @@ mod tests {
             tries += 1;
         }
         assert_eq!(tries, 35);
+    }
+
+    #[tokio::test]
+    async fn a_reply_has_one_try_at_a_time() {
+        let trying = Arc::new(InFlight::default());
+        let (a, b) = (ObjectId::of(b"a"), ObjectId::of(b"b"));
+        let first = trying.start(a).await;
+        let second = {
+            let trying = trying.clone();
+            tokio::spawn(async move { drop(trying.start(a).await) })
+        };
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(!second.is_finished(), "a second try while one is under way");
+        // Another reply isn't held up.
+        drop(trying.start(b).await);
+        drop(first);
+        tokio::time::timeout(Duration::from_secs(5), second)
+            .await
+            .expect("the second try never started")
+            .unwrap();
     }
 }

@@ -127,11 +127,12 @@ else
     say "words, then asks for some of them back. Have paper and a pen ready."
     # Answers come from the terminal even when this script was piped in. Tests
     # answer with flags in OSP_INIT_FLAGS instead.
+    # OSP_INSTALLING: init says this script starts the node, not to start it.
     if [[ -n "${OSP_INIT_FLAGS:-}" ]]; then
         # shellcheck disable=SC2086 # several flags
-        "$BIN/osp" --home "$NODE_HOME" init "${directories[@]}" $OSP_INIT_FLAGS
+        OSP_INSTALLING=1 "$BIN/osp" --home "$NODE_HOME" init "${directories[@]}" $OSP_INIT_FLAGS
     else
-        "$BIN/osp" --home "$NODE_HOME" init "${directories[@]}" < /dev/tty
+        OSP_INSTALLING=1 "$BIN/osp" --home "$NODE_HOME" init "${directories[@]}" < /dev/tty
     fi
 fi
 

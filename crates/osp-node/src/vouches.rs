@@ -335,6 +335,7 @@ impl Core {
     /// that don't answer, or answer with what doesn't check out, are passed
     /// over. Replaces the side kept before.
     pub(crate) async fn gather_side(&self) -> Result<Gathered> {
+        let _one = self.gathering.lock().await;
         let me = self.signer.identity();
         let mut placed = HashSet::from([me]);
         let mut side = Vec::new();
@@ -515,13 +516,15 @@ pub(crate) async fn vouches_loop(core: std::sync::Arc<Core>) {
     }
 }
 
-/// Gathers the owner's side once a day, at a time of its own: first a while
-/// after starting, if the last was a day ago or more.
+/// Gathers the owner's side once a day, at a time of its own: first up to 10
+/// minutes after starting, if it was never gathered or the last was about a
+/// day ago or more.
 pub(crate) async fn gather_loop(core: std::sync::Arc<Core>) {
     loop {
         let since = match core.db.side_gathered_ms() {
             Ok(Some(ms)) => Duration::from_millis(now_ms().saturating_sub(ms).max(0) as u64),
-            _ => GATHER_EVERY,
+            // Never: overdue, whatever this round's day comes to.
+            _ => Duration::MAX,
         };
         let every = GATHER_EVERY.mul_f64(0.9 + 0.2 * random_fraction());
         let wait =
