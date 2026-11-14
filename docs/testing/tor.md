@@ -21,7 +21,7 @@ A node made by `osp init` has it on already, unless it was made with `--no-tor`;
    direct = "nobody"
    ```
 
-   **This changes what the node can reach.** Messages then go only through Tor, so it can reach only nodes with Tor on, and they can reach it only that way. Its follow code gives its ID and nothing else. **Phones paired before must pair again**, as they now connect to the direct endpoint: in the app, Home node status, then Forget this home node, then `osp pair`.
+   **This changes what the node can reach.** Messages then go only through Tor, so it can reach only nodes with Tor on, and they can reach it only that way. Its follow code gives its ID and nothing else. **Phones paired before must pair again**, as they now connect to the direct endpoint: in the app, You, then Advanced details, then Forget this node, then `osp pair`.
 
 3. Restart the node (`systemctl --user restart osp`). Then `osp status` shows a line like `Tor: ready, onion service published, 0 streams`. Connecting to the Tor network takes about 10 seconds the first time, and publishing the node's onion service a few more.
 

@@ -29,11 +29,11 @@ class PostCard extends StatelessWidget {
             if (post.media.isNotEmpty)
               ListTile(
                 leading: const Icon(Icons.cloud_upload_outlined),
-                title: const Text('Reshare and host a copy'),
+                title: const Text('Share, and help keep it available'),
                 subtitle: const Text(
-                  'Your home node keeps the media and serves it to others, '
-                  "so it stays available when the author's node is off. "
-                  'This uses your home upload bandwidth.',
+                  'Your node keeps a copy of the photos and videos and passes '
+                  "it on, so they stay available when the author's node is "
+                  'off. This uses your home upload bandwidth.',
                 ),
                 onTap: () => Navigator.pop(context, true),
               ),
@@ -161,7 +161,7 @@ class PostCard extends StatelessWidget {
             Padding(
               padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
               child: Text(
-                'From directory ${post.foundThrough}',
+                'Found through ${post.foundThrough}',
                 style: theme.textTheme.bodySmall,
               ),
             ),

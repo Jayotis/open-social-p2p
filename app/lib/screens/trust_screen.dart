@@ -4,7 +4,8 @@ import '../format.dart';
 import '../node.dart';
 import '../src/rust/api/osp.dart';
 
-/// Trusted followers (ADR 0013): requests to answer, and who is trusted.
+/// People you know (trusted followers in ADR 0013): people who say they
+/// know you, waiting for an answer, and those you said you know.
 class TrustScreen extends StatefulWidget {
   const TrustScreen({super.key, required this.node});
 
@@ -59,7 +60,7 @@ class _TrustScreenState extends State<TrustScreen> {
     if (!await confirmTrust(context, r.name)) return;
     await _do(
       () => widget.node.app.answerTrust(node: r.node, allow: true),
-      'Trusted. They aren\'t told.',
+      'Done. They aren\'t told.',
     );
   }
 
@@ -72,7 +73,7 @@ class _TrustScreenState extends State<TrustScreen> {
     final go = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
-        title: Text('Stop trusting ${t.name}?'),
+        title: Text('Remove ${t.name} from people you know?'),
         content: const Text(
           'Your node stops naming them as a host more often, on every one '
           'of their nodes. They aren\'t told.',
@@ -84,7 +85,7 @@ class _TrustScreenState extends State<TrustScreen> {
           ),
           FilledButton(
             onPressed: () => Navigator.pop(context, true),
-            child: const Text('Stop trusting'),
+            child: const Text('Remove'),
           ),
         ],
       ),
@@ -92,7 +93,7 @@ class _TrustScreenState extends State<TrustScreen> {
     if (go != true) return;
     await _do(
       () => widget.node.app.untrust(identity: t.identity),
-      'No longer trusted.',
+      'Removed from people you know.',
     );
   }
 
@@ -102,7 +103,7 @@ class _TrustScreenState extends State<TrustScreen> {
     final list = _list;
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Trusted followers'),
+        title: const Text('People you know'),
         actions: [
           IconButton(
             tooltip: 'Refresh',
@@ -117,9 +118,10 @@ class _TrustScreenState extends State<TrustScreen> {
           padding: const EdgeInsets.all(16),
           children: [
             const Text(
-              'People you know who follow you. For now, trusting someone '
-              'changes one thing: your node names them as hosts of your '
-              'photos and videos more often. It grants them nothing else.',
+              'People you know who follow you. For now, saying you know '
+              'someone changes one thing: your node names them as hosts of '
+              'your photos and videos more often. It grants them nothing '
+              'else.',
             ),
             if (_busy)
               const Padding(
@@ -141,7 +143,7 @@ class _TrustScreenState extends State<TrustScreen> {
               ),
             if (list != null) ...[
               const SizedBox(height: 24),
-              Text('Asking to be trusted', style: theme.textTheme.titleMedium),
+              Text('Say they know you', style: theme.textTheme.titleMedium),
               const SizedBox(height: 8),
               if (list.requests.isEmpty) const Text('No requests waiting.'),
               for (final r in list.requests)
@@ -152,12 +154,12 @@ class _TrustScreenState extends State<TrustScreen> {
                   onDecline: () => _decline(r),
                 ),
               const SizedBox(height: 24),
-              Text('Trusted', style: theme.textTheme.titleMedium),
+              Text('You know them', style: theme.textTheme.titleMedium),
               const SizedBox(height: 8),
               if (list.trusted.isEmpty)
                 const Text(
-                  'Nobody yet. To trust someone you follow, find them under '
-                  'Follow and be followed.',
+                  'Nobody yet. To say you know someone you follow, find them '
+                  'under You, Invite and follow.',
                 ),
               for (final t in list.trusted)
                 Card(
@@ -165,13 +167,13 @@ class _TrustScreenState extends State<TrustScreen> {
                     title: Text(shownName(t.name)),
                     subtitle: Text(
                       [
-                        'Trusted ${_ago(t.secsAgo)}',
+                        'Since ${_ago(t.secsAgo)}',
                         if (t.followed) 'you follow them',
                         followerLine(t),
                       ].join(' · '),
                     ),
                     trailing: IconButton(
-                      tooltip: 'Stop trusting',
+                      tooltip: 'Remove from people you know',
                       onPressed: _busy ? null : () => _remove(t),
                       icon: const Icon(Icons.person_remove_outlined),
                     ),
@@ -209,7 +211,10 @@ class _RequestCard extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(shownName(r.name), style: theme.textTheme.titleSmall),
+            Text(
+              '${shownName(r.name)} says they know you',
+              style: theme.textTheme.titleSmall,
+            ),
             Text('Asked ${_ago(r.secsAgo)}', style: small),
             if (r.note.isNotEmpty) ...[
               const SizedBox(height: 8),
@@ -222,12 +227,14 @@ class _RequestCard extends StatelessWidget {
             else
               Text(
                 "You don't follow them, so only they say who they are. To be "
-                'sure, get their follow code in person or another way you '
-                'trust, follow them, then allow.',
+                'sure, get their invite code in person or another way you '
+                'trust, follow them, then say yes.',
                 style: TextStyle(color: theme.colorScheme.error),
               ),
             if (r.trustedElsewhere)
-              const Text('Already trusted on another of their nodes.'),
+              const Text(
+                'Already among people you know, on another of their nodes.',
+              ),
             const SizedBox(height: 4),
             Text(followerLine(r), style: small),
             Row(
@@ -239,7 +246,7 @@ class _RequestCard extends StatelessWidget {
                 ),
                 TextButton(
                   onPressed: busy ? null : onAllow,
-                  child: const Text('Allow'),
+                  child: Text('Yes, I know ${shownName(r.name)}'),
                 ),
               ],
             ),
@@ -255,7 +262,7 @@ Future<bool> confirmTrust(BuildContext context, String name) async {
   final go = await showDialog<bool>(
     context: context,
     builder: (context) => AlertDialog(
-      title: Text('Trust ${shownName(name)}?'),
+      title: Text('Do you know ${shownName(name)}?'),
       content: const Text(
         'Your node will name them to your other followers as a host of your '
         'photos and videos more often, so more of those followers can see '
@@ -269,7 +276,7 @@ Future<bool> confirmTrust(BuildContext context, String name) async {
         ),
         FilledButton(
           onPressed: () => Navigator.pop(context, true),
-          child: const Text('Trust'),
+          child: Text('Yes, I know ${shownName(name)}'),
         ),
       ],
     ),
@@ -287,12 +294,7 @@ String followerLine(TrustEntry t) {
       final secs? => 'follows you for ${formatUptime(secs)}',
       null => 'no longer follows you',
     },
-    switch (t.reached) {
-      'direct' => 'reached your node directly lately',
-      'relay' => 'reached your node through a relay lately',
-      'tor' => 'reached your node over Tor lately',
-      _ => 'not heard from lately',
-    },
+    t.reached == 'none' ? 'not heard from lately' : 'heard from lately',
     'holds ${t.copies} of your files',
   ].join(' · ');
 }

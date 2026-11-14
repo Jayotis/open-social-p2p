@@ -5,7 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:osp_app/node.dart';
-import 'package:osp_app/screens/feed_screen.dart';
+import 'package:osp_app/shell.dart';
 import 'package:osp_app/screens/search_screen.dart';
 import 'package:osp_app/src/rust/api/osp.dart';
 import 'package:osp_app/uploads.dart';
@@ -162,7 +162,7 @@ void main() {
           posts: [post('A table', foundThrough: 'oak-ash-elm')],
         ),
       );
-      expect(find.text('From directory oak-ash-elm'), findsNWidgets(2));
+      expect(find.text('Found through oak-ash-elm'), findsNWidgets(2));
     });
 
     testWidgets('can be followed, and shows it once they are', (tester) async {
@@ -328,9 +328,9 @@ void main() {
     });
   });
 
-  testWidgets('opens from the feed', (tester) async {
-    await tester.pumpWidget(MaterialApp(home: FeedScreen(node: node)));
-    await tester.tap(find.byTooltip('Search your node'));
+  testWidgets('opens from Home', (tester) async {
+    await tester.pumpWidget(MaterialApp(home: AppShell(node: node)));
+    await tester.tap(find.byTooltip('Search').first);
     await tester.pumpAndSettle();
     expect(find.byType(SearchScreen), findsOneWidget);
   });

@@ -400,7 +400,7 @@ class _PolicyPicker extends StatelessWidget {
         Text(switch (policy) {
           'off' => 'Nobody can reply. Replies already published stay.',
           'circle' =>
-            'People you follow, your trusted followers and those you '
+            'People you follow, people you know and those you '
                 'allowed. Nobody else can.',
           _ =>
             'Your circle is published at once. Anyone else waits among '

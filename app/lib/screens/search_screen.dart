@@ -5,7 +5,7 @@ import '../node.dart';
 import '../src/rust/api/osp.dart';
 import '../widgets/post_card.dart';
 
-/// Looks through the posts and profiles your home node holds: from those you
+/// Looks through the posts and profiles your node holds: from those you
 /// follow, and from the directories it reads (ADR 0015). It's only that node's
 /// copy: nothing leaves it.
 class SearchScreen extends StatefulWidget {
@@ -93,8 +93,8 @@ class _SearchScreenState extends State<SearchScreen> {
       ),
       body: _found == null
           ? const _Message(
-              "Finds posts and people your home node already holds, from "
-              "those you follow and the directories it reads. It only looks "
+              "Finds posts and people your node already holds, from "
+              "those you follow and the people it has found. It only looks "
               "on your node, so nobody sees what you search for.",
             )
           : FutureBuilder<Found>(
@@ -199,7 +199,7 @@ class _PersonTileState extends State<_PersonTile> {
           );
     final about = [
       if (person.summary != null) person.summary!,
-      if (person.foundThrough != null) 'From directory ${person.foundThrough}',
+      if (person.foundThrough != null) 'Found through ${person.foundThrough}',
     ];
     return ListTile(
       leading: CircleAvatar(

@@ -68,3 +68,15 @@ String describeError(Object error) {
   }
   return parts.isEmpty ? text : parts.join(': ');
 }
+
+/// [text] without network addresses or long IDs: IPv4 and IPv6 addresses,
+/// onion addresses, and runs of 20 or more letters and digits such as
+/// endpoint IDs and keys. For text a person may paste somewhere public.
+String scrubAddresses(String text) => text
+    .replaceAll(RegExp(r'\b[a-z2-7]{16,56}\.onion\b'), '[onion]') // not shown
+    .replaceAll(
+      RegExp(r'\[?\b(?:[0-9a-fA-F]{0,4}:){2,7}[0-9a-fA-F]{0,4}\b\]?(?::\d+)?'),
+      '[ip]',
+    )
+    .replaceAll(RegExp(r'\b(?:\d{1,3}\.){3}\d{1,3}(?::\d+)?\b'), '[ip]')
+    .replaceAll(RegExp(r'\b[A-Za-z0-9]{20,}\b'), '[id]');

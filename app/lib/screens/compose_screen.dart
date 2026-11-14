@@ -211,12 +211,12 @@ class _ComposeScreenState extends State<ComposeScreen> {
     final p = _progress;
     final percent = p == null || p.total == 0 ? null : p.sent * 100 ~/ p.total;
     if (p?.stage == PostStage.processing) {
-      _background.show('Your home node is preparing your post', '');
+      _background.show('Your node is preparing your post', '');
     } else if (_waiting) {
       // Not null: nothing is happening, rather than nothing to measure.
       _background.show(
         'Sending your post',
-        'Waiting for your home node…',
+        'Waiting for your node…',
         percent: percent ?? 0,
       );
     } else if (p != null) {
@@ -394,7 +394,7 @@ class _ComposeScreenState extends State<ComposeScreen> {
             if (_files.isNotEmpty) ...[
               const SizedBox(height: 8),
               Text(
-                'Your home node makes a 720p copy and removes location and camera details '
+                'Your node makes a 720p copy and removes location and camera details '
                 'before publishing. Videos can be up to 10 minutes.',
                 style: theme.textTheme.bodySmall,
               ),
@@ -461,13 +461,11 @@ class _ProgressView extends StatelessWidget {
   Widget build(BuildContext context) {
     final p = progress;
     if (p != null && p.stage == PostStage.processing) {
-      return const _Working(text: 'Your home node is preparing your post…');
+      return const _Working(text: 'Your node is preparing your post…');
     }
     if (p == null || p.total == 0) {
       return _Working(
-        text: waiting
-            ? 'Waiting for your home node…'
-            : 'Connecting to your home node…',
+        text: waiting ? 'Waiting for your node…' : 'Connecting to your node…',
       );
     }
     final fraction = p.sent / p.total;
@@ -480,8 +478,8 @@ class _ProgressView extends StatelessWidget {
         const SizedBox(height: 8),
         Text(
           waiting
-              ? 'Waiting for your home node… $sent sent so far'
-              : 'Sending to your home node: $sent',
+              ? 'Waiting for your node… $sent sent so far'
+              : 'Sending to your node: $sent',
         ),
       ],
     );

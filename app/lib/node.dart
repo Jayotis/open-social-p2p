@@ -84,6 +84,10 @@ class HomeNode extends ChangeNotifier with WidgetsBindingObserver {
   /// Something to tell the owner on the pairing screen.
   String? notice;
 
+  /// Set when this phone has just paired, until the first run is done
+  /// (ADR 0031 §3). Not kept: an app stopped halfway skips the rest.
+  bool firstRun = false;
+
   Timer? _poll;
   StreamSubscription<List<ConnectivityResult>>? _network;
   final Map<String, Future<String>> _urls = {};
@@ -103,7 +107,7 @@ class HomeNode extends ChangeNotifier with WidgetsBindingObserver {
       await node.app.forget();
       node.notice =
           "This phone's key couldn't be unlocked, so it got a new one. "
-          'Pair it with your home node again.';
+          'Pair it with your node again.';
     }
     node.paired = node.app.pairedNode();
     node._showSaved();
@@ -287,9 +291,16 @@ class HomeNode extends ChangeNotifier with WidgetsBindingObserver {
     );
     paired = info;
     notice = null;
+    firstRun = true;
     notifyListeners();
     _start();
     return info;
+  }
+
+  /// The first run is over: the app shows its usual places from now on.
+  void finishFirstRun() {
+    firstRun = false;
+    notifyListeners();
   }
 
   /// Looks again for a post that didn't finish sending.
@@ -317,6 +328,7 @@ class HomeNode extends ChangeNotifier with WidgetsBindingObserver {
     await uploads.clean();
     unsent = null;
     paired = null;
+    firstRun = false;
     posts = [];
     status = null;
     savedAt = null;

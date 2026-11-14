@@ -2,25 +2,32 @@ import 'package:flutter/material.dart';
 
 import '../format.dart';
 import '../node.dart';
+import '../screens/node_summary_screen.dart';
 
-/// A strip above the feed when the home node can't be reached, or reports
-/// a problem (ADR 0006: the phone shows prominently whether the node is
-/// reachable).
+/// A strip above Home when your node can't be reached, or reports a problem
+/// (ADR 0006: the phone shows prominently whether the node is reachable).
+/// The node's own words for a problem can name its mechanisms, so they're
+/// under Advanced details, a tap away through the node's summary.
 class NodeBanner extends StatelessWidget {
-  const NodeBanner({super.key, required this.node});
+  const NodeBanner({super.key, required this.node, required this.open});
 
   final HomeNode node;
+  final void Function(Widget screen) open;
 
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
+    final details = TextButton(
+      onPressed: () => open(NodeSummaryScreen(node: node, open: open)),
+      child: const Text('Details'),
+    );
     switch (node.reachability) {
       case Reachability.connecting:
         return _strip(
           context,
           color: scheme.surfaceContainerHighest,
           icon: Icons.sync,
-          text: 'Connecting to your home node…',
+          text: 'Connecting to your node…',
         );
       case Reachability.offline:
         final saved = node.savedAt != null
@@ -30,21 +37,23 @@ class NodeBanner extends StatelessWidget {
           context,
           color: scheme.errorContainer,
           icon: Icons.cloud_off,
-          text: "Can't reach your home node.$saved",
-          detail: node.lastError,
-          action: TextButton(
-            onPressed: node.refresh,
-            child: const Text('Retry'),
-          ),
+          text: "Can't reach your node.$saved",
+          actions: [
+            details,
+            TextButton(onPressed: node.refresh, child: const Text('Retry')),
+          ],
         );
       case Reachability.online:
         final problems = node.status?.problems ?? const [];
         if (problems.isEmpty) return const SizedBox.shrink();
         return _strip(
           context,
-          color: Colors.amber.withValues(alpha: 0.3),
+          color: scheme.tertiaryContainer,
           icon: Icons.warning_amber,
-          text: 'Your home node reports: ${problems.join('; ')}',
+          text: problems.length == 1
+              ? 'Your node reports a problem.'
+              : 'Your node reports ${problems.length} problems.',
+          actions: [details],
         );
       case Reachability.unknown:
         return const SizedBox.shrink();
@@ -56,8 +65,7 @@ class NodeBanner extends StatelessWidget {
     required Color color,
     required IconData icon,
     required String text,
-    String? detail,
-    Widget? action,
+    List<Widget> actions = const [],
   }) {
     return Material(
       color: color,
@@ -67,17 +75,8 @@ class NodeBanner extends StatelessWidget {
           children: [
             Icon(icon, size: 20),
             const SizedBox(width: 12),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(text),
-                  if (detail != null)
-                    Text(detail, style: Theme.of(context).textTheme.bodySmall),
-                ],
-              ),
-            ),
-            ?action,
+            Expanded(child: Text(text)),
+            ...actions,
           ],
         ),
       ),

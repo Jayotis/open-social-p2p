@@ -51,4 +51,20 @@ void main() {
       "this device isn't paired with this node",
     );
   });
+
+  test('scrubAddresses removes addresses and long IDs, nothing else', () {
+    expect(
+      scrubAddresses(
+        'Last error: no route to 192.168.1.20:4433 or [2a01:4f8::1]:7842\n'
+        'Problem: abcdefghijklmnopqrstuvwxyz234567abcdefghijklmnopqrstuv.onion '
+        'is down\n'
+        'Endpoint 5f2b9c0e4d7a1b3c8e6f0a2d4b6c8e0f1a3c5e7b9d0f2a4c6e8b0d2f4a6c8e0a\n'
+        'Path: relay, 80 ms\nRunning for: 3 h 12 min\nNode version: 0.1.0',
+      ),
+      'Last error: no route to [ip] or [ip]\n'
+      'Problem: [onion] is down\n'
+      'Endpoint [id]\n'
+      'Path: relay, 80 ms\nRunning for: 3 h 12 min\nNode version: 0.1.0',
+    );
+  });
 }

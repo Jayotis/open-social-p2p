@@ -7,7 +7,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:osp_app/node.dart';
 import 'package:osp_app/screens/compose_screen.dart';
-import 'package:osp_app/screens/feed_screen.dart';
+import 'package:osp_app/shell.dart';
 import 'package:osp_app/src/rust/api/osp.dart';
 import 'package:osp_app/uploads.dart';
 
@@ -133,24 +133,24 @@ void main() {
 
     app.sending.add(progress(PostStage.sending, sent: 500, total: 1000));
     await settle(tester);
-    expect(find.textContaining('Sending to your home node: 50%'), findsOne);
+    expect(find.textContaining('Sending to your node: 50%'), findsOne);
     expect(find.text('Cancel'), findsOneWidget);
 
     app.sending.add(progress(PostStage.waiting));
     await settle(tester);
-    expect(find.textContaining('Waiting for your home node… 50%'), findsOne);
+    expect(find.textContaining('Waiting for your node… 50%'), findsOne);
 
     // The phone going offline shows at once, before the upload gives up.
     app.sending.add(progress(PostStage.sending, sent: 600, total: 1000));
     await settle(tester);
-    expect(find.textContaining('Sending to your home node: 60%'), findsOne);
+    expect(find.textContaining('Sending to your node: 60%'), findsOne);
     node.networkChangedForTests([ConnectivityResult.none]);
     await settle(tester);
-    expect(find.textContaining('Waiting for your home node… 60%'), findsOne);
+    expect(find.textContaining('Waiting for your node… 60%'), findsOne);
     node.networkChangedForTests([ConnectivityResult.wifi]);
     app.sending.add(progress(PostStage.sending, sent: 700, total: 1000));
     await settle(tester);
-    expect(find.textContaining('Sending to your home node: 70%'), findsOne);
+    expect(find.textContaining('Sending to your node: 70%'), findsOne);
 
     app.sending.add(progress(PostStage.processing, sent: 1000, total: 1000));
     await settle(tester);
@@ -259,21 +259,19 @@ void main() {
     expect(find.byType(ComposeScreen), findsNothing);
   });
 
-  testWidgets('the feed offers to carry on with an unsent post', (
-    tester,
-  ) async {
+  testWidgets('Home offers to carry on with an unsent post', (tester) async {
     node.unsent = unsent;
-    await tester.pumpWidget(MaterialApp(home: FeedScreen(node: node)));
+    await tester.pumpWidget(MaterialApp(home: AppShell(node: node)));
     await settle(tester);
     expect(find.text("A post didn't finish sending"), findsOneWidget);
     expect(find.textContaining('"Our furnace"'), findsOneWidget);
 
     // Not while it's being sent.
     node.uploading = true;
-    await tester.pumpWidget(MaterialApp(home: FeedScreen(node: node)));
+    await tester.pumpWidget(MaterialApp(home: AppShell(node: node)));
     expect(find.text("A post didn't finish sending"), findsNothing);
     node.uploading = false;
-    await tester.pumpWidget(MaterialApp(home: FeedScreen(node: node)));
+    await tester.pumpWidget(MaterialApp(home: AppShell(node: node)));
 
     await tester.tap(find.text('Continue'));
     await settle(tester);
