@@ -72,4 +72,8 @@ P1 sets the app's theme (colours, type, spacing, light and dark) as one set of t
 
 ## Gate
 
-A new person understands where Home, the Universe, posting, Activity and their profile are, without knowing what Tor, iroh, an endpoint or a directory is. Checked with at least two people who didn't build OSP, watching them use the app, plus the word-list test above.
+- Navigation tests: each of Home, the Universe, Post, Activity, You and your node's summary is reachable from every place, in at most two taps.
+- The word-list test above passes.
+- The maintainer's own journey on a freshly installed node and a phone with the app newly installed: pair, first run, Universe, follow, Home fills, post, with no Advanced screen and no terminal.
+
+Whether people who didn't build OSP understand the shell without knowing what Tor, iroh, an endpoint or a directory is gets checked in P11, by watching them use it ([ADR 0030](0030-product-alpha-before-testers.md)).

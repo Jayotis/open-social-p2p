@@ -28,7 +28,8 @@ One inbox, kept on the node, so each of Kim's phones sees the same thing read an
 - replies to her posts, and replies waiting for her ([ADR 0028](0028-replies-let-in-by-the-creator.md));
 - likes, grouped ("Jimmy and 3 others liked your post");
 - reshares of her posts (`Reshared`, [ADR 0029](0029-vouchers-within-six-steps.md));
-- new followers, and "Jimmy says he knows you" ([ADR 0013](0013-trusted-followers.md));
+- new followers. A follow is a node subscribing, and Kim's node keeps only that node's key, not whose it is. So Activity says "Someone new follows you" and names them only when her node can tie that follower node to an identity it already has: today, when the same node asked to be trusted ([ADR 0013](0013-trusted-followers.md)) and so sent its owner's profile. It never guesses from names or timing;
+- "Jimmy says he knows you" (a trust request, which names him);
 - her own replies published, as her node hears.
 
 Each entry opens what it's about, and the words are those of a social app, not a log ([ADR 0031](0031-app-shell-home-universe-you.md)). A creator's node never tells a replier their reply was declined, and Activity doesn't either.

@@ -46,7 +46,10 @@ Network and protocol work interrupts it only for:
 - a privacy or security problem;
 - something the node must do for the product journey to work (for example avatars served to strangers, P2).
 
-Not built before the Product Alpha, as before: ADR 0017's two hops, ADR 0018's earned direct links, ADR 0022's earned lists, ADR 0023, ADR 0026 and ADR 0027.
+Not built before the Product Alpha:
+
+- **Accepted, not built:** ADR 0017's two hops, ADR 0018's earned direct links, and ADR 0022's earned lists and introductions, which wait for ADR 0016's stage B. ADR 0016's earlier introductions (stage A3) are built, and stay off by default.
+- **Proposed, not built:** ADR 0023 and ADR 0026. ADR 0027 is built after the first testers.
 
 ### 4. The current app stays as the reference
 
@@ -56,7 +59,16 @@ The working screens (pairing, posting, resumable uploads, feed, search, follows,
 
 The `v0.1.0-alpha.4` draft stays unpublished. It remains useful for clean-install checks on the lab machines. No release goes to testers until P11's gate is met.
 
-### 6. What success looks like
+So no gate before P11 depends on people outside the project. P1 to P10 are checked with tests, and with the maintainer's own clean-device journeys. Watching people who didn't build OSP use it is part of P11.
+
+### 6. Phones testers can actually install
+
+Someone who installs the node must be able to install the app. Before P12:
+
+- **Android:** a signed APK, downloadable from the release, with its checksum.
+- **iPhone:** TestFlight, if its external testing is set up and has passed Apple's review by P11. Otherwise the Product Alpha is announced as **Android first**, and the install guide says so before anyone installs the node. Today's ad hoc build installs only on registered devices, so it doesn't count.
+
+### 7. What success looks like
 
 The Product Alpha has worked if people who didn't build OSP:
 

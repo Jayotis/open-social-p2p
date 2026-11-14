@@ -21,7 +21,12 @@ The phone asks **`Universe { level, region, layers, since }`** and gets a **snap
 
 > The Universe shows what Kim's node already knows and is allowed to show Kim. It never makes the node publish anything new, or ask anyone anything new, just so there's something to draw.
 
-Fetching public material through a viewing identity, as Kim would by opening it (profile pictures up close, [ADR 0032](0032-profiles-people-want-to-follow.md)), is allowed. It tells nobody who Kim is.
+Two things are allowed, and only these:
+
+- **Public files, fetched as Kim would by opening them.** Profile pictures up close ([ADR 0032](0032-profiles-people-want-to-follow.md)), through a viewing identity, which tells nobody who Kim is.
+- **A question Kim asked herself.** When she taps "How are we connected?" on a person, her node may ask that person's node for vouches that are already public, from a throwaway key, within that request's existing limits ([ADR 0037](0037-how-are-we-connected.md)).
+
+Opening, panning or zooming the map, and anything the node does in the background to draw it, causes no new social query to any node.
 
 ### 3. What it may show
 

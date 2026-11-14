@@ -21,7 +21,9 @@ Each path is written out in words, under the map.
 ### 2. Where the paths come from
 
 - **Kim's world:** her circle, whom they reshared, and her gathered side, as ADR 0029 places them.
-- **Jimmy's side:** the vouches his node showed when he replied (`ShowVouches`). If he hasn't replied, Kim's node may ask his node `WhoVouched` once, within that request's limits. Today a node asks it from its public endpoint, as part of gathering its own side. For this use it asks from a throwaway key over Tor instead, as viewing identities do ([ADR 0024](0024-watching-found-posts-without-your-identity.md)), so Jimmy's node learns that someone asked, not who. That's a question about public acts ([ADR 0033](0033-what-the-universe-may-show.md)'s core rule).
+- **Jimmy's side:** the vouches his node showed when he replied (`ShowVouches`). If he hasn't replied, Kim's node may ask his node `WhoVouched` once, within that request's limits. Today a node asks it from its public endpoint, as part of gathering its own side. For this use it asks from a throwaway key over Tor instead, as viewing identities do ([ADR 0024](0024-watching-found-posts-without-your-identity.md)), so Jimmy's node learns that someone asked, not who.
+
+This is the one exception to [ADR 0033](0033-what-the-universe-may-show.md)'s core rule, and it holds only because Kim asked the question herself. It asks for evidence that's already public, once per tap, within `WhoVouched`'s existing limits. Drawing the map never triggers it. Nor does selecting Jimmy, opening his profile, or anything the node does in the background. A test opens and moves the Universe over a simulated world and counts zero `WhoVouched` requests.
 
 The paths come from the **same code** that admits replies, not from a copy of it. `Side::separate_chains` counts the separate chains today. It's changed to return the chains it counted, and admission keeps using their number. So what the map shows is what Kim's node would decide.
 

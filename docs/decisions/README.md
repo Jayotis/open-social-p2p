@@ -37,7 +37,7 @@ Each record captures one significant decision: the problem, the options consider
 | [0031](0031-app-shell-home-universe-you.md) | The app shell: Home, Universe and You | Proposed 2026-11-14; P1 |
 | [0032](0032-profiles-people-want-to-follow.md) | Profiles people want to follow | Proposed 2026-11-14; P2; adds a picture and links to `Person`, and editing on the phone |
 | [0033](0033-what-the-universe-may-show.md) | What the Universe may show | Proposed 2026-11-14; P3; one allowlist for everything the map draws |
-| [0034](0034-a-universe-in-levels.md) | A Universe in levels | Proposed 2026-11-14; P4; clusters on the node, stable places, bounded snapshots |
+| [0034](0034-a-universe-in-levels.md) | A Universe in levels | Proposed 2026-11-14; P4; a recursive tree on the node from public evidence only, unplaced people as a background field, stable places, bounded snapshots |
 | [0035](0035-exploring-the-universe.md) | Exploring the Universe | Proposed 2026-11-14; P5; replaces M5's Explore lanes; search on the map |
 | [0036](0036-showing-what-the-network-does.md) | Showing what the network does | Proposed 2026-11-14; P6; real events only; your node's summary |
 | [0037](0037-how-are-we-connected.md) | How are we connected? | Proposed 2026-11-14; P7; shows ADR 0029's separate chains |

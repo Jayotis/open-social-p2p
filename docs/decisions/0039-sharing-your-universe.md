@@ -36,9 +36,13 @@ The card is shown full size before it goes anywhere, with the people she named l
 
 ### 4. Sharing a profile, a post, or OSP itself
 
-- **A profile** is shared as its invite code (today's follow code), with the person's name and picture.
-- **A post** is shared as a code that opens it in OSP, with its first lines.
-- **OSP itself** is shared as the install link. Until there's a project site, that's the install guide on the repository's host.
+A profile or post is shared as a copyable **OSP code**, as text, with a line of plain words in front for people who don't have OSP:
+
+- **A profile:** `osp:person/<invite code>`, today's follow code with a prefix, with the person's name.
+- **A post:** `osp:post/<post ID>?by=<invite code>`, with its first lines. Kim's node opens the post from its author, or as a found post if Kim doesn't follow them.
+- **OSP itself:** the install link. Until there's a project site, that's the install guide on the repository's host.
+
+In the alpha, the app takes an OSP code pasted anywhere it takes an invite code, and offers to open one found on the clipboard. The app also registers `osp:` as a link scheme, so tapping a code where links work opens it, but nothing depends on that. Web links that open the app (Android App Links, iOS universal links) need a domain the project controls, and come later.
 
 There is no web page for a profile or post: OSP has no server to put one on.
 
@@ -54,4 +58,4 @@ There is no web page for a profile or post: OSP has no server to put one on.
 
 ## Gate
 
-A generated card or link can't disclose anything that isn't already public or that Kim didn't approve. Tests: on a simulated world, a card's data holds no name Kim didn't tick, no machine, no ID, no address and no time; its totals are rounded; the preview is the image that's shared, byte for byte.
+A generated card or link can't disclose anything that isn't already public or that Kim didn't approve. Tests: on a simulated world, a card's data holds no name Kim didn't tick, no machine, no ID, no address and no time; its totals are rounded; the preview is the image that's shared, byte for byte; an OSP code holds only an invite code, a post ID and the prefix, and a malformed one is refused with a plain message.

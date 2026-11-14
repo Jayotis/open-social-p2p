@@ -25,12 +25,13 @@ The picture is a file like any other, so it goes where profiles go:
 
 ### 3. Editing on the phone
 
-Two new client requests:
+New client requests:
 
 - **`SetProfile { name, summary, links, icon }`** signs and publishes a new `Person`, as `osp init` does now. The picture comes up as a resumable upload ([ADR 0008](0008-device-pairing-and-client-protocol.md)). Followers get the new profile on their next sync, and directories on their next read.
-- **`Profile { actor }`** returns what the node knows of one person: their profile, their posts, media and reshares that it holds, whether Kim follows them, and whether they're among the people Kim knows.
+- **`Profile { actor }`** returns one person's profile only: the `Person`, whether Kim follows them, whether they're among the people Kim knows, and how many posts, media and reshares of theirs the node holds. It is small and the same size for everyone.
+- **`ProfileItems { actor, kind, before, limit }`** returns one page of their **posts**, **media** or **reshares** that the node holds, newest first: at most 50 a page, with a cursor for the next.
 
-`osp profile` does the same from the command line.
+`osp profile` shows the profile, and `osp profile --posts`, `--media` or `--reshares` one page at a time, the same way.
 
 ### 4. The profile page
 
@@ -61,4 +62,4 @@ Checking a domain (M4's plan: the profile names a website, the website names the
 
 ## Gate
 
-Discovering a person, opening their profile, understanding who they are and following them is a complete journey in the app, with no command line. Tests: a profile with a picture and links round-trips through a directory and a follow; an older `Person` without them still verifies; a picture is fetched through a viewing identity only; a picture over 64 KiB or a link that isn't `https` is refused.
+Discovering a person, opening their profile, understanding who they are and following them is a complete journey in the app, with no command line. Tests: a profile with a picture and links round-trips through a directory and a follow; an older `Person` without them still verifies; a picture is fetched through a viewing identity only; a picture over 64 KiB or a link that isn't `https` is refused; `Profile` stays the same size for a person with 10,000 posts, and `ProfileItems` never returns more than a page.
