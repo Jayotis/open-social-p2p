@@ -1092,7 +1092,8 @@ impl Core {
     }
 
     /// Nodes believed to serve `blob`, most recently seen first, those we
-    /// know how to fetch from. A node may be here by two of its endpoints.
+    /// know how to fetch from, then its author's own. A node may be here by
+    /// two of its endpoints.
     fn known_providers(&self, blob: &BlobHash) -> Result<Vec<Source>> {
         let me = self.endpoint.id();
         let mut sources: Vec<Source> = Vec::new();
@@ -1102,6 +1103,17 @@ impl Core {
             }
             remember(&self.lookup, &addr);
             sources.extend(self.sources_of(&addr.id)?);
+        }
+        // Then the media endpoints its author's profile names. Until the first sync
+        // with someone just followed, nothing says their node holds the posts
+        // a directory brought before, and over Tor that sync can take minutes
+        // (P1's journey: a video opened right after following failed).
+        if let Some(author) = self.db.blob_author(blob)? {
+            for bound in self.db.media_endpoints_of(&author)? {
+                if !sources.iter().any(|s| s.endpoint == bound.endpoint) {
+                    sources.push(Source::media(&bound));
+                }
+            }
         }
         Ok(sources)
     }
