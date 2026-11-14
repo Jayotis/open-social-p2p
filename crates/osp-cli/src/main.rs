@@ -1519,10 +1519,13 @@ async fn send(home: &Path, req: ClientRequest) -> Result<ClientResponse> {
 }
 
 fn print_universe(snapshot: &osp_proto::universe::Snapshot) {
-    use osp_proto::universe::{LineKind, MachineState, WorkBand};
-    let names: std::collections::HashMap<_, _> =
-        snapshot.people.iter().map(|p| (p.actor, &p.name)).collect();
-    let name = |actor| names.get(actor).map_or("?".into(), |n| plain(n));
+    use osp_proto::universe::{ActivityBand, LineKind, MachineState};
+    let name = |place: u32| {
+        snapshot
+            .people
+            .get(place as usize)
+            .map_or("?".into(), |p| plain(&p.name))
+    };
     println!("People ({}):", snapshot.people.len());
     for p in &snapshot.people {
         let step = match p.step {
@@ -1558,8 +1561,8 @@ fn print_universe(snapshot: &osp_proto::universe::Snapshot) {
         };
         println!(
             "  {} {what} {} ({}x, last {})",
-            name(&l.from),
-            name(&l.to),
+            name(l.from),
+            name(l.to),
             l.count,
             l.last
         );
@@ -1572,13 +1575,13 @@ fn print_universe(snapshot: &osp_proto::universe::Snapshot) {
             MachineState::AnsweredLately => "answered lately",
             MachineState::Faded => "faded",
         };
-        let work = match m.work {
-            WorkBand::None => "no work yet",
-            WorkBand::Some => "some work",
-            WorkBand::ALot => "a lot of work",
+        let activity = match m.activity {
+            ActivityBand::None => "no activity yet",
+            ActivityBand::Some => "some activity",
+            ActivityBand::ALot => "a lot of activity",
         };
         let directory = if m.directory { ", a directory" } else { "" };
-        println!("  {} ({state}{directory}, {work})", m.words);
+        println!("  {} ({state}{directory}, {activity})", m.words);
     }
     if let Some(n) = snapshot.network {
         println!(

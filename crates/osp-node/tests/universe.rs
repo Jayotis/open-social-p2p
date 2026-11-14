@@ -3,7 +3,7 @@
 //!
 //! Kim follows Jimmy, and Jimmy reshares a post of Alice's. Kim's Universe
 //! shows Kim, Jimmy one step away, Alice two, and the line between them, and
-//! nothing outside the allowlist: no node's endpoint ID or address anywhere.
+//! nothing outside the allowlist: no full endpoint ID, address or relay URL.
 //!
 //! All nodes run in this process on loopback with relays and DNS lookup off.
 
@@ -13,7 +13,7 @@ use osp_node::{Config, Node};
 use osp_proto::{
     ObjectId,
     rpc::{ClientRequest, ClientResponse, StatusInfo},
-    universe::{ALLOWLIST, Layer, Level, LineKind, Snapshot, field_paths},
+    universe::{ALLOWLIST, Layer, Level, LineKind, MAX_SNAPSHOT_BYTES, Snapshot, field_paths},
 };
 
 async fn start(root: &Path, name: &str) -> Node {
@@ -113,9 +113,10 @@ async fn the_universe_shows_steps_and_public_lines_and_nothing_else() {
     assert_eq!(snapshot.level, Level::Local);
     let jimmy_id = status(&jimmy).await.identity;
     let alice_id = status(&alice).await.identity;
+    let actor = |place: u32| snapshot.people[place as usize].actor;
     assert!(snapshot.lines.iter().any(|l| l.kind == LineKind::Reshared
-        && l.from == jimmy_id
-        && l.to == alice_id
+        && actor(l.from) == jimmy_id
+        && actor(l.to) == alice_id
         && l.count == 1));
     let jimmy_point = snapshot.people.iter().find(|p| p.name == "Jimmy").unwrap();
     assert!(jimmy_point.followed);
@@ -131,7 +132,11 @@ async fn the_universe_shows_steps_and_public_lines_and_nothing_else() {
         "fields outside the allowlist: {outside:?}"
     );
 
-    // No node's endpoint ID, address or relay, in any form, anywhere.
+    // Within its limit (ADR 0034).
+    assert!(bytes.len() <= MAX_SNAPSHOT_BYTES, "{} bytes", bytes.len());
+
+    // No full endpoint ID, address or relay URL appears in the snapshot.
+    // (A machine's words come from 33 bits of its key, as ADR 0033 says.)
     let text = String::from_utf8(bytes).unwrap();
     for node in [&kim, &jimmy, &alice] {
         let s = status(node).await;

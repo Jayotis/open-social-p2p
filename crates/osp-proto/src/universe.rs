@@ -91,12 +91,14 @@ pub struct PersonPoint {
     pub last_post: Option<String>,
 }
 
-/// A public, signed act between two people.
+/// A public, signed act between two people, each named by their place in
+/// the snapshot's `people`, which keeps a line small: a key is 64
+/// characters, and there can be 600 lines.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Line {
     pub kind: LineKind,
-    pub from: PublicKey,
-    pub to: PublicKey,
+    pub from: u32,
+    pub to: u32,
     /// How many such acts there are from `from` to `to`, within 90 days.
     pub count: u32,
     /// The day of the newest (`YYYY-MM-DD`, UTC).
@@ -121,7 +123,7 @@ pub struct MachinePoint {
     pub state: MachineState,
     /// Its record says it serves a directory.
     pub directory: bool,
-    pub work: WorkBand,
+    pub activity: ActivityBand,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -137,10 +139,13 @@ pub enum MachineState {
     Faded,
 }
 
-/// How much a machine has done with this node, never as a number.
+/// A machine's recent machine-protocol interaction with this node: greetings
+/// it answered and records it passed on that checked out, never as a number.
+/// It isn't work for the network, such as bytes carried or hosting: those
+/// words are kept for that.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum WorkBand {
+pub enum ActivityBand {
     None,
     Some,
     ALot,
@@ -186,7 +191,7 @@ pub const ALLOWLIST: &[&str] = &[
     "machines[].words",
     "machines[].state",
     "machines[].directory",
-    "machines[].work",
+    "machines[].activity",
     "network",
     "network.posts_hosted",
     "network.bytes_served",
@@ -249,8 +254,8 @@ mod tests {
             }],
             lines: vec![Line {
                 kind: LineKind::Reshared,
-                from: key(1),
-                to: key(3),
+                from: 0,
+                to: 0,
                 count: 1,
                 last: "2026-11-14".into(),
             }],
@@ -259,7 +264,7 @@ mod tests {
                 words: "able-baker-charlie".into(),
                 state: MachineState::Met,
                 directory: true,
-                work: WorkBand::ALot,
+                activity: ActivityBand::ALot,
             }],
             network: Some(NetworkTotals {
                 posts_hosted: 1,

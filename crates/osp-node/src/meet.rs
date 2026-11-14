@@ -1196,7 +1196,8 @@ impl Table {
 
 impl Table {
     /// Each machine as the Universe may show it: where it stands, whether
-    /// its record offers a directory, and how much it did, faded.
+    /// its record offers a directory, and how active it has been with this
+    /// node lately.
     pub fn seen(&self, now: i64) -> Vec<Seen> {
         self.entries
             .values()
@@ -1212,7 +1213,7 @@ impl Table {
                     .record
                     .verify()
                     .is_ok_and(|info| info.offers.iter().any(|o| o == OFFERS_DIRECTORY)),
-                work: e.counts.answers + e.counts.good,
+                activity: e.counts.answers + e.counts.good,
             })
             .collect()
     }
@@ -1225,8 +1226,10 @@ pub(crate) struct Seen {
     pub machine: EndpointId,
     pub state: SeenState,
     pub directory: bool,
-    /// Its faded answers, and the good records it passed on.
-    pub work: f64,
+    /// Its recent machine-protocol activity with this node: greetings it
+    /// answered and records it passed on that checked out, faded. Not work
+    /// for the network, such as bytes carried.
+    pub activity: f64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
