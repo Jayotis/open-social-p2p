@@ -25,7 +25,7 @@ use osp_proto::{
     BlobHash, MACHINE_ALPN,
     framing::{read_frame, write_frame},
     machine::{ListingEntry, ListingItem, MachineRequest, MachineResponse},
-    rpc::{ClientRequest, ClientResponse},
+    rpc::{ClientRequest, ClientResponse, IconChange},
 };
 
 const AN_HOUR: Duration = Duration::from_secs(60 * 60);
@@ -256,6 +256,123 @@ async fn a_found_post_opens_through_a_viewing_endpoint_and_nothing_of_alices_own
         senders_to(&net, &kim, &[&directory])
             .iter()
             .any(|from| own.contains(from))
+    );
+    assert_eq!(alice.viewing_endpoints_made(), 1);
+
+    for node in [alice, kim, directory] {
+        node.shutdown().await.unwrap();
+    }
+}
+
+/// Kim's profile picture reaches Alice through the directory as a hash only.
+/// Her node fetches it when she opens it, through a viewing endpoint, and
+/// once she follows Kim it comes the usual way (ADR 0032).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_strangers_picture_opens_through_a_viewing_endpoint_and_nothing_of_alices_own() {
+    let dir = tempfile::tempdir().unwrap();
+    let net = SimNet::new(60);
+    let directory = start_directory(dir.path(), &net).await;
+    let kim = start_sim(
+        dir.path(),
+        config_knowing("Kim", &directory, true),
+        sim(&net),
+    )
+    .await;
+    let photo = dir.path().join("kim.png");
+    let status = tokio::process::Command::new("ffmpeg")
+        .args(["-hide_banner", "-loglevel", "error", "-y"])
+        .args([
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc=size=640x480",
+            "-frames:v",
+            "1",
+        ])
+        .arg(&photo)
+        .status()
+        .await
+        .expect("ffmpeg must be installed");
+    assert!(status.success());
+    let req = ClientRequest::SetProfile {
+        name: "Kim".into(),
+        summary: None,
+        links: vec![],
+        icon: IconChange::File { path: photo },
+    };
+    let ClientResponse::Profile { profile } = call(&kim, req).await else {
+        panic!("no profile")
+    };
+    let icon = profile.person.icon.expect("a picture");
+    assert!(kim.ask_to_be_listed().await);
+    wait_until_listed(&net, &directory, kim.identity()).await;
+
+    let alice = alice(dir.path(), &directory, sim(&net)).await;
+    let own = own_endpoints(&alice);
+    let ClientResponse::Profile { profile } = call(
+        &alice,
+        ClientRequest::Profile {
+            actor: kim.identity(),
+        },
+    )
+    .await
+    else {
+        panic!("no profile")
+    };
+    // Found, not fetched: reading a directory brings no pictures.
+    assert_eq!(profile.person.icon, Some(icon.clone()));
+    assert!(!profile.icon_local);
+    assert_eq!(alice.blob_class(&icon.blob).unwrap(), None);
+
+    net.record_senders();
+    assert_eq!(alice.open_blob(&icon.blob).await.unwrap(), icon.size);
+    assert_eq!(alice.viewing_endpoints_made(), 1);
+    let to_kim = senders_to(&net, &kim, &[&directory]);
+    assert_eq!(to_kim.len(), 1, "{to_kim:?}");
+    assert!(!alice.endpoint_ids().contains(to_kim.iter().next().unwrap()));
+    assert_sent_nothing_from(&net, &own);
+    assert_eq!(
+        alice.blob_class(&icon.blob).unwrap(),
+        Some(BlobClass::Cache)
+    );
+
+    // Kim's new picture, once Alice follows her, comes with her profile
+    // from her node, and through no viewing endpoint.
+    let follow = ClientRequest::FollowPerson {
+        actor: kim.identity(),
+    };
+    call(&alice, follow).await;
+    let photo = dir.path().join("kim-2.png");
+    let status = tokio::process::Command::new("ffmpeg")
+        .args(["-hide_banner", "-loglevel", "error", "-y"])
+        .args([
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=size=640x480",
+            "-frames:v",
+            "1",
+        ])
+        .arg(&photo)
+        .status()
+        .await
+        .expect("ffmpeg must be installed");
+    assert!(status.success());
+    let req = ClientRequest::SetProfile {
+        name: "Kim".into(),
+        summary: None,
+        links: vec![],
+        icon: IconChange::File { path: photo },
+    };
+    let ClientResponse::Profile { profile } = call(&kim, req).await else {
+        panic!("no profile")
+    };
+    let new_icon = profile.person.icon.expect("a picture");
+    assert_ne!(new_icon.blob, icon.blob);
+    call(&alice, ClientRequest::Sync).await;
+    assert_eq!(
+        alice.blob_class(&new_icon.blob).unwrap(),
+        Some(BlobClass::Prefetch)
     );
     assert_eq!(alice.viewing_endpoints_made(), 1);
 

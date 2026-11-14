@@ -15,6 +15,7 @@
 //! as for every relayed transfer.
 
 use std::{
+    collections::VecDeque,
     pin::pin,
     sync::{
         Arc, Weak,
@@ -23,7 +24,7 @@ use std::{
     time::Duration,
 };
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, bail, ensure};
 use iroh::{Endpoint, EndpointAddr, PublicKey, SecretKey};
 use iroh_blobs::util::connection_pool::ConnectionPool;
 use osp_proto::{BlobHash, Note, ObjectId};
@@ -59,9 +60,19 @@ pub(crate) const MAX_FOUND_HOSTS: usize = 16;
 /// An author who's on answers in under a second through the relay.
 pub(crate) const DELETE_GRACE: Duration = Duration::from_secs(3);
 
+/// Most strangers' profile pictures fetched in an hour (ADR 0032), so
+/// opening profiles one after another can't make the node fetch without end.
+pub(crate) const MAX_ICONS_PER_HOUR: usize = 200;
+const AN_HOUR: Duration = Duration::from_secs(60 * 60);
+
 /// What the person is told when no public source could be reached privately.
 pub(crate) const NO_PRIVATE_SOURCE: &str = "no public source of this post could be reached \
      without showing who you are; try again later, or follow its author";
+
+/// What the person is told when a stranger's picture couldn't be fetched
+/// privately.
+pub(crate) const NO_PRIVATE_PICTURE: &str = "this profile picture couldn't be fetched \
+     without showing who you are; try again later";
 
 /// One viewing endpoint: its key is new, and it connects only through the
 /// relay.
@@ -95,6 +106,8 @@ pub(crate) struct Viewing {
     made: AtomicUsize,
     reuse_for: Duration,
     max_life: Duration,
+    /// When each stranger's picture fetched in the last hour was asked for.
+    icons_fetched: std::sync::Mutex<VecDeque<Instant>>,
 }
 
 /// A fetch's hold on a viewing endpoint. Dropping it lets the endpoint go
@@ -120,7 +133,15 @@ impl Viewing {
             made: AtomicUsize::new(0),
             reuse_for,
             max_life,
+            icons_fetched: std::sync::Mutex::new(VecDeque::new()),
         }
+    }
+
+    /// Whether another stranger's picture may be fetched now, and if so,
+    /// counts it.
+    fn icon_turn(&self) -> bool {
+        let mut fetched = self.icons_fetched.lock().unwrap_or_else(|e| e.into_inner());
+        take_turn(&mut fetched, Instant::now(), MAX_ICONS_PER_HOUR)
     }
 
     /// How many viewing endpoints have been made since the node started.
@@ -222,6 +243,22 @@ fn close(slots: Vec<Slot>) {
     for slot in slots {
         tokio::spawn(async move { slot.inner.endpoint.close().await });
     }
+}
+
+/// Takes one of `limit` turns an hour, if one is free at `now`. `taken` holds
+/// when each turn in the last hour was taken, oldest first.
+fn take_turn(taken: &mut VecDeque<Instant>, now: Instant, limit: usize) -> bool {
+    while taken
+        .front()
+        .is_some_and(|at| now.saturating_duration_since(*at) >= AN_HOUR)
+    {
+        taken.pop_front();
+    }
+    if taken.len() >= limit {
+        return false;
+    }
+    taken.push_back(now);
+    true
 }
 
 /// Shuffles `list`: a viewer takes hosts in an order of its own.
@@ -364,6 +401,50 @@ impl Core {
         }
     }
 
+    /// Fetches the picture of `actor`, someone this node doesn't follow,
+    /// through a viewing endpoint (ADR 0032), from the media endpoints their
+    /// profile gives, so their node never learns who opened their profile.
+    /// At most `MAX_ICONS_PER_HOUR` an hour.
+    pub(crate) async fn watch_icon(
+        &self,
+        blob: &BlobHash,
+        actor: &PublicKey,
+        class: BlobClass,
+        declared: u64,
+    ) -> Result<u64> {
+        let mut sources: Vec<Source> = Vec::new();
+        for bound in self.db.media_endpoints_of(actor)? {
+            if !sources.iter().any(|s| s.endpoint == bound.endpoint) {
+                sources.push(Source::media(&bound));
+            }
+        }
+        if sources.is_empty() {
+            bail!("{NO_PRIVATE_PICTURE} (their profile gives no media endpoint)");
+        }
+        ensure!(
+            self.viewing.icon_turn(),
+            "this node has fetched {MAX_ICONS_PER_HOUR} profile pictures in the last hour; \
+             try again later"
+        );
+        let lease = self
+            .viewing
+            .lease(*actor, || self.viewing_endpoint())
+            .await
+            .context(NO_PRIVATE_PICTURE)?;
+        let sources = Sources {
+            at_once: Vec::new(),
+            in_turn: sources,
+        };
+        let fetched = self
+            .store
+            .download_through(blob, sources, class, declared, &lease.inner.pool)
+            .await;
+        drop(lease);
+        let size = fetched.context(NO_PRIVATE_PICTURE)?;
+        info!(blob = %blob.fmt_short(), "fetched a profile picture through a viewing endpoint");
+        Ok(size)
+    }
+
     /// A new viewing endpoint: a key made for it, relay-only, published
     /// nowhere. It finds sources by their IDs but doesn't publish its own.
     pub(crate) async fn viewing_endpoint(&self) -> Result<Endpoint> {
@@ -404,6 +485,24 @@ mod tests {
 
     fn id(lease: &Lease<'_>) -> iroh::EndpointId {
         lease.inner.endpoint.id()
+    }
+
+    #[test]
+    fn strangers_pictures_take_turns_of_an_hour() {
+        let start = Instant::now();
+        let mut taken = VecDeque::new();
+        for i in 0..3 {
+            assert!(take_turn(&mut taken, start + Duration::from_secs(i), 3));
+        }
+        assert!(!take_turn(&mut taken, start + Duration::from_secs(60), 3));
+        // An hour after the first, its turn is free again, and only its.
+        assert!(take_turn(&mut taken, start + AN_HOUR, 3));
+        assert!(!take_turn(&mut taken, start + AN_HOUR, 3));
+        assert!(take_turn(
+            &mut taken,
+            start + AN_HOUR + Duration::from_secs(1),
+            3
+        ));
     }
 
     #[test]

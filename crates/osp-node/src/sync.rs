@@ -459,6 +459,18 @@ impl Core {
                 break;
             }
         }
+        // Their picture comes with their profile (ADR 0032), from their node.
+        if let Some((blob, size)) = self.db.icon_of(&follow.actor)?
+            && !self.store.has(&blob).await?
+        {
+            self.db.add_host(&blob, &follow.addr)?;
+            blobs.push(Wanted {
+                blob,
+                size,
+                author: follow.actor,
+                trackers: Vec::new(),
+            });
+        }
         self.subscribe_if_due(follow).await;
         Ok((new_objects, blobs, forwards))
     }
@@ -981,6 +993,10 @@ impl Core {
         if class != BlobClass::Replica && !self.store.has(blob).await? {
             if let Some(post) = self.db.found_only_post(blob)? {
                 return self.watch_found(blob, &post, class, declared).await;
+            }
+            // So is the picture of someone not followed (ADR 0032).
+            if let Some(actor) = self.db.strangers_icon(blob)? {
+                return self.watch_icon(blob, &actor, class, declared).await;
             }
             // Its post went, but it's still named only by what a directory
             // brought: never the usual way, which would show who asks.

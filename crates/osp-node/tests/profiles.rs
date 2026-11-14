@@ -7,7 +7,7 @@
 
 use std::path::{Path, PathBuf};
 
-use osp_node::{Config, Node};
+use osp_node::{BlobClass, Config, Node};
 use osp_proto::EarlierKeys;
 use osp_proto::{
     ObjectId, ProfileLink, PublicKey,
@@ -143,6 +143,12 @@ async fn a_picture_and_links_are_kept_over_a_restart_and_reach_a_follower() {
     assert!(seen.followed);
     assert!(!seen.known);
     assert_eq!(seen.person.icon, Some(icon.clone()));
+    // The picture came with it, fetched ahead as a followed post's media.
+    assert!(seen.icon_local);
+    assert_eq!(
+        jimmy.blob_class(&icon.blob).unwrap(),
+        Some(BlobClass::Prefetch)
+    );
     assert_eq!(seen.person.attachment, links);
     assert_eq!(
         seen.person.summary.as_deref(),

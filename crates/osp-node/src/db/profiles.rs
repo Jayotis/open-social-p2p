@@ -3,8 +3,8 @@
 
 use anyhow::{Context, Result};
 use iroh::PublicKey;
-use osp_proto::{ObjectId, SignedObject, rpc::ProfileItemKind};
-use rusqlite::{OptionalExtension, params};
+use osp_proto::{BlobHash, ObjectId, Payload, Person, SignedObject, rpc::ProfileItemKind};
+use rusqlite::{Connection, OptionalExtension, params};
 
 use super::Db;
 
@@ -98,6 +98,40 @@ impl Db {
             .collect()
     }
 
+    /// The picture `actor`'s profile held here gives, and its declared size.
+    pub fn icon_of(&self, actor: &PublicKey) -> Result<Option<(BlobHash, u64)>> {
+        let row: Option<(String, i64)> = self
+            .conn()
+            .query_row(
+                "SELECT blob, size FROM icons WHERE actor = ?1",
+                params![actor.to_string()],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        row.map(|(blob, size)| Ok((blob.parse()?, size as u64)))
+            .transpose()
+    }
+
+    /// Whose picture `blob` is, when it's only a picture here, and only of
+    /// people this node doesn't follow: such a picture is fetched only
+    /// through a viewing endpoint (ADR 0032), never the usual way. None for
+    /// any other blob.
+    pub fn strangers_icon(&self, blob: &BlobHash) -> Result<Option<PublicKey>> {
+        let actor: Option<String> = self
+            .conn()
+            .query_row(
+                "SELECT actor FROM icons WHERE blob = ?1
+                     AND NOT EXISTS (SELECT 1 FROM declared_sizes WHERE blob = ?1)
+                     AND NOT EXISTS (SELECT 1 FROM icons AS i JOIN follows AS f
+                                     ON f.actor = i.actor WHERE i.blob = ?1)
+                 LIMIT 1",
+                params![blob.to_string()],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(actor.map(|a| a.parse()).transpose()?)
+    }
+
     /// Whether `actor` is trusted on any of their nodes (ADR 0013): someone
     /// this node's owner knows.
     pub fn is_trusted(&self, actor: &PublicKey) -> Result<bool> {
@@ -109,10 +143,43 @@ impl Db {
     }
 }
 
+/// Notes the picture `person` gives, in place of the one their profile
+/// gave before.
+pub(super) fn record_icon(conn: &Connection, person: &Person) -> Result<()> {
+    let actor = person.actor.to_string();
+    match &person.icon {
+        Some(icon) => conn.execute(
+            "INSERT INTO icons (actor, blob, size) VALUES (?1, ?2, ?3)
+             ON CONFLICT(actor) DO UPDATE SET blob = excluded.blob, size = excluded.size",
+            params![actor, icon.blob.to_string(), icon.size as i64],
+        )?,
+        None => forget_icon(conn, &actor)?,
+    };
+    Ok(())
+}
+
+/// Forgets `actor`'s picture, as their profile goes.
+pub(super) fn forget_icon(conn: &Connection, actor: &str) -> Result<usize> {
+    Ok(conn.execute("DELETE FROM icons WHERE actor = ?1", params![actor])?)
+}
+
+/// Notes the pictures of the profiles stored before `icons` existed.
+pub(super) fn backfill_icons(conn: &Connection) -> Result<()> {
+    let mut stmt = conn.prepare("SELECT signed FROM profiles")?;
+    let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+    for json in rows {
+        let obj: SignedObject = serde_json::from_str(&json?).context("corrupt stored profile")?;
+        if let Ok(Payload::Person(person)) = obj.verify() {
+            record_icon(conn, &person)?;
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
-    use iroh::SecretKey;
-    use osp_proto::{Note, Payload};
+    use iroh::{EndpointAddr, SecretKey};
+    use osp_proto::Note;
 
     use super::*;
 
@@ -126,6 +193,61 @@ mod tests {
             in_reply_to: None,
         });
         (SignedObject::sign(kim, &payload).unwrap(), payload)
+    }
+
+    /// Kim's profile, with the picture `icon` of `size` bytes, or none.
+    fn kim_with(kim: &SecretKey, icon: Option<(u8, u64)>) -> (Person, SignedObject) {
+        let person = Person {
+            actor: kim.public(),
+            name: "Kim".into(),
+            summary: None,
+            discoverable: true,
+            nodes: vec![],
+            media_endpoints: vec![],
+            icon: icon.map(|(byte, size)| osp_proto::BlobRef {
+                blob: BlobHash::from_bytes([byte; 32]),
+                size,
+                media_type: "image/webp".into(),
+            }),
+            attachment: vec![],
+            published: "2026-11-14T00:00:00Z".into(),
+        };
+        let obj = SignedObject::sign(kim, &Payload::Person(person.clone())).unwrap();
+        (person, obj)
+    }
+
+    #[test]
+    fn a_picture_is_known_while_its_profile_gives_it_and_a_strangers_only_privately() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(&dir.path().join("t.db")).unwrap();
+        let kim = SecretKey::from_bytes(&[3; 32]);
+        let (first, second) = (BlobHash::from_bytes([1; 32]), BlobHash::from_bytes([2; 32]));
+
+        let (person, obj) = kim_with(&kim, Some((1, 5_000)));
+        db.upsert_profile(&person, &obj).unwrap();
+        assert_eq!(db.icon_of(&kim.public()).unwrap(), Some((first, 5_000)));
+        assert_eq!(db.declared_size(&first).unwrap(), Some(5_000));
+        assert_eq!(db.blob_author(&first).unwrap(), Some(kim.public()));
+        assert!(db.is_named(&first).unwrap());
+        assert_eq!(db.strangers_icon(&first).unwrap(), Some(kim.public()));
+
+        // A new picture takes the old one's place.
+        let (person, obj) = kim_with(&kim, Some((2, 6_000)));
+        db.upsert_profile(&person, &obj).unwrap();
+        assert!(!db.is_named(&first).unwrap());
+        assert_eq!(db.declared_size(&first).unwrap(), None);
+        assert_eq!(db.strangers_icon(&first).unwrap(), None);
+
+        // Someone followed isn't a stranger.
+        let addr = EndpointAddr::new(SecretKey::from_bytes(&[5; 32]).public());
+        db.upsert_follow(&kim.public(), &addr).unwrap();
+        assert_eq!(db.strangers_icon(&second).unwrap(), None);
+        assert!(db.is_named(&second).unwrap());
+
+        let (person, obj) = kim_with(&kim, None);
+        db.upsert_profile(&person, &obj).unwrap();
+        assert_eq!(db.icon_of(&kim.public()).unwrap(), None);
+        assert!(!db.is_named(&second).unwrap());
     }
 
     #[test]
