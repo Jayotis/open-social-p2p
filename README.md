@@ -1,94 +1,160 @@
 # Open Social P2P
 
-**Run your own social network at home, connect it to everyone else's, and use it from your phone anywhere.**
+**A home-hosted, peer-to-peer social network: your identity, posts and media live on your own node, while your phone is the everyday interface.**
 
-**Status: Stage 1 prototype in progress.** A Rust home node ([`crates/`](crates/)) and a Flutter app for Android and iPhone ([`app/`](app/)) work together on test devices; finding people and their posts is under way ([roadmap](docs/06-roadmap.md)). There is no production application yet.
+> **Alpha testers wanted.** OSP has reached the point where the main unknown is no longer whether the pieces can work in the lab, but how they behave on independent home networks. If you run Linux on x86_64 or arm64 and are willing to try an early system, see [Installing a node](docs/install.md) and the [GitHub releases](https://github.com/Jayotis/open-social-p2p/releases).
 
-## The idea
+**Status: early alpha.** Prebuilt Linux releases exist, the node has been exercised across real machines and networks, and Android and iPhone clients have been tested against home nodes. This is still experimental software, not a production social network. The current alpha is focused on public content and Linux home nodes.
 
-Open Social P2P lets you create your own social media platform in your home. It's yours: your feed, your content, your connections. You connect it to a decentralized network of other people's home platforms and reach it from your phone, from anywhere.
+## What OSP is trying to do
 
-There is no corporate administration, no data center holding everyone's posts, no handing your data to someone else, and no asking a company to show you content. You get your friends' content directly from them.
+Most social networks put your account, content, social graph, search and delivery behind infrastructure run by one company. OSP moves most of that work back to the people using the network.
 
-How it works:
+- Your **home node** owns your identity, posts, photos, videos, follows, local search index and network state.
+- Your **phone app** talks to your own node, so the phone does not need to be the always-on server or carry the network's storage and bandwidth load.
+- Public posts and profiles are **signed by their authors**. Media is addressed and verified by hash.
+- Nodes exchange social/control traffic over **Tor onion services**, so a stranger discovering your public profile does not automatically learn your home IP address.
+- Discovery material from directories is brought to the node and **searched locally**. The words you type into search are not sent to a central search service.
+- Followers and people who deliberately reshare with hosting can serve verified copies of media, so a popular creator does not have to upload every copy themselves.
 
-- Your **home node** runs on a desktop or another always-on computer. It holds your identity, posts, photos and videos, follows people, gathers their posts and does all the heavy networking. Installing it creates your identity locally; there is no central sign-up ([ADR 0006](docs/decisions/0006-desktop-first-always-on-node.md)).
-- The **Flutter phone app** is the remote control for your node: read, watch and post from anywhere, without your phone carrying the storage, data use or network load ([ADR 0001](docs/decisions/0001-home-node-architecture.md)).
-- **Popular posts spread through the people who already have them.** Followers' nodes and people who reshare can serve verified copies, so a popular post doesn't overload the creator's home connection ([proposal](docs/13-hosting-roles-and-follower-swarm.md)).
+OSP is not trying to make every machine anonymous, eliminate every public helper on day one, or pretend the hard parts of abuse, moderation and large-scale transport are already solved. Those trade-offs are documented as architecture decisions rather than hidden behind the app.
 
-Nodes still need some public helpers to get through home routers: relay servers that pass along encrypted traffic without storing it. During development these are run by the iroh project; project and community relays are planned ([ADR 0002](docs/decisions/0002-rust-and-iroh.md), [ADR 0007](docs/decisions/0007-transport-privacy-defaults.md)).
+## What works today
 
-**Your internet address.** By default your node connects directly to the nodes it exchanges posts and media with, as BitTorrent does, so they can see your home's internet address. In relay-only mode (`relay_only = true` in the node's `config.toml`) everything goes through a relay instead: other nodes, and your own phone, never learn your address, but the relay operator does, and video is slower. Neither mode makes you anonymous ([ADR 0007](docs/decisions/0007-transport-privacy-defaults.md), [testing](docs/testing/relay-only.md)).
+The project has moved well beyond the original source-only prototype:
 
-Peers should choose sources according to **locally measured speed, latency, reliability and available capacity**, and respect bandwidth/storage limits. Security, IP-address privacy, audience controls, moderation and deletion limitations are essential design requirements.
+- **Local identity and recovery:** an identity is created on the node, with recovery words and signing-key revocation/replacement.
+- **Posting:** signed public text, photo and video posts, including transcoding and resumable phone uploads.
+- **Following and resharing:** followers sync posts; resharers can deliberately keep and serve a verified public copy.
+- **Deletion:** signed deletes and tombstones propagate so stale copies do not simply bring a deleted post back.
+- **P2P media:** downloads can use several verified sources, resume, stream to the phone while still arriving, and continue from replicas when the creator is offline.
+- **Discovery:** opt-in directories provide signed public profiles, posts and reshares; nodes pull that material and search it at home.
+- **Private viewing of found public posts:** a person can open media they found without using their stable public identity for the viewing path. Busy and interrupted sources are tested with fallback to others.
+- **Replies:** signed reply threads, retry while a creator is offline, creator reply policies, requests, allow/block/hide controls and deletion.
+- **Cross-community reply admission:** a creator's node can automatically admit a stranger's reply when enough independent people near the creator's social world have vouched for that person. The current design was exercised with 300 nodes across 10 simulated communities before being enabled by default.
+- **Android and iPhone clients:** pairing, feed, posting, playback, search, replies and node controls have been tested on real phones. The public alpha release is currently centred on the Linux node rather than app-store distribution.
 
-Design decisions are recorded in [docs/decisions/](docs/decisions/). The first prototype covers node-to-node publishing, resharing with hosting and verified retrieval. The second adds the Android app, paired with its node by QR code, with the node running as an always-on service. The third, under way, limits what other nodes can make a node do, and adds storage quotas and relay-only mode.
+See the [development roadmap](docs/06-roadmap.md), [architecture decisions](docs/decisions/) and [testing records](docs/testing/) for the implementation and the failures that changed the design.
 
-## Project documentation
+## We need independent alpha testers
+
+The home lab can prove protocol behaviour, but it cannot tell us how OSP behaves across a handful of unrelated homes, ISPs, routers and usage habits.
+
+The next alpha round is looking for a small number of people who can run a node and report what actually happens. Useful testing includes:
+
+- installing from a clean Linux machine and leaving the node running;
+- Tor's first-start and reconnect behaviour on a normal home connection;
+- finding people and public posts without exchanging follow codes;
+- opening a found video and seeing which creator or resharer actually serves it;
+- following, posting, resharing and replying between independent nodes;
+- seeing whether sharing-with-hosting is something people would choose without being prompted to do it;
+- reporting confusing setup, resource use, failures and anything that only appears outside the maintainer's lab.
+
+You do **not** need to build Rust from source to participate. The alpha installer uses release binaries.
+
+## Install the alpha
+
+Current node releases support **Linux x86_64 and arm64 with systemd**. Debian 12, Ubuntu 22.04 and Raspberry Pi OS 12 (64-bit), or newer versions, are the easiest path. A Raspberry Pi 4/5 or another always-on Linux machine is suitable, but a normal desktop is fine for testing.
+
+Start with:
+
+- [Installing a node](docs/install.md) — requirements, installer, updating and removal
+- [Releases](https://github.com/Jayotis/open-social-p2p/releases) — prebuilt Linux packages, installer and checksums
+
+The installer creates the node, configures Tor and the alpha directories, installs the user service and shows the node's recovery words. Run the installer as your normal user, not as root.
+
+**Please treat the alpha as disposable experimental software.** Keep the recovery words if you care about the test identity, expect rough edges, and do not use it for private or sensitive material.
+
+## How the network is split
+
+| Part | What it does now |
+| --- | --- |
+| **Home node** | Rust service that stores identity/content, syncs, searches, transcodes and serves media |
+| **Phone** | Flutter client paired to the owner's node; a window onto the node rather than a server |
+| **Public/control endpoint** | Tor-only endpoint for node-to-node social messages |
+| **Media endpoint** | Relay-only endpoint for public media when a direct connection is not allowed |
+| **Direct endpoint** | Used by the owner's phones and by peers allowed under the node's direct-connection policy |
+| **Directories** | Opt-in public discovery/bootstrap; nodes download signed listings and search locally |
+| **Follower/resharer swarms** | People who already hold verified media can serve it to others |
+
+The alpha still depends on public relay infrastructure for media paths that cannot or should not connect directly. Replacing more of that relay load with a sustainable OSP-operated or peer-carried transport is active design work; the first two-hop/earned-link model did **not** meet its simulation gates and was deliberately not shipped.
+
+## Privacy and limitations
+
+- **OSP is not an anonymity network.** Tor is used for the control plane, but public posts are public and network participants can still learn information appropriate to the path they use.
+- Found public media uses temporary viewing endpoints so the creator does not receive the viewer's stable social identity just because they opened a post.
+- Media relays can see network metadata for traffic they carry. Current development uses iroh/n0 relay infrastructure.
+- The alpha directories are currently maintained for bootstrapping the test network. A signed, replaceable directory-list design is planned before anything broader.
+- Only **public content** is in scope for this alpha. Private groups/content require a separate validated design.
+- **ActivityPub is planned, not implemented.** OSP currently uses its own native protocol. A bridge to Mastodon and the wider fediverse is a later stage.
+
+## Evidence, not just plans
+
+Design work in this repository is normally followed by a measurable gate. Examples include:
+
+- real-node publish/reshare/retrieve tests with the original creator offline;
+- real-node found-and-hosted tests where a stranger fetched a video from a resharer's copy;
+- deletion/tombstone propagation tests;
+- Android and iPhone tests against always-on nodes;
+- reply tests across three real nodes over Tor and two phones;
+- 300-follower media simulations under slow/flaky conditions;
+- a 300-node, 10-community simulation for cross-community voucher admission, including a 200-throwaway-identity attacker.
+
+The results, including failed gates and changes made because of them, are kept under [docs/testing/](docs/testing/).
+
+## Technology
+
+- **Rust** for the home node and protocol implementation.
+- **iroh / iroh-blobs** for QUIC connectivity, relay fallback and BLAKE3-verified content transfer.
+- **Tor** for the public control plane between nodes.
+- **SQLite FTS5** for local full-text search.
+- **ffmpeg** and **libheif** for the media pipeline.
+- **Flutter** plus `flutter_rust_bridge` for Android and iPhone clients.
+
+Stage 1 uses a native OSP protocol. An **ActivityPub bridge** is planned for a later stage so fediverse users can interact without running an OSP node.
+
+## Repository map
 
 | Document | Contents |
 | --- | --- |
-| [Vision and principles](docs/01-vision-and-principles.md) | Goals, user experience, non-goals and guiding values |
-| [System architecture](docs/02-system-architecture.md) | Social layer, Flutter, media nodes, P2P transport and integrations |
-| [Peer distribution and scoring](docs/03-peer-distribution-and-scoring.md) | Replication on reshare, fairness, verification and source selection |
-| [App and companion requirements](docs/04-app-and-companion-requirements.md) | Mobile and desktop features and user journeys |
-| [Security, privacy and governance](docs/05-security-privacy-and-governance.md) | Threat model, consent, moderation and policy requirements |
-| [Development roadmap](docs/06-roadmap.md) | Research, proof of concept, integration, alpha and release milestones |
-| [Contributing and open decisions](docs/07-contributing-and-open-decisions.md) | How to help and architectural questions needing review |
-| [Open feed and recommendation algorithm](docs/08-open-feed-algorithm.md) | Open-source feed modes, trending criteria, user controls and transparency |
-| [Distributed trending signals](docs/09-distributed-trending-signals.md) | P2P-assisted public trend discovery, data minimization and abuse resistance |
-| [Exploration, divergent perspectives and discovery hunters](docs/10-exploration-divergence-and-hunters.md) | Overlooked posts, cross-perspective discovery and recognition for early curators |
-| [Collective discovery history and referrals](docs/11-collective-discovery-history-and-referrals.md) | Voluntary public recommendations, offline word-of-mouth credit, private local history and P2P discovery snapshots |
-| [Peer reciprocity and recognition](docs/12-peer-reciprocity-and-recognition.md) | **Proposal (second draft):** nodes assess their own peers, generous tit-for-tat when busy, creator and hunter levels, self-reported host stat |
-| [Hosting roles and the follower swarm](docs/13-hosting-roles-and-follower-swarm.md) | **Proposal (second draft):** followers' nodes share prefetched copies, preservation nodes, demand-based expiry |
-| [Critical review of docs 12 and 13](docs/reviews/2026-10-21-review-of-docs-12-and-13.md) | Findings against the first drafts, with a disposition for each |
-| [Architecture decision records](docs/decisions/) | Accepted decisions: home node model, Rust and iroh, native social protocol, signed objects, media profile, desktop-first node, transport privacy defaults, device pairing and the client protocol |
+| [Vision and principles](docs/01-vision-and-principles.md) | What OSP is trying to be, and its non-goals |
+| [System architecture](docs/02-system-architecture.md) | Components, data flow and protocol boundaries |
+| [Security, privacy and governance](docs/05-security-privacy-and-governance.md) | Threats, privacy goals and open governance questions |
+| [Development roadmap](docs/06-roadmap.md) | Completed milestones, alpha work and later stages |
+| [Contributing and open decisions](docs/07-contributing-and-open-decisions.md) | How to help and what still needs decisions |
+| [Architecture decision records](docs/decisions/) | The decisions that define the current system |
+| [Testing records](docs/testing/) | Real-node and simulated experiments, including failures |
 
-## Technologies
+Code lives primarily in:
 
-Selected for the Stage 1 prototype (see the [decision records](docs/decisions/)):
+| Path | What it is |
+| --- | --- |
+| [`crates/osp-proto`](crates/osp-proto/) | Signed objects, wire formats, requests and tickets |
+| [`crates/osp-node`](crates/osp-node/) | Home-node storage, networking, media, discovery and social behaviour |
+| [`crates/osp-cli`](crates/osp-cli/) | `osp` command, daemon/service, setup and administration |
+| [`crates/osp-client`](crates/osp-client/) | Client protocol used by paired phones |
+| [`crates/osp-tor`](crates/osp-tor/) | OSP's Tor transport/control-plane integration |
+| [`crates/osp-sim`](crates/osp-sim/) | Repeatable multi-node simulation harnesses |
+| [`app/`](app/) | Flutter mobile application |
 
-- **Rust** home node built on **iroh** (peer connections by public key, hole punching, relay fallback) and **iroh-blobs** (BLAKE3-verified content transfer).
-- **ffmpeg** for transcoding to a low-bitrate 720p profile, and **libheif** for reading iPhone photos.
-- **Flutter** for the phone app, on Android and iPhone, calling the same Rust code through `flutter_rust_bridge`.
+## Building from source
 
-Still to evaluate:
-
-- **ActivityPub** bridge for federation with Mastodon and others (Stage 2).
-- **PeerTube** or adaptive streaming for longer video.
-
-## Building the prototype
-
-The invited alpha's testers install a release instead: see [docs/install.md](docs/install.md).
-
-Requirements: Rust (stable), Tor (a new node uses it unless made with `osp init --no-tor`), ffmpeg, and libheif-examples for iPhone photos (HEIC).
+Alpha testers should normally use a release. For development:
 
 ```sh
 cargo build
-cargo test            # three-node publish / reshare / origin-offline, and phone pairing tests
+cargo test
 cargo run --bin osp -- --help
 ```
 
-See [docs/testing/stage1-manual.md](docs/testing/stage1-manual.md) for running several nodes and testing across machines, [docs/testing/m2-phone.md](docs/testing/m2-phone.md) for running a node as a service and pairing a phone, [docs/testing/relay-only.md](docs/testing/relay-only.md) for relay-only mode, [docs/testing/tor.md](docs/testing/tor.md) for messages over Tor, being built, and [docs/testing/direct-endpoint.md](docs/testing/direct-endpoint.md) for the media and direct endpoints, being built.
+See [Stage 1 manual testing](docs/testing/stage1-manual.md) for running multiple development nodes.
 
-| Crate | What it is |
-| --- | --- |
-| [`osp-proto`](crates/osp-proto/) | Wire formats: signed objects, payloads, requests, tickets |
-| [`osp-node`](crates/osp-node/) | The home node: storage, media pipeline, sync, serving phones |
-| [`osp-cli`](crates/osp-cli/) | The `osp` command: daemon, service, pairing and everything else |
-| [`osp-client`](crates/osp-client/) | What a paired phone runs; used by the Android app |
-| [`osp-tor`](crates/osp-tor/) | Messages between nodes over Tor, and the node's own Tor (MIT or Apache-2.0, as the code it started from) |
+## Contributing
 
-## Key design questions
+Right now, **independent testing is at least as valuable as more code**. Bug reports that include the distro, hardware, what you expected, what happened and relevant `osp status` output are especially useful.
 
-Can resharers voluntarily improve availability by seeding verified copies? How can local observations assign work fairly across faster and slower peers? How can we protect private groups, avoid revealing home network addresses, keep always-on home nodes simple to run, and manage abuse in a replicated network?
-
-See the [open decisions](docs/07-contributing-and-open-decisions.md) to participate in those discussions.
-
-## Separate search project
-
-A personal search engine with a home-hosted crawler is a **separate idea and not part of Open Social P2P**.
+Architectural changes are recorded as ADRs so decisions can be reviewed and later superseded without rewriting project history. See [Contributing and open decisions](docs/07-contributing-and-open-decisions.md).
 
 ## License
 
-See [LICENSE](LICENSE) for the repository's current AGPL-3.0 license. [`crates/osp-tor`](crates/osp-tor/) is under MIT or Apache-2.0 instead, as the code it started from. Documentation licensing and third-party compatibility will be reviewed as the project develops.
+The project is licensed under [AGPL-3.0](LICENSE). [`crates/osp-tor`](crates/osp-tor/) retains MIT or Apache-2.0 licensing for the code it originated from.
