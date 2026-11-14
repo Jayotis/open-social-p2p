@@ -222,6 +222,16 @@ async fn a_found_post_opens_through_a_viewing_endpoint_and_nothing_of_alices_own
     let own = own_endpoints(&alice);
     assert_eq!(alice.blob_class(&photo).unwrap(), None);
 
+    // With no follows and no search, her node lists who it found.
+    let ClientResponse::People { people } = call(&alice, ClientRequest::People { limit: 50 }).await
+    else {
+        panic!("not a list of people")
+    };
+    let found_kim = people.iter().find(|p| p.actor == kim.identity()).unwrap();
+    assert!(!found_kim.followed);
+    assert!(found_kim.found_through.is_some());
+    assert!(found_kim.newest.is_some());
+
     net.record_senders();
     alice.open_blob(&thumbnail).await.unwrap();
     alice.open_blob(&photo).await.unwrap();

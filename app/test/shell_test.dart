@@ -6,6 +6,7 @@ import 'package:osp_app/node.dart';
 import 'package:osp_app/screens/activity_screen.dart';
 import 'package:osp_app/screens/advanced_screen.dart';
 import 'package:osp_app/screens/compose_screen.dart';
+import 'package:osp_app/screens/found_people_screen.dart';
 import 'package:osp_app/screens/node_summary_screen.dart';
 import 'package:osp_app/screens/people_screen.dart';
 import 'package:osp_app/screens/search_screen.dart';
@@ -35,6 +36,17 @@ class FakeApp implements OspApp {
 
   @override
   UnsentPost? pendingPost() => null;
+
+  /// Who the node has found.
+  List<FoundPerson> found = [];
+  final followed = <String>[];
+
+  @override
+  Future<List<FoundPerson>> people({required int limit}) async => found;
+
+  @override
+  Future<void> followPerson({required String identity}) async =>
+      followed.add(identity);
 
   @override
   String deviceId() => 'device-0123456789';
@@ -231,6 +243,47 @@ void main() {
     await tester.pumpAndSettle();
     expect(node.firstRun, isFalse);
     expect(_title('Universe'), findsOneWidget);
+  });
+
+  testWidgets('the Universe lists who the node found, to follow', (
+    tester,
+  ) async {
+    final posted = DateTime.now()
+        .subtract(const Duration(hours: 2))
+        .toUtc()
+        .toIso8601String();
+    app.found = [
+      FoundPerson(
+        identity: 'id-Kim',
+        name: 'Kim',
+        summary: 'Plays the cello',
+        followed: false,
+        foundThrough: 'upset-slot-only',
+        newest: posted,
+      ),
+      const FoundPerson(identity: 'id-Sam', name: 'Sam', followed: true),
+    ];
+    await start(tester, Place.universe);
+    expect(find.text('Your node found 2 people'), findsOne);
+    expect(find.text('Kim, Sam'), findsOne);
+
+    await tester.tap(find.text('Your node found 2 people'));
+    await tester.pumpAndSettle();
+    expect(find.byType(FoundPeopleScreen), findsOneWidget);
+    expect(find.textContaining('Posted 2 h ago'), findsOne);
+    expect(find.text('Following'), findsOne);
+    expectPlainWords(tester);
+
+    await tester.tap(find.widgetWithText(TextButton, 'Follow'));
+    await tester.pumpAndSettle();
+    expect(app.followed, ['id-Kim']);
+    expect(find.text('Following'), findsNWidgets(2));
+  });
+
+  testWidgets('a node that found nobody says it is looking', (tester) async {
+    await start(tester, Place.universe);
+    expect(find.text('Your node is looking for people'), findsOne);
+    expectPlainWords(tester);
   });
 }
 

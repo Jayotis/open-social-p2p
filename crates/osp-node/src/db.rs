@@ -2717,6 +2717,41 @@ impl Db {
         )
     }
 
+    /// Stored profiles other than `me`'s, with when their newest post or
+    /// reshare here was published: newest first, then those with none, by
+    /// name.
+    pub fn people(&self, me: &PublicKey, limit: u32) -> Result<Vec<(SignedObject, Option<u64>)>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT profiles.signed,
+                    (SELECT MAX(published_ms) FROM objects
+                     WHERE objects.actor = profiles.actor
+                       AND objects.kind IN ('Note', 'Announce')) AS newest
+             FROM profiles WHERE profiles.actor != ?1
+             ORDER BY newest IS NULL, newest DESC, profiles.name LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(params![me.to_string(), limit], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, Option<i64>>(1)?))
+        })?;
+        rows.map(|r| {
+            let (json, newest) = r?;
+            let obj = serde_json::from_str(&json).context("corrupt stored profile")?;
+            Ok((obj, newest.map(|ms| ms.max(0) as u64)))
+        })
+        .collect()
+    }
+
+    /// When `actor`'s newest post or reshare here was published.
+    pub fn newest_ms(&self, actor: &PublicKey) -> Result<Option<u64>> {
+        let newest: Option<i64> = self.conn().query_row(
+            "SELECT MAX(published_ms) FROM objects
+             WHERE actor = ?1 AND kind IN ('Note', 'Announce')",
+            params![actor.to_string()],
+            |row| row.get(0),
+        )?;
+        Ok(newest.map(|ms| ms.max(0) as u64))
+    }
+
     /// Stored profiles matching what a person typed: the best match first.
     pub fn search_profiles(&self, words: &str, limit: u32) -> Result<Vec<SignedObject>> {
         self.search(

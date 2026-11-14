@@ -3,13 +3,15 @@ import 'dart:math';
 import 'package:flutter/material.dart';
 
 import '../node.dart';
+import '../src/rust/api/osp.dart';
 import '../theme.dart';
 import 'node_summary_screen.dart';
-import 'search_screen.dart';
+import 'found_people_screen.dart';
 
 /// The Universe (ADR 0031 §1): the network as a map, with your star at the
-/// centre. For now only your star and the sky: the people, posts and
-/// machines around it come with P3 and P4 (ADRs 0033, 0034). What it says
+/// centre. For now your star, the sky, and who your node has found as a
+/// list (ADR 0035's "People your node found", brought forward): the map
+/// around your star comes with P3 and P4 (ADRs 0033, 0034). What it says
 /// comes from the node's real state only (ADR 0036).
 class UniverseTab extends StatelessWidget {
   const UniverseTab({super.key, required this.node, required this.open});
@@ -70,13 +72,7 @@ class UniverseTab extends StatelessWidget {
             left: Space.m,
             right: Space.m,
             bottom: 96,
-            child: Center(
-              child: FilledButton.tonalIcon(
-                onPressed: () => open(SearchScreen(node: node)),
-                icon: const Icon(Icons.search),
-                label: const Text('Find people and posts'),
-              ),
-            ),
+            child: _FoundPeople(node: node, open: open),
           ),
         ],
       ),
@@ -144,4 +140,46 @@ class _Sky extends CustomPainter {
 
   @override
   bool shouldRepaint(_Sky old) => old.colors != colors;
+}
+
+/// Who your node has found, as a card on the sky that opens the list.
+class _FoundPeople extends StatelessWidget {
+  const _FoundPeople({required this.node, required this.open});
+
+  final HomeNode node;
+  final void Function(Widget screen) open;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final people = node.people;
+    final (title, detail) = switch (people) {
+      null when node.peopleError != null => (
+        "Couldn't ask your node who it found",
+        'Tap to try again.',
+      ),
+      null => ('Your node is finding people…', null),
+      [] => ('Your node is looking for people', 'It checks every few minutes.'),
+      [final one] => ('Your node found 1 person', one.name),
+      _ => ('Your node found ${people.length} people', _names(people)),
+    };
+    return Card(
+      child: ListTile(
+        leading: const Icon(Icons.people_outline),
+        title: Text(title, style: theme.textTheme.titleSmall),
+        subtitle: detail == null
+            ? null
+            : Text(detail, maxLines: 1, overflow: TextOverflow.ellipsis),
+        trailing: const Icon(Icons.chevron_right),
+        onTap: () => open(FoundPeopleScreen(node: node)),
+      ),
+    );
+  }
+
+  static String _names(List<FoundPerson> people) {
+    final named = people.map((p) => p.name).where((n) => n.isNotEmpty);
+    final first = named.take(3).toList();
+    final more = people.length - first.length;
+    return more > 0 ? '${first.join(', ')} and $more more' : first.join(', ');
+  }
 }
