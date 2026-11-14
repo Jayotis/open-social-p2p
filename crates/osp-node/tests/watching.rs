@@ -19,7 +19,7 @@ use iroh::{
 };
 use osp_node::{
     BlobClass, Config, KnownDirectory, Node, SimSettings,
-    simnet::{self, Link, SimNet},
+    simnet::{self, Link, SimNet, TorDelay},
 };
 use osp_proto::{
     BlobHash, MACHINE_ALPN,
@@ -313,6 +313,50 @@ async fn with_no_source_reachable_privately_it_fails_plainly_and_a_retry_works()
     assert!(net.set_online(kim.node_id(), true));
     alice.open_blob(&photo).await.unwrap();
     assert_sent_nothing_from(&net, &own);
+
+    for node in [alice, kim, directory] {
+        node.shutdown().await.unwrap();
+    }
+}
+
+/// Kim's posts reached Alice through a directory. She follows Kim and opens
+/// Kim's photo before the first sync with Kim is through, which over Tor can
+/// take minutes: nothing says yet that Kim's node holds it, but Kim's profile
+/// names her node, so it comes from there (P1's journey, where a video
+/// opened right after following failed with "no known providers").
+#[tokio::test(flavor = "multi_thread")]
+async fn a_post_opened_right_after_following_its_author_comes_from_their_node() {
+    let dir = tempfile::tempdir().unwrap();
+    let net = SimNet::new(63);
+    let directory = start_directory(dir.path(), &net).await;
+    let (kim, photo, _) = listed_creator(dir.path(), &net, &directory, "Kim").await;
+    let alice = alice(dir.path(), &directory, sim(&net)).await;
+    alice.shutdown().await.unwrap();
+
+    // Now with Tor: a first connection to Kim's node takes five minutes.
+    let slow = TorDelay {
+        first_connect: (Duration::from_secs(300), Duration::from_secs(300)),
+        round_trip: (Duration::ZERO, Duration::ZERO),
+        bytes_per_sec: 10_000_000,
+    };
+    let settings = SimSettings {
+        tor_delay: Some(slow),
+        ..sim(&net)
+    };
+    let alice = Node::spawn_sim(&dir.path().join("alice"), settings)
+        .await
+        .unwrap();
+    let follow = ClientRequest::FollowPerson {
+        actor: kim.identity(),
+    };
+    tokio::time::timeout(Duration::from_secs(10), call(&alice, follow))
+        .await
+        .expect("following doesn't wait for Kim's node");
+    tokio::time::timeout(Duration::from_secs(20), alice.open_blob(&photo))
+        .await
+        .expect("not kept waiting on the first sync")
+        .unwrap();
+    assert!(alice.blob_class(&photo).unwrap().is_some());
 
     for node in [alice, kim, directory] {
         node.shutdown().await.unwrap();
