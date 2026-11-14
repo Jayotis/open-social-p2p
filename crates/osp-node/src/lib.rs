@@ -23,6 +23,7 @@ mod meet;
 mod network;
 mod node;
 mod peers;
+mod profiles;
 mod relays;
 mod replies;
 mod replying;

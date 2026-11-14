@@ -468,6 +468,8 @@ mod tests {
                 })
                 .collect(),
             published: DATE.into(),
+            icon: None,
+            attachment: Vec::new(),
         };
         let profile = SignedObject::sign(&key, &crate::Payload::Person(person)).unwrap();
         let len = serde_json::to_vec(&profile).unwrap().len();

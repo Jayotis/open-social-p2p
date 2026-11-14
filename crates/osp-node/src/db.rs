@@ -22,6 +22,7 @@ use tracing::info;
 
 use crate::{meet, peers, trust};
 
+mod profiles;
 mod replies;
 mod sent_replies;
 mod vouches;
@@ -480,6 +481,9 @@ const MIGRATIONS: &[&str] = &[
     // 2 shown), and what the meeting with the owner's world found, as JSON.
     "ALTER TABLE received_replies ADD COLUMN side_asked INTEGER NOT NULL DEFAULT 0;
     ALTER TABLE received_replies ADD COLUMN found TEXT;",
+    // 31: a person's posts and reshares by date, for their profile's pages
+    // (ADR 0032).
+    "CREATE INDEX objects_by_actor_date ON objects(actor, kind, published_ms, id)",
 ];
 
 /// The search index (ADR 0014): a number for each post, by its object ID, and
@@ -5448,6 +5452,8 @@ mod tests {
             nodes: vec![],
             media_endpoints: vec![],
             published: osp_proto::now_rfc3339(),
+            icon: None,
+            attachment: Vec::new(),
         };
         let obj = SignedObject::sign(key, &Payload::Person(person.clone())).unwrap();
         (person, obj)
@@ -5817,6 +5823,8 @@ mod tests {
                 nodes: vec![],
                 media_endpoints: vec![],
                 published: published.into(),
+                icon: None,
+                attachment: Vec::new(),
             };
             let signed = SignedObject::sign(&key, &Payload::Person(person.clone())).unwrap();
             (person, signed)
@@ -5857,6 +5865,8 @@ mod tests {
                     1_000,
                 )],
                 published: published.into(),
+                icon: None,
+                attachment: Vec::new(),
             };
             let signed = SignedObject::sign(&key, &Payload::Person(person.clone())).unwrap();
             (person, signed)
@@ -6511,6 +6521,7 @@ mod tests {
                      DROP TABLE vouches; DROP TABLE voucher_profiles;
                      DROP TABLE credits_given; DROP TABLE told_reshares;
                      DROP TABLE side_vouches; DROP TABLE side_gathered;
+                     DROP INDEX objects_by_actor_date;
                      PRAGMA user_version = 24;",
                 )
                 .unwrap();

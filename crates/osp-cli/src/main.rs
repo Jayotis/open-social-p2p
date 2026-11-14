@@ -40,9 +40,9 @@ use osp_proto::{
     framing::{read_frame, write_frame},
     machine::MAX_LISTED_POSTS,
     rpc::{
-        ClientRequest, ClientResponse, DeviceInfo, Direction, FeedItem, FollowerInfo, PeerRecord,
-        Reached, ReplierChoice, ReplyAnswer, ReplyInfo, ReplyStatus, SentReplyInfo, SentStatus,
-        StatusInfo, TrustInfo,
+        ClientRequest, ClientResponse, DeviceInfo, Direction, FeedItem, FollowerInfo, IconChange,
+        PeerRecord, ProfileInfo, ProfileItemKind, Reached, ReplierChoice, ReplyAnswer, ReplyInfo,
+        ReplyStatus, SentReplyInfo, SentStatus, StatusInfo, TrustInfo,
     },
     social::ReplyPolicy,
 };
@@ -168,6 +168,48 @@ enum Command {
         /// How many people at most
         #[arg(long, default_value_t = 50)]
         limit: u32,
+    },
+    /// Show someone's profile and how many of their posts your node holds,
+    /// or one page of them. With no one named, your own
+    Profile {
+        /// A name, or the start of an identity, of someone your node found
+        who: Option<String>,
+        /// List their posts, a page at a time
+        #[arg(long, conflicts_with_all = ["media", "reshares"])]
+        posts: bool,
+        /// List their posts with photos or videos
+        #[arg(long, conflicts_with = "reshares")]
+        media: bool,
+        /// List their reshares
+        #[arg(long)]
+        reshares: bool,
+        /// Show the page after this post or reshare
+        #[arg(long)]
+        before: Option<ObjectId>,
+        #[arg(long, default_value_t = 20)]
+        limit: u32,
+    },
+    /// Change your profile. Anything not given stays as it is. Followers see
+    /// the change at their next sync. Your picture is as public as your name
+    EditProfile {
+        #[arg(long)]
+        name: Option<String>,
+        /// A few words about you; an empty one removes it
+        #[arg(long)]
+        summary: Option<String>,
+        /// A link to show, as `Name=https://...` (repeatable, at most 4).
+        /// Giving any replaces them all
+        #[arg(long = "link")]
+        links: Vec<String>,
+        /// Remove every link
+        #[arg(long, conflicts_with = "links")]
+        no_links: bool,
+        /// A photo for your profile picture, cut to a square
+        #[arg(long, conflicts_with = "no_picture")]
+        picture: Option<PathBuf>,
+        /// Remove your profile picture
+        #[arg(long)]
+        no_picture: bool,
     },
     /// Reshare a post
     Reshare {
@@ -594,6 +636,78 @@ async fn main() -> Result<()> {
             limit,
         },
         Command::People { limit } => ClientRequest::People { limit },
+        Command::Profile {
+            who,
+            posts,
+            media,
+            reshares,
+            before,
+            limit,
+        } => {
+            let actor = find_person(&home, who.as_deref()).await?;
+            let kind = match (posts, media, reshares) {
+                (true, _, _) => Some(ProfileItemKind::Posts),
+                (_, true, _) => Some(ProfileItemKind::Media),
+                (_, _, true) => Some(ProfileItemKind::Reshares),
+                _ => None,
+            };
+            match kind {
+                Some(kind) => ClientRequest::ProfileItems {
+                    actor,
+                    kind,
+                    before,
+                    limit,
+                },
+                None => ClientRequest::Profile { actor },
+            }
+        }
+        Command::EditProfile {
+            name,
+            summary,
+            links,
+            no_links,
+            picture,
+            no_picture,
+        } => {
+            let me = find_person(&home, None).await?;
+            let current = match send(&home, ClientRequest::Profile { actor: me }).await? {
+                ClientResponse::Profile { profile } => profile.person,
+                ClientResponse::Error { message } => bail!(message),
+                other => bail!("unexpected reply {other:?}"),
+            };
+            let links = match (no_links, links.is_empty()) {
+                (true, _) => Vec::new(),
+                (false, true) => current.attachment,
+                (false, false) => links
+                    .iter()
+                    .map(|l| {
+                        let (name, value) = l
+                            .split_once('=')
+                            .with_context(|| format!("{l:?}: give a link as Name=https://..."))?;
+                        Ok(osp_proto::ProfileLink {
+                            name: name.into(),
+                            value: value.into(),
+                        })
+                    })
+                    .collect::<Result<_>>()?,
+            };
+            let icon = match (picture, no_picture) {
+                (Some(path), _) => IconChange::File {
+                    // The daemon has its own working directory.
+                    path: path
+                        .canonicalize()
+                        .with_context(|| format!("{}", path.display()))?,
+                },
+                (None, true) => IconChange::Remove,
+                (None, false) => IconChange::Keep,
+            };
+            ClientRequest::SetProfile {
+                name: name.unwrap_or(current.name),
+                summary: summary.or(current.summary),
+                links,
+                icon,
+            }
+        }
         Command::Reshare { id, host } => ClientRequest::Reshare { id, host },
         Command::Fetch { id, out } => ClientRequest::Fetch {
             id,
@@ -1288,6 +1402,32 @@ async fn find_followed(home: &Path, who: &str) -> Result<PublicKey> {
     only_one(who, actors, "person you follow", "osp following")
 }
 
+/// Someone this node holds a profile of, by name or the start of their
+/// identity, or with no one named, the owner.
+async fn find_person(home: &Path, who: Option<&str>) -> Result<PublicKey> {
+    let Some(who) = who else {
+        return match send(home, ClientRequest::Status).await? {
+            ClientResponse::Status(status) => Ok(status.identity),
+            ClientResponse::Error { message } => bail!(message),
+            other => bail!("unexpected reply {other:?}"),
+        };
+    };
+    if let Ok(actor) = who.trim().parse::<PublicKey>() {
+        return Ok(actor);
+    }
+    let people = match send(home, ClientRequest::People { limit: 500 }).await? {
+        ClientResponse::People { people } => people,
+        ClientResponse::Error { message } => bail!(message),
+        other => bail!("unexpected reply {other:?}"),
+    };
+    let actors = people
+        .iter()
+        .filter(|p| matches_person(who, &p.name, &p.actor, None))
+        .map(|p| p.actor)
+        .collect();
+    only_one(who, actors, "person your node found", "osp people")
+}
+
 /// Whether `who` is this name (ignoring case), or the start of this
 /// identity or node ID.
 fn matches_person(who: &str, name: &str, actor: &PublicKey, node: Option<&EndpointId>) -> bool {
@@ -1553,6 +1693,19 @@ fn print(resp: ClientResponse, json: bool) -> Result<()> {
             for item in posts {
                 print_item(&item);
                 println!();
+            }
+        }
+        ClientResponse::Profile { profile } => print_profile(&profile),
+        ClientResponse::ProfileItems { items, next } => {
+            if items.is_empty() {
+                println!("Your node holds none.");
+            }
+            for item in &items {
+                print_item(item);
+                println!();
+            }
+            if let Some(next) = next {
+                println!("More follow: add `--before {next}`.");
             }
         }
         ClientResponse::People { people } => {
@@ -2041,6 +2194,43 @@ fn uptime(secs: u64) -> String {
         s if s >= 60 => format!("{}m", s / 60),
         s => format!("{s}s"),
     }
+}
+
+fn print_profile(p: &ProfileInfo) {
+    let person = &p.person;
+    let mut marks = Vec::new();
+    if p.followed {
+        marks.push("following");
+    }
+    if p.known {
+        marks.push("you know them");
+    }
+    match marks.is_empty() {
+        true => println!("{}", plain(&person.name)),
+        false => println!("{} ({})", plain(&person.name), marks.join(", ")),
+    }
+    if let Some(summary) = &person.summary {
+        println!("  {}", plain(summary));
+    }
+    for link in &person.attachment {
+        println!("  {}: {}", plain(&link.name), plain(&link.value));
+    }
+    println!("  identity: {}", person.actor);
+    if let Some(icon) = &person.icon {
+        let held = if p.icon_local {
+            ""
+        } else {
+            ", not fetched yet"
+        };
+        println!("  picture: {} ({} bytes{held})", icon.blob, icon.size);
+    }
+    if let (Some(followers), Some(following)) = (p.followers, p.following) {
+        println!("  {followers} following you, you follow {following}");
+    }
+    println!(
+        "  your node holds {} posts ({} with media) and {} reshares of theirs",
+        p.posts, p.media, p.reshares
+    );
 }
 
 fn print_item(item: &FeedItem) {

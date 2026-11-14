@@ -22,7 +22,10 @@ use iroh::{
 use osp_proto::{
     BlobHash, PairingTicket,
     framing::{read_frame_max, write_frame},
-    rpc::{ClientRequest, ClientResponse, DeviceInfo, MAX_PAIR_REQUEST_LEN, MAX_REQUEST_LEN},
+    rpc::{
+        ClientRequest, ClientResponse, DeviceInfo, IconChange, MAX_PAIR_REQUEST_LEN,
+        MAX_REQUEST_LEN,
+    },
 };
 use tokio::sync::{Semaphore, watch};
 use tracing::{debug, info};
@@ -181,6 +184,21 @@ async fn serve_stream(
                 );
                 write_frame(&mut send, &resp).await?;
             }
+            ClientRequest::SetProfile {
+                name,
+                summary,
+                links,
+                icon: icon @ IconChange::Upload { .. },
+            } => {
+                let resp = reply(
+                    core.set_profile(&name, summary.as_deref(), &links, icon, Some(&mut recv))
+                        .await
+                        .map(|profile| ClientResponse::Profile {
+                            profile: Box::new(profile),
+                        }),
+                );
+                write_frame(&mut send, &resp).await?;
+            }
             ClientRequest::CancelUpload { upload } => {
                 let resp = reply(
                     core.cancel_upload(device, &upload)
@@ -258,7 +276,7 @@ impl Core {
         info!(device = %device.fmt_short(), %name, "paired a device");
         Ok(ClientResponse::Paired {
             identity: self.signer.identity(),
-            name: self.config.name.clone(),
+            name: self.own_name(),
         })
     }
 

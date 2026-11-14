@@ -194,6 +194,8 @@ fn profile(key: &SecretKey, nodes: Vec<iroh::EndpointId>, published: &str) -> Si
         nodes,
         media_endpoints: vec![],
         published: published.into(),
+        icon: None,
+        attachment: Vec::new(),
     });
     SignedObject::sign(key, &person).unwrap()
 }
@@ -471,6 +473,8 @@ async fn a_thief_cant_date_a_profile_so_late_that_the_owner_cant_answer() {
         nodes: vec![endpoint.id()],
         media_endpoints: vec![],
         published: "9999-01-01T00:00:00Z".into(),
+        icon: None,
+        attachment: Vec::new(),
     });
     let profile_far_ahead = SignedObject::sign(&key, &far_ahead).unwrap();
     let req = SocialRequest::Moved {

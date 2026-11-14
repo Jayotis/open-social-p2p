@@ -192,6 +192,8 @@ impl Peer {
             nodes,
             media_endpoints: vec![],
             published: osp_proto::now_rfc3339(),
+            icon: None,
+            attachment: Vec::new(),
         });
         let req = SocialRequest::AskTrust {
             profile: SignedObject::sign(&self.identity, &profile).unwrap(),

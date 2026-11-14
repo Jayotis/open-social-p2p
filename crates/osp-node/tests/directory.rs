@@ -829,6 +829,8 @@ fn signed_person(key: &SecretKey, name: &str, summary: &str, discoverable: bool)
         nodes: vec![SecretKey::generate().public()],
         media_endpoints: vec![],
         published: at(-60),
+        icon: None,
+        attachment: Vec::new(),
     };
     SignedObject::sign(key, &Payload::Person(person)).unwrap()
 }
@@ -1216,6 +1218,8 @@ async fn a_hostile_directory_costs_only_its_own_entries() {
         nodes: vec![],
         media_endpoints: vec![],
         published: at(30 * 24 * 60 * 60),
+        icon: None,
+        attachment: Vec::new(),
     };
     let ahead = SignedObject::sign(&dated_ahead, &Payload::Person(ahead)).unwrap();
     let (no_consent, too_many, resharer, not_a_profile) =
@@ -1456,6 +1460,8 @@ async fn a_post_signed_by_a_key_since_revoked_drops_out_and_stays_out() {
         nodes: vec![],
         media_endpoints: vec![],
         published: at(-120),
+        icon: None,
+        attachment: Vec::new(),
     };
     let profile = |key: &CertifiedKey| {
         SignedObject::sign_certified(key, &Payload::Person(person.clone())).unwrap()
@@ -1799,6 +1805,8 @@ async fn following_someone_found_asks_their_own_node_first() {
         nodes: vec![bob.node_id()],
         media_endpoints: vec![],
         published: at(-60),
+        icon: None,
+        attachment: Vec::new(),
     };
     let profile = SignedObject::sign(&key, &Payload::Person(person)).unwrap();
     {
@@ -2061,6 +2069,8 @@ fn profile_naming(key: &SecretKey, node: EndpointId, discoverable: bool) -> Sign
         nodes: vec![node],
         media_endpoints: vec![],
         published: at(-60),
+        icon: None,
+        attachment: Vec::new(),
     };
     SignedObject::sign(key, &Payload::Person(person)).unwrap()
 }

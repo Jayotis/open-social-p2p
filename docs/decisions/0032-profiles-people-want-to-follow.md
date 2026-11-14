@@ -27,11 +27,11 @@ The picture is a file like any other, so it goes where profiles go:
 
 New client requests:
 
-- **`SetProfile { name, summary, links, icon }`** signs and publishes a new `Person`, as `osp init` does now. The picture comes up as a resumable upload ([ADR 0008](0008-device-pairing-and-client-protocol.md)). Followers get the new profile on their next sync, and directories on their next read.
+- **`SetProfile { name, summary, links, icon }`** signs and publishes a new `Person`, as `osp init` does now, and writes it to `config.toml`, so a restart keeps it. The phone shrinks the photo to about 1,024 px first, a few hundred kilobytes, and sends it on the request's stream; after a broken connection it sends it again. (Changed while building, 2026-11-14: this ADR first had it come up as a resumable upload, [ADR 0008](0008-device-pairing-and-client-protocol.md), but those are built for posts, and a photo this small doesn't need one.) Followers get the new profile on their next sync, and directories on their next read.
 - **`Profile { actor }`** returns one person's profile only: the `Person`, whether Kim follows them, whether they're among the people Kim knows, and how many posts, media and reshares of theirs the node holds. It is small and the same size for everyone.
 - **`ProfileItems { actor, kind, before, limit }`** returns one page of their **posts**, **media** or **reshares** that the node holds, newest first: at most 50 a page, with a cursor for the next.
 
-`osp profile` shows the profile, and `osp profile --posts`, `--media` or `--reshares` one page at a time, the same way.
+`osp profile` shows the profile, and `osp profile --posts`, `--media` or `--reshares` one page at a time, the same way, and `osp edit-profile` changes your own.
 
 ### 4. The profile page
 

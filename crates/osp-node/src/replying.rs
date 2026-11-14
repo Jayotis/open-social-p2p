@@ -102,7 +102,7 @@ impl Core {
         let signed = self.signer.sign(&Payload::Note(reply))?;
         let id = signed.id();
         if note.actor == me {
-            let (state, _) = self.submitted_reply(self.endpoint.id(), &signed, &self.profile)?;
+            let (state, _) = self.submitted_reply(self.endpoint.id(), &signed, &self.profile())?;
             info!(post = %root.fmt_short(), "replied to an own post");
             return own_info(&signed, root, me, status_of(state));
         }
@@ -169,7 +169,7 @@ impl Core {
         if let Some(row) = self.db.received_reply(id)?
             && row.reply.actor == me
         {
-            self.deleted_reply(self.endpoint.id(), &sign_delete()?, &self.profile)?;
+            self.deleted_reply(self.endpoint.id(), &sign_delete()?, &self.profile())?;
             info!(reply = %id.fmt_short(), "deleted a reply to an own post");
             return Ok(true);
         }
@@ -264,11 +264,11 @@ impl Core {
         let req = match (&row.delete, &row.signed) {
             (Some(delete), _) => SocialRequest::DeleteReply {
                 delete: delete.clone(),
-                profile: self.profile.clone(),
+                profile: self.profile(),
             },
             (None, Some(reply)) => SocialRequest::SubmitReply {
                 reply: reply.clone(),
-                profile: self.profile.clone(),
+                profile: self.profile(),
             },
             (None, None) => bail!("a kept reply {} has nothing to send", id.fmt_short()),
         };

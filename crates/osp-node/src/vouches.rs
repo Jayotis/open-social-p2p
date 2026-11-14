@@ -223,7 +223,7 @@ impl Core {
             .context("no node known for the post's author")?;
         let req = SocialRequest::Reshared {
             announce: announce.clone(),
-            profile: self.profile.clone(),
+            profile: self.profile(),
         };
         match self.social_request(&EndpointAddr::new(node), &req).await? {
             SocialResponse::Ok => self.db.note_reshare_told(&announce.id()),
@@ -283,7 +283,7 @@ impl Core {
             .context("no node known for the finder")?;
         let req = SocialRequest::FoundEarly {
             credit: credit.signed.clone(),
-            profile: self.profile.clone(),
+            profile: self.profile(),
         };
         match self.social_request(&EndpointAddr::new(node), &req).await? {
             SocialResponse::Ok => Ok(()),
@@ -556,6 +556,8 @@ mod tests {
             nodes: vec![],
             media_endpoints: vec![],
             published: osp_proto::now_rfc3339(),
+            icon: None,
+            attachment: Vec::new(),
         });
         SignedObject::sign(who, &person).unwrap()
     }

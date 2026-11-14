@@ -5,7 +5,7 @@ use std::{
     collections::{HashMap, HashSet},
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, RwLock},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
@@ -18,7 +18,8 @@ use iroh::{
 };
 use iroh_blobs::BlobsProtocol;
 use osp_proto::{
-    BlobHash, EarlierKeys, EndpointBinding, EndpointKind, ObjectId, Payload, Person, SignedObject,
+    BlobHash, BlobRef, EarlierKeys, EndpointBinding, EndpointKind, ObjectId, Payload, Person,
+    ProfileLink, SignedObject,
     rpc::{BackupInfo, ClientRequest, ClientResponse},
 };
 use tokio::{
@@ -223,8 +224,11 @@ pub(crate) struct Core {
     pub relays: RelayPolicy,
     pub db: Arc<Db>,
     pub store: ContentStore,
-    /// Our signed profile, served to anyone who asks.
-    pub profile: SignedObject,
+    /// Our signed profile, served to anyone who asks. `SetProfile` replaces
+    /// it (ADR 0032); read it with `profile()`.
+    pub own_profile: RwLock<SignedObject>,
+    /// Held while a new profile is made, so two edits can't interleave.
+    pub profile_edit: tokio::sync::Mutex<()>,
     /// Open `osp/social/2` connections, reused across requests.
     pub conns: Arc<Mutex<HashMap<EndpointId, Connection>>>,
     /// Those being set up in the background.
@@ -383,6 +387,12 @@ impl Node {
         if let Some(person) = backed_up {
             config.summary = config.summary.or(person.summary);
             config.directory.list_me |= person.discoverable;
+            // A backup without media has no picture; the node leaves it
+            // out when it starts.
+            if config.links.is_empty() {
+                config.links = person.attachment;
+            }
+            config.icon = config.icon.or(person.icon);
         }
         let key = NewKey {
             published: keys::certificate_date(
@@ -562,7 +572,16 @@ impl Node {
             .as_ref()
             .and_then(|own| own.media.as_ref())
             .map(|m| m.binding.clone());
-        let profile = own_profile(&signer, &config, endpoint.id(), media_binding, &db)?;
+        let mut fields = ProfileFields::from_config(&config);
+        // A picture is our own blob; one edited into config.toml by hand
+        // may not be here.
+        if let Some(icon) = &fields.icon
+            && !store.has(&icon.blob).await?
+        {
+            warn!("the profile picture in config.toml isn't stored here; leaving it out");
+            fields.icon = None;
+        }
+        let profile = own_profile(&signer, &fields, endpoint.id(), media_binding, &db)?;
         let media_tools = media::tools_available(&config.media).await;
         let heic_tool = media::heic_tool_available(&config.media).await;
         if matches!(signer, Signer::Identity(_)) {
@@ -584,7 +603,8 @@ impl Node {
             relays,
             db,
             store,
-            profile,
+            own_profile: RwLock::new(profile),
+            profile_edit: tokio::sync::Mutex::new(()),
             conns: Arc::default(),
             readying: Arc::new(Mutex::new(HashSet::new())),
             tracker,
@@ -779,7 +799,7 @@ impl Node {
 
     /// This node's own signed profile, as it gives it to others.
     pub fn profile(&self) -> SignedObject {
-        self.core.profile.clone()
+        self.core.profile()
     }
 
     /// How to reach the media endpoint, when it's on.
@@ -1059,6 +1079,14 @@ impl Node {
 }
 
 impl Core {
+    /// Our signed profile as it is now.
+    pub fn profile(&self) -> SignedObject {
+        self.own_profile
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
     /// Our address as we hand it out. With relays we share only the node ID
     /// and relay URL, so tickets don't reveal home IP addresses; without
     /// relays, direct addresses are all there is. Over Tor the ID is enough,
@@ -1370,14 +1398,38 @@ fn resign_own_objects(signer: &Signer, db: &Db) -> Result<()> {
     Ok(())
 }
 
+/// What the owner shows in their profile: from `config.toml` at start, and
+/// from `SetProfile` (ADR 0032), which writes it back there.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct ProfileFields {
+    pub name: String,
+    pub summary: Option<String>,
+    pub links: Vec<ProfileLink>,
+    pub icon: Option<BlobRef>,
+    pub discoverable: bool,
+}
+
+impl ProfileFields {
+    pub fn from_config(config: &Config) -> Self {
+        let summary = config.summary.as_deref().map(str::trim);
+        Self {
+            name: config.name.clone(),
+            summary: summary.filter(|s| !s.is_empty()).map(String::from),
+            links: config.links.clone(),
+            icon: config.icon.clone(),
+            discoverable: config.directory.list_me,
+        }
+    }
+}
+
 /// Reuses the stored profile if nothing changed, so its ID stays stable.
 /// If the stored one lists another node, this node has taken the identity
 /// over (ADR 0009), and every follower is marked to be told. One signed
 /// with an earlier key is signed again, so it carries the current key's
 /// certificate, and followers are told of that too (ADR 0010).
-fn own_profile(
+pub(crate) fn own_profile(
     signer: &Signer,
-    config: &Config,
+    fields: &ProfileFields,
     node: EndpointId,
     media: Option<EndpointBinding>,
     db: &Db,
@@ -1388,17 +1440,16 @@ fn own_profile(
         .filter(|b| b.kind == EndpointKind::Media)
         .collect();
     let me = signer.identity();
-    let summary = config.summary.as_deref().map(str::trim);
-    let summary = summary.filter(|s| !s.is_empty()).map(String::from);
-    let discoverable = config.directory.list_me;
     let previous = match db.profile(&me)?.map(|obj| (obj.verify(), obj)) {
         Some((Ok(Payload::Person(p)), obj)) => Some((p, obj)),
         _ => None,
     };
     if let Some((p, existing)) = &previous
-        && p.name == config.name
-        && p.summary == summary
-        && p.discoverable == discoverable
+        && p.name == fields.name
+        && p.summary == fields.summary
+        && p.attachment == fields.links
+        && p.icon == fields.icon
+        && p.discoverable == fields.discoverable
         && p.nodes == [node]
         && p.media_endpoints == media_endpoints
         && existing.certificate() == signer.certificate()
@@ -1416,14 +1467,18 @@ fn own_profile(
     }
     let person = Person {
         actor: me,
-        name: config.name.clone(),
-        summary,
-        discoverable,
+        name: fields.name.clone(),
+        summary: fields.summary.clone(),
+        discoverable: fields.discoverable,
         nodes: vec![node],
         media_endpoints,
+        icon: fields.icon.clone(),
+        attachment: fields.links.clone(),
         published: humantime::format_rfc3339_millis(at).to_string(),
     };
-    let obj = signer.sign(&Payload::Person(person.clone()))?;
+    let payload = Payload::Person(person.clone());
+    payload.check_limits()?;
+    let obj = signer.sign(&payload)?;
     db.upsert_profile(&person, &obj)?;
     if let Some((p, existing)) = &previous {
         let moved = !p.nodes.contains(&node);

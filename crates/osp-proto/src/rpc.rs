@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     object::ObjectId,
     social::ReplyPolicy,
-    types::{Attachment, BlobHash},
+    types::{Attachment, BlobHash, Person, ProfileLink},
 };
 
 /// Largest request frame a node reads from a paired device, in bytes. The
@@ -277,6 +277,67 @@ pub enum ClientRequest {
     /// Reads the directories this node knows now, as it does in the background
     /// (local socket only).
     ReadDirectories,
+    /// Signs and publishes a new profile for this node's owner (ADR 0032).
+    /// Followers get it on their next sync, directories on their next read.
+    /// `icon` says what becomes of the picture.
+    SetProfile {
+        name: String,
+        #[serde(default)]
+        summary: Option<String>,
+        #[serde(default)]
+        links: Vec<ProfileLink>,
+        #[serde(default)]
+        icon: IconChange,
+    },
+    /// One person's profile and what this node holds of them, the same size
+    /// however much that is (ADR 0032). For the owner's own, also how many
+    /// people follow them and they follow.
+    Profile {
+        actor: PublicKey,
+    },
+    /// One page of a person's posts, media or reshares that this node holds,
+    /// newest first: those published before `before`, a post or reshare of
+    /// theirs from an earlier page, or the newest with none.
+    ProfileItems {
+        actor: PublicKey,
+        kind: ProfileItemKind,
+        #[serde(default)]
+        before: Option<ObjectId>,
+        #[serde(default = "default_feed_limit")]
+        limit: u32,
+    },
+}
+
+/// Most items in one page of `ProfileItems`.
+pub const MAX_PROFILE_PAGE: u32 = 50;
+
+/// What `SetProfile` does with the profile picture.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "change", rename_all = "snake_case")]
+pub enum IconChange {
+    /// Keeps the one there is, if any.
+    #[default]
+    Keep,
+    /// Takes the picture off the profile.
+    Remove,
+    /// A photo from the device, whose bytes follow the request on the same
+    /// stream (`osp/client/0` only). The device shrinks it first, so it's
+    /// small, and sends it again if the connection breaks.
+    Upload { file: Upload },
+    /// A photo on the home node's machine (local socket only).
+    File { path: PathBuf },
+}
+
+/// Which of a person's things `ProfileItems` lists.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProfileItemKind {
+    /// Their posts, with media or without.
+    Posts,
+    /// Their posts with photos or videos.
+    Media,
+    /// Their reshares of others' posts.
+    Reshares,
 }
 
 fn default_feed_limit() -> u32 {
@@ -440,6 +501,16 @@ pub enum ClientResponse {
     },
     /// What a machine said when greeted, and how long connecting and asking
     /// took.
+    /// The answer to `Profile`.
+    Profile {
+        profile: Box<ProfileInfo>,
+    },
+    /// The answer to `ProfileItems`. `next` is the `before` for the next
+    /// page, when there may be one.
+    ProfileItems {
+        items: Vec<FeedItem>,
+        next: Option<ObjectId>,
+    },
     MachineGreeted {
         words: String,
         offers: Vec<String>,
@@ -935,6 +1006,29 @@ pub struct PersonInfo {
 }
 
 /// A post as shown in a feed, with reshare context.
+/// A person's profile as `Profile` gives it (ADR 0032).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProfileInfo {
+    /// Their newest profile this node holds.
+    pub person: Person,
+    /// Whether this node holds their picture, so a device can read it now.
+    pub icon_local: bool,
+    pub followed: bool,
+    /// Whether they're among the people this node's owner knows: trusted
+    /// (ADR 0013).
+    pub known: bool,
+    /// How many of their posts, posts with media, and reshares this node holds.
+    pub posts: u64,
+    pub media: u64,
+    pub reshares: u64,
+    /// For the owner's own profile only: how many nodes follow them, and how
+    /// many people they follow. Nobody else's are known (ADR 0032).
+    #[serde(default)]
+    pub followers: Option<u64>,
+    #[serde(default)]
+    pub following: Option<u64>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FeedItem {
     pub id: ObjectId,
