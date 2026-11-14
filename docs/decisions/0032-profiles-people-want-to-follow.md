@@ -1,6 +1,6 @@
 # ADR 0032: Profiles people want to follow
 
-**Status:** Proposed (2026-11-14). Step P2 of the Product Alpha ([ADR 0030](0030-product-alpha-before-testers.md)). Adds to the `Person` object of [ADR 0003](0003-native-social-protocol-v0.md) and to the client protocol of [ADR 0008](0008-device-pairing-and-client-protocol.md).
+**Status:** Accepted (2026-11-14), the maintainer's decision the day it was proposed. Step P2 of the Product Alpha ([ADR 0030](0030-product-alpha-before-testers.md)). Adds to the `Person` object of [ADR 0003](0003-native-social-protocol-v0.md) and to the client protocol of [ADR 0008](0008-device-pairing-and-client-protocol.md).
 
 ## Context
 

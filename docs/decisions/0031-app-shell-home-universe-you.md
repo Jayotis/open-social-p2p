@@ -1,6 +1,6 @@
 # ADR 0031: The app shell: Home, Universe and You
 
-**Status:** Proposed (2026-11-14). Step P1 of the Product Alpha ([ADR 0030](0030-product-alpha-before-testers.md)). Changes the app only; the client protocol ([ADR 0008](0008-device-pairing-and-client-protocol.md)) is unchanged.
+**Status:** Accepted (2026-11-14), the maintainer's decision the day it was proposed. Step P1 of the Product Alpha ([ADR 0030](0030-product-alpha-before-testers.md)). Changes the app only; the client protocol ([ADR 0008](0008-device-pairing-and-client-protocol.md)) is unchanged.
 
 ## Context
 

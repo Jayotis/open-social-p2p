@@ -1,6 +1,6 @@
 # ADR 0034: A Universe in levels
 
-**Status:** Proposed (2026-11-14). Step P4 of the Product Alpha ([ADR 0030](0030-product-alpha-before-testers.md)). Builds on [ADR 0033](0033-what-the-universe-may-show.md)'s snapshot. Work for the node and the app only; the node-to-node protocol is unchanged.
+**Status:** Accepted (2026-11-14), the maintainer's decision the day it was proposed. Step P4 of the Product Alpha ([ADR 0030](0030-product-alpha-before-testers.md)). Builds on [ADR 0033](0033-what-the-universe-may-show.md)'s snapshot. Work for the node and the app only; the node-to-node protocol is unchanged.
 
 ## Context
 

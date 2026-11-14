@@ -1,6 +1,6 @@
 # ADR 0033: What the Universe may show
 
-**Status:** Proposed (2026-11-14). Step P3 of the Product Alpha ([ADR 0030](0030-product-alpha-before-testers.md)). A new client request of [ADR 0008](0008-device-pairing-and-client-protocol.md); the node-to-node protocol is unchanged.
+**Status:** Accepted (2026-11-14), the maintainer's decision the day it was proposed. Step P3 of the Product Alpha ([ADR 0030](0030-product-alpha-before-testers.md)). A new client request of [ADR 0008](0008-device-pairing-and-client-protocol.md); the node-to-node protocol is unchanged.
 
 ## Context
 

@@ -1,6 +1,6 @@
 # ADR 0039: Sharing your Universe
 
-**Status:** Proposed (2026-11-14). Step P10 of the Product Alpha ([ADR 0030](0030-product-alpha-before-testers.md)). The one thing the app makes to leave it. Stricter than [ADR 0033](0033-what-the-universe-may-show.md)'s allowlist, which is for Kim's own phone.
+**Status:** Accepted (2026-11-14), the maintainer's decision the day it was proposed. Step P10 of the Product Alpha ([ADR 0030](0030-product-alpha-before-testers.md)). The one thing the app makes to leave it. Stricter than [ADR 0033](0033-what-the-universe-may-show.md)'s allowlist, which is for Kim's own phone.
 
 ## Context
 
