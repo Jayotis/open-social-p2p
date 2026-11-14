@@ -33,6 +33,7 @@ use osp_proto::{
         ProfileItemKind, Upload, UploadId,
     },
     types::ProfileLink,
+    universe::{Level, Snapshot},
 };
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
@@ -77,6 +78,8 @@ const MAX_PROFILE_PHOTO: u64 = 16 << 20;
 const PROFILE_TRIES: usize = 3;
 /// Where the post still on its way to the home node is kept.
 const PENDING_POST: &str = "pending-post.json";
+/// Where the last Universe snapshot is kept.
+const UNIVERSE: &str = "universe.json";
 
 /// Why a post stopped when it gave up for lack of contact with the home
 /// node: the post is kept, to carry on later. Find it with
@@ -401,7 +404,7 @@ impl Client {
         *self.lock_pairing() = None;
         self.stop_dial.notify_waiters();
         self.disconnect().await;
-        for file in ["pairing.json", "feed.json", PENDING_POST] {
+        for file in ["pairing.json", "feed.json", UNIVERSE, PENDING_POST] {
             match std::fs::remove_file(self.dir.join(file)) {
                 Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.into()),
                 _ => {}
@@ -445,6 +448,33 @@ impl Client {
     /// The feed as last fetched, if any.
     pub fn cached_feed(&self) -> Option<CachedFeed> {
         read_json(&self.dir.join("feed.json")).ok().flatten()
+    }
+
+    /// What the Universe may show (ADR 0033): the whole world the node
+    /// knows, as one snapshot. With `since` the version of the one the
+    /// device holds, `None` means it's still the node's. A new one is saved
+    /// for the next start, so the Universe shows at once.
+    pub async fn universe(&self, since: Option<String>) -> Result<Option<Snapshot>> {
+        let req = ClientRequest::Universe {
+            level: Level::default(),
+            region: None,
+            layers: vec![],
+            since,
+        };
+        let snapshot = match self.request(&req).await? {
+            ClientResponse::Universe { snapshot } => *snapshot,
+            ClientResponse::UniverseUnchanged => return Ok(None),
+            _ => bail!("unexpected reply to Universe"),
+        };
+        if let Err(e) = write_json(&self.dir.join(UNIVERSE), &snapshot) {
+            debug!("couldn't save the Universe: {e:#}");
+        }
+        Ok(Some(snapshot))
+    }
+
+    /// The Universe as last fetched, if any.
+    pub fn cached_universe(&self) -> Option<Snapshot> {
+        read_json(&self.dir.join(UNIVERSE)).ok().flatten()
     }
 
     /// Looks through the posts and profiles the node has received.

@@ -6,8 +6,8 @@
 import '../frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `found_person`, `node_info`, `post`, `profile_of`, `progress`, `reply_info`, `report_to`, `run_post`, `sent_reply`, `trust_entry`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `clone`, `clone`
+// These functions are ignored because they are not marked as `pub`: `found_person`, `node_info`, `post`, `profile_of`, `progress`, `reply_info`, `report_to`, `run_post`, `sent_reply`, `trust_entry`, `universe`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`
 
 /// A new device key, as 64 hex digits, for the app to keep in the phone's
 /// secure storage.
@@ -146,6 +146,9 @@ abstract class OspApp implements RustOpaqueInterface {
 
   SavedFeed? savedFeed();
 
+  /// The last snapshot fetched, to show before the node answers.
+  UniverseSnapshot? savedUniverse();
+
   /// Looks through the posts and profiles the node has received. Nothing
   /// leaves the node.
   Future<Found> search({required String words, required int limit});
@@ -194,6 +197,11 @@ abstract class OspApp implements RustOpaqueInterface {
   /// Stops following someone, whether or not the node has reached theirs.
   Future<void> unfollow({required String identity});
 
+  /// What the Universe may show (ADR 0033), built on the node from what
+  /// it already knows: asking sends nothing to any other node. With
+  /// `since` the version the app holds, none means it's unchanged.
+  Future<UniverseSnapshot?> universe({String? since});
+
   /// Stops trusting someone, on every node they were trusted on.
   Future<void> untrust({required String identity});
 
@@ -202,6 +210,9 @@ abstract class OspApp implements RustOpaqueInterface {
   /// reaches the player as it arrives.
   Future<void> waitForMedia({required String blob});
 }
+
+/// Recent machine-protocol interaction with the node, in bands.
+enum ActivityBand { none, some, aLot }
 
 /// Someone the node follows.
 class Followed {
@@ -295,6 +306,16 @@ class FoundPerson {
           newest == other.newest;
 }
 
+enum LineKind {
+  /// `from` reshared one of `to`'s posts.
+  reshared,
+
+  /// `from`, a post's author, credited `to` with finding it early.
+  creditedEarly,
+}
+
+enum MachineState { heardOf, met, answeredLately, faded }
+
 class Media {
   final bool isVideo;
   final String blob;
@@ -346,6 +367,32 @@ class Media {
           durationMs == other.durationMs &&
           thumbnailBlob == other.thumbnailBlob &&
           onNode == other.onNode;
+}
+
+/// The owner's own totals.
+class NetworkTotals {
+  final PlatformInt64 postsHosted;
+  final PlatformInt64 bytesServed;
+  final PlatformInt64 peopleFound;
+
+  const NetworkTotals({
+    required this.postsHosted,
+    required this.bytesServed,
+    required this.peopleFound,
+  });
+
+  @override
+  int get hashCode =>
+      postsHosted.hashCode ^ bytesServed.hashCode ^ peopleFound.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is NetworkTotals &&
+          runtimeType == other.runtimeType &&
+          postsHosted == other.postsHosted &&
+          bytesServed == other.bytesServed &&
+          peopleFound == other.peopleFound;
 }
 
 /// The home node this phone is paired with.
@@ -988,6 +1035,193 @@ class TrustList {
           runtimeType == other.runtimeType &&
           requests == other.requests &&
           trusted == other.trusted;
+}
+
+/// A public act between two people, each by their place in `people`.
+class UniverseLine {
+  final LineKind kind;
+  final int from;
+  final int to;
+
+  /// How many within 90 days.
+  final int count;
+
+  /// The newest's day (`YYYY-MM-DD`, UTC).
+  final String last;
+
+  const UniverseLine({
+    required this.kind,
+    required this.from,
+    required this.to,
+    required this.count,
+    required this.last,
+  });
+
+  @override
+  int get hashCode =>
+      kind.hashCode ^
+      from.hashCode ^
+      to.hashCode ^
+      count.hashCode ^
+      last.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is UniverseLine &&
+          runtimeType == other.runtimeType &&
+          kind == other.kind &&
+          from == other.from &&
+          to == other.to &&
+          count == other.count &&
+          last == other.last;
+}
+
+/// A machine, by its name in words: never beside a person.
+class UniverseMachine {
+  final String words;
+  final MachineState state;
+  final bool directory;
+  final ActivityBand activity;
+
+  const UniverseMachine({
+    required this.words,
+    required this.state,
+    required this.directory,
+    required this.activity,
+  });
+
+  @override
+  int get hashCode =>
+      words.hashCode ^ state.hashCode ^ directory.hashCode ^ activity.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is UniverseMachine &&
+          runtimeType == other.runtimeType &&
+          words == other.words &&
+          state == other.state &&
+          directory == other.directory &&
+          activity == other.activity;
+}
+
+class UniversePerson {
+  final String identity;
+  final String name;
+
+  /// Their profile picture's blob, for `media_url`.
+  final String? picture;
+
+  /// Steps from the owner: 0 the owner, 1 their circle, 2 whom their
+  /// circle reshared, 3 their gathered side; none for anyone else.
+  final int? step;
+  final bool followed;
+
+  /// Among the people the owner knows.
+  final bool known;
+
+  /// The directory they came from, in words, if only because of one.
+  final String? foundThrough;
+  final PlatformInt64 posts;
+  final PlatformInt64 media;
+  final PlatformInt64 reshares;
+
+  /// The day of their newest post or reshare (`YYYY-MM-DD`, UTC).
+  final String? lastPost;
+
+  const UniversePerson({
+    required this.identity,
+    required this.name,
+    this.picture,
+    this.step,
+    required this.followed,
+    required this.known,
+    this.foundThrough,
+    required this.posts,
+    required this.media,
+    required this.reshares,
+    this.lastPost,
+  });
+
+  @override
+  int get hashCode =>
+      identity.hashCode ^
+      name.hashCode ^
+      picture.hashCode ^
+      step.hashCode ^
+      followed.hashCode ^
+      known.hashCode ^
+      foundThrough.hashCode ^
+      posts.hashCode ^
+      media.hashCode ^
+      reshares.hashCode ^
+      lastPost.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is UniversePerson &&
+          runtimeType == other.runtimeType &&
+          identity == other.identity &&
+          name == other.name &&
+          picture == other.picture &&
+          step == other.step &&
+          followed == other.followed &&
+          known == other.known &&
+          foundThrough == other.foundThrough &&
+          posts == other.posts &&
+          media == other.media &&
+          reshares == other.reshares &&
+          lastPost == other.lastPost;
+}
+
+/// What the Universe may show (ADR 0033): one snapshot from the node, field
+/// for field as `osp_proto::universe::Snapshot`.
+class UniverseSnapshot {
+  /// Ask `since` this; it changes whenever anything else does.
+  final String version;
+
+  /// The owner first, then the nearest and most active.
+  final List<UniversePerson> people;
+
+  /// Public acts between people, newest first.
+  final List<UniverseLine> lines;
+
+  /// People the node knows who didn't fit.
+  final PlatformInt64 morePeople;
+  final List<UniverseMachine> machines;
+  final NetworkTotals? network;
+
+  const UniverseSnapshot({
+    required this.version,
+    required this.people,
+    required this.lines,
+    required this.morePeople,
+    required this.machines,
+    this.network,
+  });
+
+  @override
+  int get hashCode =>
+      version.hashCode ^
+      people.hashCode ^
+      lines.hashCode ^
+      morePeople.hashCode ^
+      machines.hashCode ^
+      network.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is UniverseSnapshot &&
+          runtimeType == other.runtimeType &&
+          version == other.version &&
+          people == other.people &&
+          lines == other.lines &&
+          morePeople == other.morePeople &&
+          machines == other.machines &&
+          network == other.network;
 }
 
 class UnsentFile {

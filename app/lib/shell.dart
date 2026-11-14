@@ -35,8 +35,8 @@ class _AppShellState extends State<AppShell> {
   }
 
   void _go(Place place) {
-    _node.watchingPeople = place == Place.universe;
-    if (place == Place.universe) _node.loadPeople();
+    _node.watchingUniverse = place == Place.universe;
+    if (place == Place.universe) _node.loadUniverse();
     setState(() => _place = place);
   }
 
@@ -48,8 +48,8 @@ class _AppShellState extends State<AppShell> {
         node: node,
         onDone: () {
           _place = Place.universe;
-          node.watchingPeople = true;
-          node.loadPeople();
+          node.watchingUniverse = true;
+          node.loadUniverse();
           node.finishFirstRun();
         },
       );

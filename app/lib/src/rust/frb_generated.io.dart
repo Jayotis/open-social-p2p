@@ -52,10 +52,16 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   String dco_decode_String(dynamic raw);
 
   @protected
+  ActivityBand dco_decode_activity_band(dynamic raw);
+
+  @protected
   bool dco_decode_bool(dynamic raw);
 
   @protected
   PlatformInt64 dco_decode_box_autoadd_i_64(dynamic raw);
+
+  @protected
+  NetworkTotals dco_decode_box_autoadd_network_totals(dynamic raw);
 
   @protected
   NodeInfo dco_decode_box_autoadd_node_info(dynamic raw);
@@ -65,6 +71,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   int dco_decode_box_autoadd_u_32(dynamic raw);
+
+  @protected
+  int dco_decode_box_autoadd_u_8(dynamic raw);
+
+  @protected
+  UniverseSnapshot dco_decode_box_autoadd_universe_snapshot(dynamic raw);
 
   @protected
   UnsentPost dco_decode_box_autoadd_unsent_post(dynamic raw);
@@ -83,6 +95,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   PlatformInt64 dco_decode_i_64(dynamic raw);
+
+  @protected
+  LineKind dco_decode_line_kind(dynamic raw);
 
   @protected
   List<String> dco_decode_list_String(dynamic raw);
@@ -115,10 +130,25 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   List<TrustEntry> dco_decode_list_trust_entry(dynamic raw);
 
   @protected
+  List<UniverseLine> dco_decode_list_universe_line(dynamic raw);
+
+  @protected
+  List<UniverseMachine> dco_decode_list_universe_machine(dynamic raw);
+
+  @protected
+  List<UniversePerson> dco_decode_list_universe_person(dynamic raw);
+
+  @protected
   List<UnsentFile> dco_decode_list_unsent_file(dynamic raw);
 
   @protected
+  MachineState dco_decode_machine_state(dynamic raw);
+
+  @protected
   Media dco_decode_media(dynamic raw);
+
+  @protected
+  NetworkTotals dco_decode_network_totals(dynamic raw);
 
   @protected
   NodeInfo dco_decode_node_info(dynamic raw);
@@ -133,6 +163,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   PlatformInt64? dco_decode_opt_box_autoadd_i_64(dynamic raw);
 
   @protected
+  NetworkTotals? dco_decode_opt_box_autoadd_network_totals(dynamic raw);
+
+  @protected
   NodeInfo? dco_decode_opt_box_autoadd_node_info(dynamic raw);
 
   @protected
@@ -140,6 +173,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   int? dco_decode_opt_box_autoadd_u_32(dynamic raw);
+
+  @protected
+  int? dco_decode_opt_box_autoadd_u_8(dynamic raw);
+
+  @protected
+  UniverseSnapshot? dco_decode_opt_box_autoadd_universe_snapshot(dynamic raw);
 
   @protected
   UnsentPost? dco_decode_opt_box_autoadd_unsent_post(dynamic raw);
@@ -190,6 +229,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void dco_decode_unit(dynamic raw);
 
   @protected
+  UniverseLine dco_decode_universe_line(dynamic raw);
+
+  @protected
+  UniverseMachine dco_decode_universe_machine(dynamic raw);
+
+  @protected
+  UniversePerson dco_decode_universe_person(dynamic raw);
+
+  @protected
+  UniverseSnapshot dco_decode_universe_snapshot(dynamic raw);
+
+  @protected
   UnsentFile dco_decode_unsent_file(dynamic raw);
 
   @protected
@@ -228,10 +279,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   String sse_decode_String(SseDeserializer deserializer);
 
   @protected
+  ActivityBand sse_decode_activity_band(SseDeserializer deserializer);
+
+  @protected
   bool sse_decode_bool(SseDeserializer deserializer);
 
   @protected
   PlatformInt64 sse_decode_box_autoadd_i_64(SseDeserializer deserializer);
+
+  @protected
+  NetworkTotals sse_decode_box_autoadd_network_totals(
+    SseDeserializer deserializer,
+  );
 
   @protected
   NodeInfo sse_decode_box_autoadd_node_info(SseDeserializer deserializer);
@@ -241,6 +300,14 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   int sse_decode_box_autoadd_u_32(SseDeserializer deserializer);
+
+  @protected
+  int sse_decode_box_autoadd_u_8(SseDeserializer deserializer);
+
+  @protected
+  UniverseSnapshot sse_decode_box_autoadd_universe_snapshot(
+    SseDeserializer deserializer,
+  );
 
   @protected
   UnsentPost sse_decode_box_autoadd_unsent_post(SseDeserializer deserializer);
@@ -259,6 +326,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   PlatformInt64 sse_decode_i_64(SseDeserializer deserializer);
+
+  @protected
+  LineKind sse_decode_line_kind(SseDeserializer deserializer);
 
   @protected
   List<String> sse_decode_list_String(SseDeserializer deserializer);
@@ -293,10 +363,31 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   List<TrustEntry> sse_decode_list_trust_entry(SseDeserializer deserializer);
 
   @protected
+  List<UniverseLine> sse_decode_list_universe_line(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  List<UniverseMachine> sse_decode_list_universe_machine(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  List<UniversePerson> sse_decode_list_universe_person(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   List<UnsentFile> sse_decode_list_unsent_file(SseDeserializer deserializer);
 
   @protected
+  MachineState sse_decode_machine_state(SseDeserializer deserializer);
+
+  @protected
   Media sse_decode_media(SseDeserializer deserializer);
+
+  @protected
+  NetworkTotals sse_decode_network_totals(SseDeserializer deserializer);
 
   @protected
   NodeInfo sse_decode_node_info(SseDeserializer deserializer);
@@ -311,6 +402,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   PlatformInt64? sse_decode_opt_box_autoadd_i_64(SseDeserializer deserializer);
 
   @protected
+  NetworkTotals? sse_decode_opt_box_autoadd_network_totals(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   NodeInfo? sse_decode_opt_box_autoadd_node_info(SseDeserializer deserializer);
 
   @protected
@@ -320,6 +416,14 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   int? sse_decode_opt_box_autoadd_u_32(SseDeserializer deserializer);
+
+  @protected
+  int? sse_decode_opt_box_autoadd_u_8(SseDeserializer deserializer);
+
+  @protected
+  UniverseSnapshot? sse_decode_opt_box_autoadd_universe_snapshot(
+    SseDeserializer deserializer,
+  );
 
   @protected
   UnsentPost? sse_decode_opt_box_autoadd_unsent_post(
@@ -372,6 +476,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_decode_unit(SseDeserializer deserializer);
 
   @protected
+  UniverseLine sse_decode_universe_line(SseDeserializer deserializer);
+
+  @protected
+  UniverseMachine sse_decode_universe_machine(SseDeserializer deserializer);
+
+  @protected
+  UniversePerson sse_decode_universe_person(SseDeserializer deserializer);
+
+  @protected
+  UniverseSnapshot sse_decode_universe_snapshot(SseDeserializer deserializer);
+
+  @protected
   UnsentFile sse_decode_unsent_file(SseDeserializer deserializer);
 
   @protected
@@ -417,11 +533,20 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_encode_String(String self, SseSerializer serializer);
 
   @protected
+  void sse_encode_activity_band(ActivityBand self, SseSerializer serializer);
+
+  @protected
   void sse_encode_bool(bool self, SseSerializer serializer);
 
   @protected
   void sse_encode_box_autoadd_i_64(
     PlatformInt64 self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_network_totals(
+    NetworkTotals self,
     SseSerializer serializer,
   );
 
@@ -439,6 +564,15 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_box_autoadd_u_32(int self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_box_autoadd_u_8(int self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_box_autoadd_universe_snapshot(
+    UniverseSnapshot self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_box_autoadd_unsent_post(
@@ -460,6 +594,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_i_64(PlatformInt64 self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_line_kind(LineKind self, SseSerializer serializer);
 
   @protected
   void sse_encode_list_String(List<String> self, SseSerializer serializer);
@@ -507,13 +644,37 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_list_universe_line(
+    List<UniverseLine> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_universe_machine(
+    List<UniverseMachine> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_universe_person(
+    List<UniversePerson> self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_list_unsent_file(
     List<UnsentFile> self,
     SseSerializer serializer,
   );
 
   @protected
+  void sse_encode_machine_state(MachineState self, SseSerializer serializer);
+
+  @protected
   void sse_encode_media(Media self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_network_totals(NetworkTotals self, SseSerializer serializer);
 
   @protected
   void sse_encode_node_info(NodeInfo self, SseSerializer serializer);
@@ -531,6 +692,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_opt_box_autoadd_network_totals(
+    NetworkTotals? self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_opt_box_autoadd_node_info(
     NodeInfo? self,
     SseSerializer serializer,
@@ -544,6 +711,15 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_opt_box_autoadd_u_32(int? self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_opt_box_autoadd_u_8(int? self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_opt_box_autoadd_universe_snapshot(
+    UniverseSnapshot? self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_opt_box_autoadd_unsent_post(
@@ -598,6 +774,27 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_unit(void self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_universe_line(UniverseLine self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_universe_machine(
+    UniverseMachine self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_universe_person(
+    UniversePerson self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_universe_snapshot(
+    UniverseSnapshot self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_unsent_file(UnsentFile self, SseSerializer serializer);

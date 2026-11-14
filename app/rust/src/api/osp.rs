@@ -20,7 +20,7 @@ use osp_client::{
             TrustInfo,
         },
         social::ReplyPolicy,
-        BlobHash, MediaKind, ObjectId, ProfileLink,
+        universe, BlobHash, MediaKind, ObjectId, ProfileLink,
     },
     Client, ClientOptions, NoContact, Pairing, ProfilePicture,
 };
@@ -270,6 +270,91 @@ pub struct SavedFeed {
     pub saved: String,
 }
 
+/// What the Universe may show (ADR 0033): one snapshot from the node, field
+/// for field as `osp_proto::universe::Snapshot`.
+pub struct UniverseSnapshot {
+    /// Ask `since` this; it changes whenever anything else does.
+    pub version: String,
+    /// The owner first, then the nearest and most active.
+    pub people: Vec<UniversePerson>,
+    /// Public acts between people, newest first.
+    pub lines: Vec<UniverseLine>,
+    /// People the node knows who didn't fit.
+    pub more_people: i64,
+    pub machines: Vec<UniverseMachine>,
+    pub network: Option<NetworkTotals>,
+}
+
+pub struct UniversePerson {
+    pub identity: String,
+    pub name: String,
+    /// Their profile picture's blob, for `media_url`.
+    pub picture: Option<String>,
+    /// Steps from the owner: 0 the owner, 1 their circle, 2 whom their
+    /// circle reshared, 3 their gathered side; none for anyone else.
+    pub step: Option<u8>,
+    pub followed: bool,
+    /// Among the people the owner knows.
+    pub known: bool,
+    /// The directory they came from, in words, if only because of one.
+    pub found_through: Option<String>,
+    pub posts: i64,
+    pub media: i64,
+    pub reshares: i64,
+    /// The day of their newest post or reshare (`YYYY-MM-DD`, UTC).
+    pub last_post: Option<String>,
+}
+
+/// A public act between two people, each by their place in `people`.
+pub struct UniverseLine {
+    pub kind: LineKind,
+    pub from: u32,
+    pub to: u32,
+    /// How many within 90 days.
+    pub count: u32,
+    /// The newest's day (`YYYY-MM-DD`, UTC).
+    pub last: String,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum LineKind {
+    /// `from` reshared one of `to`'s posts.
+    Reshared,
+    /// `from`, a post's author, credited `to` with finding it early.
+    CreditedEarly,
+}
+
+/// A machine, by its name in words: never beside a person.
+pub struct UniverseMachine {
+    pub words: String,
+    pub state: MachineState,
+    pub directory: bool,
+    pub activity: ActivityBand,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum MachineState {
+    HeardOf,
+    Met,
+    AnsweredLately,
+    Faded,
+}
+
+/// Recent machine-protocol interaction with the node, in bands.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum ActivityBand {
+    None,
+    Some,
+    ALot,
+}
+
+/// The owner's own totals.
+pub struct NetworkTotals {
+    pub posts_hosted: i64,
+    pub bytes_served: i64,
+    pub people_found: i64,
+}
+
 #[derive(Clone, Copy)]
 pub enum PostStage {
     /// Sending files to the node.
@@ -398,6 +483,19 @@ impl OspApp {
     pub async fn people(&self, limit: u32) -> Result<Vec<FoundPerson>> {
         let people = self.client.people(limit).await?;
         Ok(people.into_iter().map(found_person).collect())
+    }
+
+    /// What the Universe may show (ADR 0033), built on the node from what
+    /// it already knows: asking sends nothing to any other node. With
+    /// `since` the version the app holds, none means it's unchanged.
+    pub async fn universe(&self, since: Option<String>) -> Result<Option<UniverseSnapshot>> {
+        Ok(self.client.universe(since).await?.map(universe))
+    }
+
+    /// The last snapshot fetched, to show before the node answers.
+    #[frb(sync)]
+    pub fn saved_universe(&self) -> Option<UniverseSnapshot> {
+        self.client.cached_universe().map(universe)
     }
 
     /// One person's profile, the owner's own too, and what the node holds
@@ -1039,6 +1137,69 @@ pub fn is_pairing_ticket(text: String) -> bool {
 #[frb(sync)]
 pub fn is_follow_ticket(text: String) -> bool {
     text.trim().to_ascii_uppercase().starts_with("OSP1")
+}
+
+fn universe(s: universe::Snapshot) -> UniverseSnapshot {
+    let count = |n: u64| n.min(i64::MAX as u64) as i64;
+    UniverseSnapshot {
+        version: s.version,
+        people: s
+            .people
+            .into_iter()
+            .map(|p| UniversePerson {
+                identity: p.actor.to_string(),
+                name: p.name,
+                picture: p.picture.map(|h| h.to_string()),
+                step: p.step,
+                followed: p.followed,
+                known: p.known,
+                found_through: p.found_through,
+                posts: count(p.posts),
+                media: count(p.media),
+                reshares: count(p.reshares),
+                last_post: p.last_post,
+            })
+            .collect(),
+        lines: s
+            .lines
+            .into_iter()
+            .map(|l| UniverseLine {
+                kind: match l.kind {
+                    universe::LineKind::Reshared => LineKind::Reshared,
+                    universe::LineKind::CreditedEarly => LineKind::CreditedEarly,
+                },
+                from: l.from,
+                to: l.to,
+                count: l.count,
+                last: l.last,
+            })
+            .collect(),
+        more_people: count(s.more_people),
+        machines: s
+            .machines
+            .into_iter()
+            .map(|m| UniverseMachine {
+                words: m.words,
+                state: match m.state {
+                    universe::MachineState::HeardOf => MachineState::HeardOf,
+                    universe::MachineState::Met => MachineState::Met,
+                    universe::MachineState::AnsweredLately => MachineState::AnsweredLately,
+                    universe::MachineState::Faded => MachineState::Faded,
+                },
+                directory: m.directory,
+                activity: match m.activity {
+                    universe::ActivityBand::None => ActivityBand::None,
+                    universe::ActivityBand::Some => ActivityBand::Some,
+                    universe::ActivityBand::ALot => ActivityBand::ALot,
+                },
+            })
+            .collect(),
+        network: s.network.map(|n| NetworkTotals {
+            posts_hosted: count(n.posts_hosted),
+            bytes_served: count(n.bytes_served),
+            people_found: count(n.people_found),
+        }),
+    }
 }
 
 fn found_person(p: osp_client::osp_proto::rpc::PersonInfo) -> FoundPerson {
