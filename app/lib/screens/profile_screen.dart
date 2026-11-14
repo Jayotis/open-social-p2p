@@ -38,7 +38,7 @@ class ProfileScreen extends StatefulWidget {
 /// The three lists a profile shows.
 enum ProfileList {
   posts('Posts'),
-  media('Photos and videos'),
+  media('Media'),
   reshares('Reshares');
 
   const ProfileList(this.label);
