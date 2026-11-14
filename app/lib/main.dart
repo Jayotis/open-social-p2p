@@ -6,10 +6,11 @@ import 'package:path_provider/path_provider.dart';
 import 'device_key.dart';
 import 'format.dart';
 import 'node.dart';
-import 'screens/feed_screen.dart';
 import 'screens/pair_screen.dart';
+import 'shell.dart';
 import 'src/rust/api/osp.dart';
 import 'src/rust/frb_generated.dart';
+import 'theme.dart';
 import 'uploads.dart';
 
 Future<void> main() async {
@@ -51,24 +52,15 @@ class PhoneApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp(
       title: 'Open Social P2P',
-      theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(seedColor: Colors.teal),
-        useMaterial3: true,
-      ),
-      darkTheme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(
-          seedColor: Colors.teal,
-          brightness: Brightness.dark,
-        ),
-        useMaterial3: true,
-      ),
+      theme: ospTheme(Brightness.light),
+      darkTheme: ospTheme(Brightness.dark),
       home: switch (node) {
         null => _StartupError(message: startupError ?? 'unknown error'),
         final node => ListenableBuilder(
           listenable: node,
           builder: (context, _) => node.paired == null
               ? PairScreen(node: node)
-              : FeedScreen(node: node),
+              : AppShell(node: node),
         ),
       },
     );

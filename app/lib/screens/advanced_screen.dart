@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:share_plus/share_plus.dart';
@@ -5,17 +7,19 @@ import 'package:share_plus/share_plus.dart';
 import '../format.dart';
 import '../node.dart';
 
-/// How this phone reaches its home node, and how the node is doing.
-class StatusScreen extends StatefulWidget {
-  const StatusScreen({super.key, required this.node});
+/// Advanced details (ADR 0031 §2): how this phone reaches your node and how
+/// the node is doing, in the protocol's own words. The only screen where
+/// they appear; everything else uses plain words.
+class AdvancedScreen extends StatefulWidget {
+  const AdvancedScreen({super.key, required this.node});
 
   final HomeNode node;
 
   @override
-  State<StatusScreen> createState() => _StatusScreenState();
+  State<AdvancedScreen> createState() => _AdvancedScreenState();
 }
 
-class _StatusScreenState extends State<StatusScreen> {
+class _AdvancedScreenState extends State<AdvancedScreen> {
   @override
   void initState() {
     super.initState();
@@ -26,7 +30,7 @@ class _StatusScreenState extends State<StatusScreen> {
     final go = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('Forget your home node?'),
+        title: const Text('Forget your node?'),
         content: const Text(
           'This phone stops talking to your node and deletes the saved feed. '
           'To revoke its access completely, also run `osp unpair` on the node.',
@@ -48,13 +52,30 @@ class _StatusScreenState extends State<StatusScreen> {
     if (mounted) Navigator.of(context).popUntil((route) => route.isFirst);
   }
 
+  Future<void> _copyReport() async {
+    final messenger = ScaffoldMessenger.of(context);
+    await Clipboard.setData(ClipboardData(text: bugReport(widget.node)));
+    messenger.showSnackBar(
+      const SnackBar(
+        content: Text(
+          'Copied, without addresses. Paste it into your bug report.',
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final node = widget.node;
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Home node'),
+        title: const Text('Advanced details'),
         actions: [
+          IconButton(
+            tooltip: 'Copy details for a bug report',
+            onPressed: _copyReport,
+            icon: const Icon(Icons.bug_report_outlined),
+          ),
           IconButton(
             onPressed: node.checkStatus,
             icon: const Icon(Icons.refresh),
@@ -95,7 +116,7 @@ class _StatusScreenState extends State<StatusScreen> {
                 node.onMobileData ? 'Mobile data' : 'Wi-Fi or other',
               ),
               if (s != null) ...[
-                _Section('Home node'),
+                _Section('Your node'),
                 _Row('Owner', s.name),
                 _Row(
                   'Health',
@@ -124,7 +145,7 @@ class _StatusScreenState extends State<StatusScreen> {
                 padding: const EdgeInsets.all(16),
                 child: OutlinedButton(
                   onPressed: _forget,
-                  child: const Text('Forget this home node'),
+                  child: const Text('Forget this node'),
                 ),
               ),
               _LogView(node: node),
@@ -134,6 +155,33 @@ class _StatusScreenState extends State<StatusScreen> {
       ),
     );
   }
+}
+
+/// The node's state for a bug report, with addresses and long IDs removed
+/// ([scrubAddresses]), so it can be pasted into a public issue.
+String bugReport(HomeNode node) {
+  final s = node.status;
+  final lines = [
+    'Reachable: ${node.reachability.name}',
+    if (node.lastError != null) 'Last error: ${node.lastError}',
+    if (node.lastContact != null)
+      'Last reached: ${formatAgo(node.lastContact!)}',
+    'Phone network: ${node.onMobileData ? 'mobile data' : 'Wi-Fi or other'}',
+    'Phone: ${Platform.operatingSystem} ${Platform.operatingSystemVersion}',
+    if (s != null) ...[
+      'Node version: ${s.version}',
+      'Running for: ${formatUptime(s.uptimeSecs)}',
+      'Path: ${s.path}${s.rttMs != null ? ', ${s.rttMs} ms' : ''}',
+      'Relay: ${s.relayConnected ? 'connected' : 'not connected'}',
+      'Over Tor: ${s.overTor ? 'yes' : 'no'}',
+      'Following: ${s.follows}, followers: ${s.followers}',
+      'Paired devices: ${s.devices}',
+      if (s.diskFreeBytes != null)
+        'Free disk: ${formatBytes(s.diskFreeBytes!)}',
+      for (final p in s.problems) 'Problem: $p',
+    ],
+  ];
+  return scrubAddresses(lines.join('\n'));
 }
 
 class _Section extends StatelessWidget {

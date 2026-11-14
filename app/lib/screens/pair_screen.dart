@@ -76,7 +76,7 @@ class _PairScreenState extends State<PairScreen> {
             ),
             const SizedBox(height: 16),
             Text(
-              'Pair with your home node',
+              'Pair with your node',
               style: theme.textTheme.headlineSmall,
               textAlign: TextAlign.center,
             ),
@@ -92,7 +92,7 @@ class _PairScreenState extends State<PairScreen> {
             ],
             const SizedBox(height: 16),
             const Text(
-              'This app is a remote control for your home node: the computer '
+              'This app is a remote control for your node: the computer '
               'that holds your identity and does the networking. Your phone '
               'talks only to it.',
             ),
@@ -127,7 +127,7 @@ class _PairScreenState extends State<PairScreen> {
               const LinearProgressIndicator(),
               const SizedBox(height: 8),
               const Text(
-                'Connecting to your home node…',
+                'Connecting to your node…',
                 textAlign: TextAlign.center,
               ),
             ],

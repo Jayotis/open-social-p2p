@@ -99,7 +99,7 @@ void main() {
     expect(find.textContaining('You follow them, so this is'), findsOne);
     expect(
       find.text(
-        'follows you for 3 d 0 h · reached your node directly lately · '
+        'follows you for 3 d 0 h · heard from lately · '
         'holds 4 of your files',
       ),
       findsOne,
@@ -108,9 +108,9 @@ void main() {
     expect(find.textContaining('Nobody yet'), findsOne);
 
     // Allowing says what it changes first; cancelling does nothing.
-    await tester.tap(find.text('Allow').first);
+    await tester.tap(find.text('Yes, I know Sam').first);
     await tester.pumpAndSettle();
-    expect(find.text('Trust Sam?'), findsOne);
+    expect(find.text('Do you know Sam?'), findsOne);
     expect(
       find.textContaining('can see that this person follows you'),
       findsOne,
@@ -119,12 +119,12 @@ void main() {
     await tester.pumpAndSettle();
     expect(app.answers, isEmpty);
 
-    await tester.tap(find.text('Allow').first);
+    await tester.tap(find.text('Yes, I know Sam').first);
     await tester.pumpAndSettle();
-    await tester.tap(find.widgetWithText(FilledButton, 'Trust'));
+    await tester.tap(find.widgetWithText(FilledButton, 'Yes, I know Sam'));
     await tester.pumpAndSettle();
     expect(app.answers, [('node-Sam', true)]);
-    expect(find.textContaining("Trusted. They aren't told."), findsOne);
+    expect(find.textContaining("Done. They aren't told."), findsOne);
     expect(find.textContaining('They say:'), findsNothing);
     expect(find.text('Sam'), findsOne);
 
@@ -139,10 +139,10 @@ void main() {
     app.list = TrustList(requests: const [], trusted: [entry('Sam')]);
     await open(tester);
 
-    await tester.tap(find.byTooltip('Stop trusting'));
+    await tester.tap(find.byTooltip('Remove from people you know'));
     await tester.pumpAndSettle();
-    expect(find.text('Stop trusting Sam?'), findsOne);
-    await tester.tap(find.widgetWithText(FilledButton, 'Stop trusting'));
+    expect(find.text('Remove Sam from people you know?'), findsOne);
+    await tester.tap(find.widgetWithText(FilledButton, 'Remove'));
     await tester.pumpAndSettle();
     expect(app.untrusted, ['id-Sam']);
     expect(find.textContaining('Nobody yet'), findsOne);

@@ -8,9 +8,9 @@ import '../src/rust/api/osp.dart';
 import 'scan_screen.dart';
 import 'trust_screen.dart';
 
-/// Following works by exchanging follow codes (ADR 0003): show yours, or
-/// scan someone else's. People you follow can be trusted, or asked to
-/// trust you (ADR 0013).
+/// Following works by exchanging invite codes (follow codes in ADR 0003):
+/// show yours, or scan someone else's. People you follow can be marked as
+/// people you know, or asked to say they know you (ADR 0013).
 class PeopleScreen extends StatefulWidget {
   const PeopleScreen({super.key, required this.node});
 
@@ -43,7 +43,7 @@ class _PeopleScreenState extends State<PeopleScreen> {
     if (!await confirmTrust(context, person.name)) return;
     await _do(
       () => widget.node.app.trust(identity: person.identity),
-      'You trust ${person.name} now.',
+      'You know ${person.name}.',
     );
   }
 
@@ -77,7 +77,7 @@ class _PeopleScreenState extends State<PeopleScreen> {
     if (!isFollowTicket(text: ticket)) {
       messenger.showSnackBar(
         const SnackBar(
-          content: Text("That isn't a follow code. It starts with OSP1."),
+          content: Text("That isn't an invite code. It starts with OSP1."),
         ),
       );
       return;
@@ -90,10 +90,9 @@ class _PeopleScreenState extends State<PeopleScreen> {
         SnackBar(
           content: Text(
             overTor
-                ? 'Following. Your node is reaching theirs through Tor, which '
-                      'can take a few minutes. Their posts appear in your feed '
-                      'after that.'
-                : 'Following. Their posts appear in your feed shortly.',
+                ? 'Following. Your node is reaching theirs, which can take a '
+                      'few minutes. Their posts appear on Home after that.'
+                : 'Following. Their posts appear on Home shortly.',
           ),
         ),
       );
@@ -116,10 +115,10 @@ class _PeopleScreenState extends State<PeopleScreen> {
     final ticket = await Navigator.of(context).push<String>(
       MaterialPageRoute(
         builder: (_) => ScanScreen(
-          title: 'Scan a follow code',
-          hint: "Point the camera at someone's follow code.",
+          title: 'Scan an invite code',
+          hint: "Point the camera at someone's invite code.",
           accept: (text) => isFollowTicket(text: text),
-          wrongCode: "That's not a follow code.",
+          wrongCode: "That's not an invite code.",
         ),
       ),
     );
@@ -130,11 +129,11 @@ class _PeopleScreenState extends State<PeopleScreen> {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     return Scaffold(
-      appBar: AppBar(title: const Text('Follow and be followed')),
+      appBar: AppBar(title: const Text('Invite and follow')),
       body: ListView(
         padding: const EdgeInsets.all(24),
         children: [
-          Text('Your follow code', style: theme.textTheme.titleMedium),
+          Text('Your invite code', style: theme.textTheme.titleMedium),
           const SizedBox(height: 8),
           const Text('Anyone who scans this can follow your public posts.'),
           const SizedBox(height: 16),
@@ -167,20 +166,21 @@ class _PeopleScreenState extends State<PeopleScreen> {
           const Divider(height: 48),
           Text('Follow someone', style: theme.textTheme.titleMedium),
           const SizedBox(height: 8),
-          const Text('Scan their follow code, or paste it.'),
+          const Text('Scan their invite code, or paste it.'),
           const SizedBox(height: 16),
           FilledButton.icon(
             onPressed: _busy ? null : _scan,
             icon: const Icon(Icons.qr_code_scanner),
-            label: const Text('Scan follow code'),
+            label: const Text('Scan invite code'),
           ),
           const SizedBox(height: 8),
           OutlinedButton(
             onPressed: _busy
                 ? null
-                : () async =>
-                      _follow(await askForCode(context, 'Paste a follow code')),
-            child: const Text('Paste a follow code'),
+                : () async => _follow(
+                    await askForCode(context, 'Paste an invite code'),
+                  ),
+            child: const Text('Paste an invite code'),
           ),
           if (_busy)
             const Padding(
@@ -191,8 +191,7 @@ class _PeopleScreenState extends State<PeopleScreen> {
           Text('People you follow', style: theme.textTheme.titleMedium),
           const SizedBox(height: 8),
           const Text(
-            'Someone you know can be a trusted follower: trust them, or ask '
-            'them to trust you.',
+            'Say which of them you know, or ask them to say they know you.',
           ),
           FutureBuilder<List<Followed>>(
             future: _following,
@@ -219,7 +218,7 @@ class _PeopleScreenState extends State<PeopleScreen> {
                       subtitle: person.connecting
                           ? Text(
                               widget.node.status?.overTor ?? false
-                                  ? 'Connecting through Tor…'
+                                  ? 'Connecting, which can take a few minutes…'
                                   : 'Connecting…',
                             )
                           : null,
@@ -231,10 +230,13 @@ class _PeopleScreenState extends State<PeopleScreen> {
                           _ => _unfollow(person),
                         },
                         itemBuilder: (_) => const [
-                          PopupMenuItem(value: 'trust', child: Text('Trust')),
+                          PopupMenuItem(
+                            value: 'trust',
+                            child: Text('I know them'),
+                          ),
                           PopupMenuItem(
                             value: 'ask',
-                            child: Text('Ask to be a trusted follower'),
+                            child: Text('Ask if they know you'),
                           ),
                           PopupMenuItem(
                             value: 'unfollow',
@@ -276,7 +278,7 @@ class _AskTrustDialogState extends State<_AskTrustDialog> {
   @override
   Widget build(BuildContext context) {
     return AlertDialog(
-      title: Text('Ask ${widget.name} to trust you?'),
+      title: Text('Ask ${widget.name} if they know you?'),
       content: Column(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,
