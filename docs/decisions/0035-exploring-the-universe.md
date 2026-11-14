@@ -39,7 +39,7 @@ Each result says the region it's in, so the phone knows where to look. Kim can s
 
 ### 4. A newcomer's first look
 
-On a fresh node, the first directory read (50 s on the clean-install test) brings the people a directory lists and their latest posts. That's what the first Universe shows. If the node has found no one yet, the map says so plainly ("Your node is looking for people"), and offers an invite code to paste instead.
+On a fresh node, the first directory read (50 s on the clean-install test) brings the people a directory lists and their latest posts. Few of them have lines yet, so most appear as the unplaced background field ([ADR 0034](0034-a-universe-in-levels.md)). Tapping the field opens them as a list, "People your node found", newest posts first, so a newcomer can browse them before any geography forms. With a layer on (Posts, Video), the stars in the field that have such posts brighten, without moving. If the node has found no one yet, the map says so plainly ("Your node is looking for people"), and offers an invite code to paste instead.
 
 ## Options considered
 
@@ -53,4 +53,4 @@ On a fresh node, the first directory read (50 s on the clean-install test) bring
 
 ## Gate
 
-A new person with no follows finds people and posts they find interesting by browsing, without knowing what to search for. Checked on a fresh node against the lab's world. Tests: every search result carries its region; each layer's lit regions match what the node holds.
+On a fresh node with no follows, against the lab's world, the maintainer reaches people and posts by browsing alone, without typing a search: every person and post the node holds is reachable from the map or the field's list. Whether newcomers find it interesting is checked in P11 ([ADR 0030](0030-product-alpha-before-testers.md)). Tests: every search result carries its region; each layer's lit regions match what the node holds.

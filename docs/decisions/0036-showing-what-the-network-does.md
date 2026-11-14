@@ -54,4 +54,4 @@ When the node is offline, the summary says when it was last seen, and the Univer
 
 ## Gate
 
-A person who didn't build OSP can say in their own words what their node does for the network, without knowing the transport underneath. Tests: each event type is produced by a real action in `osp-sim`; an idle world produces no events; no event holds a field outside the allowlist.
+The node's summary describes what it did in plain words only: the word-list test of [ADR 0031](0031-app-shell-home-universe-you.md) passes on it, and each line matches the node's own counts in `osp-sim`. Whether people who didn't build OSP can then say what their node does is checked in P11 ([ADR 0030](0030-product-alpha-before-testers.md)). Tests: each event type is produced by a real action in `osp-sim`; an idle world produces no events; no event holds a field outside the allowlist.
