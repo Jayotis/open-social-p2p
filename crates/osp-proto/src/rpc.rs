@@ -499,8 +499,6 @@ pub enum ClientResponse {
         #[serde(default)]
         failed: Vec<String>,
     },
-    /// What a machine said when greeted, and how long connecting and asking
-    /// took.
     /// The answer to `Profile`.
     Profile {
         profile: Box<ProfileInfo>,
@@ -511,6 +509,8 @@ pub enum ClientResponse {
         items: Vec<FeedItem>,
         next: Option<ObjectId>,
     },
+    /// What a machine said when greeted, and how long connecting and asking
+    /// took.
     MachineGreeted {
         words: String,
         offers: Vec<String>,
@@ -1005,7 +1005,6 @@ pub struct PersonInfo {
     pub newest: Option<String>,
 }
 
-/// A post as shown in a feed, with reshare context.
 /// A person's profile as `Profile` gives it (ADR 0032).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProfileInfo {
@@ -1029,6 +1028,7 @@ pub struct ProfileInfo {
     pub following: Option<u64>,
 }
 
+/// A post as shown in a feed, with reshare context.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FeedItem {
     pub id: ObjectId,

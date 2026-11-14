@@ -6,7 +6,7 @@
 import '../frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `found_person`, `node_info`, `post`, `progress`, `reply_info`, `report_to`, `run_post`, `sent_reply`, `trust_entry`
+// These functions are ignored because they are not marked as `pub`: `found_person`, `node_info`, `post`, `profile_of`, `progress`, `reply_info`, `report_to`, `run_post`, `sent_reply`, `trust_entry`
 // These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `clone`, `clone`
 
 /// A new device key, as 64 hex digits, for the app to keep in the phone's
@@ -113,6 +113,19 @@ abstract class OspApp implements RustOpaqueInterface {
     required List<String> files,
   });
 
+  /// One person's profile, the owner's own too, and what the node holds
+  /// of them. Nothing leaves the node.
+  Future<Profile> profile({required String identity});
+
+  /// One page of someone's `posts`, `media` or `reshares` that the node
+  /// holds, newest first: those before `before`, or the newest with none.
+  Future<ProfilePage> profileItems({
+    required String identity,
+    required String kind,
+    String? before,
+    required int limit,
+  });
+
   /// The end of the app's log, for the status screen.
   String recentLog({required int lines});
 
@@ -139,6 +152,18 @@ abstract class OspApp implements RustOpaqueInterface {
 
   /// The owner's replies to others' posts, newest first.
   Future<List<SentReply>> sentReplies();
+
+  /// Publishes the owner's profile. `photo`, a file on this phone shrunk
+  /// to about 1,024 px, becomes the new picture; without one,
+  /// `remove_picture` takes the picture off, or else it stays. The picture
+  /// is public, as the name is.
+  Future<Profile> setProfile({
+    required String name,
+    String? summary,
+    required List<ProfileLinkEntry> links,
+    String? photo,
+    required bool removePicture,
+  });
 
   /// Lets someone reply to the owner's posts from now on (`allow`), blocks
   /// them (`block`), or with `None` forgets either.
@@ -568,6 +593,130 @@ enum PostStage {
   processing,
   done,
   failed,
+}
+
+/// A person's profile (ADR 0032), as the node holds it.
+class Profile {
+  final String identity;
+  final String name;
+  final String? summary;
+
+  /// Links they give: shown, never checked.
+  final List<ProfileLinkEntry> links;
+
+  /// Their picture, a square WebP image, to show with `media_url`. A
+  /// stranger's is fetched only then, without saying who looks.
+  final String? picture;
+
+  /// Whether it's the owner's own profile.
+  final bool own;
+  final bool followed;
+
+  /// Whether they're among the people the owner knows (ADR 0013).
+  final bool known;
+
+  /// How many of their posts, posts with photos or videos, and reshares
+  /// the node holds.
+  final PlatformInt64 posts;
+  final PlatformInt64 media;
+  final PlatformInt64 reshares;
+
+  /// On the owner's own profile only: how many people follow them, and
+  /// how many they follow. Nobody else's are known.
+  final PlatformInt64? followers;
+  final PlatformInt64? following;
+
+  const Profile({
+    required this.identity,
+    required this.name,
+    this.summary,
+    required this.links,
+    this.picture,
+    required this.own,
+    required this.followed,
+    required this.known,
+    required this.posts,
+    required this.media,
+    required this.reshares,
+    this.followers,
+    this.following,
+  });
+
+  @override
+  int get hashCode =>
+      identity.hashCode ^
+      name.hashCode ^
+      summary.hashCode ^
+      links.hashCode ^
+      picture.hashCode ^
+      own.hashCode ^
+      followed.hashCode ^
+      known.hashCode ^
+      posts.hashCode ^
+      media.hashCode ^
+      reshares.hashCode ^
+      followers.hashCode ^
+      following.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is Profile &&
+          runtimeType == other.runtimeType &&
+          identity == other.identity &&
+          name == other.name &&
+          summary == other.summary &&
+          links == other.links &&
+          picture == other.picture &&
+          own == other.own &&
+          followed == other.followed &&
+          known == other.known &&
+          posts == other.posts &&
+          media == other.media &&
+          reshares == other.reshares &&
+          followers == other.followers &&
+          following == other.following;
+}
+
+class ProfileLinkEntry {
+  final String name;
+
+  /// An `https` URL.
+  final String url;
+
+  const ProfileLinkEntry({required this.name, required this.url});
+
+  @override
+  int get hashCode => name.hashCode ^ url.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is ProfileLinkEntry &&
+          runtimeType == other.runtimeType &&
+          name == other.name &&
+          url == other.url;
+}
+
+/// One page of a person's posts, media or reshares.
+class ProfilePage {
+  final List<Post> posts;
+
+  /// What to pass as `before` for the next page, if there may be one.
+  final String? next;
+
+  const ProfilePage({required this.posts, this.next});
+
+  @override
+  int get hashCode => posts.hashCode ^ next.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is ProfilePage &&
+          runtimeType == other.runtimeType &&
+          posts == other.posts &&
+          next == other.next;
 }
 
 /// A reply to a post (ADR 0028).

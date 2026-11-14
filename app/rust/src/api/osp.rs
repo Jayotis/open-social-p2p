@@ -15,13 +15,14 @@ use osp_client::{
     device_key_from_hex,
     osp_proto::{
         rpc::{
-            ClientRequest, ClientResponse, FeedItem, Reached, ReplierChoice, ReplyAnswer,
-            ReplyInfo, ReplyStatus, SentReplyInfo, SentStatus, TrustInfo,
+            ClientRequest, ClientResponse, FeedItem, ProfileInfo, ProfileItemKind, Reached,
+            ReplierChoice, ReplyAnswer, ReplyInfo, ReplyStatus, SentReplyInfo, SentStatus,
+            TrustInfo,
         },
         social::ReplyPolicy,
-        BlobHash, MediaKind, ObjectId,
+        BlobHash, MediaKind, ObjectId, ProfileLink,
     },
-    Client, ClientOptions, NoContact, Pairing,
+    Client, ClientOptions, NoContact, Pairing, ProfilePicture,
 };
 use tokio::sync::oneshot;
 
@@ -223,6 +224,45 @@ pub struct Media {
     pub on_node: bool,
 }
 
+/// A person's profile (ADR 0032), as the node holds it.
+pub struct Profile {
+    pub identity: String,
+    pub name: String,
+    pub summary: Option<String>,
+    /// Links they give: shown, never checked.
+    pub links: Vec<ProfileLinkEntry>,
+    /// Their picture, a square WebP image, to show with `media_url`. A
+    /// stranger's is fetched only then, without saying who looks.
+    pub picture: Option<String>,
+    /// Whether it's the owner's own profile.
+    pub own: bool,
+    pub followed: bool,
+    /// Whether they're among the people the owner knows (ADR 0013).
+    pub known: bool,
+    /// How many of their posts, posts with photos or videos, and reshares
+    /// the node holds.
+    pub posts: i64,
+    pub media: i64,
+    pub reshares: i64,
+    /// On the owner's own profile only: how many people follow them, and
+    /// how many they follow. Nobody else's are known.
+    pub followers: Option<i64>,
+    pub following: Option<i64>,
+}
+
+pub struct ProfileLinkEntry {
+    pub name: String,
+    /// An `https` URL.
+    pub url: String,
+}
+
+/// One page of a person's posts, media or reshares.
+pub struct ProfilePage {
+    pub posts: Vec<Post>,
+    /// What to pass as `before` for the next page, if there may be one.
+    pub next: Option<String>,
+}
+
 /// The feed as last fetched, for when the node can't be reached.
 pub struct SavedFeed {
     pub posts: Vec<Post>,
@@ -358,6 +398,71 @@ impl OspApp {
     pub async fn people(&self, limit: u32) -> Result<Vec<FoundPerson>> {
         let people = self.client.people(limit).await?;
         Ok(people.into_iter().map(found_person).collect())
+    }
+
+    /// One person's profile, the owner's own too, and what the node holds
+    /// of them. Nothing leaves the node.
+    pub async fn profile(&self, identity: String) -> Result<Profile> {
+        let info = self.client.profile(identity.parse()?).await?;
+        Ok(self.profile_of(info))
+    }
+
+    /// One page of someone's `posts`, `media` or `reshares` that the node
+    /// holds, newest first: those before `before`, or the newest with none.
+    pub async fn profile_items(
+        &self,
+        identity: String,
+        kind: String,
+        before: Option<String>,
+        limit: u32,
+    ) -> Result<ProfilePage> {
+        let kind = match kind.as_str() {
+            "posts" => ProfileItemKind::Posts,
+            "media" => ProfileItemKind::Media,
+            "reshares" => ProfileItemKind::Reshares,
+            _ => bail!("no such list: {kind:?}"),
+        };
+        let before = before.map(|b| b.parse()).transpose()?;
+        let (items, next) = self
+            .client
+            .profile_items(identity.parse()?, kind, before, limit)
+            .await?;
+        Ok(ProfilePage {
+            posts: items.into_iter().map(post).collect(),
+            next: next.map(|n| n.to_string()),
+        })
+    }
+
+    /// Publishes the owner's profile. `photo`, a file on this phone shrunk
+    /// to about 1,024 px, becomes the new picture; without one,
+    /// `remove_picture` takes the picture off, or else it stays. The picture
+    /// is public, as the name is.
+    pub async fn set_profile(
+        &self,
+        name: String,
+        summary: Option<String>,
+        links: Vec<ProfileLinkEntry>,
+        photo: Option<String>,
+        remove_picture: bool,
+    ) -> Result<Profile> {
+        let picture = match (photo, remove_picture) {
+            (Some(path), _) => ProfilePicture::Photo(PathBuf::from(path)),
+            (None, true) => ProfilePicture::Remove,
+            (None, false) => ProfilePicture::Keep,
+        };
+        let links = links
+            .into_iter()
+            .map(|l| ProfileLink {
+                name: l.name,
+                value: l.url,
+            })
+            .collect();
+        let summary = summary.filter(|s| !s.trim().is_empty());
+        let info = self
+            .client
+            .set_profile(name.trim(), summary.as_deref(), links, picture)
+            .await?;
+        Ok(self.profile_of(info))
     }
 
     #[frb(sync)]
@@ -713,6 +818,36 @@ impl OspApp {
     #[frb(sync)]
     pub fn log_file(&self) -> String {
         logging::path(&self.dir).to_string_lossy().into_owned()
+    }
+
+    fn profile_of(&self, p: ProfileInfo) -> Profile {
+        let own = self
+            .client
+            .pairing()
+            .is_some_and(|paired| paired.identity == p.person.actor);
+        Profile {
+            identity: p.person.actor.to_string(),
+            name: p.person.name,
+            summary: p.person.summary,
+            links: p
+                .person
+                .attachment
+                .into_iter()
+                .map(|l| ProfileLinkEntry {
+                    name: l.name,
+                    url: l.value,
+                })
+                .collect(),
+            picture: p.person.icon.map(|i| i.blob.to_string()),
+            own,
+            followed: p.followed,
+            known: p.known,
+            posts: p.posts as i64,
+            media: p.media as i64,
+            reshares: p.reshares as i64,
+            followers: p.followers.map(|n| n as i64),
+            following: p.following.map(|n| n as i64),
+        }
     }
 
     /// Runs a post until it ends, and reports how, unless `discard_post`

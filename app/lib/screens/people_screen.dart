@@ -62,7 +62,7 @@ class _PeopleScreenState extends State<PeopleScreen> {
   Future<void> _askTrust(Followed person) async {
     final note = await showDialog<String>(
       context: context,
-      builder: (context) => _AskTrustDialog(name: person.name),
+      builder: (context) => AskTrustDialog(name: person.name),
     );
     if (note == null) return;
     await _do(
@@ -257,16 +257,16 @@ class _PeopleScreenState extends State<PeopleScreen> {
 
 /// Asks for the note sent with a request to be trusted. Pops with the
 /// note, or null if cancelled.
-class _AskTrustDialog extends StatefulWidget {
-  const _AskTrustDialog({required this.name});
+class AskTrustDialog extends StatefulWidget {
+  const AskTrustDialog({super.key, required this.name});
 
   final String name;
 
   @override
-  State<_AskTrustDialog> createState() => _AskTrustDialogState();
+  State<AskTrustDialog> createState() => _AskTrustDialogState();
 }
 
-class _AskTrustDialogState extends State<_AskTrustDialog> {
+class _AskTrustDialogState extends State<AskTrustDialog> {
   final _note = TextEditingController();
 
   @override

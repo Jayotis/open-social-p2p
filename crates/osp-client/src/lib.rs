@@ -28,7 +28,11 @@ use iroh::{
 use osp_proto::{
     BlobHash, CLIENT_ALPN, ObjectId, PairingTicket,
     framing::{read_frame, write_frame},
-    rpc::{ClientRequest, ClientResponse, FeedItem, PersonInfo, Upload, UploadId},
+    rpc::{
+        ClientRequest, ClientResponse, FeedItem, IconChange, PersonInfo, ProfileInfo,
+        ProfileItemKind, Upload, UploadId,
+    },
+    types::ProfileLink,
 };
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
@@ -65,6 +69,12 @@ const REFUSAL_WAIT: Duration = Duration::from_secs(5);
 /// How long discarding a post waits for the home node. Past that, the node
 /// drops what it has of the post itself within a day.
 const DISCARD_WAIT: Duration = Duration::from_secs(10);
+/// Largest photo `set_profile` sends, as the node's own limit. The app
+/// shrinks it to about 1,024 px first, a few hundred kilobytes.
+const MAX_PROFILE_PHOTO: u64 = 16 << 20;
+/// How many times `set_profile` tries before giving up on a broken
+/// connection.
+const PROFILE_TRIES: usize = 3;
 /// Where the post still on its way to the home node is kept.
 const PENDING_POST: &str = "pending-post.json";
 
@@ -248,6 +258,17 @@ pub enum PostProgress {
     Sending { sent: u64, total: u64 },
     /// Lost contact with the home node; trying again.
     Waiting,
+}
+
+/// What `set_profile` does with the profile picture.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProfilePicture {
+    /// Keeps the one there is, if any.
+    Keep,
+    /// Takes it off the profile.
+    Remove,
+    /// A new one, made by the node from this photo on the device.
+    Photo(PathBuf),
 }
 
 /// How one try at sending a post ended, short of a broken connection.
@@ -449,6 +470,109 @@ impl Client {
             bail!("unexpected reply to People");
         };
         Ok(people)
+    }
+
+    /// One person's profile, and what the node holds of them (ADR 0032).
+    /// Their picture, if the node doesn't hold it, is fetched by reading it
+    /// (`media_url`): a stranger's through a viewing identity.
+    pub async fn profile(&self, actor: PublicKey) -> Result<ProfileInfo> {
+        let ClientResponse::Profile { profile } =
+            self.request(&ClientRequest::Profile { actor }).await?
+        else {
+            bail!("unexpected reply to Profile");
+        };
+        Ok(*profile)
+    }
+
+    /// One page of a person's posts, media or reshares that the node holds,
+    /// newest first, and the `before` for the next page, if there may be one.
+    pub async fn profile_items(
+        &self,
+        actor: PublicKey,
+        kind: ProfileItemKind,
+        before: Option<ObjectId>,
+        limit: u32,
+    ) -> Result<(Vec<FeedItem>, Option<ObjectId>)> {
+        let req = ClientRequest::ProfileItems {
+            actor,
+            kind,
+            before,
+            limit,
+        };
+        let ClientResponse::ProfileItems { items, next } = self.request(&req).await? else {
+            bail!("unexpected reply to ProfileItems");
+        };
+        Ok((items, next))
+    }
+
+    /// Publishes a new profile for the node's owner (ADR 0032). A new
+    /// picture's photo is sent after the request on the same stream; shrink
+    /// it first, it's sent whole. After a broken connection it's sent again,
+    /// up to `PROFILE_TRIES` times in all: publishing the same profile twice
+    /// does no harm.
+    pub async fn set_profile(
+        &self,
+        name: &str,
+        summary: Option<&str>,
+        links: Vec<ProfileLink>,
+        picture: ProfilePicture,
+    ) -> Result<ProfileInfo> {
+        let (icon, photo) = match picture {
+            ProfilePicture::Keep => (IconChange::Keep, None),
+            ProfilePicture::Remove => (IconChange::Remove, None),
+            ProfilePicture::Photo(path) => {
+                let bytes = tokio::fs::read(&path)
+                    .await
+                    .with_context(|| format!("reading {}", path.display()))?;
+                ensure!(!bytes.is_empty(), "the photo is empty");
+                ensure!(
+                    bytes.len() as u64 <= MAX_PROFILE_PHOTO,
+                    "the photo is too big for a profile picture; choose a smaller one"
+                );
+                let file = Upload {
+                    name: path
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_default(),
+                    size: bytes.len() as u64,
+                };
+                (IconChange::Upload { file }, Some(bytes))
+            }
+        };
+        let req = ClientRequest::SetProfile {
+            name: name.to_string(),
+            summary: summary.map(str::to_string),
+            links,
+            icon,
+        };
+        let mut tries = 0;
+        loop {
+            tries += 1;
+            let attempt = async {
+                let (mut send, mut recv) = self.send_request(&req).await?;
+                if let Some(photo) = &photo {
+                    tokio::time::timeout(POST_STALL, send.write_all(photo))
+                        .await
+                        .context("the photo stopped moving")??;
+                }
+                send.finish()?;
+                // The node may have to wait for a video being prepared
+                // before it makes the picture.
+                read_reply(&mut recv, POST_REPLY_TIMEOUT).await
+            }
+            .await;
+            match attempt {
+                Ok(ClientResponse::Profile { profile }) => return Ok(*profile),
+                Ok(ClientResponse::Error { message }) => bail!(message),
+                Ok(other) => bail!("unexpected reply to SetProfile: {other:?}"),
+                Err(e) if tries < PROFILE_TRIES => {
+                    debug!("profile not sent, trying again: {e:#}");
+                    self.disconnect().await;
+                    tokio::time::sleep(POST_RETRY_WAITS[tries - 1]).await;
+                }
+                Err(e) => return Err(e.context("sending the profile to the home node")),
+            }
+        }
     }
 
     /// Publishes a post with files from this device. The node transcodes

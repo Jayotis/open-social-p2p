@@ -105,6 +105,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   Uint8List dco_decode_list_prim_u_8_strict(dynamic raw);
 
   @protected
+  List<ProfileLinkEntry> dco_decode_list_profile_link_entry(dynamic raw);
+
+  @protected
   List<Reply> dco_decode_list_reply(dynamic raw);
 
   @protected
@@ -151,6 +154,15 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   PostStage dco_decode_post_stage(dynamic raw);
+
+  @protected
+  Profile dco_decode_profile(dynamic raw);
+
+  @protected
+  ProfileLinkEntry dco_decode_profile_link_entry(dynamic raw);
+
+  @protected
+  ProfilePage dco_decode_profile_page(dynamic raw);
 
   @protected
   Reply dco_decode_reply(dynamic raw);
@@ -269,6 +281,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   Uint8List sse_decode_list_prim_u_8_strict(SseDeserializer deserializer);
 
   @protected
+  List<ProfileLinkEntry> sse_decode_list_profile_link_entry(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   List<Reply> sse_decode_list_reply(SseDeserializer deserializer);
 
   @protected
@@ -319,6 +336,15 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   PostStage sse_decode_post_stage(SseDeserializer deserializer);
+
+  @protected
+  Profile sse_decode_profile(SseDeserializer deserializer);
+
+  @protected
+  ProfileLinkEntry sse_decode_profile_link_entry(SseDeserializer deserializer);
+
+  @protected
+  ProfilePage sse_decode_profile_page(SseDeserializer deserializer);
 
   @protected
   Reply sse_decode_reply(SseDeserializer deserializer);
@@ -462,6 +488,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_list_profile_link_entry(
+    List<ProfileLinkEntry> self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_list_reply(List<Reply> self, SseSerializer serializer);
 
   @protected
@@ -529,6 +561,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_post_stage(PostStage self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_profile(Profile self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_profile_link_entry(
+    ProfileLinkEntry self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_profile_page(ProfilePage self, SseSerializer serializer);
 
   @protected
   void sse_encode_reply(Reply self, SseSerializer serializer);

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../format.dart';
 import '../node.dart';
+import '../screens/profile_screen.dart';
 import '../src/rust/api/osp.dart';
 
 /// A person the node holds a profile of, with a Follow button.
@@ -71,6 +72,15 @@ class _PersonTileState extends State<PersonTile> {
       title: Text(person.name),
       subtitle: about.isEmpty ? null : Text(about.join('\n')),
       trailing: trailing,
+      onTap: () => Navigator.of(context).push(
+        MaterialPageRoute(
+          builder: (_) => ProfileScreen(
+            node: widget.node,
+            identity: person.identity,
+            name: person.name,
+          ),
+        ),
+      ),
     );
   }
 }

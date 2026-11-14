@@ -1,0 +1,488 @@
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+
+import '../format.dart';
+import '../node.dart';
+import '../src/rust/api/osp.dart';
+import '../theme.dart';
+import '../widgets/person_avatar.dart';
+import '../widgets/post_card.dart';
+import 'edit_profile_screen.dart';
+import 'image_screen.dart';
+import 'people_screen.dart' show AskTrustDialog;
+import 'player_screen.dart';
+import 'trust_screen.dart' show confirmTrust, shownName;
+
+/// Someone's profile (ADR 0032 §4): picture, name, summary and links, then
+/// their posts, a grid of their photos and videos, and their reshares, as
+/// far as your node holds them. Follow, and say you know them, from here.
+class ProfileScreen extends StatefulWidget {
+  const ProfileScreen({
+    super.key,
+    required this.node,
+    required this.identity,
+    this.name = '',
+  });
+
+  final HomeNode node;
+  final String identity;
+
+  /// Their name as the screen that opened this showed it, until the
+  /// profile arrives.
+  final String name;
+
+  @override
+  State<ProfileScreen> createState() => _ProfileScreenState();
+}
+
+/// The three lists a profile shows.
+enum ProfileList {
+  posts('Posts'),
+  media('Photos and videos'),
+  reshares('Reshares');
+
+  const ProfileList(this.label);
+  final String label;
+}
+
+/// One list, as far as it's been read.
+class _Listed {
+  final posts = <Post>[];
+  String? next;
+  bool done = false;
+  bool loading = false;
+  String? error;
+}
+
+class _ProfileScreenState extends State<ProfileScreen> {
+  /// Most items asked for at once; the node gives at most 50.
+  static const _page = 30;
+
+  Profile? _profile;
+  String? _error;
+  bool _busy = false;
+  ProfileList _list = ProfileList.posts;
+  final Map<ProfileList, _Listed> _lists = {
+    for (final list in ProfileList.values) list: _Listed(),
+  };
+
+  HomeNode get _node => widget.node;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    try {
+      final profile = await _node.app.profile(identity: widget.identity);
+      if (!mounted) return;
+      setState(() {
+        _profile = profile;
+        _error = null;
+      });
+      if (_lists[_list]!.posts.isEmpty) await _more();
+    } catch (e) {
+      if (mounted) setState(() => _error = describeError(e));
+    }
+  }
+
+  /// Reads the next page of the list shown.
+  Future<void> _more() async {
+    final list = _list;
+    final listed = _lists[list]!;
+    if (listed.loading || listed.done) return;
+    setState(() {
+      listed.loading = true;
+      listed.error = null;
+    });
+    try {
+      final page = await _node.app.profileItems(
+        identity: widget.identity,
+        kind: list.name,
+        before: listed.next,
+        limit: _page,
+      );
+      listed.posts.addAll(page.posts);
+      listed.next = page.next;
+      listed.done = page.next == null;
+    } catch (e) {
+      listed.error = describeError(e);
+    } finally {
+      listed.loading = false;
+    }
+    if (mounted) setState(() {});
+  }
+
+  /// Starts the lists again from the newest, after a follow, say.
+  Future<void> _reload() async {
+    for (final list in ProfileList.values) {
+      _lists[list] = _Listed();
+    }
+    await _load();
+  }
+
+  /// Runs [action], then says [done], or why it failed.
+  Future<void> _do(Future<void> Function() action, String done) async {
+    final messenger = ScaffoldMessenger.of(context);
+    setState(() => _busy = true);
+    try {
+      await action();
+      messenger.showSnackBar(SnackBar(content: Text(done)));
+      await _load();
+    } catch (e) {
+      messenger.showSnackBar(SnackBar(content: Text(describeError(e))));
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  String get _name => shownName(_profile?.name ?? widget.name);
+
+  Future<void> _follow() => _do(
+    () => _node.app.followPerson(identity: widget.identity),
+    'Following $_name. Their posts reach Home once their node answers.',
+  );
+
+  Future<void> _unfollow() => _do(
+    () => _node.app.unfollow(identity: widget.identity),
+    'You no longer follow $_name.',
+  );
+
+  Future<void> _trust() async {
+    if (!await confirmTrust(context, _name)) return;
+    await _do(
+      () => _node.app.trust(identity: widget.identity),
+      'You know $_name.',
+    );
+  }
+
+  Future<void> _askTrust() async {
+    final note = await showDialog<String>(
+      context: context,
+      builder: (context) => AskTrustDialog(name: _name),
+    );
+    if (note == null) return;
+    await _do(
+      () => _node.app.askTrust(identity: widget.identity, note: note),
+      "Asked. You won't be told their answer.",
+    );
+  }
+
+  Future<void> _edit(Profile profile) async {
+    final saved = await Navigator.of(context).push<Profile>(
+      MaterialPageRoute(
+        builder: (_) => EditProfileScreen(node: _node, profile: profile),
+      ),
+    );
+    if (saved == null || !mounted) return;
+    setState(() => _profile = saved);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final profile = _profile;
+    return Scaffold(
+      appBar: AppBar(title: Text(profile?.own ?? false ? 'You' : _name)),
+      body: profile == null
+          ? Center(
+              child: _error == null
+                  ? const CircularProgressIndicator()
+                  : Padding(
+                      padding: const EdgeInsets.all(Space.xl),
+                      child: Text(
+                        "Couldn't open this profile: $_error",
+                        textAlign: TextAlign.center,
+                      ),
+                    ),
+            )
+          : RefreshIndicator(
+              onRefresh: _reload,
+              child: CustomScrollView(
+                slivers: [
+                  SliverToBoxAdapter(child: _header(context, profile)),
+                  SliverToBoxAdapter(child: _choice(profile)),
+                  ..._items(context, profile),
+                ],
+              ),
+            ),
+    );
+  }
+
+  Widget _header(BuildContext context, Profile profile) {
+    final theme = Theme.of(context);
+    final counts = [
+      if (profile.followers case final n?)
+        n == 1 ? '1 follower' : '$n followers',
+      if (profile.following case final n?) '$n following',
+    ];
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(Space.m, Space.m, Space.m, 0),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              PersonAvatar(
+                node: _node,
+                name: profile.name,
+                picture: profile.picture,
+                radius: 40,
+              ),
+              const SizedBox(width: Space.m),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      shownName(profile.name),
+                      style: theme.textTheme.headlineSmall,
+                    ),
+                    if (counts.isNotEmpty)
+                      Text(
+                        counts.join(' · '),
+                        style: theme.textTheme.bodySmall,
+                      ),
+                    if (profile.known && !profile.own)
+                      Text(
+                        'You know ${shownName(profile.name)}',
+                        style: theme.textTheme.bodySmall,
+                      ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          if (profile.summary case final summary?) ...[
+            const SizedBox(height: Space.m),
+            SelectableText(summary, style: theme.textTheme.bodyLarge),
+          ],
+          for (final link in profile.links)
+            ListTile(
+              contentPadding: EdgeInsets.zero,
+              dense: true,
+              leading: const Icon(Icons.link),
+              title: Text(link.name),
+              subtitle: Text(link.url),
+              onTap: () {
+                Clipboard.setData(ClipboardData(text: link.url));
+                ScaffoldMessenger.of(
+                  context,
+                ).showSnackBar(const SnackBar(content: Text('Link copied.')));
+              },
+            ),
+          const SizedBox(height: Space.s),
+          _actions(profile),
+          if (!profile.own && !profile.followed)
+            Padding(
+              padding: const EdgeInsets.only(top: Space.s),
+              child: Text(
+                'This is what your node has found of theirs. Follow them to '
+                'get everything they post from now on.',
+                style: theme.textTheme.bodySmall,
+              ),
+            ),
+          if (_busy)
+            const Padding(
+              padding: EdgeInsets.only(top: Space.s),
+              child: LinearProgressIndicator(),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _actions(Profile profile) {
+    final online = _node.reachability != Reachability.offline;
+    final enabled = online && !_busy;
+    final name = shownName(profile.name);
+    if (profile.own) {
+      return FilledButton.icon(
+        onPressed: enabled ? () => _edit(profile) : null,
+        icon: const Icon(Icons.edit_outlined),
+        label: const Text('Edit your profile'),
+      );
+    }
+    if (!profile.followed) {
+      return FilledButton(
+        onPressed: enabled ? _follow : null,
+        child: const Text('Follow'),
+      );
+    }
+    return Wrap(
+      spacing: Space.s,
+      runSpacing: Space.xs,
+      children: [
+        MenuAnchor(
+          builder: (context, menu, _) => OutlinedButton.icon(
+            onPressed: enabled
+                ? () => menu.isOpen ? menu.close() : menu.open()
+                : null,
+            icon: const Icon(Icons.check),
+            label: const Text('Following'),
+          ),
+          menuChildren: [
+            MenuItemButton(
+              onPressed: _unfollow,
+              child: const Text('Stop following'),
+            ),
+          ],
+        ),
+        if (!profile.known)
+          OutlinedButton(
+            onPressed: enabled ? _trust : null,
+            child: Text('I know $name'),
+          ),
+        OutlinedButton(
+          onPressed: enabled ? _askTrust : null,
+          child: Text('Ask $name to confirm they know you'),
+        ),
+      ],
+    );
+  }
+
+  Widget _choice(Profile profile) {
+    int count(ProfileList list) => switch (list) {
+      ProfileList.posts => profile.posts,
+      ProfileList.media => profile.media,
+      ProfileList.reshares => profile.reshares,
+    };
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(Space.m, Space.m, Space.m, Space.s),
+      child: SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        child: SegmentedButton<ProfileList>(
+          showSelectedIcon: false,
+          segments: [
+            for (final list in ProfileList.values)
+              ButtonSegment(
+                value: list,
+                label: Text('${list.label} ${count(list)}'),
+              ),
+          ],
+          selected: {_list},
+          onSelectionChanged: (chosen) {
+            setState(() => _list = chosen.first);
+            _more();
+          },
+        ),
+      ),
+    );
+  }
+
+  List<Widget> _items(BuildContext context, Profile profile) {
+    final listed = _lists[_list]!;
+    final Widget end;
+    if (listed.error != null) {
+      end = Padding(
+        padding: const EdgeInsets.all(Space.m),
+        child: Column(
+          children: [
+            Text("Couldn't load them: ${listed.error}"),
+            TextButton(onPressed: _more, child: const Text('Try again')),
+          ],
+        ),
+      );
+    } else if (listed.loading) {
+      end = const Padding(
+        padding: EdgeInsets.all(Space.l),
+        child: Center(child: CircularProgressIndicator()),
+      );
+    } else if (!listed.done) {
+      end = Center(
+        child: TextButton(onPressed: _more, child: const Text('Show more')),
+      );
+    } else if (listed.posts.isEmpty) {
+      end = Padding(
+        padding: const EdgeInsets.all(Space.xl),
+        child: Text(switch (_list) {
+          ProfileList.posts => 'No posts here yet.',
+          ProfileList.media => 'No photos or videos here yet.',
+          ProfileList.reshares => 'No reshares here yet.',
+        }, textAlign: TextAlign.center),
+      );
+    } else {
+      end = const SizedBox(height: Space.l);
+    }
+    final Widget body;
+    if (_list == ProfileList.media) {
+      final tiles = [
+        for (final post in listed.posts)
+          for (final media in post.media) (post, media),
+      ];
+      body = SliverPadding(
+        padding: const EdgeInsets.symmetric(horizontal: Space.xs),
+        sliver: SliverGrid.count(
+          crossAxisCount: 3,
+          mainAxisSpacing: 2,
+          crossAxisSpacing: 2,
+          children: [
+            for (final (post, media) in tiles)
+              _GridTile(node: _node, post: post, media: media),
+          ],
+        ),
+      );
+    } else {
+      body = SliverList.list(
+        children: [
+          for (final post in listed.posts) PostCard(node: _node, post: post),
+        ],
+      );
+    }
+    return [body, SliverToBoxAdapter(child: end)];
+  }
+}
+
+/// One photo or video in a profile's grid, opened on a tap.
+class _GridTile extends StatelessWidget {
+  const _GridTile({
+    required this.node,
+    required this.post,
+    required this.media,
+  });
+
+  final HomeNode node;
+  final Post post;
+  final Media media;
+
+  @override
+  Widget build(BuildContext context) {
+    final thumb = media.thumbnailBlob;
+    return InkWell(
+      onTap: () => Navigator.of(context).push(
+        MaterialPageRoute(
+          builder: (_) => media.isVideo
+              ? PlayerScreen(node: node, post: post, media: media)
+              : ImageScreen(node: node, media: media),
+        ),
+      ),
+      child: Stack(
+        fit: StackFit.expand,
+        children: [
+          Container(color: Colors.black12),
+          if (thumb != null)
+            FutureBuilder<String>(
+              future: node.mediaUrl(thumb, 'image/webp'),
+              builder: (context, url) => url.hasData
+                  ? Image.network(
+                      url.data!,
+                      fit: BoxFit.cover,
+                      errorBuilder: (_, _, _) =>
+                          const Icon(Icons.broken_image_outlined),
+                    )
+                  : const SizedBox.shrink(),
+            ),
+          if (media.isVideo)
+            const Center(
+              child: Icon(
+                Icons.play_circle_outline,
+                color: Colors.white,
+                size: 36,
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
