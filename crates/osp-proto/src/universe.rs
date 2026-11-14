@@ -91,12 +91,14 @@ pub struct PersonPoint {
     pub last_post: Option<String>,
 }
 
-/// A public, signed act between two people.
+/// A public, signed act between two people, each named by their place in
+/// the snapshot's `people`, which keeps a line small: a key is 64
+/// characters, and there can be 600 lines.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Line {
     pub kind: LineKind,
-    pub from: PublicKey,
-    pub to: PublicKey,
+    pub from: u32,
+    pub to: u32,
     /// How many such acts there are from `from` to `to`, within 90 days.
     pub count: u32,
     /// The day of the newest (`YYYY-MM-DD`, UTC).
@@ -252,8 +254,8 @@ mod tests {
             }],
             lines: vec![Line {
                 kind: LineKind::Reshared,
-                from: key(1),
-                to: key(3),
+                from: 0,
+                to: 0,
                 count: 1,
                 last: "2026-11-14".into(),
             }],

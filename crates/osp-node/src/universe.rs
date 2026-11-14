@@ -159,18 +159,31 @@ impl Core {
             .take(MAX_POINTS)
             .map(|(p, _)| p)
             .collect();
-        let kept: HashSet<_> = people.iter().map(|p| p.actor).collect();
-        let mut lines: Vec<Line> = lines
-            .into_iter()
-            .filter(|l| kept.contains(&l.from) && kept.contains(&l.to))
+        // A line names its two people by their place in `people`.
+        let place: HashMap<PublicKey, u32> = people
+            .iter()
+            .enumerate()
+            .map(|(i, p)| (p.actor, i as u32))
             .collect();
-        lines.truncate(MAX_LINES);
+        let lines: Vec<Line> = lines
+            .into_iter()
+            .filter_map(|act| {
+                Some(Line {
+                    kind: act.kind,
+                    from: *place.get(&act.from)?,
+                    to: *place.get(&act.to)?,
+                    count: act.count,
+                    last: day(act.at),
+                })
+            })
+            .take(MAX_LINES)
+            .collect();
         Ok((people, lines, more))
     }
 
     /// Public acts between people within the last 90 days, one line per kind
     /// and pair, newest first.
-    fn lines(&self, now: i64) -> Result<Vec<Line>> {
+    fn lines(&self, now: i64) -> Result<Vec<Act>> {
         let since = now - LINE_DAYS as i64 * DAY_MS;
         let mut lines: HashMap<(LineKind, PublicKey, PublicKey), (u32, i64)> = HashMap::new();
         let mut seen = HashSet::new();
@@ -189,28 +202,34 @@ impl Core {
             line.0 += 1;
             line.1 = line.1.max(at);
         }
-        let mut lines: Vec<(Line, i64)> = lines
+        let mut lines: Vec<Act> = lines
             .into_iter()
-            .map(|((kind, from, to), (count, at))| {
-                (
-                    Line {
-                        kind,
-                        from,
-                        to,
-                        count,
-                        last: day(at),
-                    },
-                    at,
-                )
+            .map(|((kind, from, to), (count, at))| Act {
+                kind,
+                from,
+                to,
+                count,
+                at,
             })
             .collect();
-        lines.sort_by(|(a, a_at), (b, b_at)| {
-            b_at.cmp(a_at)
+        lines.sort_by(|a, b| {
+            b.at.cmp(&a.at)
                 .then(a.from.as_bytes().cmp(b.from.as_bytes()))
                 .then(a.to.as_bytes().cmp(b.to.as_bytes()))
         });
-        Ok(lines.into_iter().map(|(l, _)| l).collect())
+        Ok(lines)
     }
+}
+
+/// Public acts of one kind from one person to another, before they're
+/// placed in a snapshot.
+struct Act {
+    kind: LineKind,
+    from: PublicKey,
+    to: PublicKey,
+    count: u32,
+    /// When the newest was published.
+    at: i64,
 }
 
 /// Makes a snapshot fit in `MAX_SNAPSHOT_BYTES`, and gives it its version.
@@ -229,10 +248,10 @@ fn fit(mut snapshot: Snapshot) -> Result<Snapshot> {
             let drop = (snapshot.people.len() / 10).max(1);
             snapshot.people.truncate(snapshot.people.len() - drop);
             snapshot.more_people += drop as u64;
-            let kept: HashSet<_> = snapshot.people.iter().map(|p| p.actor).collect();
-            snapshot
-                .lines
-                .retain(|l| kept.contains(&l.from) && kept.contains(&l.to));
+            // The people kept keep their places, so their lines still
+            // name them.
+            let kept = snapshot.people.len() as u32;
+            snapshot.lines.retain(|l| l.from < kept && l.to < kept);
         } else if !snapshot.machines.is_empty() {
             let drop = (snapshot.machines.len() / 10).max(1);
             snapshot.machines.truncate(snapshot.machines.len() - drop);
@@ -336,8 +355,8 @@ mod tests {
         let lines = (0..MAX_LINES)
             .map(|i| Line {
                 kind: LineKind::CreditedEarly,
-                from: keys[i % MAX_POINTS],
-                to: keys[(i * 7 + 1) % MAX_POINTS],
+                from: (MAX_POINTS - 1 - i % MAX_POINTS) as u32,
+                to: ((i * 7 + 1) % MAX_POINTS) as u32,
                 count: u32::MAX,
                 last: "2026-11-14".into(),
             })
@@ -385,13 +404,8 @@ mod tests {
                 fitted.people.len() as u64 + fitted.more_people,
                 MAX_POINTS as u64 + u64::MAX / 2
             );
-            let kept: HashSet<_> = fitted.people.iter().map(|p| p.actor).collect();
-            assert!(
-                fitted
-                    .lines
-                    .iter()
-                    .all(|l| kept.contains(&l.from) && kept.contains(&l.to))
-            );
+            let kept = fitted.people.len() as u32;
+            assert!(fitted.lines.iter().all(|l| l.from < kept && l.to < kept));
         }
     }
 

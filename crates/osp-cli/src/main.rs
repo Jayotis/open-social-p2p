@@ -1520,9 +1520,12 @@ async fn send(home: &Path, req: ClientRequest) -> Result<ClientResponse> {
 
 fn print_universe(snapshot: &osp_proto::universe::Snapshot) {
     use osp_proto::universe::{ActivityBand, LineKind, MachineState};
-    let names: std::collections::HashMap<_, _> =
-        snapshot.people.iter().map(|p| (p.actor, &p.name)).collect();
-    let name = |actor| names.get(actor).map_or("?".into(), |n| plain(n));
+    let name = |place: u32| {
+        snapshot
+            .people
+            .get(place as usize)
+            .map_or("?".into(), |p| plain(&p.name))
+    };
     println!("People ({}):", snapshot.people.len());
     for p in &snapshot.people {
         let step = match p.step {
@@ -1558,8 +1561,8 @@ fn print_universe(snapshot: &osp_proto::universe::Snapshot) {
         };
         println!(
             "  {} {what} {} ({}x, last {})",
-            name(&l.from),
-            name(&l.to),
+            name(l.from),
+            name(l.to),
             l.count,
             l.last
         );

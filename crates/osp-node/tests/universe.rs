@@ -113,9 +113,10 @@ async fn the_universe_shows_steps_and_public_lines_and_nothing_else() {
     assert_eq!(snapshot.level, Level::Local);
     let jimmy_id = status(&jimmy).await.identity;
     let alice_id = status(&alice).await.identity;
+    let actor = |place: u32| snapshot.people[place as usize].actor;
     assert!(snapshot.lines.iter().any(|l| l.kind == LineKind::Reshared
-        && l.from == jimmy_id
-        && l.to == alice_id
+        && actor(l.from) == jimmy_id
+        && actor(l.to) == alice_id
         && l.count == 1));
     let jimmy_point = snapshot.people.iter().find(|p| p.name == "Jimmy").unwrap();
     assert!(jimmy_point.followed);
