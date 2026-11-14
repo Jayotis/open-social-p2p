@@ -595,7 +595,7 @@ impl Core {
     /// endpoint and never the machine name. Says whether all of them answered.
     pub(crate) async fn ask_to_be_listed(&self) -> bool {
         let req = SocialRequest::AskListing {
-            profile: self.profile.clone(),
+            profile: self.profile(),
         };
         let mut answered = true;
         for directory in &self.config.directory.known {
@@ -1329,6 +1329,8 @@ mod tests {
             nodes: vec![],
             media_endpoints: vec![],
             published: DATE.into(),
+            icon: None,
+            attachment: Vec::new(),
         };
         SignedObject::sign(&key(), &Payload::Person(person)).unwrap()
     }

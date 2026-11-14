@@ -195,7 +195,7 @@ impl Core {
             .find(|f| f.actor == *actor)
             .context("you can only ask someone you follow")?;
         let req = SocialRequest::AskTrust {
-            profile: self.profile.clone(),
+            profile: self.profile(),
             note,
         };
         self.social_request(&follow.addr, &req).await?;

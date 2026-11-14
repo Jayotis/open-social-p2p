@@ -22,7 +22,7 @@ pub use object::{CertifiedKey, ObjectId, SignedObject};
 pub use ticket::{FollowTicket, PairingTicket, pairing_pass_hash};
 pub use types::{
     Announce, Attachment, BlobHash, BlobRef, Delete, EarlierKeys, ForwardDelete, FoundEarly, Key,
-    MediaKind, Note, Payload, Person,
+    MediaKind, Note, Payload, Person, ProfileLink,
 };
 
 /// ALPN of the node-to-node social protocol. Version 1 added objects

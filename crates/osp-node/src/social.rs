@@ -216,7 +216,7 @@ impl Core {
         Ok(match req {
             SocialRequest::Endpoints { direct } => self.answer_endpoints(remote, direct).await?,
             SocialRequest::GetProfile => SocialResponse::Profile {
-                profile: self.profile.clone(),
+                profile: self.profile(),
             },
             SocialRequest::GetOutbox { since, limit } => {
                 let mut entries = Vec::new();

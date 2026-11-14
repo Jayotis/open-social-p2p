@@ -137,6 +137,52 @@ async fn transcode_into(cfg: &MediaConfig, input: &Path, job_dir: &Path) -> Resu
     }
 }
 
+/// A profile picture's side, in pixels (ADR 0032).
+pub const ICON_SIDE: u32 = 400;
+/// Fill a 400-pixel square, cropping the middle out of a photo that isn't one.
+const ICON_SCALE: &str = "scale=400:400:force_original_aspect_ratio=increase,crop=400:400,setsar=1";
+/// Qualities tried in turn, until the picture fits `MAX_ICON_BYTES`.
+const ICON_QUALITIES: [&str; 4] = ["80", "65", "50", "35"];
+
+/// Makes a profile picture from a photo (ADR 0032): a 400-pixel square
+/// WebP of at most `MAX_ICON_BYTES`, its metadata stripped, in a fresh
+/// directory under `work_dir`. The caller deletes that directory.
+pub async fn profile_picture(cfg: &MediaConfig, input: &Path, work_dir: &Path) -> Result<PathBuf> {
+    let job_dir = new_job_dir(work_dir)?;
+    let result = profile_picture_into(cfg, input, &job_dir).await;
+    if result.is_err() {
+        let _ = std::fs::remove_dir_all(&job_dir);
+    }
+    result
+}
+
+async fn profile_picture_into(cfg: &MediaConfig, input: &Path, job_dir: &Path) -> Result<PathBuf> {
+    let decoded;
+    let input = if is_heic(input)? {
+        decoded = decode_heic(cfg, input, job_dir).await?;
+        decoded.as_path()
+    } else {
+        let source = probe(cfg, input).await?;
+        ensure!(
+            source.video.is_some() && source.is_still_image(),
+            "a profile picture has to be a photo"
+        );
+        input
+    };
+    let out = job_dir.join("icon.webp");
+    for quality in ICON_QUALITIES {
+        let mut args = vec!["-y", "-i", path_str(input)?, "-frames:v", "1"];
+        args.extend(["-vf", ICON_SCALE, "-c:v", "libwebp", "-quality", quality]);
+        args.extend(STRIP_METADATA);
+        args.push(path_str(&out)?);
+        run_ffmpeg(cfg, &args, Run::Quick).await?;
+        if std::fs::metadata(&out)?.len() <= osp_proto::types::MAX_ICON_BYTES {
+            return Ok(out);
+        }
+    }
+    bail!("couldn't make that photo small enough for a profile picture")
+}
+
 /// Whether a file is a HEIC photo. ffmpeg can't read those whole: iPhones
 /// store a photo as a grid of tiles, and ffmpeg 7.1 shows one tile as a
 /// 1-frame video, while older versions can't open the file at all.

@@ -262,7 +262,7 @@ impl Core {
             blob,
             reshare: Some(Box::new(HostingReshare {
                 announce: announce.clone(),
-                profile: self.profile.clone(),
+                profile: self.profile(),
             })),
         };
         match self.social_request(&EndpointAddr::new(node), &req).await? {

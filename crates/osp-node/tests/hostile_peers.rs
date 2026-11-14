@@ -494,6 +494,8 @@ impl HostileAuthor {
                         nodes: vec![],
                         media_endpoints: vec![],
                         published: osp_proto::now_rfc3339(),
+                        icon: None,
+                        attachment: Vec::new(),
                     }),
                 )
                 .unwrap(),

@@ -18,8 +18,8 @@ use osp_proto::{
     framing::{read_frame, write_frame},
     rpc::{
         AttachmentInfo, ClientRequest, ClientResponse, DirectoryStatus, FeedItem, FetchedFile,
-        FollowerInfo, PeerRecord, PersonInfo, ReplierChoice, ResharedBy, SharedStatus, SideInfo,
-        StatusInfo, VoucherInfo,
+        FollowerInfo, IconChange, PeerRecord, PersonInfo, ReplierChoice, ResharedBy, SharedStatus,
+        SideInfo, StatusInfo, VoucherInfo,
     },
     social::SocialRequest,
     types::{MAX_ATTACHMENTS, MAX_CONTENT_BYTES},
@@ -319,6 +319,37 @@ impl Core {
                 self.set_replier(&actor, choice)?;
                 ClientResponse::Ok
             }
+            ClientRequest::SetProfile {
+                name,
+                summary,
+                links,
+                icon,
+            } => {
+                if matches!(icon, IconChange::Upload { .. }) {
+                    bail!("a photo can only be sent from a paired device");
+                }
+                if !local && matches!(icon, IconChange::File { .. }) {
+                    bail!("a file on the home node can only be named from the local socket");
+                }
+                ClientResponse::Profile {
+                    profile: Box::new(
+                        self.set_profile(&name, summary.as_deref(), &links, icon, None)
+                            .await?,
+                    ),
+                }
+            }
+            ClientRequest::Profile { actor } => ClientResponse::Profile {
+                profile: Box::new(self.profile_info(&actor).await?),
+            },
+            ClientRequest::ProfileItems {
+                actor,
+                kind,
+                before,
+                limit,
+            } => {
+                self.profile_items(&actor, kind, before.as_ref(), limit)
+                    .await?
+            }
             ClientRequest::Pair { .. }
             | ClientRequest::ReadBlob { .. }
             | ClientRequest::ResumeUpload { .. }
@@ -392,7 +423,7 @@ impl Core {
         }
         let (transfer_places, upload_measured_mbps) = self.store.serving();
         Ok(StatusInfo {
-            name: self.config.name.clone(),
+            name: self.own_name(),
             identity: self.signer.identity(),
             node: self.endpoint.id(),
             problems: self.problems(relay.as_deref(), disk_free_bytes)?,
@@ -693,7 +724,7 @@ impl Core {
             return 0;
         }
         let req = &SocialRequest::Moved {
-            profile: self.profile.clone(),
+            profile: self.profile(),
             addr: self.shareable_addr().await,
         };
         let count = to_tell.len();
@@ -804,7 +835,7 @@ impl Core {
 
     /// Adds where a post came from, if a directory brought it, and the
     /// reshares of it that came with it.
-    fn with_found(&self, mut item: FeedItem) -> Result<FeedItem> {
+    pub(crate) fn with_found(&self, mut item: FeedItem) -> Result<FeedItem> {
         item.found_through = self
             .db
             .post_found_through(&item.id)?
@@ -887,7 +918,7 @@ impl Core {
     }
 
     /// Turns a stored Note or Announce into a feed item; None if it can't be shown.
-    async fn feed_item(&self, obj: &SignedObject) -> Result<Option<FeedItem>> {
+    pub(crate) async fn feed_item(&self, obj: &SignedObject) -> Result<Option<FeedItem>> {
         let (id, note, reshared_by) = match obj.verify() {
             Ok(Payload::Note(note)) => (obj.id(), note, None),
             Ok(Payload::Announce(a)) => {

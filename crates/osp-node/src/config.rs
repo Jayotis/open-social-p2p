@@ -4,7 +4,7 @@ use std::{fmt, net::SocketAddr, path::Path};
 
 use anyhow::{Context, Result};
 use iroh::EndpointId;
-use osp_proto::social::ReplyPolicy;
+use osp_proto::{BlobRef, ProfileLink, social::ReplyPolicy};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -15,6 +15,13 @@ pub struct Config {
     /// A few words about you in this identity's profile, for people looking
     /// for you to find.
     pub summary: Option<String>,
+    /// Links shown on the profile (ADR 0032), each a name and an `https`
+    /// URL. The app sets them.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub links: Vec<ProfileLink>,
+    /// The profile picture, one of this node's own files. The app sets it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub icon: Option<BlobRef>,
     pub network: NetworkConfig,
     pub sync: SyncConfig,
     pub media: MediaConfig,
@@ -292,6 +299,8 @@ impl Default for Config {
         Self {
             name: "Anonymous".to_string(),
             summary: None,
+            links: Vec::new(),
+            icon: None,
             network: NetworkConfig::default(),
             sync: SyncConfig::default(),
             media: MediaConfig::default(),
@@ -357,6 +366,8 @@ impl Config {
         Self {
             name: name.to_string(),
             summary: None,
+            links: Vec::new(),
+            icon: None,
             network: NetworkConfig {
                 relay: RelayChoice::Disabled,
                 address_lookup: false,

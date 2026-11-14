@@ -155,6 +155,25 @@ impl Payload {
                     p.media_endpoints.len() <= MAX_PROFILE_NODES,
                     "profile lists more than {MAX_PROFILE_NODES} media endpoints"
                 );
+                if let Some(icon) = &p.icon {
+                    ensure!(
+                        icon.media_type == "image/webp",
+                        "a profile picture must be image/webp, not {:?}",
+                        icon.media_type
+                    );
+                    ensure!(
+                        icon.size <= MAX_ICON_BYTES,
+                        "the profile picture declares {} bytes; the limit is {MAX_ICON_BYTES}",
+                        icon.size
+                    );
+                }
+                ensure!(
+                    p.attachment.len() <= MAX_PROFILE_LINKS,
+                    "a profile can have at most {MAX_PROFILE_LINKS} links"
+                );
+                for link in &p.attachment {
+                    link.check()?;
+                }
             }
             Payload::Note(n) => {
                 ensure!(
@@ -201,6 +220,14 @@ pub const MAX_NAME_BYTES: usize = 200;
 pub const MAX_SUMMARY_BYTES: usize = 2_000;
 /// Most home nodes a profile may list.
 pub const MAX_PROFILE_NODES: usize = 8;
+/// Largest profile picture (ADR 0032): a 400-pixel square WebP.
+pub const MAX_ICON_BYTES: u64 = 64 << 10;
+/// Most links a profile may show (ADR 0032).
+pub const MAX_PROFILE_LINKS: usize = 4;
+/// Longest name of a profile link, in bytes.
+pub const MAX_LINK_NAME_BYTES: usize = 32;
+/// Longest profile link, in bytes.
+pub const MAX_LINK_URL_BYTES: usize = 256;
 
 /// A profile. Also tells others which home nodes speak for this identity.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -226,7 +253,56 @@ pub struct Person {
         skip_serializing_if = "Vec::is_empty"
     )]
     pub media_endpoints: Vec<EndpointBinding>,
+    /// A profile picture (ADR 0032): a square WebP blob, fetched like a
+    /// post's media.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<BlobRef>,
+    /// Links to show on the profile (ADR 0032), as Mastodon's
+    /// `PropertyValue`s, so a bridge can carry them. Shown, never checked.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachment: Vec<ProfileLink>,
     pub published: String,
+}
+
+/// A link on a profile: a short name and an `https` URL.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProfileLink {
+    pub name: String,
+    pub value: String,
+}
+
+impl ProfileLink {
+    /// Checks a link's limits: a name of at most [`MAX_LINK_NAME_BYTES`], not
+    /// empty, and an `https` URL of at most [`MAX_LINK_URL_BYTES`] with no
+    /// spaces or control characters.
+    pub fn check(&self) -> Result<()> {
+        ensure!(!self.name.trim().is_empty(), "a link needs a name");
+        ensure!(
+            self.name.len() <= MAX_LINK_NAME_BYTES,
+            "a link's name is longer than {MAX_LINK_NAME_BYTES} bytes"
+        );
+        ensure!(
+            !self.name.chars().any(char::is_control),
+            "a link's name can't have control characters"
+        );
+        ensure!(
+            self.value.len() <= MAX_LINK_URL_BYTES,
+            "a link is longer than {MAX_LINK_URL_BYTES} bytes"
+        );
+        let rest = self
+            .value
+            .strip_prefix("https://")
+            .filter(|rest| !rest.is_empty() && !rest.starts_with('/'));
+        ensure!(rest.is_some(), "a link must start with https://");
+        ensure!(
+            !self
+                .value
+                .chars()
+                .any(|c| c.is_whitespace() || c.is_control()),
+            "a link can't have spaces or control characters"
+        );
+        Ok(())
+    }
 }
 
 impl Person {
@@ -462,6 +538,8 @@ mod tests {
             nodes: vec![],
             media_endpoints: vec![],
             published: "2026-11-01T00:00:00Z".into(),
+            icon: None,
+            attachment: Vec::new(),
         }
     }
 
@@ -476,6 +554,96 @@ mod tests {
         let json = serde_json::to_string(&person(true)).unwrap();
         assert!(json.contains(r#""discoverable":true"#), "{json}");
         assert!(serde_json::from_str::<Person>(&json).unwrap().discoverable);
+    }
+
+    #[test]
+    fn a_profile_without_a_picture_or_links_is_written_as_before() {
+        let json = serde_json::to_string(&person(true)).unwrap();
+        assert!(
+            !json.contains("icon") && !json.contains("attachment"),
+            "{json}"
+        );
+        let signed = crate::SignedObject::sign(&key(1), &Payload::Person(person(true))).unwrap();
+        let back: crate::SignedObject =
+            serde_json::from_str(&serde_json::to_string(&signed).unwrap()).unwrap();
+        assert!(matches!(back.verify(), Ok(Payload::Person(p)) if p.icon.is_none()));
+    }
+
+    /// Kim's profile with a picture and a link, as a node before ADR 0032
+    /// reads it: without them, the fields it doesn't know ignored.
+    #[test]
+    fn an_older_node_reads_a_profile_with_a_picture_and_links() {
+        #[derive(Deserialize)]
+        struct OlderPerson {
+            name: String,
+            nodes: Vec<EndpointId>,
+        }
+        let kim = Person {
+            icon: Some(icon(MAX_ICON_BYTES)),
+            attachment: vec![link("https://example.org/kim")],
+            ..person(true)
+        };
+        let json = serde_json::to_string(&kim).unwrap();
+        let older: OlderPerson = serde_json::from_str(&json).unwrap();
+        assert_eq!((older.name.as_str(), older.nodes.len()), ("Alice", 0));
+        let back: Person = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, kim);
+    }
+
+    fn icon(size: u64) -> BlobRef {
+        BlobRef {
+            blob: BlobHash::from_bytes([9; 32]),
+            size,
+            media_type: "image/webp".into(),
+        }
+    }
+
+    fn link(value: &str) -> ProfileLink {
+        ProfileLink {
+            name: "Site".into(),
+            value: value.into(),
+        }
+    }
+
+    #[test]
+    fn a_big_picture_or_a_link_that_isnt_https_is_refused() {
+        let check = |p: Person| Payload::Person(p).check_limits();
+        let with_icon = |icon| Person {
+            icon: Some(icon),
+            ..person(true)
+        };
+        assert!(check(with_icon(icon(MAX_ICON_BYTES))).is_ok());
+        assert!(check(with_icon(icon(MAX_ICON_BYTES + 1))).is_err());
+        let png = BlobRef {
+            media_type: "image/png".into(),
+            ..icon(1_000)
+        };
+        assert!(check(with_icon(png)).is_err());
+
+        let with_links = |links: Vec<ProfileLink>| Person {
+            attachment: links,
+            ..person(true)
+        };
+        assert!(check(with_links(vec![link("https://example.org/a?b=c")])).is_ok());
+        for bad in [
+            "http://example.org",
+            "javascript:alert(1)",
+            "https://",
+            "https:///path",
+            "https://exa mple.org",
+            "https://example.org/\n",
+        ] {
+            assert!(check(with_links(vec![link(bad)])).is_err(), "{bad:?}");
+        }
+        let long = format!("https://example.org/{}", "a".repeat(MAX_LINK_URL_BYTES));
+        assert!(check(with_links(vec![link(&long)])).is_err());
+        let long_name = ProfileLink {
+            name: "n".repeat(MAX_LINK_NAME_BYTES + 1),
+            ..link("https://example.org")
+        };
+        assert!(check(with_links(vec![long_name])).is_err());
+        let five = vec![link("https://example.org"); MAX_PROFILE_LINKS + 1];
+        assert!(check(with_links(five)).is_err());
     }
 
     fn key(byte: u8) -> SecretKey {
