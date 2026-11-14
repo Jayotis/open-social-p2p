@@ -250,7 +250,7 @@ void main() {
     expect(find.text('first'), findsOneWidget);
     expect(find.text('Show more'), findsNothing);
 
-    await tester.tap(find.text('Photos and videos 1'));
+    await tester.tap(find.text('Media 1'));
     await tester.pumpAndSettle();
     expect(app.asked, ['posts newest', 'posts 1', 'media newest']);
     expect(find.byType(GridView), findsNothing);
