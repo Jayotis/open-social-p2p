@@ -1062,6 +1062,46 @@ async fn downloads_from(node: &Node, source: &Node) -> osp_proto::rpc::PeerCount
         .unwrap_or_default()
 }
 
+/// Asks `host`'s media endpoint for `blob` from a stranger's endpoint, and
+/// reads only the size Jimmy's answer starts with, which says he took the
+/// request. The rest waits, unread, so the place stays held until what this
+/// returns is dropped.
+async fn hold_a_place(
+    net: &SimNet,
+    host: &Node,
+    blob: BlobHash,
+) -> (Endpoint, iroh_blobs::get::fsm::AtBlobContent) {
+    let ClientResponse::Status(status) = call(host, ClientRequest::Status).await else {
+        panic!("no status");
+    };
+    let media = status
+        .endpoints
+        .and_then(|e| e.media)
+        .expect("a media endpoint");
+    let key = SecretKey::generate();
+    let me = Endpoint::builder(presets::Minimal)
+        .relay_mode(RelayMode::Disabled)
+        .clear_ip_transports()
+        .add_custom_transport(net.link(Link::default()).transport(key.public()))
+        .secret_key(key)
+        .bind()
+        .await
+        .unwrap();
+    let conn = me.connect(sim_addr(media), iroh_blobs::ALPN).await.unwrap();
+    let hash = iroh_blobs::Hash::from_bytes(*blob.as_bytes());
+    let request = iroh_blobs::protocol::GetRequest::blob(hash);
+    let connected = iroh_blobs::get::fsm::start(conn, request, Default::default())
+        .next()
+        .await
+        .unwrap();
+    let iroh_blobs::get::fsm::ConnectedNext::StartRoot(root) = connected.next().await.unwrap()
+    else {
+        panic!("not a blob's answer");
+    };
+    let (content, _size) = root.next().next().await.expect("Jimmy took the request");
+    (me, content)
+}
+
 /// Fails if any of `own` sent anything since recording began.
 fn assert_sent_nothing_from(net: &SimNet, own: &HashSet<EndpointId>) {
     let from_own: Vec<_> = net
@@ -1072,8 +1112,10 @@ fn assert_sent_nothing_from(net: &SimNet, own: &HashSet<EndpointId>) {
     assert!(from_own.is_empty(), "own endpoints sent: {from_own:?}");
 }
 
-/// Fred is watching Kim's photo from Jimmy, who hosts it, and holds the one
-/// place Jimmy has for strangers. Alice's viewing endpoint, a stranger too, is
+/// A stranger asks Jimmy, who hosts Kim's photo, for it and reads none of
+/// it, which holds the one place Jimmy has for strangers for as long as the
+/// request is open. (A real fetch held it before, but could end early, and
+/// Alice then got the photo from Jimmy.) Alice's viewing endpoint, a stranger too, is
 /// refused as busy. With Kim's node off, that's the end of it, said plainly;
 /// when she tries again with Kim's node back, Jimmy is still busy and she gets
 /// the photo from Kim's media endpoint instead. Nothing comes from Alice's
@@ -1093,21 +1135,12 @@ async fn a_busy_source_is_retried_then_left_for_the_next_through_the_same_viewin
     assert!(kim.ask_to_be_listed().await);
     wait_for_listing(&net, &directory, kim.identity(), Some(vec![])).await;
     let jimmy = slow_hosting_jimmy(dir.path(), &net, &directory, post).await;
-    let fred = newcomer(dir.path(), &net, &directory, "Fred").await;
     let alice = newcomer(dir.path(), &net, &directory, "Alice").await;
     let own = own_endpoints(&alice);
     assert_eq!(own.len(), 3, "public, media and direct");
     net.record_senders();
 
-    let freds = tokio::spawn(async move {
-        let fetched = fred.open_blob(&photo).await;
-        (fred, fetched)
-    });
-    tokio::time::sleep(Duration::from_secs(2)).await;
-    assert!(
-        !freds.is_finished(),
-        "Fred's fetch was meant to hold the place"
-    );
+    let holding = hold_a_place(&net, &jimmy, photo).await;
 
     // With Kim's node off as well, there's no next source: it fails plainly.
     assert!(net.set_online(kim.node_id(), false));
@@ -1120,12 +1153,8 @@ async fn a_busy_source_is_retried_then_left_for_the_next_through_the_same_viewin
     assert!(from_jimmy.busy > 0.5, "{from_jimmy:?}");
     assert_sent_nothing_from(&net, &own);
 
-    // She tries again with Kim back, while Fred still holds Jimmy's place.
+    // She tries again with Kim back, while the place is still held.
     assert!(net.set_online(kim.node_id(), true));
-    assert!(
-        !freds.is_finished(),
-        "Fred's fetch was meant to hold the place"
-    );
     alice.open_blob(&photo).await.unwrap();
     let from_jimmy = downloads_from(&alice, &jimmy).await;
     assert!(from_jimmy.busy > 1.5, "{from_jimmy:?}");
@@ -1136,9 +1165,8 @@ async fn a_busy_source_is_retried_then_left_for_the_next_through_the_same_viewin
     assert_eq!(alice.viewing_endpoints_made(), 1);
     assert_sent_nothing_from(&net, &own);
 
-    let (fred, fetched) = freds.await.unwrap();
-    fetched.unwrap();
-    for node in [alice, fred, jimmy, kim, directory] {
+    drop(holding);
+    for node in [alice, jimmy, kim, directory] {
         node.shutdown().await.unwrap();
     }
 }
