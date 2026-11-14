@@ -1,6 +1,6 @@
 # ADR 0035: Exploring the Universe
 
-**Status:** Proposed (2026-11-14). Step P5 of the Product Alpha ([ADR 0030](0030-product-alpha-before-testers.md)). Replaces M5's planned Explore lanes and search screen. Uses [ADR 0034](0034-a-universe-in-levels.md)'s levels and the node's own index ([ADR 0014](0014-finding-people-and-private-messages.md)).
+**Status:** Accepted (2026-11-14), the maintainer's decision the day it was proposed. Step P5 of the Product Alpha ([ADR 0030](0030-product-alpha-before-testers.md)). Replaces M5's planned Explore lanes and search screen. Uses [ADR 0034](0034-a-universe-in-levels.md)'s levels and the node's own index ([ADR 0014](0014-finding-people-and-private-messages.md)).
 
 ## Context
 

@@ -1,6 +1,6 @@
 # ADR 0030: A Product Alpha before testers
 
-**Status:** Proposed (2026-11-14). Replaces the roadmap's M5 and the invited mechanism alpha as the next release gate. The decisions for each part are in ADRs [0031](0031-app-shell-home-universe-you.md) to [0039](0039-sharing-your-universe.md).
+**Status:** Accepted (2026-11-14), the maintainer's decision the day it was proposed. Replaces the roadmap's M5 and the invited mechanism alpha as the next release gate. The decisions for each part are in ADRs [0031](0031-app-shell-home-universe-you.md) to [0039](0039-sharing-your-universe.md).
 
 ## Context
 

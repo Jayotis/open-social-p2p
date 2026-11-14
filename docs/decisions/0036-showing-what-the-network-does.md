@@ -1,6 +1,6 @@
 # ADR 0036: Showing what the network does
 
-**Status:** Proposed (2026-11-14). Step P6 of the Product Alpha ([ADR 0030](0030-product-alpha-before-testers.md)). Replaces M5's planned My Node screen. Adds events to [ADR 0033](0033-what-the-universe-may-show.md)'s allowlist.
+**Status:** Accepted (2026-11-14), the maintainer's decision the day it was proposed. Step P6 of the Product Alpha ([ADR 0030](0030-product-alpha-before-testers.md)). Replaces M5's planned My Node screen. Adds events to [ADR 0033](0033-what-the-universe-may-show.md)'s allowlist.
 
 ## Context
 

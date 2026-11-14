@@ -1,6 +1,6 @@
 # ADR 0037: How are we connected?
 
-**Status:** Proposed (2026-11-14). Step P7 of the Product Alpha ([ADR 0030](0030-product-alpha-before-testers.md)). Shows the paths [ADR 0029](0029-vouchers-within-six-steps.md) already works out; changes nothing in how replies are let in.
+**Status:** Accepted (2026-11-14), the maintainer's decision the day it was proposed. Step P7 of the Product Alpha ([ADR 0030](0030-product-alpha-before-testers.md)). Shows the paths [ADR 0029](0029-vouchers-within-six-steps.md) already works out; changes nothing in how replies are let in.
 
 ## Context
 

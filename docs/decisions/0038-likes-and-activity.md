@@ -1,6 +1,6 @@
 # ADR 0038: Likes, and one Activity inbox
 
-**Status:** Proposed (2026-11-14). Step P8 of the Product Alpha ([ADR 0030](0030-product-alpha-before-testers.md)). Takes up M5's planned reactions. A new object in the native protocol ([ADR 0003](0003-native-social-protocol-v0.md)), sent the way replies are ([ADR 0028](0028-replies-let-in-by-the-creator.md)).
+**Status:** Accepted (2026-11-14), the maintainer's decision the day it was proposed. Step P8 of the Product Alpha ([ADR 0030](0030-product-alpha-before-testers.md)). Takes up M5's planned reactions. A new object in the native protocol ([ADR 0003](0003-native-social-protocol-v0.md)), sent the way replies are ([ADR 0028](0028-replies-let-in-by-the-creator.md)).
 
 ## Context
 
