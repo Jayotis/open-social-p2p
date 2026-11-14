@@ -1519,7 +1519,7 @@ async fn send(home: &Path, req: ClientRequest) -> Result<ClientResponse> {
 }
 
 fn print_universe(snapshot: &osp_proto::universe::Snapshot) {
-    use osp_proto::universe::{LineKind, MachineState, WorkBand};
+    use osp_proto::universe::{ActivityBand, LineKind, MachineState};
     let names: std::collections::HashMap<_, _> =
         snapshot.people.iter().map(|p| (p.actor, &p.name)).collect();
     let name = |actor| names.get(actor).map_or("?".into(), |n| plain(n));
@@ -1572,13 +1572,13 @@ fn print_universe(snapshot: &osp_proto::universe::Snapshot) {
             MachineState::AnsweredLately => "answered lately",
             MachineState::Faded => "faded",
         };
-        let work = match m.work {
-            WorkBand::None => "no work yet",
-            WorkBand::Some => "some work",
-            WorkBand::ALot => "a lot of work",
+        let activity = match m.activity {
+            ActivityBand::None => "no activity yet",
+            ActivityBand::Some => "some activity",
+            ActivityBand::ALot => "a lot of activity",
         };
         let directory = if m.directory { ", a directory" } else { "" };
-        println!("  {} ({state}{directory}, {work})", m.words);
+        println!("  {} ({state}{directory}, {activity})", m.words);
     }
     if let Some(n) = snapshot.network {
         println!(

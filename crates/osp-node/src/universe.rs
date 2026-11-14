@@ -14,9 +14,8 @@ use osp_proto::{
     Payload, SignedObject,
     rpc::ClientResponse,
     universe::{
-        ALL_LAYERS, LINE_DAYS, Layer, Level, Line, LineKind, MAX_LINES, MAX_POINTS,
+        ALL_LAYERS, ActivityBand, LINE_DAYS, Layer, Level, Line, LineKind, MAX_LINES, MAX_POINTS,
         MAX_SNAPSHOT_BYTES, MachinePoint, MachineState, NetworkTotals, PersonPoint, Snapshot,
-        WorkBand,
     },
 };
 
@@ -51,7 +50,7 @@ impl Core {
     }
 
     fn snapshot(&self, layers: &[Layer], now: i64) -> Result<Snapshot> {
-        let (mut people, lines, more_people) = match layers.contains(&Layer::People) {
+        let (people, lines, more_people) = match layers.contains(&Layer::People) {
             true => self.people_layer(now)?,
             false => (vec![], vec![], 0),
         };
@@ -70,32 +69,15 @@ impl Core {
             }
             false => None,
         };
-        let mut snapshot = Snapshot {
+        fit(Snapshot {
             version: String::new(),
             level: Level::Local,
-            people: vec![],
-            lines: vec![],
+            people,
+            lines,
             more_people,
             machines,
             network,
-        };
-        // The least near go first until it fits, with their lines.
-        let mut lines = lines;
-        loop {
-            snapshot.people = people.clone();
-            let kept: HashSet<_> = people.iter().map(|p| p.actor).collect();
-            lines.retain(|l| kept.contains(&l.from) && kept.contains(&l.to));
-            snapshot.lines = lines.clone();
-            let len = serde_json::to_vec(&snapshot)?.len();
-            if len <= MAX_SNAPSHOT_BYTES - 64 || people.len() <= 1 {
-                break;
-            }
-            let drop = (people.len() / 10).max(1);
-            people.truncate(people.len() - drop);
-            snapshot.more_people += drop as u64;
-        }
-        snapshot.version = blake3::hash(&serde_json::to_vec(&snapshot)?).to_hex()[..16].to_string();
-        Ok(snapshot)
+        })
     }
 
     /// The people the node knows, nearest and most active first, within the
@@ -231,6 +213,40 @@ impl Core {
     }
 }
 
+/// Makes a snapshot fit in `MAX_SNAPSHOT_BYTES`, and gives it its version.
+/// The least near people go first, with their lines, a tenth at a time. A
+/// full machine table fits beside a person or two (a test checks), so
+/// machines go only as a last resort, should that table ever grow.
+fn fit(mut snapshot: Snapshot) -> Result<Snapshot> {
+    // Room for the version, added once it fits.
+    const ROOM: usize = 64;
+    loop {
+        let len = serde_json::to_vec(&snapshot)?.len();
+        if len <= MAX_SNAPSHOT_BYTES - ROOM {
+            break;
+        }
+        if snapshot.people.len() > 1 {
+            let drop = (snapshot.people.len() / 10).max(1);
+            snapshot.people.truncate(snapshot.people.len() - drop);
+            snapshot.more_people += drop as u64;
+            let kept: HashSet<_> = snapshot.people.iter().map(|p| p.actor).collect();
+            snapshot
+                .lines
+                .retain(|l| kept.contains(&l.from) && kept.contains(&l.to));
+        } else if !snapshot.machines.is_empty() {
+            let drop = (snapshot.machines.len() / 10).max(1);
+            snapshot.machines.truncate(snapshot.machines.len() - drop);
+        } else {
+            // One person, no machines: only a line list this long could
+            // be left, and lines need two people.
+            snapshot.lines.clear();
+            break;
+        }
+    }
+    snapshot.version = blake3::hash(&serde_json::to_vec(&snapshot)?).to_hex()[..16].to_string();
+    Ok(snapshot)
+}
+
 /// A reshare or found-early credit, checked: its kind, from whom to whom,
 /// and its date.
 fn public_act(obj: &SignedObject) -> Option<(LineKind, PublicKey, PublicKey, i64)> {
@@ -255,19 +271,20 @@ fn machine_points(seen: Vec<Seen>) -> Vec<MachinePoint> {
                 SeenState::Faded => MachineState::Faded,
             },
             directory: s.directory,
-            work: band(s.work),
+            activity: band(s.activity),
         })
         .collect();
     points.sort_by(|a, b| a.words.cmp(&b.words));
     points
 }
 
-/// A machine's work in bands, never as its score (ADR 0033).
-fn band(work: f64) -> WorkBand {
-    match work {
-        w if w < 1.0 => WorkBand::None,
-        w if w < 20.0 => WorkBand::Some,
-        _ => WorkBand::ALot,
+/// A machine's recent activity with this node in bands, never as its score
+/// (ADR 0033).
+fn band(activity: f64) -> ActivityBand {
+    match activity {
+        a if a < 1.0 => ActivityBand::None,
+        a if a < 20.0 => ActivityBand::Some,
+        _ => ActivityBand::ALot,
     }
 }
 
@@ -280,15 +297,126 @@ fn day(ms: i64) -> String {
 mod tests {
     use super::*;
 
+    use osp_proto::{
+        BlobHash, SecretKey,
+        types::MAX_NAME_BYTES,
+        universe::{ActivityBand, MachinePoint, MachineState},
+    };
+
+    use crate::meet::MAX_MACHINES;
+
+    /// The largest snapshot the node could be asked to send: the most
+    /// people, each with the longest name JSON can make of a profile's
+    /// (control characters, six bytes each), the most lines, and a full
+    /// machine table with the longest words.
+    fn worst_case(name: &str) -> Snapshot {
+        let keys: Vec<PublicKey> = (0..MAX_POINTS)
+            .map(|i| {
+                let mut seed = [0u8; 32];
+                seed[..8].copy_from_slice(&(i as u64).to_le_bytes());
+                SecretKey::from_bytes(&seed).public()
+            })
+            .collect();
+        let people = keys
+            .iter()
+            .map(|actor| PersonPoint {
+                actor: *actor,
+                name: name.to_string(),
+                picture: Some(BlobHash::from_bytes([0xff; 32])),
+                step: Some(3),
+                followed: true,
+                known: true,
+                found_through: Some("abstract-abstract-abstract".into()),
+                posts: u64::MAX,
+                media: u64::MAX,
+                reshares: u64::MAX,
+                last_post: Some("2026-11-14".into()),
+            })
+            .collect();
+        let lines = (0..MAX_LINES)
+            .map(|i| Line {
+                kind: LineKind::CreditedEarly,
+                from: keys[i % MAX_POINTS],
+                to: keys[(i * 7 + 1) % MAX_POINTS],
+                count: u32::MAX,
+                last: "2026-11-14".into(),
+            })
+            .collect();
+        let machines = (0..MAX_MACHINES)
+            .map(|_| MachinePoint {
+                words: "abstract-abstract-abstract".into(),
+                state: MachineState::AnsweredLately,
+                directory: true,
+                activity: ActivityBand::ALot,
+            })
+            .collect();
+        Snapshot {
+            version: String::new(),
+            level: Level::Local,
+            people,
+            lines,
+            more_people: u64::MAX / 2,
+            machines,
+            network: Some(NetworkTotals {
+                posts_hosted: u64::MAX,
+                bytes_served: u64::MAX,
+                people_found: u64::MAX,
+            }),
+        }
+    }
+
+    /// The 128 KiB contract (ADR 0034) holds however large the world, and
+    /// a full machine table always fits: only people and their lines are
+    /// trimmed. If the table grows past what fits, this fails, rather than
+    /// the Universe quietly dropping machines or growing past its limit.
+    #[test]
+    fn the_largest_snapshot_fits_its_limit_with_every_machine() {
+        for name in [
+            "Kim".to_string(),
+            "n".repeat(MAX_NAME_BYTES),
+            "\u{1}".repeat(MAX_NAME_BYTES),
+        ] {
+            let fitted = fit(worst_case(&name)).unwrap();
+            let len = serde_json::to_vec(&fitted).unwrap().len();
+            assert!(len <= MAX_SNAPSHOT_BYTES, "{len} bytes");
+            assert_eq!(fitted.machines.len(), MAX_MACHINES);
+            assert_eq!(fitted.people[0].actor, worst_case(&name).people[0].actor);
+            assert_eq!(
+                fitted.people.len() as u64 + fitted.more_people,
+                MAX_POINTS as u64 + u64::MAX / 2
+            );
+            let kept: HashSet<_> = fitted.people.iter().map(|p| p.actor).collect();
+            assert!(
+                fitted
+                    .lines
+                    .iter()
+                    .all(|l| kept.contains(&l.from) && kept.contains(&l.to))
+            );
+        }
+    }
+
+    /// A small world is sent whole.
+    #[test]
+    fn a_small_snapshot_is_sent_whole() {
+        let mut small = worst_case("Kim");
+        small.people.truncate(20);
+        small.lines.clear();
+        small.machines.truncate(5);
+        let fitted = fit(small.clone()).unwrap();
+        assert_eq!(fitted.people, small.people);
+        assert_eq!(fitted.machines, small.machines);
+        assert_eq!(fitted.version.len(), 16);
+    }
+
     #[test]
     fn a_day_is_only_the_date() {
         assert_eq!(day(1_763_078_400_000), "2025-11-14");
     }
 
     #[test]
-    fn work_is_shown_in_bands() {
-        assert_eq!(band(0.0), WorkBand::None);
-        assert_eq!(band(3.0), WorkBand::Some);
-        assert_eq!(band(500.0), WorkBand::ALot);
+    fn activity_is_shown_in_bands() {
+        assert_eq!(band(0.0), ActivityBand::None);
+        assert_eq!(band(3.0), ActivityBand::Some);
+        assert_eq!(band(500.0), ActivityBand::ALot);
     }
 }

@@ -48,7 +48,7 @@ Opening, panning or zooming the map, and anything the node does in the backgroun
 | machine name, in words | `machines`, `map` | made to be shown; tied to no person | `words`. Never the key. The words come from 33 bits of it, so someone holding a list of machine keys could match them, which tells them only that Kim's node knows that machine. Kim's own machine is never in the list. |
 | state: heard of, met, answered lately, faded | `machines` | coarse, Kim's own record | `state`. Met: answered within 3 days. Answered lately: known for a month and still answering. Faded: answered once, not lately. |
 | runs a directory | directory lists read | public role | `directory`, from the machine's own signed record. |
-| work with Kim's node, in bands (none, some, a lot) | peer record | Kim's own record, banded, never a score | `work`. The machine's faded answers and good records passed on, below 1, below 20, or more. Machines and the peer record's nodes have different keys, so the bands come from the machine record. |
+| recent activity with Kim's node, in bands (none, some, a lot) | `machines` | Kim's own record, banded, never a score | `activity`: recent machine-protocol interaction with this node, from greetings it answered and records it passed on that checked out, faded, shown only in bands (below 1, below 20, more). It isn't work for the network: *work* and *contribution* are kept for carrying bytes, hosting and serving (P6). Machines and the peer record's nodes have different keys, so it comes from the machine record, not the peer record. |
 
 **Content:** public posts, media and reshares the node holds or found, each placed with its author.
 
