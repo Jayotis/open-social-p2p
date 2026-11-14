@@ -107,6 +107,7 @@ say "Installed $("$BIN/osp" --version) in $BIN."
 
 # --- The node ---
 
+created=false
 if [[ -e "$NODE_HOME/config.toml" ]]; then
     say ""
     say "A node already exists in $NODE_HOME; its settings are left as they are."
@@ -134,11 +135,16 @@ else
     else
         OSP_INSTALLING=1 "$BIN/osp" --home "$NODE_HOME" init "${directories[@]}" < /dev/tty
     fi
+    created=true
 fi
 
 if ! systemctl --user is-enabled --quiet osp 2>/dev/null; then
     say ""
     "$BIN/osp" --home "$NODE_HOME" service install
+elif $created; then
+    # The service is left from an earlier node, so installing it started
+    # nothing: start the new one.
+    systemctl --user start osp
 fi
 
 say ""
