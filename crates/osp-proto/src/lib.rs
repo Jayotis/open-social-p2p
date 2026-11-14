@@ -13,6 +13,7 @@ pub mod rpc;
 pub mod social;
 pub mod ticket;
 pub mod types;
+pub mod universe;
 
 use std::time::SystemTime;
 

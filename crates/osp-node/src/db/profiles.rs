@@ -10,7 +10,7 @@ use super::Db;
 
 /// A post with media is a `Note` that names a file. A note's only refs are
 /// its files (`add_refs`).
-const HAS_MEDIA: &str = "EXISTS (SELECT 1 FROM refs WHERE refs.id = objects.id)";
+pub(super) const HAS_MEDIA: &str = "EXISTS (SELECT 1 FROM refs WHERE refs.id = objects.id)";
 
 /// How many of a person's things this node holds.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]

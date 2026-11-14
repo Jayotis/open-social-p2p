@@ -23,7 +23,9 @@ use std::{
 use anyhow::{Context, Result, bail, ensure};
 use iroh::EndpointId;
 use n0_future::{BufferedStreamExt, StreamExt, stream};
-use osp_proto::machine::{IntroduceRequest, MAX_INTRODUCE_LIFETIME_SECS, MAX_KNOWN, MachineRecord};
+use osp_proto::machine::{
+    IntroduceRequest, MAX_INTRODUCE_LIFETIME_SECS, MAX_KNOWN, MachineRecord, OFFERS_DIRECTORY,
+};
 use serde::{Deserialize, Serialize};
 use tracing::{debug, warn};
 
@@ -1192,6 +1194,49 @@ impl Table {
     }
 }
 
+impl Table {
+    /// Each machine as the Universe may show it: where it stands, whether
+    /// its record offers a directory, and how much it did, faded.
+    pub fn seen(&self, now: i64) -> Vec<Seen> {
+        self.entries
+            .values()
+            .map(|e| Seen {
+                machine: e.machine,
+                state: match (self.stage(e, now), self.answering(e, now)) {
+                    (Stage::Heard, _) => SeenState::HeardOf,
+                    (_, false) => SeenState::Faded,
+                    (Stage::Met, true) => SeenState::Met,
+                    (Stage::Known, true) => SeenState::AnsweredLately,
+                },
+                directory: e
+                    .record
+                    .verify()
+                    .is_ok_and(|info| info.offers.iter().any(|o| o == OFFERS_DIRECTORY)),
+                work: e.counts.answers + e.counts.good,
+            })
+            .collect()
+    }
+}
+
+/// A machine as the Universe may show it. `machine` is for the node alone:
+/// a snapshot shows only its words.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct Seen {
+    pub machine: EndpointId,
+    pub state: SeenState,
+    pub directory: bool,
+    /// Its faded answers, and the good records it passed on.
+    pub work: f64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SeenState {
+    HeardOf,
+    Met,
+    AnsweredLately,
+    Faded,
+}
+
 /// Whether the records a machine passed on checked out. One that didn't is
 /// forgiven, as a machine can go for good between being passed on and being
 /// dialled.
@@ -1362,6 +1407,11 @@ impl Acquaintances {
 
     pub fn acquaintances(&self) -> Vec<Acquaintance> {
         self.with(|t| t.acquaintances(now_ms()))
+    }
+
+    /// How each machine looks in the Universe (ADR 0033).
+    pub fn seen(&self) -> Vec<Seen> {
+        self.with(|t| t.seen(now_ms()))
     }
 }
 
