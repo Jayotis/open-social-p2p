@@ -350,6 +350,14 @@ impl Core {
                 self.profile_items(&actor, kind, before.as_ref(), limit)
                     .await?
             }
+            // Unlike `People`, it reads no directory first: opening the
+            // Universe asks nobody anything (ADR 0033).
+            ClientRequest::Universe {
+                level,
+                region: _,
+                layers,
+                since,
+            } => self.universe(level, &layers, since.as_deref())?,
             ClientRequest::Pair { .. }
             | ClientRequest::ReadBlob { .. }
             | ClientRequest::ResumeUpload { .. }

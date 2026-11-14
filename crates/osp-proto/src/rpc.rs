@@ -17,6 +17,7 @@ use crate::{
     object::ObjectId,
     social::ReplyPolicy,
     types::{Attachment, BlobHash, Person, ProfileLink},
+    universe::{Layer, Level, Snapshot},
 };
 
 /// Largest request frame a node reads from a paired device, in bytes. The
@@ -306,6 +307,23 @@ pub enum ClientRequest {
         #[serde(default = "default_feed_limit")]
         limit: u32,
     },
+    /// What the Universe may show (ADR 0033): one snapshot, built on the
+    /// node alone from what it already knows. Asking for it sends nothing to
+    /// any other node. `region` names a part of the tree once ADR 0034's
+    /// exists; until then it's ignored, and every `level` gets the whole
+    /// world as `Local`. No `layers` means all of them. With `since` the
+    /// `version` of the snapshot the device holds, the reply is
+    /// `UniverseUnchanged` if nothing changed.
+    Universe {
+        #[serde(default)]
+        level: Level,
+        #[serde(default)]
+        region: Option<String>,
+        #[serde(default)]
+        layers: Vec<Layer>,
+        #[serde(default)]
+        since: Option<String>,
+    },
 }
 
 /// Most items in one page of `ProfileItems`.
@@ -517,6 +535,12 @@ pub enum ClientResponse {
         connect_ms: u64,
         round_trip_ms: u64,
     },
+    /// The answer to `Universe`.
+    Universe {
+        snapshot: Box<Snapshot>,
+    },
+    /// The snapshot named by `since` is still the node's.
+    UniverseUnchanged,
     Error {
         message: String,
     },

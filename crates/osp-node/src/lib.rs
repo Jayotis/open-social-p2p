@@ -35,6 +35,7 @@ mod sync;
 mod threads;
 mod tor;
 mod trust;
+mod universe;
 mod uploads;
 mod viewing;
 mod vouches;

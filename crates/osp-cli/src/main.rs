@@ -169,6 +169,10 @@ enum Command {
         #[arg(long, default_value_t = 50)]
         limit: u32,
     },
+    /// What the Universe shows: the people your node knows, how near each is
+    /// to you and the public lines between them, the machines it knows, and
+    /// its totals. Built on your node alone; nothing leaves it
+    Universe,
     /// Show someone's profile and how many of their posts your node holds,
     /// or one page of them. With no one named, your own
     Profile {
@@ -636,6 +640,12 @@ async fn main() -> Result<()> {
             limit,
         },
         Command::People { limit } => ClientRequest::People { limit },
+        Command::Universe => ClientRequest::Universe {
+            level: Default::default(),
+            region: None,
+            layers: vec![],
+            since: None,
+        },
         Command::Profile {
             who,
             posts,
@@ -1508,6 +1518,78 @@ async fn send(home: &Path, req: ClientRequest) -> Result<ClientResponse> {
     read_frame(&mut reader).await
 }
 
+fn print_universe(snapshot: &osp_proto::universe::Snapshot) {
+    use osp_proto::universe::{LineKind, MachineState, WorkBand};
+    let names: std::collections::HashMap<_, _> =
+        snapshot.people.iter().map(|p| (p.actor, &p.name)).collect();
+    let name = |actor| names.get(actor).map_or("?".into(), |n| plain(n));
+    println!("People ({}):", snapshot.people.len());
+    for p in &snapshot.people {
+        let step = match p.step {
+            Some(0) => "you".to_string(),
+            Some(n) => format!("step {n}"),
+            None => "unplaced".to_string(),
+        };
+        let mut notes = vec![step];
+        if p.followed {
+            notes.push("following".into());
+        }
+        if p.known {
+            notes.push("known".into());
+        }
+        if let Some(d) = &p.found_through {
+            notes.push(format!("found through {d}"));
+        }
+        println!("  {} ({})", plain(&p.name), notes.join(", "));
+        let last = p.last_post.as_deref().unwrap_or("never");
+        println!(
+            "    {} posts, {} with media, {} reshares; last {last}",
+            p.posts, p.media, p.reshares
+        );
+    }
+    if snapshot.more_people > 0 {
+        println!("  and {} more who didn't fit", snapshot.more_people);
+    }
+    println!("Lines ({}):", snapshot.lines.len());
+    for l in &snapshot.lines {
+        let what = match l.kind {
+            LineKind::Reshared => "reshared",
+            LineKind::CreditedEarly => "credited early",
+        };
+        println!(
+            "  {} {what} {} ({}x, last {})",
+            name(&l.from),
+            name(&l.to),
+            l.count,
+            l.last
+        );
+    }
+    println!("Machines ({}):", snapshot.machines.len());
+    for m in &snapshot.machines {
+        let state = match m.state {
+            MachineState::HeardOf => "heard of",
+            MachineState::Met => "met",
+            MachineState::AnsweredLately => "answered lately",
+            MachineState::Faded => "faded",
+        };
+        let work = match m.work {
+            WorkBand::None => "no work yet",
+            WorkBand::Some => "some work",
+            WorkBand::ALot => "a lot of work",
+        };
+        let directory = if m.directory { ", a directory" } else { "" };
+        println!("  {} ({state}{directory}, {work})", m.words);
+    }
+    if let Some(n) = snapshot.network {
+        println!(
+            "Network: hosting {} posts, served {}, found {} people through directories",
+            n.posts_hosted,
+            size(n.bytes_served),
+            n.people_found
+        );
+    }
+}
+
 fn print(resp: ClientResponse, json: bool) -> Result<()> {
     if json {
         println!("{}", serde_json::to_string_pretty(&resp)?);
@@ -1728,6 +1810,8 @@ fn print(resp: ClientResponse, json: bool) -> Result<()> {
                 println!();
             }
         }
+        ClientResponse::Universe { snapshot } => print_universe(&snapshot),
+        ClientResponse::UniverseUnchanged => println!("Unchanged."),
         ClientResponse::Fetched { files } => {
             for f in files {
                 match f.path {

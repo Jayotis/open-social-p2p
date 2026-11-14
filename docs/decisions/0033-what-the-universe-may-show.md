@@ -32,27 +32,29 @@ Opening, panning or zooming the map, and anything the node does in the backgroun
 
 **People**
 
-| Field | From | Why it may be shown |
-| --- | --- | --- |
-| identity key, name, picture hash | profiles the node holds | public, signed by them |
-| steps from Kim: 1 (her circle), 2 (whom her circle reshared), 3 (from her gathered side) | follows, trust, outboxes, `side_vouches` | Kim's own follows, and public signed acts |
-| follows them, is someone Kim knows | `follows`, `trust` | Kim's own data |
-| found through a directory, in words | `found_people` | already shown today |
-| public edges: Alice reshared Jimmy, Jimmy credited Carol early | reshares in outboxes, `vouches`, `side_vouches` | public signed acts |
-| posts held, media held, last post (to the day) | `objects` | public; used for brightness |
+| Field | From | Why it may be shown | Review (2026-11-14) |
+| --- | --- | --- | --- |
+| identity key, name, picture hash | profiles the node holds | public, signed by them | `actor`, `name`, `picture`. Copied from the profile field by field: a profile also lists its nodes' endpoint IDs and media endpoints, which never reach the snapshot. The picture is read like any other file a device opens. |
+| steps from Kim: 1 (her circle), 2 (whom her circle reshared), 3 (from her gathered side) | follows, trust, outboxes, `side_vouches` | Kim's own follows, and public signed acts | `step`: 0 for Kim, none for anyone else. Step 2 counts Kim's own reshares too. Step 1 shows whom Kim follows and knows. That's her own data, but it's on screen (see Consequences). |
+| follows them, is someone Kim knows | `follows`, `trust` | Kim's own data | `followed`, `known`. The same. |
+| found through a directory, in words | `found_people` | already shown today | `found_through`. It names the directory's machine, a public role, never the person's own. |
+| public edges: Alice reshared Jimmy, Jimmy credited Carol early | reshares in outboxes, `vouches`, `side_vouches` | public signed acts | `lines`: kind, from, to, how many in 90 days, and the newest's day. Each act's signature is checked again, and its signer must be `from`. Also read: reshares that came with directories' lists, and the credits Kim gave, her own acts. `PlaceWithin` answers are kept elsewhere and never read. |
+| posts held, media held, last post (to the day) | `objects` | public; used for brightness | `posts`, `media`, `reshares`, `last_post`, the day only, in UTC, so no time of day hints at a time zone. |
 
 **Machines**
 
-| Field | From | Why it may be shown |
-| --- | --- | --- |
-| machine name, in words | `machines`, `map` | made to be shown; tied to no person |
-| state: heard of, met, answered lately, faded | `machines` | coarse, Kim's own record |
-| runs a directory | directory lists read | public role |
-| work with Kim's node, in bands (none, some, a lot) | peer record | Kim's own record, banded, never a score |
+| Field | From | Why it may be shown | Review (2026-11-14) |
+| --- | --- | --- | --- |
+| machine name, in words | `machines`, `map` | made to be shown; tied to no person | `words`. Never the key. The words come from 33 bits of it, so someone holding a list of machine keys could match them, which tells them only that Kim's node knows that machine. Kim's own machine is never in the list. |
+| state: heard of, met, answered lately, faded | `machines` | coarse, Kim's own record | `state`. Met: answered within 3 days. Answered lately: known for a month and still answering. Faded: answered once, not lately. |
+| runs a directory | directory lists read | public role | `directory`, from the machine's own signed record. |
+| work with Kim's node, in bands (none, some, a lot) | peer record | Kim's own record, banded, never a score | `work`. The machine's faded answers and good records passed on, below 1, below 20, or more. Machines and the peer record's nodes have different keys, so the bands come from the machine record. |
 
 **Content:** public posts, media and reshares the node holds or found, each placed with its author.
 
 **Network:** totals only. Copies served, bytes served, posts hosted, people found through directories, as counts over a day or a week. And the recent events of [ADR 0036](0036-showing-what-the-network-does.md).
+
+*Review (2026-11-14):* built from Kim's own counts: `posts_hosted` and `bytes_served` (everything served since each was reshared with hosting) and `people_found`. Copies served over a day or a week need a count the node doesn't keep yet. They come with ADR 0036's events (P6), as do the events themselves. Content isn't in the snapshot yet: a device reads a person's posts through `ProfileItems`, as their profile does. Also in the snapshot: `version`, a hash of the rest, so a device can ask `since` it; `level`; `more_people`, how many didn't fit.
 
 ### 4. What it never shows
 
