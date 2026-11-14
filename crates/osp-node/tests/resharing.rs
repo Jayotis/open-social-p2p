@@ -1021,3 +1021,175 @@ async fn a_directory_that_follows_the_author_drops_a_deleted_post_at_once() {
         node.shutdown().await.unwrap();
     }
 }
+
+// ---- ADR 0024 step 2: a busy source, and one that stops partway ----
+
+/// Jimmy, listed as hosting Kim's `post`, on a 500 kbit/s uplink. A node that
+/// hasn't measured itself sending faster has 2 places for large files, 1 of
+/// them for strangers, and Kim's 3 MB photo takes him about 45 s to send.
+async fn slow_hosting_jimmy(root: &Path, net: &SimNet, directory: &Node, post: ObjectId) -> Node {
+    let slow = SimSettings {
+        network: Some(net.link(Link {
+            up_bps: 500_000,
+            ..Link::default()
+        })),
+        ..sim(net)
+    };
+    let jimmy = start_sim(root, config_knowing("Jimmy", directory, true), slow).await;
+    read_directories(&jimmy).await;
+    reshare(&jimmy, post, true).await;
+    assert!(jimmy.ask_to_be_listed().await);
+    wait_for_listing(net, directory, jimmy.identity(), Some(vec![(post, true)])).await;
+    jimmy
+}
+
+/// Someone who follows nobody and has found what `directory` lists.
+async fn newcomer(root: &Path, net: &SimNet, directory: &Node, name: &str) -> Node {
+    let node = start_sim(root, config_knowing(name, directory, false), sim(net)).await;
+    read_directories(&node).await;
+    node
+}
+
+/// What `node` measured downloading from `source`'s node (ADR 0011).
+async fn downloads_from(node: &Node, source: &Node) -> osp_proto::rpc::PeerCounts {
+    let ClientResponse::Peers { peers } = call(node, ClientRequest::Peers).await else {
+        panic!("no peers");
+    };
+    peers
+        .into_iter()
+        .find(|p| p.node == source.node_id())
+        .map(|p| p.counts)
+        .unwrap_or_default()
+}
+
+/// Fails if any of `own` sent anything since recording began.
+fn assert_sent_nothing_from(net: &SimNet, own: &HashSet<EndpointId>) {
+    let from_own: Vec<_> = net
+        .senders()
+        .into_iter()
+        .filter(|(from, _)| own.contains(from))
+        .collect();
+    assert!(from_own.is_empty(), "own endpoints sent: {from_own:?}");
+}
+
+/// Fred is watching Kim's photo from Jimmy, who hosts it, and holds the one
+/// place Jimmy has for strangers. Alice's viewing endpoint, a stranger too, is
+/// refused as busy. With Kim's node off, that's the end of it, said plainly;
+/// when she tries again with Kim's node back, Jimmy is still busy and she gets
+/// the photo from Kim's media endpoint instead. Nothing comes from Alice's
+/// own endpoints.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_busy_source_is_retried_then_left_for_the_next_through_the_same_viewing_key() {
+    let dir = tempfile::tempdir().unwrap();
+    let net = SimNet::new(80);
+    let directory = start_directory(dir.path(), &net, Duration::from_secs(3600), 16).await;
+    let kim = start_sim(
+        dir.path(),
+        config_knowing("Kim", &directory, true),
+        sim(&net),
+    )
+    .await;
+    let (post, photo) = post_large_photo(&kim, dir.path()).await;
+    assert!(kim.ask_to_be_listed().await);
+    wait_for_listing(&net, &directory, kim.identity(), Some(vec![])).await;
+    let jimmy = slow_hosting_jimmy(dir.path(), &net, &directory, post).await;
+    let fred = newcomer(dir.path(), &net, &directory, "Fred").await;
+    let alice = newcomer(dir.path(), &net, &directory, "Alice").await;
+    let own = own_endpoints(&alice);
+    assert_eq!(own.len(), 3, "public, media and direct");
+    net.record_senders();
+
+    let freds = tokio::spawn(async move {
+        let fetched = fred.open_blob(&photo).await;
+        (fred, fetched)
+    });
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    assert!(
+        !freds.is_finished(),
+        "Fred's fetch was meant to hold the place"
+    );
+
+    // With Kim's node off as well, there's no next source: it fails plainly.
+    assert!(net.set_online(kim.node_id(), false));
+    let err = alice.open_blob(&photo).await.unwrap_err();
+    assert!(
+        format!("{err:#}").contains("without showing who you are"),
+        "{err:#}"
+    );
+    let from_jimmy = downloads_from(&alice, &jimmy).await;
+    assert!(from_jimmy.busy > 0.5, "{from_jimmy:?}");
+    assert_sent_nothing_from(&net, &own);
+
+    // She tries again with Kim back, while Fred still holds Jimmy's place.
+    assert!(net.set_online(kim.node_id(), true));
+    assert!(
+        !freds.is_finished(),
+        "Fred's fetch was meant to hold the place"
+    );
+    alice.open_blob(&photo).await.unwrap();
+    let from_jimmy = downloads_from(&alice, &jimmy).await;
+    assert!(from_jimmy.busy > 1.5, "{from_jimmy:?}");
+    assert_eq!(from_jimmy.completed, 0.0, "{from_jimmy:?}");
+    let from_kim = downloads_from(&alice, &kim).await;
+    assert!(from_kim.completed > 0.5, "{from_kim:?}");
+    // One viewing endpoint, within its 10 minutes, asked both, both times.
+    assert_eq!(alice.viewing_endpoints_made(), 1);
+    assert_sent_nothing_from(&net, &own);
+
+    let (fred, fetched) = freds.await.unwrap();
+    fetched.unwrap();
+    for node in [alice, fred, jimmy, kim, directory] {
+        node.shutdown().await.unwrap();
+    }
+}
+
+/// Jimmy, who hosts Kim's photo, goes offline partway through sending it to
+/// Alice. Her node gives up on him once he has sent nothing for a while, and
+/// gets the rest from Kim's media endpoint, through the same viewing key.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_source_that_stops_partway_is_left_for_the_next_through_the_same_viewing_key() {
+    let dir = tempfile::tempdir().unwrap();
+    let net = SimNet::new(81);
+    let directory = start_directory(dir.path(), &net, Duration::from_secs(3600), 16).await;
+    let kim = start_sim(
+        dir.path(),
+        config_knowing("Kim", &directory, true),
+        sim(&net),
+    )
+    .await;
+    let (post, photo) = post_large_photo(&kim, dir.path()).await;
+    assert!(kim.ask_to_be_listed().await);
+    wait_for_listing(&net, &directory, kim.identity(), Some(vec![])).await;
+    let jimmy = slow_hosting_jimmy(dir.path(), &net, &directory, post).await;
+    let alice = newcomer(dir.path(), &net, &directory, "Alice").await;
+    let own = own_endpoints(&alice);
+    assert_eq!(own.len(), 3, "public, media and direct");
+    net.record_senders();
+
+    let opening = tokio::spawn(async move {
+        let fetched = alice.open_blob(&photo).await;
+        (alice, fetched)
+    });
+    // About 0.25 MB in at 500 kbit/s, of 3 MB.
+    tokio::time::sleep(Duration::from_secs(4)).await;
+    assert!(!opening.is_finished(), "it was meant to be partway");
+    assert!(net.set_online(jimmy.node_id(), false));
+
+    let (alice, fetched) = tokio::time::timeout(Duration::from_secs(90), opening)
+        .await
+        .expect("never moved on from Jimmy")
+        .unwrap();
+    fetched.unwrap();
+    let from_jimmy = downloads_from(&alice, &jimmy).await;
+    assert!(from_jimmy.received_bytes > 0.0, "{from_jimmy:?}");
+    assert_eq!(from_jimmy.completed, 0.0, "{from_jimmy:?}");
+    let from_kim = downloads_from(&alice, &kim).await;
+    assert!(from_kim.completed > 0.5, "{from_kim:?}");
+    assert_eq!(alice.viewing_endpoints_made(), 1);
+    assert_sent_nothing_from(&net, &own);
+
+    assert!(net.set_online(jimmy.node_id(), true));
+    for node in [alice, jimmy, kim, directory] {
+        node.shutdown().await.unwrap();
+    }
+}
