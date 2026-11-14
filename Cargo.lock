@@ -3021,6 +3021,7 @@ dependencies = [
  "n0-future",
  "osp-node",
  "osp-proto",
+ "osp-tor",
  "serde",
  "serde_json",
  "tempfile",

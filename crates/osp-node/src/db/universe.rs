@@ -22,14 +22,22 @@ pub(crate) struct HeldPerson {
 
 impl Db {
     /// Every profile held other than `me`'s, with how many posts, posts with
-    /// media and reshares of theirs are here, and their newest's date.
+    /// media and reshares of theirs are here, and their newest's date. That
+    /// includes those who vouched for `me` (ADR 0029), whose profiles are
+    /// kept apart. Those further back on `me`'s side came with profiles
+    /// when it was gathered, but only their vouches are kept.
     pub fn held_people(&self, me: &PublicKey) -> Result<Vec<HeldPerson>> {
         let conn = self.conn();
         let sql = format!(
-            "SELECT profiles.signed,
+            "SELECT held.signed,
                     COALESCE(c.posts, 0), COALESCE(c.media, 0), COALESCE(c.reshares, 0),
                     c.newest
-             FROM profiles
+             FROM (
+               SELECT actor, signed FROM profiles
+               UNION ALL
+               SELECT actor, profile FROM voucher_profiles
+               WHERE actor NOT IN (SELECT actor FROM profiles)
+             ) AS held
              LEFT JOIN (
                SELECT actor,
                       SUM(kind = 'Note') AS posts,
@@ -37,8 +45,8 @@ impl Db {
                       SUM(kind = 'Announce') AS reshares,
                       MAX(published_ms) AS newest
                FROM objects WHERE kind IN ('Note', 'Announce') GROUP BY actor
-             ) AS c ON c.actor = profiles.actor
-             WHERE profiles.actor != ?1"
+             ) AS c ON c.actor = held.actor
+             WHERE held.actor != ?1"
         );
         let mut stmt = conn.prepare(&sql)?;
         let rows = stmt.query_map(params![me.to_string()], |row| {
