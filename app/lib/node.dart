@@ -97,6 +97,9 @@ class HomeNode extends ChangeNotifier with WidgetsBindingObserver {
   /// status check, so people appear as the node finds them.
   bool watchingPeople = false;
 
+  /// The owner's own profile (ADR 0032): null until first loaded.
+  Profile? me;
+
   /// Set when this phone has just paired, until the first run is done
   /// (ADR 0031 §3). Not kept: an app stopped halfway skips the rest.
   bool firstRun = false;
@@ -291,11 +294,30 @@ class HomeNode extends ChangeNotifier with WidgetsBindingObserver {
       savedAt = null;
       _reached();
       status = await app.status();
+      unawaited(loadMe());
     } catch (e) {
       _failed(e);
       _showSaved();
     }
     notifyListeners();
+  }
+
+  /// Reads the owner's own profile, for the You tab. Quietly keeps the last
+  /// one if the node can't be asked.
+  Future<void> loadMe() async {
+    final identity = paired?.identity;
+    if (identity == null) return;
+    try {
+      me = await app.profile(identity: identity);
+      notifyListeners();
+    } catch (_) {}
+  }
+
+  /// The owner saved a new profile.
+  void profileChanged(Profile profile) {
+    me = profile;
+    notifyListeners();
+    unawaited(checkStatus());
   }
 
   Future<NodeInfo> pair(String ticket) async {
@@ -360,6 +382,7 @@ class HomeNode extends ChangeNotifier with WidgetsBindingObserver {
     firstRun = false;
     people = null;
     peopleError = null;
+    me = null;
     posts = [];
     status = null;
     savedAt = null;

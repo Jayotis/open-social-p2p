@@ -4,6 +4,7 @@ import '../format.dart';
 import '../node.dart';
 import '../screens/image_screen.dart';
 import '../screens/player_screen.dart';
+import '../screens/profile_screen.dart';
 import '../screens/thread_screen.dart';
 import '../src/rust/api/osp.dart';
 
@@ -146,6 +147,15 @@ class PostCard extends StatelessWidget {
             ),
             title: Text(post.author),
             subtitle: published != null ? Text(formatAgo(published)) : null,
+            onTap: () => Navigator.of(context).push(
+              MaterialPageRoute(
+                builder: (_) => ProfileScreen(
+                  node: node,
+                  identity: post.authorIdentity,
+                  name: post.author,
+                ),
+              ),
+            ),
           ),
           if ((post.resharers ?? 0) > 0)
             Padding(

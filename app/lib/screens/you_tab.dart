@@ -2,13 +2,15 @@ import 'package:flutter/material.dart';
 
 import '../node.dart';
 import '../theme.dart';
+import '../widgets/person_avatar.dart';
 import 'advanced_screen.dart';
 import 'node_summary_screen.dart';
 import 'people_screen.dart';
+import 'profile_screen.dart';
 import 'trust_screen.dart';
 
-/// You (ADR 0031 §1): you, the people you know, your node, and Advanced
-/// details. Your profile and your own posts come with P2 (ADR 0032).
+/// You (ADR 0031 §1): your profile and posts (ADR 0032), the people you
+/// know, your node, and Advanced details.
 class YouTab extends StatelessWidget {
   const YouTab({super.key, required this.node, required this.open});
 
@@ -18,29 +20,47 @@ class YouTab extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final name = node.status?.name ?? node.paired?.name ?? '';
+    final me = node.me;
+    final name = me?.name ?? node.status?.name ?? node.paired?.name ?? '';
+    final identity = node.paired?.identity;
     return ListView(
       padding: const EdgeInsets.only(bottom: 88),
       children: [
-        Padding(
-          padding: const EdgeInsets.all(Space.l),
-          child: Row(
-            children: [
-              CircleAvatar(
-                radius: 28,
-                child: Text(
-                  name.isEmpty ? '?' : name[0].toUpperCase(),
-                  style: theme.textTheme.headlineSmall,
+        InkWell(
+          onTap: identity == null
+              ? null
+              : () => open(
+                  ProfileScreen(node: node, identity: identity, name: name),
                 ),
-              ),
-              const SizedBox(width: Space.m),
-              Expanded(
-                child: Text(
-                  name.isEmpty ? 'You' : name,
-                  style: theme.textTheme.headlineSmall,
+          child: Padding(
+            padding: const EdgeInsets.all(Space.l),
+            child: Row(
+              children: [
+                PersonAvatar(
+                  node: node,
+                  name: name,
+                  picture: me?.picture,
+                  radius: 28,
                 ),
-              ),
-            ],
+                const SizedBox(width: Space.m),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        name.isEmpty ? 'You' : name,
+                        style: theme.textTheme.headlineSmall,
+                      ),
+                      Text(
+                        'Your profile and posts',
+                        style: theme.textTheme.bodySmall,
+                      ),
+                    ],
+                  ),
+                ),
+                const Icon(Icons.chevron_right),
+              ],
+            ),
           ),
         ),
         ListTile(
