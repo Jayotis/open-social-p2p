@@ -307,6 +307,10 @@ pub(crate) struct Core {
     pub directories_read_at: Mutex<Option<Instant>>,
     /// Endpoints for fetching found posts' media unseen (ADR 0024).
     pub viewing: Viewing,
+    /// Held while the owner's side is gathered (ADR 0029), one at a time.
+    pub gathering: tokio::sync::Mutex<()>,
+    /// The replies being sent now (ADR 0028), each by one try at a time.
+    pub trying_replies: crate::replying::InFlight,
     pub sim: SimSettings,
     /// With `SimSettings::tor_delay`: when the Tor-like circuits to each
     /// node are, or will be, ready.
@@ -619,6 +623,8 @@ impl Node {
             read_directories_now: Notify::new(),
             directories_read_at: Mutex::new(None),
             viewing: Viewing::new(sim.viewing_reuse, sim.viewing_life),
+            gathering: tokio::sync::Mutex::new(()),
+            trying_replies: Default::default(),
             sim,
             #[cfg(feature = "sim")]
             tor_ready: Mutex::new(HashMap::new()),

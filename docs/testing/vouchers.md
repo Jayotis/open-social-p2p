@@ -98,3 +98,7 @@ The same scenario with another seed (`--seed 2`), whose careless person has 4 vo
 
 - A node that can't tell an author's node of a reshare at once, as when that node is busy, tells it on its next pass, a day later. About 1 reshare in 200 waited so in a trial run. By design; the harness brings the pass forward.
 - With follows outside one's community going to any community, every popular person was 2 or 3 steps from every creator, so the run puts communities in a ring.
+
+### On real nodes
+
+Checked on three nodes over Tor, 2026-11-13. A reply from someone near the creator's world was published. A careless person's reply waited among the requests. With the creator's node offline, then one of its circle's nodes silent, the replies were still placed. The circle node that did answer still counted, and the replier's node sent again about 10 minutes after the creator's node was back. A replier far away wasn't tried on real nodes: the rounds above cover it.

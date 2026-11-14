@@ -27,7 +27,7 @@ mod sent_replies;
 mod vouches;
 pub(crate) use replies::{Choice, Held, ReceivedReply, ReplyRow};
 pub(crate) use sent_replies::SentReply;
-pub(crate) use vouches::{GivenCredit, NewVouch, SideVouch, VouchKind};
+pub(crate) use vouches::{GivenCredit, NewVouch, SideVouch, VouchKind, VouchTables};
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS objects (

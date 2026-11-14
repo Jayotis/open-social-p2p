@@ -546,6 +546,75 @@ async fn a_node_gathers_its_owners_side_three_steps_back() {
     }
 }
 
+/// What `osp vouches` shows: who vouched, the side, when it was gathered, and
+/// whether a gathering is under way.
+async fn vouches(
+    node: &Node,
+    gather: bool,
+) -> (
+    Vec<osp_proto::rpc::VoucherInfo>,
+    Vec<osp_proto::rpc::SideInfo>,
+    Option<u64>,
+    bool,
+) {
+    match call(node, ClientRequest::Vouches { gather }).await {
+        ClientResponse::Vouches {
+            vouchers,
+            side,
+            gathered_secs_ago,
+            gathering,
+        } => (vouchers, side, gathered_secs_ago, gathering),
+        other => panic!("unexpected {other:?}"),
+    }
+}
+
+/// Kim's owner sees who vouched for them, and gathers their side by asking
+/// rather than waiting for its daily time.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_owner_sees_who_vouched_and_gathers_their_side_when_asked() {
+    let dir = tempfile::tempdir().unwrap();
+    let kim = start(dir.path(), "Kim").await;
+    let alice = start(dir.path(), "Alice").await;
+    let (vouchers, side, gathered, gathering) = vouches(&kim, false).await;
+    assert!(vouchers.is_empty() && side.is_empty());
+    assert_eq!((gathered, gathering), (None, false));
+
+    let shared = post(&kim, "worth passing on").await;
+    follow(&alice, &kim).await;
+    call(&alice, ClientRequest::Sync).await;
+    reshare(&alice, shared).await;
+    wait_for("Kim's node to hear of Alice's reshare", || async {
+        resharers(&kim, shared).await == Some(1)
+    })
+    .await;
+    let (vouchers, side, gathered, _) = vouches(&kim, false).await;
+    assert_eq!(vouchers.len(), 1);
+    let v = &vouchers[0];
+    assert_eq!(v.actor, alice.identity());
+    assert_eq!(v.name.as_deref(), Some("Alice"));
+    assert_eq!((v.reshares, v.credits), (1, 0));
+    // Not gathered: asking to see doesn't gather.
+    assert!(side.is_empty());
+    assert_eq!(gathered, None);
+
+    let (_, _, _, gathering) = vouches(&kim, true).await;
+    assert!(gathering);
+    wait_for("Kim's side to be gathered", || async {
+        let (_, side, gathered, gathering) = vouches(&kim, false).await;
+        gathered.is_some()
+            && !gathering
+            && side
+                .iter()
+                .map(|s| (s.actor, s.step))
+                .eq([(alice.identity(), 1)])
+    })
+    .await;
+
+    for node in [kim, alice] {
+        node.shutdown().await.unwrap();
+    }
+}
+
 /// The answer to a reply: its state, and whether its side is asked for.
 fn answered(resp: SocialResponse) -> (ReplyState, bool) {
     match resp {

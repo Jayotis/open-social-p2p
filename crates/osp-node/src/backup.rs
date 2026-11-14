@@ -40,7 +40,7 @@ use tokio::io::{AsyncWrite, AsyncWriteExt, BufWriter};
 use tracing::warn;
 
 use crate::{
-    db::{BlobClass, Db, now_ms},
+    db::{BlobClass, Db, VouchTables, now_ms},
     home::Home,
     keys::{self, Signer},
     node::Core,
@@ -146,6 +146,11 @@ struct Manifest {
     /// Nodes allowed a direct connection by the rule `approved` (ADR 0014).
     #[serde(default)]
     direct_contacts: Vec<PublicKey>,
+    /// Who vouched for this identity, the credits it gave, and which of its
+    /// reshares their authors' nodes were told of (ADR 0029). The nodes that
+    /// told it tell only once. Files made before have none.
+    #[serde(default)]
+    vouches: VouchTables,
 }
 
 /// A node trusted, and whose it is: the identity whose profile listed it,
@@ -470,6 +475,7 @@ impl Core {
             });
         }
         manifest.direct_contacts = self.db.direct_contacts()?;
+        manifest.vouches = self.db.vouch_tables()?;
         let mut media_missing = 0;
         if media {
             for (blob, class) in self.db.blobs()? {
@@ -505,6 +511,7 @@ impl Core {
             bytes,
             trusted: manifest.trusted.len(),
             direct_contacts: manifest.direct_contacts.len(),
+            vouches: manifest.vouches.vouches.len(),
         })
     }
 
@@ -638,6 +645,8 @@ impl BackupFile {
         for node in &m.direct_contacts {
             db.add_direct_contact(node)?;
         }
+        // Vouches are signed by others and hold wherever the node is.
+        let vouches = db.restore_vouch_tables(&m.vouches)?;
         let dir = home.restored_media();
         fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
         for media in &m.media {
@@ -659,6 +668,7 @@ impl BackupFile {
             bytes: self.bytes,
             trusted: m.trusted.len(),
             direct_contacts: m.direct_contacts.len(),
+            vouches,
         })
     }
 }

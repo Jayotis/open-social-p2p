@@ -240,6 +240,13 @@ enum Command {
     Devices,
     /// Show what this node measured about the nodes it deals with
     Peers,
+    /// Who vouched for you (reshared your posts, or credited you with finding
+    /// theirs early), and your side as last gathered (ADR 0029)
+    Vouches {
+        /// Gather your side now, in the background, rather than at its daily time
+        #[arg(long)]
+        gather: bool,
+    },
     /// Forget a paired phone, by its name or the start of its ID
     Unpair { device: String },
     /// Run the node in the background, starting at boot (systemd user service)
@@ -563,6 +570,7 @@ async fn main() -> Result<()> {
         Command::Following => ClientRequest::Following,
         Command::Devices => ClientRequest::Devices,
         Command::Peers => ClientRequest::Peers,
+        Command::Vouches { gather } => ClientRequest::Vouches { gather },
         Command::Post { text, attach } => ClientRequest::Post {
             content: text,
             // The daemon has its own working directory, so send absolute paths.
@@ -728,7 +736,7 @@ async fn init(home: &Path, mut config: Config, check_words: bool, answers: Answe
     }
     say_missing(&config).await;
     println!();
-    println!("Start it with: osp --home {} daemon", home.display());
+    print_start_line(home);
     Ok(())
 }
 
@@ -793,6 +801,9 @@ async fn restore_node(
         if let Some(line) = trust_line(info) {
             println!("{line} (`osp trust list`, `osp direct list`)");
         }
+        if info.vouches > 0 {
+            println!("{}", vouch_line(info));
+        }
     }
     println!();
     println!("This is a new node, so:");
@@ -808,8 +819,19 @@ async fn restore_node(
     println!("- never start the old node again, or your followers get two nodes for you.");
     say_missing(&config).await;
     println!();
-    println!("Start it with: osp --home {} daemon", home.display());
+    print_start_line(home);
     Ok(())
+}
+
+/// How to start the new node. The installer (`scripts/install.sh`) sets
+/// `OSP_INSTALLING` and starts it as a service right after, so someone
+/// following the usual line there would start a second copy.
+fn print_start_line(home: &Path) {
+    if std::env::var_os("OSP_INSTALLING").is_some() {
+        println!("The installer starts it next, as a service that starts at boot.");
+    } else {
+        println!("Start it with: osp --home {} daemon", home.display());
+    }
 }
 
 /// What a backup holds of who this node trusts and lets connect directly,
@@ -821,6 +843,63 @@ fn trust_line(info: &osp_proto::rpc::BackupInfo) -> Option<String> {
             info.trusted, info.direct_contacts
         )
     })
+}
+
+/// Who vouched for the owner, and their side (ADR 0029).
+fn print_vouches(
+    vouchers: &[osp_proto::rpc::VoucherInfo],
+    side: &[osp_proto::rpc::SideInfo],
+    gathered_secs_ago: Option<u64>,
+    gathering: bool,
+) {
+    if vouchers.is_empty() {
+        println!(
+            "Nobody has vouched for you yet: nobody's reshare of your posts, and no credit for finding a post early, has reached this node."
+        );
+    } else {
+        println!("Who vouched for you, most recently heard of first:");
+    }
+    for v in vouchers {
+        let name = v.name.as_deref().unwrap_or("(no profile kept)");
+        let mut what = Vec::new();
+        if v.reshares > 0 {
+            what.push(format!("reshared {} of your posts", v.reshares));
+        }
+        if v.credits > 0 {
+            what.push(format!("credited you {} times", v.credits));
+        }
+        println!("  {name}  {}  {}", v.actor, what.join(", "));
+    }
+    println!();
+    match gathered_secs_ago {
+        Some(secs) => {
+            let steps = |n: u8| side.iter().filter(|s| s.step == n).count();
+            println!(
+                "Your side, gathered {} ago: {} people ({} 1 step back, {} 2, {} 3).",
+                uptime(secs),
+                side.len(),
+                steps(1),
+                steps(2),
+                steps(3)
+            );
+        }
+        None => println!("Your side hasn't been gathered yet."),
+    }
+    if gathering {
+        println!(
+            "Gathering it now; over Tor that can take a while. Run `osp vouches` again later."
+        );
+    } else {
+        println!("It's gathered once a day; `osp vouches --gather` gathers it now.");
+    }
+}
+
+/// How many vouches for its owner a backup holds (ADR 0029).
+fn vouch_line(info: &osp_proto::rpc::BackupInfo) -> String {
+    format!(
+        "Vouches for you (reshares of your posts, credits for finding posts early): {}.",
+        info.vouches
+    )
 }
 
 /// Asks whether someone else could have the old node's signing key.
@@ -1491,6 +1570,12 @@ fn print(resp: ClientResponse, json: bool) -> Result<()> {
             }
         }
         ClientResponse::Peers { peers } => print_peers(&peers),
+        ClientResponse::Vouches {
+            vouchers,
+            side,
+            gathered_secs_ago,
+            gathering,
+        } => print_vouches(&vouchers, &side, gathered_secs_ago, gathering),
         ClientResponse::Trust { requests, trusted } => {
             print_trust_requests(&requests);
             println!();
@@ -1507,6 +1592,9 @@ fn print(resp: ClientResponse, json: bool) -> Result<()> {
             );
             if let Some(line) = trust_line(&info) {
                 println!("{line}");
+            }
+            if info.vouches > 0 {
+                println!("{}", vouch_line(&info));
             }
             if info.media_missing > 0 {
                 println!(

@@ -17,7 +17,8 @@ use osp_proto::{
     framing::{read_frame, write_frame},
     rpc::{
         AttachmentInfo, ClientRequest, ClientResponse, DirectoryStatus, FeedItem, FetchedFile,
-        FollowerInfo, PeerRecord, PersonInfo, ReplierChoice, ResharedBy, SharedStatus, StatusInfo,
+        FollowerInfo, PeerRecord, PersonInfo, ReplierChoice, ResharedBy, SharedStatus, SideInfo,
+        StatusInfo, VoucherInfo,
     },
     social::SocialRequest,
     types::{MAX_ATTACHMENTS, MAX_CONTENT_BYTES},
@@ -243,6 +244,7 @@ impl Core {
             ClientRequest::AllowFollower { node } => ClientResponse::FollowerAllowed {
                 was_removed: self.db.allow_follower(&node)?,
             },
+            ClientRequest::Vouches { gather } => self.vouch_list(gather)?,
             ClientRequest::DirectContacts => ClientResponse::DirectContacts {
                 nodes: self.db.direct_contacts()?,
             },
@@ -923,6 +925,62 @@ impl Core {
             }
             Payload::FoundEarly(_) => bail!("{id} is a found-early credit, not a post"),
         }
+    }
+
+    /// Who vouched for the owner, and their side as last gathered (ADR
+    /// 0029). With `gather`, starts gathering it now unless one is under way.
+    fn vouch_list(self: &Arc<Self>, gather: bool) -> Result<ClientResponse> {
+        let mut gathering = self.gathering.try_lock().is_err();
+        if gather && !gathering {
+            gathering = true;
+            let core = self.clone();
+            tokio::spawn(async move {
+                if let Some(tor) = &core.tor {
+                    tor.ready().await;
+                }
+                match core.gather_side().await {
+                    Ok(g) => info!(
+                        side = g.side,
+                        asked = g.asked,
+                        "gathered the owner's side, as asked"
+                    ),
+                    Err(e) => warn!("gathering who vouched for this node's owner failed: {e:#}"),
+                }
+            });
+        }
+        let vouchers = self
+            .db
+            .vouchers()?
+            .into_iter()
+            .map(|v| VoucherInfo {
+                actor: v.actor,
+                name: v.profile.and_then(|p| match p.verify() {
+                    Ok(Payload::Person(person)) => Some(person.name),
+                    _ => None,
+                }),
+                reshares: v.reshares,
+                credits: v.credits,
+            })
+            .collect();
+        let side = self
+            .db
+            .side()?
+            .into_iter()
+            .map(|v| SideInfo {
+                actor: v.voucher,
+                step: v.step,
+            })
+            .collect();
+        let gathered_secs_ago = self
+            .db
+            .side_gathered_ms()?
+            .map(|ms| (now_ms().saturating_sub(ms).max(0) / 1000) as u64);
+        Ok(ClientResponse::Vouches {
+            vouchers,
+            side,
+            gathered_secs_ago,
+            gathering,
+        })
     }
 
     /// The followers' nodes, named where this node knows whose they are, and

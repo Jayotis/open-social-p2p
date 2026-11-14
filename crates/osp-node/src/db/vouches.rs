@@ -7,6 +7,7 @@ use anyhow::{Context, Result};
 use iroh::{EndpointAddr, EndpointId, PublicKey};
 use osp_proto::{ObjectId, Payload, SignedObject};
 use rusqlite::{OptionalExtension, params};
+use serde::{Deserialize, Serialize};
 
 use super::Db;
 
@@ -459,6 +460,231 @@ impl Db {
             .iter()
             .any(|(reshared, _)| reshared == post))
     }
+
+    /// Each voucher, most recently heard of first, with how many reshares
+    /// and found-early credits of theirs are kept, and their kept profile.
+    pub fn vouchers(&self) -> Result<Vec<Voucher>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT v.voucher,
+                    SUM(v.kind = 'reshare'), SUM(v.kind = 'found_early'),
+                    p.profile, MAX(v.heard_ms) AS heard
+             FROM vouches v LEFT JOIN voucher_profiles p ON p.actor = v.voucher
+             GROUP BY v.voucher ORDER BY heard DESC",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, u32>(1)?,
+                row.get::<_, u32>(2)?,
+                row.get::<_, Option<String>>(3)?,
+            ))
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            let (voucher, reshares, credits, profile) = row?;
+            let profile = profile
+                .map(|p| serde_json::from_str(&p).context("corrupt stored profile"))
+                .transpose()?;
+            out.push(Voucher {
+                actor: voucher.parse()?,
+                reshares,
+                credits,
+                profile,
+            });
+        }
+        Ok(out)
+    }
+
+    // ---- backups ----
+
+    /// Everything kept of who vouched for the owner and what the owner gave
+    /// and told, for a backup. Not the side: a restored node gathers it again.
+    pub fn vouch_tables(&self) -> Result<VouchTables> {
+        let conn = self.conn();
+        let mut out = VouchTables::default();
+        let mut stmt = conn.prepare(
+            "SELECT kind, post, voucher, signed, first_ms, heard_ms, post_ms
+             FROM vouches ORDER BY rowid",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, i64>(4)?,
+                row.get::<_, i64>(5)?,
+                row.get::<_, i64>(6)?,
+            ))
+        })?;
+        for row in rows {
+            let (kind, post, voucher, signed, first_ms, heard_ms, post_ms) = row?;
+            out.vouches.push(VouchRecord {
+                kind,
+                post: post.parse()?,
+                voucher: voucher.parse()?,
+                signed: serde_json::from_str(&signed).context("corrupt stored vouch")?,
+                first_ms,
+                heard_ms,
+                post_ms,
+            });
+        }
+        let mut stmt = conn.prepare("SELECT profile, published_ms FROM voucher_profiles")?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        })?;
+        for row in rows {
+            let (profile, published_ms) = row?;
+            out.voucher_profiles.push(VoucherProfileRecord {
+                profile: serde_json::from_str(&profile).context("corrupt stored profile")?,
+                published_ms,
+            });
+        }
+        let mut stmt =
+            conn.prepare("SELECT post, finder, signed, told FROM credits_given ORDER BY rowid")?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, bool>(3)?,
+            ))
+        })?;
+        for row in rows {
+            let (post, finder, signed, told) = row?;
+            out.credits_given.push(CreditRecord {
+                post: post.parse()?,
+                finder: finder.parse()?,
+                signed: serde_json::from_str(&signed).context("corrupt stored credit")?,
+                told,
+            });
+        }
+        let mut stmt = conn.prepare("SELECT announce FROM told_reshares")?;
+        for row in stmt.query_map([], |row| row.get::<_, String>(0))? {
+            out.told_reshares.push(row?.parse()?);
+        }
+        Ok(out)
+    }
+
+    /// Puts back what `vouch_tables` gave, into a new node's database. A vouch,
+    /// profile or credit that doesn't verify, or names someone other than its
+    /// signer, is skipped. Returns how many vouches were put back.
+    pub fn restore_vouch_tables(&self, tables: &VouchTables) -> Result<usize> {
+        let conn = self.conn();
+        let tx = conn.unchecked_transaction()?;
+        let signed_by = |obj: &SignedObject, who: &PublicKey| {
+            obj.verify().is_ok_and(|payload| payload.actor() == *who)
+        };
+        let mut vouches = 0;
+        for v in &tables.vouches {
+            // A reshare is signed by its resharer, a found-early credit by
+            // the author who gave it: either way, the voucher.
+            let known = [VouchKind::Reshare, VouchKind::FoundEarly]
+                .iter()
+                .any(|k| k.as_str() == v.kind);
+            if !known || !signed_by(&v.signed, &v.voucher) {
+                tracing::warn!("skipping a vouch in the backup that doesn't check out");
+                continue;
+            }
+            vouches += tx.execute(
+                "INSERT OR IGNORE INTO vouches
+                     (kind, post, voucher, signed, first_ms, heard_ms, post_ms)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![
+                    v.kind,
+                    v.post.to_string(),
+                    v.voucher.to_string(),
+                    serde_json::to_string(&v.signed)?,
+                    v.first_ms,
+                    v.heard_ms,
+                    v.post_ms,
+                ],
+            )?;
+        }
+        for p in &tables.voucher_profiles {
+            let Ok(Payload::Person(person)) = p.profile.verify() else {
+                tracing::warn!("skipping a voucher's profile in the backup that doesn't check out");
+                continue;
+            };
+            tx.execute(
+                "INSERT OR IGNORE INTO voucher_profiles (actor, profile, published_ms)
+                 VALUES (?1, ?2, ?3)",
+                params![
+                    person.actor.to_string(),
+                    serde_json::to_string(&p.profile)?,
+                    p.published_ms
+                ],
+            )?;
+        }
+        for c in &tables.credits_given {
+            if c.signed.verify().is_err() {
+                tracing::warn!("skipping a credit in the backup that doesn't check out");
+                continue;
+            }
+            tx.execute(
+                "INSERT OR IGNORE INTO credits_given (post, finder, signed, told)
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![
+                    c.post.to_string(),
+                    c.finder.to_string(),
+                    serde_json::to_string(&c.signed)?,
+                    c.told
+                ],
+            )?;
+        }
+        for announce in &tables.told_reshares {
+            tx.execute(
+                "INSERT OR IGNORE INTO told_reshares (announce) VALUES (?1)",
+                params![announce.to_string()],
+            )?;
+        }
+        tx.commit()?;
+        Ok(vouches)
+    }
+}
+
+/// Someone who vouched for the owner: how many reshares and found-early
+/// credits of theirs are kept, and their kept profile.
+pub(crate) struct Voucher {
+    pub actor: PublicKey,
+    pub reshares: u32,
+    pub credits: u32,
+    pub profile: Option<SignedObject>,
+}
+
+/// What a backup holds of vouches (ADR 0029), as the tables keep them.
+#[derive(Debug, Default, Serialize, Deserialize)]
+pub(crate) struct VouchTables {
+    pub vouches: Vec<VouchRecord>,
+    pub voucher_profiles: Vec<VoucherProfileRecord>,
+    pub credits_given: Vec<CreditRecord>,
+    pub told_reshares: Vec<ObjectId>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct VouchRecord {
+    kind: String,
+    post: ObjectId,
+    voucher: PublicKey,
+    signed: SignedObject,
+    first_ms: i64,
+    heard_ms: i64,
+    post_ms: i64,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct VoucherProfileRecord {
+    profile: SignedObject,
+    published_ms: i64,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct CreditRecord {
+    post: ObjectId,
+    finder: PublicKey,
+    signed: SignedObject,
+    told: bool,
 }
 
 #[cfg(test)]
