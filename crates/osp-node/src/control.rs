@@ -13,7 +13,8 @@ use anyhow::{Context, Result, bail, ensure};
 use iroh::{EndpointAddr, EndpointId, PublicKey};
 use n0_future::{BufferedStreamExt, StreamExt, stream};
 use osp_proto::{
-    Announce, Attachment, BlobRef, Delete, FollowTicket, Note, ObjectId, Payload, SignedObject,
+    Announce, Attachment, BlobRef, Delete, FollowTicket, Note, ObjectId, Payload, Person,
+    SignedObject,
     framing::{read_frame, write_frame},
     rpc::{
         AttachmentInfo, ClientRequest, ClientResponse, DirectoryStatus, FeedItem, FetchedFile,
@@ -140,6 +141,13 @@ impl Core {
                     let _ = tokio::time::timeout(directory::SEARCH_READ_WAIT, read).await;
                 }
                 self.search(&words, limit.min(100)).await?
+            }
+            ClientRequest::People { limit } => {
+                // As for a search: what's new in the directories' lists first.
+                if let Some(read) = self.read_directories_for_use() {
+                    let _ = tokio::time::timeout(directory::SEARCH_READ_WAIT, read).await;
+                }
+                self.people(limit.min(500))?
             }
             ClientRequest::Reshare { id, host } => ClientResponse::Posted {
                 id: self.reshare(&id, host).await?,
@@ -814,16 +822,8 @@ impl Core {
         let mut people = Vec::new();
         for obj in self.db.search_profiles(words, limit)? {
             if let Ok(Payload::Person(person)) = obj.verify() {
-                people.push(PersonInfo {
-                    actor: person.actor,
-                    name: person.name,
-                    summary: person.summary,
-                    followed: followed.contains(&person.actor),
-                    found_through: self
-                        .db
-                        .found_through(&person.actor)?
-                        .map(|directory| machine::words(&directory)),
-                });
+                let newest = self.db.newest_ms(&person.actor)?;
+                people.push(self.person_info(person, &followed, newest)?);
             }
         }
         let mut posts = Vec::new();
@@ -833,6 +833,38 @@ impl Core {
             }
         }
         Ok(ClientResponse::Found { people, posts })
+    }
+
+    /// Everyone this node holds a profile of but its owner (`People`).
+    fn people(&self, limit: u32) -> Result<ClientResponse> {
+        let followed: HashSet<_> = self.db.follows()?.iter().map(|f| f.actor).collect();
+        let mut people = Vec::new();
+        for (obj, newest) in self.db.people(&self.signer.identity(), limit)? {
+            if let Ok(Payload::Person(person)) = obj.verify() {
+                people.push(self.person_info(person, &followed, newest)?);
+            }
+        }
+        Ok(ClientResponse::People { people })
+    }
+
+    fn person_info(
+        &self,
+        person: Person,
+        followed: &HashSet<PublicKey>,
+        newest_ms: Option<u64>,
+    ) -> Result<PersonInfo> {
+        let newest = newest_ms.map(osp_proto::rfc3339_from_ms);
+        Ok(PersonInfo {
+            actor: person.actor,
+            followed: followed.contains(&person.actor),
+            found_through: self
+                .db
+                .found_through(&person.actor)?
+                .map(|directory| machine::words(&directory)),
+            name: person.name,
+            summary: person.summary,
+            newest,
+        })
     }
 
     /// The reshares of a post that came with it through directories.

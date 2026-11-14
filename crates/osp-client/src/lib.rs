@@ -442,6 +442,15 @@ impl Client {
         Ok((people, posts))
     }
 
+    /// Everyone the node holds a profile of but its owner, newest post first.
+    pub async fn people(&self, limit: u32) -> Result<Vec<PersonInfo>> {
+        let req = ClientRequest::People { limit };
+        let ClientResponse::People { people } = self.request(&req).await? else {
+            bail!("unexpected reply to People");
+        };
+        Ok(people)
+    }
+
     /// Publishes a post with files from this device. The node transcodes
     /// them before replying. `progress` is called with bytes sent and total.
     pub async fn post(

@@ -44,6 +44,12 @@ pub fn now_rfc3339() -> String {
     humantime::format_rfc3339_millis(SystemTime::now()).to_string()
 }
 
+/// Unix milliseconds as an RFC 3339 timestamp, like `published`.
+pub fn rfc3339_from_ms(ms: u64) -> String {
+    let t = SystemTime::UNIX_EPOCH + std::time::Duration::from_millis(ms);
+    humantime::format_rfc3339_millis(t).to_string()
+}
+
 /// Parses a `published` timestamp into Unix milliseconds.
 pub fn parse_rfc3339_ms(s: &str) -> Option<i64> {
     let t = humantime::parse_rfc3339_weak(s).ok()?;

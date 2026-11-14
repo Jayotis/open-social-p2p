@@ -134,6 +134,8 @@ pub struct FoundPerson {
     /// The directory they came from, in words, if they're on the node only
     /// because of one.
     pub found_through: Option<String>,
+    /// When their newest post the node holds was published (RFC 3339).
+    pub newest: Option<String>,
 }
 
 pub struct Post {
@@ -346,18 +348,16 @@ impl OspApp {
     pub async fn search(&self, words: String, limit: u32) -> Result<Found> {
         let (people, posts) = self.client.search(&words, limit).await?;
         Ok(Found {
-            people: people
-                .into_iter()
-                .map(|p| FoundPerson {
-                    identity: p.actor.to_string(),
-                    name: p.name,
-                    summary: p.summary,
-                    followed: p.followed,
-                    found_through: p.found_through,
-                })
-                .collect(),
+            people: people.into_iter().map(found_person).collect(),
             posts: posts.into_iter().map(post).collect(),
         })
+    }
+
+    /// Everyone the node holds a profile of: those it follows and those
+    /// directories brought, newest post first. Nothing leaves the node.
+    pub async fn people(&self, limit: u32) -> Result<Vec<FoundPerson>> {
+        let people = self.client.people(limit).await?;
+        Ok(people.into_iter().map(found_person).collect())
     }
 
     #[frb(sync)]
@@ -904,4 +904,15 @@ pub fn is_pairing_ticket(text: String) -> bool {
 #[frb(sync)]
 pub fn is_follow_ticket(text: String) -> bool {
     text.trim().to_ascii_uppercase().starts_with("OSP1")
+}
+
+fn found_person(p: osp_client::osp_proto::rpc::PersonInfo) -> FoundPerson {
+    FoundPerson {
+        identity: p.actor.to_string(),
+        name: p.name,
+        summary: p.summary,
+        followed: p.followed,
+        found_through: p.found_through,
+        newest: p.newest,
+    }
 }

@@ -163,6 +163,12 @@ enum Command {
         #[arg(long, default_value_t = 20)]
         limit: u32,
     },
+    /// Everyone your node holds a profile of: those you follow and those directories brought, newest post first. Nothing leaves your node
+    People {
+        /// How many people at most
+        #[arg(long, default_value_t = 50)]
+        limit: u32,
+    },
     /// Reshare a post
     Reshare {
         id: ObjectId,
@@ -587,6 +593,7 @@ async fn main() -> Result<()> {
             words: words.join(" "),
             limit,
         },
+        Command::People { limit } => ClientRequest::People { limit },
         Command::Reshare { id, host } => ClientRequest::Reshare { id, host },
         Command::Fetch { id, out } => ClientRequest::Fetch {
             id,
@@ -1545,6 +1552,26 @@ fn print(resp: ClientResponse, json: bool) -> Result<()> {
             }
             for item in posts {
                 print_item(&item);
+                println!();
+            }
+        }
+        ClientResponse::People { people } => {
+            if people.is_empty() {
+                println!("Your node has found nobody yet.");
+            }
+            for person in people {
+                let followed = if person.followed { " (following)" } else { "" };
+                println!("{}{followed}", plain(&person.name));
+                if let Some(summary) = person.summary {
+                    println!("  {}", plain(&summary));
+                }
+                println!("  identity: {}", person.actor);
+                if let Some(newest) = person.newest {
+                    println!("  newest post: {newest}");
+                }
+                if let Some(directory) = person.found_through {
+                    println!("  found through directory {directory}");
+                }
                 println!();
             }
         }

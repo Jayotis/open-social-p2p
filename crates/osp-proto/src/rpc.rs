@@ -79,6 +79,14 @@ pub enum ClientRequest {
         #[serde(default = "default_feed_limit")]
         limit: u32,
     },
+    /// Everyone this node holds a profile of, other than its owner: the
+    /// people it follows and those directories brought, newest post first,
+    /// then those with none (ADR 0035's "People your node found", brought
+    /// forward into P1). Like a search, it never leaves the node.
+    People {
+        #[serde(default = "default_feed_limit")]
+        limit: u32,
+    },
     /// Reshare a post; with `host`, keep a copy of its media and serve it.
     Reshare {
         id: ObjectId,
@@ -312,6 +320,10 @@ pub enum ClientResponse {
     Found {
         people: Vec<PersonInfo>,
         posts: Vec<FeedItem>,
+    },
+    /// The answer to `People`.
+    People {
+        people: Vec<PersonInfo>,
     },
     Fetched {
         files: Vec<FetchedFile>,
@@ -916,6 +928,10 @@ pub struct PersonInfo {
     /// they're here only because of one (ADR 0015).
     #[serde(default)]
     pub found_through: Option<String>,
+    /// When their newest post or reshare this node holds was published
+    /// (RFC 3339, like `published`).
+    #[serde(default)]
+    pub newest: Option<String>,
 }
 
 /// A post as shown in a feed, with reshare context.

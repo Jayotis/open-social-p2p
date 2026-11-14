@@ -6,7 +6,7 @@
 import '../frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `node_info`, `post`, `progress`, `reply_info`, `report_to`, `run_post`, `sent_reply`, `trust_entry`
+// These functions are ignored because they are not marked as `pub`: `found_person`, `node_info`, `post`, `progress`, `reply_info`, `report_to`, `run_post`, `sent_reply`, `trust_entry`
 // These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `clone`, `clone`
 
 /// A new device key, as 64 hex digits, for the app to keep in the phone's
@@ -100,6 +100,10 @@ abstract class OspApp implements RustOpaqueInterface {
   /// The post that didn't finish sending, if any: one that failed, or was
   /// stopped when the app was.
   UnsentPost? pendingPost();
+
+  /// Everyone the node holds a profile of: those it follows and those
+  /// directories brought, newest post first. Nothing leaves the node.
+  Future<List<FoundPerson>> people({required int limit});
 
   /// Posts text with photos or videos from this phone, reporting progress.
   /// It carries on after short breaks in the connection; if it fails, the
@@ -232,12 +236,16 @@ class FoundPerson {
   /// because of one.
   final String? foundThrough;
 
+  /// When their newest post the node holds was published (RFC 3339).
+  final String? newest;
+
   const FoundPerson({
     required this.identity,
     required this.name,
     this.summary,
     required this.followed,
     this.foundThrough,
+    this.newest,
   });
 
   @override
@@ -246,7 +254,8 @@ class FoundPerson {
       name.hashCode ^
       summary.hashCode ^
       followed.hashCode ^
-      foundThrough.hashCode;
+      foundThrough.hashCode ^
+      newest.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -257,7 +266,8 @@ class FoundPerson {
           name == other.name &&
           summary == other.summary &&
           followed == other.followed &&
-          foundThrough == other.foundThrough;
+          foundThrough == other.foundThrough &&
+          newest == other.newest;
 }
 
 class Media {

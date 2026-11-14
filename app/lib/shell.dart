@@ -34,7 +34,11 @@ class _AppShellState extends State<AppShell> {
         .then((_) => _node.checkUnsent());
   }
 
-  void _go(Place place) => setState(() => _place = place);
+  void _go(Place place) {
+    _node.watchingPeople = place == Place.universe;
+    if (place == Place.universe) _node.loadPeople();
+    setState(() => _place = place);
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -44,6 +48,8 @@ class _AppShellState extends State<AppShell> {
         node: node,
         onDone: () {
           _place = Place.universe;
+          node.watchingPeople = true;
+          node.loadPeople();
           node.finishFirstRun();
         },
       );

@@ -84,6 +84,19 @@ class HomeNode extends ChangeNotifier with WidgetsBindingObserver {
   /// Something to tell the owner on the pairing screen.
   String? notice;
 
+  /// Everyone the node holds a profile of, newest post first: null until
+  /// first loaded ([loadPeople]).
+  List<FoundPerson>? people;
+
+  /// Why loading [people] failed, if it did.
+  String? peopleError;
+
+  bool _loadingPeople = false;
+
+  /// Set while the Universe is on screen: [people] is reloaded with each
+  /// status check, so people appear as the node finds them.
+  bool watchingPeople = false;
+
   /// Set when this phone has just paired, until the first run is done
   /// (ADR 0031 §3). Not kept: an app stopped halfway skips the rest.
   bool firstRun = false;
@@ -252,6 +265,7 @@ class HomeNode extends ChangeNotifier with WidgetsBindingObserver {
     if (paired == null) return;
     try {
       status = await app.status();
+      if (watchingPeople) unawaited(loadPeople());
       if (status?.overTor ?? false) {
         posts = await app.feed(limit: 100);
         savedAt = null;
@@ -297,6 +311,21 @@ class HomeNode extends ChangeNotifier with WidgetsBindingObserver {
     return info;
   }
 
+  /// Asks the node who it has found (the Universe's list). One at a time.
+  Future<void> loadPeople() async {
+    if (paired == null || _loadingPeople) return;
+    _loadingPeople = true;
+    try {
+      people = await app.people(limit: 200);
+      peopleError = null;
+    } catch (e) {
+      peopleError = describeError(e);
+    } finally {
+      _loadingPeople = false;
+    }
+    notifyListeners();
+  }
+
   /// The first run is over: the app shows its usual places from now on.
   void finishFirstRun() {
     firstRun = false;
@@ -329,6 +358,8 @@ class HomeNode extends ChangeNotifier with WidgetsBindingObserver {
     unsent = null;
     paired = null;
     firstRun = false;
+    people = null;
+    peopleError = null;
     posts = [];
     status = null;
     savedAt = null;

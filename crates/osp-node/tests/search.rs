@@ -278,3 +278,45 @@ async fn a_new_post_is_found_as_soon_as_it_arrives() {
     wait_for_post(&alice, "birch").await;
     assert_eq!(found_posts(&alice, "stool").await, ["A birch stool"]);
 }
+
+async fn people(node: &Node) -> Vec<PersonInfo> {
+    match call(node, ClientRequest::People { limit: 50 }).await {
+        ClientResponse::People { people } => people,
+        other => panic!("unexpected {other:?}"),
+    }
+}
+
+/// "People your node found" (ADR 0035, brought forward into P1): everyone
+/// whose profile the node holds, newest post first, without a search word.
+#[tokio::test(flavor = "multi_thread")]
+async fn people_are_listed_newest_post_first_without_the_owner() {
+    let dir = tempfile::tempdir().unwrap();
+    let alice = start(dir.path(), "Alice").await;
+    let bob = start(dir.path(), "Bob").await;
+    let kim = start(dir.path(), "Kim").await;
+    let quiet = start(dir.path(), "Quiet").await;
+    post(&bob, "An older post").await;
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    post(&kim, "A newer post").await;
+    post(&alice, "Alice's own").await;
+    for other in [&bob, &kim, &quiet] {
+        follow(&alice, other).await;
+    }
+    call(&alice, ClientRequest::Sync).await;
+
+    let listed = people(&alice).await;
+    let names: Vec<_> = listed.iter().map(|p| p.name.as_str()).collect();
+    assert_eq!(names, ["Kim", "Bob", "Quiet"]);
+    assert!(listed.iter().all(|p| p.followed));
+    assert!(listed[0].newest > listed[1].newest);
+    assert!(listed[0].newest.is_some());
+    assert_eq!(listed[2].newest, None);
+
+    // The same answer to a search names when they last posted, too.
+    let (found, _) = search(&alice, "kim").await;
+    assert_eq!(found[0].newest, listed[0].newest);
+
+    for node in [alice, bob, kim, quiet] {
+        node.shutdown().await.unwrap();
+    }
+}
