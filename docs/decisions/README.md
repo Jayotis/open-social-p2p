@@ -33,6 +33,16 @@ Each record captures one significant decision: the problem, the options consider
 | [0027](0027-directory-bootstrap-list-and-mirror.md) | A signed list of directories, and a mirror of their listings | Proposed 2026-11-09, approved in principle, revised after review; built after the invited alpha; snapshots in pages, from measured sizes; adds to 0015's directories and 0014's step 6 |
 | [0028](0028-replies-let-in-by-the-creator.md) | Replies, let in by the creator's node | Accepted 2026-11-12: the creator's circle gets in directly, others go to requests; automatic admission by level left to a later record |
 | [0029](0029-vouchers-within-six-steps.md) | Vouchers within six steps of the creator | Accepted 2026-11-12: a replier carries who vouched for them, up to 3 steps back; the creator's node and circle place up to 3 steps out; the reply is published when they meet at enough points on separate chains for the distance. Amended 2026-11-13 after its simulation: separate chains, a table of 3, 4 and 6 points, 150 ms of work. On by default since it passed |
+| [0030](0030-product-alpha-before-testers.md) | A Product Alpha before testers | Proposed 2026-11-14; replaces M5 and the invited mechanism alpha as the next gate; sets the order P1 to P12 |
+| [0031](0031-app-shell-home-universe-you.md) | The app shell: Home, Universe and You | Proposed 2026-11-14; P1 |
+| [0032](0032-profiles-people-want-to-follow.md) | Profiles people want to follow | Proposed 2026-11-14; P2; adds a picture and links to `Person`, and editing on the phone |
+| [0033](0033-what-the-universe-may-show.md) | What the Universe may show | Proposed 2026-11-14; P3; one allowlist for everything the map draws |
+| [0034](0034-a-universe-in-levels.md) | A Universe in levels | Proposed 2026-11-14; P4; clusters on the node, stable places, bounded snapshots |
+| [0035](0035-exploring-the-universe.md) | Exploring the Universe | Proposed 2026-11-14; P5; replaces M5's Explore lanes; search on the map |
+| [0036](0036-showing-what-the-network-does.md) | Showing what the network does | Proposed 2026-11-14; P6; real events only; your node's summary |
+| [0037](0037-how-are-we-connected.md) | How are we connected? | Proposed 2026-11-14; P7; shows ADR 0029's separate chains |
+| [0038](0038-likes-and-activity.md) | Likes, and one Activity inbox | Proposed 2026-11-14; P8; a signed `Like` with no part in standing or ranking |
+| [0039](0039-sharing-your-universe.md) | Sharing your Universe | Proposed 2026-11-14; P10; a share card from its own, stricter allowlist |
 
 Proposals under review that may become ADRs: [peer reciprocity and recognition](../12-peer-reciprocity-and-recognition.md) (its first phase, measuring, is ADR 0011) and [hosting roles and the follower swarm](../13-hosting-roles-and-follower-swarm.md) (its first phase is accepted, and whether to share copies is asked at setup, ADR 0012). See the [critical review](../reviews/2026-10-21-review-of-docs-12-and-13.md) for what blocks them.
 
