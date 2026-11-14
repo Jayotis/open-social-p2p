@@ -484,6 +484,15 @@ const MIGRATIONS: &[&str] = &[
     // 31: a person's posts and reshares by date, for their profile's pages
     // (ADR 0032).
     "CREATE INDEX objects_by_actor_date ON objects(actor, kind, published_ms, id)",
+    // 32: the picture of each profile held (ADR 0032): its file, the size the
+    // profile declares, and whose it is, so a device can open it and the node
+    // knows where it comes from. Kept with `profiles`.
+    "CREATE TABLE icons (
+        actor TEXT PRIMARY KEY,
+        blob  TEXT NOT NULL,
+        size  INTEGER NOT NULL
+    );
+    CREATE INDEX icons_by_blob ON icons(blob);",
 ];
 
 /// The search index (ADR 0014): a number for each post, by its object ID, and
@@ -1060,12 +1069,14 @@ impl Db {
         is_deleted(&self.conn(), &obj.id(), payload)
     }
 
-    /// Whether a post kept here names `blob`.
+    /// Whether a post kept here names `blob`, or a profile held here gives
+    /// it as its picture.
     pub fn is_named(&self, blob: &BlobHash) -> Result<bool> {
         Ok(self
             .conn()
             .query_row(
-                "SELECT 1 FROM refs WHERE ref = ?1 LIMIT 1",
+                "SELECT 1 FROM refs WHERE ref = ?1
+                 UNION ALL SELECT 1 FROM icons WHERE blob = ?1 LIMIT 1",
                 params![blob.to_string()],
                 |_| Ok(()),
             )
@@ -1680,6 +1691,7 @@ impl Db {
                 "DELETE FROM profiles WHERE actor = ?1",
                 params![actor.to_string()],
             )?;
+            profiles::forget_icon(&tx, &actor.to_string())?;
             remove_from_search(&tx, &actor.to_string())?;
         }
         tx.commit()?;
@@ -2925,7 +2937,9 @@ impl Db {
         let size = match size {
             Some(size) => Some(size),
             None => conn.query_row(
-                "SELECT MAX(size) FROM found_blobs WHERE blob = ?1",
+                "SELECT COALESCE(
+                     (SELECT MAX(size) FROM found_blobs WHERE blob = ?1),
+                     (SELECT MAX(size) FROM icons WHERE blob = ?1))",
                 params![blob.to_string()],
                 |row| row.get(0),
             )?,
@@ -2933,12 +2947,14 @@ impl Db {
         Ok(size.map(|s| s as u64))
     }
 
-    /// Who posted `blob`, from the posts we have.
+    /// Who posted `blob`, from the posts we have, or whose picture it is.
     pub fn blob_author(&self, blob: &BlobHash) -> Result<Option<PublicKey>> {
         let author: Option<Option<String>> = self
             .conn()
             .query_row(
-                "SELECT author FROM declared_sizes WHERE blob = ?1",
+                "SELECT COALESCE(
+                     (SELECT author FROM declared_sizes WHERE blob = ?1),
+                     (SELECT actor FROM icons WHERE blob = ?1 LIMIT 1))",
                 params![blob.to_string()],
                 |row| row.get(0),
             )
@@ -3939,6 +3955,7 @@ fn upsert_profile(conn: &Connection, person: &Person, obj: &SignedObject) -> Res
          ON CONFLICT(actor) DO UPDATE SET name = excluded.name, signed = excluded.signed",
         params![actor, person.name, signed],
     )?;
+    profiles::record_icon(conn, person)?;
     index_for_search(conn, &actor, &profile_text(person), None)
 }
 
@@ -4181,6 +4198,7 @@ fn drop_found_person(conn: &Connection, actor: &PublicKey) -> Result<()> {
         params![actor_text],
     )?;
     if n > 0 {
+        profiles::forget_icon(conn, &actor_text)?;
         remove_from_search(conn, &actor_text)?;
     }
     forget_key_if_unused(conn, actor)
@@ -4280,6 +4298,9 @@ fn migrate(conn: &Connection) -> Result<()> {
         }
         if version == 17 {
             backfill_refs(&tx)?;
+        }
+        if version == 32 {
+            profiles::backfill_icons(&tx)?;
         }
         tx.pragma_update(None, "user_version", version)?;
         tx.commit()?;
@@ -6521,7 +6542,7 @@ mod tests {
                      DROP TABLE vouches; DROP TABLE voucher_profiles;
                      DROP TABLE credits_given; DROP TABLE told_reshares;
                      DROP TABLE side_vouches; DROP TABLE side_gathered;
-                     DROP INDEX objects_by_actor_date;
+                     DROP INDEX objects_by_actor_date; DROP TABLE icons;
                      PRAGMA user_version = 24;",
                 )
                 .unwrap();
