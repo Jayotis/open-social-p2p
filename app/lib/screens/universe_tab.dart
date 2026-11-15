@@ -9,10 +9,11 @@ import 'node_summary_screen.dart';
 import 'found_people_screen.dart';
 
 /// The Universe (ADR 0031 §1): the network as a map, with your star at the
-/// centre. For now your star, the sky, and who your node has found as a
-/// list (ADR 0035's "People your node found", brought forward): the map
-/// around your star comes with P3 and P4 (ADRs 0033, 0034). What it says
-/// comes from the node's real state only (ADR 0036).
+/// centre. For now your star, the sky, and who your node has found, from
+/// the Universe snapshot (ADR 0033), which opens as a list (ADR 0035's
+/// "People your node found", brought forward): the map around your star
+/// comes with P4 (ADR 0034). What it says comes from the node's real state
+/// only (ADR 0036).
 class UniverseTab extends StatelessWidget {
   const UniverseTab({super.key, required this.node, required this.open});
 
@@ -142,7 +143,8 @@ class _Sky extends CustomPainter {
   bool shouldRepaint(_Sky old) => old.colors != colors;
 }
 
-/// Who your node has found, as a card on the sky that opens the list.
+/// Who your node has found, from the Universe snapshot (ADR 0033), as a
+/// card on the sky that opens the list.
 class _FoundPeople extends StatelessWidget {
   const _FoundPeople({required this.node, required this.open});
 
@@ -152,16 +154,25 @@ class _FoundPeople extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final people = node.people;
+    final universe = node.universe;
+    // The owner is step 0; the nearest come first after them.
+    final people = universe?.people.where((p) => p.step != 0).toList();
+    final count = (people?.length ?? 0) + (universe?.morePeople.toInt() ?? 0);
     final (title, detail) = switch (people) {
-      null when node.peopleError != null => (
+      null when node.universeError != null => (
         "Couldn't ask your node who it found",
         'Tap to try again.',
       ),
       null => ('Your node is finding people…', null),
-      [] => ('Your node is looking for people', 'It checks every few minutes.'),
-      [final one] => ('Your node found 1 person', one.name),
-      _ => ('Your node found ${people.length} people', _names(people)),
+      _ when count == 0 => (
+        'Your node is looking for people',
+        'It checks every few minutes.',
+      ),
+      _ when count == 1 => (
+        'Your node found 1 person',
+        people.firstOrNull?.name,
+      ),
+      _ => ('Your node found $count people', _names(people, count)),
     };
     return Card(
       child: ListTile(
@@ -176,10 +187,10 @@ class _FoundPeople extends StatelessWidget {
     );
   }
 
-  static String _names(List<FoundPerson> people) {
+  static String _names(List<UniversePerson> people, int count) {
     final named = people.map((p) => p.name).where((n) => n.isNotEmpty);
     final first = named.take(3).toList();
-    final more = people.length - first.length;
+    final more = count - first.length;
     return more > 0 ? '${first.join(', ')} and $more more' : first.join(', ');
   }
 }

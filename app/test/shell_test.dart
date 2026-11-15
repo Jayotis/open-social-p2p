@@ -44,6 +44,18 @@ class FakeApp implements OspApp {
   @override
   Future<List<FoundPerson>> people({required int limit}) async => found;
 
+  /// The node's Universe now, and each `since` it was asked with.
+  UniverseSnapshot snapshot = world([]);
+  final asked = <String?>[];
+  bool unreachable = false;
+
+  @override
+  Future<UniverseSnapshot?> universe({String? since}) async {
+    asked.add(since);
+    if (unreachable) throw Exception('no contact');
+    return since == snapshot.version ? null : snapshot;
+  }
+
   @override
   Future<void> followPerson({required String identity}) async =>
       followed.add(identity);
@@ -75,6 +87,27 @@ NodeStatus nodeStatus({int trustRequests = 0, int replyRequests = 0}) =>
       replyRequests: replyRequests,
       overTor: false,
     );
+
+/// A snapshot with the owner, Alice, and [names] after her.
+UniverseSnapshot world(List<String> names, {String? version}) {
+  UniversePerson person(String name, int? step) => UniversePerson(
+    identity: 'id-$name',
+    name: name,
+    step: step,
+    followed: false,
+    known: false,
+    posts: 0,
+    media: 0,
+    reshares: 0,
+  );
+  return UniverseSnapshot(
+    version: version ?? 'v-${names.join('-')}',
+    people: [person('Alice', 0), for (final n in names) person(n, 1)],
+    lines: const [],
+    morePeople: 0,
+    machines: const [],
+  );
+}
 
 void main() {
   late Directory root;
@@ -109,7 +142,11 @@ void main() {
     await tester.pumpWidget(
       MaterialApp(
         key: UniqueKey(),
-        home: AppShell(node: node),
+        // As the app does: places redraw as the node changes.
+        home: ListenableBuilder(
+          listenable: node,
+          builder: (_, _) => AppShell(node: node),
+        ),
       ),
     );
     await tester.pumpAndSettle();
@@ -263,6 +300,7 @@ void main() {
       ),
       const FoundPerson(identity: 'id-Sam', name: 'Sam', followed: true),
     ];
+    app.snapshot = world(['Kim', 'Sam']);
     await start(tester, Place.universe);
     expect(find.text('Your node found 2 people'), findsOne);
     expect(find.text('Kim, Sam'), findsOne);
@@ -284,6 +322,46 @@ void main() {
     await start(tester, Place.universe);
     expect(find.text('Your node is looking for people'), findsOne);
     expectPlainWords(tester);
+  });
+
+  testWidgets('the Universe shows the one it holds, then asks since it', (
+    tester,
+  ) async {
+    // Kept from last time, and the node can't be reached yet.
+    node.universe = world(['Kim'], version: 'old');
+    app.unreachable = true;
+    await start(tester, Place.universe);
+    expect(find.text('Your node found 1 person'), findsOne);
+    expect(find.text('Kim'), findsOne);
+    expect(app.asked, ['old']);
+
+    // The node answers: a newer one replaces it.
+    app.unreachable = false;
+    app.snapshot = world(['Kim', 'Sam', 'Lee', 'Ana', 'Bo']);
+    await node.checkStatus();
+    await tester.pumpAndSettle();
+    expect(find.text('Your node found 5 people'), findsOne);
+    expect(find.text('Kim, Sam, Lee and 2 more'), findsOne);
+
+    // Unchanged: asked since the one held, which stays.
+    await node.checkStatus();
+    await tester.pumpAndSettle();
+    expect(app.asked.last, app.snapshot.version);
+    expect(find.text('Your node found 5 people'), findsOne);
+  });
+
+  testWidgets('the Universe counts those who did not fit', (tester) async {
+    final some = world(['Kim', 'Sam']);
+    app.snapshot = UniverseSnapshot(
+      version: 'v',
+      people: some.people,
+      lines: const [],
+      morePeople: 40,
+      machines: const [],
+    );
+    await start(tester, Place.universe);
+    expect(find.text('Your node found 42 people'), findsOne);
+    expect(find.text('Kim, Sam and 40 more'), findsOne);
   });
 }
 

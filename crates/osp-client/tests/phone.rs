@@ -395,6 +395,13 @@ async fn phone_pairs_posts_plays_and_is_revoked() {
     let cached = phone.cached_feed().expect("feed saved");
     assert!(cached.items.iter().any(|i| i.id == post_id));
 
+    // The Universe (ADR 0033): saved, then unchanged when asked since it.
+    let world = phone.universe(None).await.unwrap().expect("a snapshot");
+    assert_eq!(world.people[0].step, Some(0), "the owner comes first");
+    assert_eq!(phone.cached_universe(), Some(world.clone()));
+    let again = phone.universe(Some(world.version.clone())).await.unwrap();
+    assert!(again.is_none(), "unchanged");
+
     // Playback: the whole video, then a range, then refusals.
     let url = phone
         .media_url(&video.blob, &video.media_type)
@@ -443,10 +450,11 @@ async fn phone_pairs_posts_plays_and_is_revoked() {
     let err = phone.request(&ClientRequest::Status).await.unwrap_err();
     assert!(err.to_string().contains("isn't paired"), "{err:#}");
 
-    // Forgetting clears the pairing and the cached feed on the phone.
+    // Forgetting clears the pairing and what's saved on the phone.
     phone.forget().await.unwrap();
     assert!(phone.pairing().is_none());
     assert!(phone.cached_feed().is_none());
+    assert!(phone.cached_universe().is_none());
 
     for client in [phone, thief, stranger] {
         client.shutdown().await;

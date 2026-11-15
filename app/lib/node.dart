@@ -93,9 +93,18 @@ class HomeNode extends ChangeNotifier with WidgetsBindingObserver {
 
   bool _loadingPeople = false;
 
-  /// Set while the Universe is on screen: [people] is reloaded with each
-  /// status check, so people appear as the node finds them.
-  bool watchingPeople = false;
+  /// What the Universe may show (ADR 0033): the last snapshot, kept on the
+  /// phone, so it shows at once. Null until there is one.
+  UniverseSnapshot? universe;
+
+  /// Why asking for [universe] failed, if the last try did.
+  String? universeError;
+
+  bool _loadingUniverse = false;
+
+  /// Set while the Universe is on screen: [universe] is asked for again
+  /// with each status check, so people appear as the node finds them.
+  bool watchingUniverse = false;
 
   /// The owner's own profile (ADR 0032): null until first loaded.
   Profile? me;
@@ -127,6 +136,7 @@ class HomeNode extends ChangeNotifier with WidgetsBindingObserver {
     }
     node.paired = node.app.pairedNode();
     node._showSaved();
+    node.universe = node.app.savedUniverse();
     node.unsent = node.app.pendingPost();
     await uploads.clean(keep: [...?node.unsent?.files.map((f) => f.path)]);
     WidgetsBinding.instance.addObserver(node);
@@ -268,7 +278,7 @@ class HomeNode extends ChangeNotifier with WidgetsBindingObserver {
     if (paired == null) return;
     try {
       status = await app.status();
-      if (watchingPeople) unawaited(loadPeople());
+      if (watchingUniverse) unawaited(loadUniverse());
       if (status?.overTor ?? false) {
         posts = await app.feed(limit: 100);
         savedAt = null;
@@ -333,7 +343,26 @@ class HomeNode extends ChangeNotifier with WidgetsBindingObserver {
     return info;
   }
 
-  /// Asks the node who it has found (the Universe's list). One at a time.
+  /// Asks the node for the Universe, since the one the phone holds: an
+  /// unchanged one costs a few bytes. One at a time. The one held stays
+  /// on screen if the node can't be asked.
+  Future<void> loadUniverse() async {
+    if (paired == null || _loadingUniverse) return;
+    _loadingUniverse = true;
+    try {
+      final fresh = await app.universe(since: universe?.version);
+      if (fresh != null) universe = fresh;
+      universeError = null;
+    } catch (e) {
+      universeError = describeError(e);
+    } finally {
+      _loadingUniverse = false;
+    }
+    notifyListeners();
+  }
+
+  /// Asks the node for everyone it holds a profile of (the list the
+  /// Universe opens). One at a time.
   Future<void> loadPeople() async {
     if (paired == null || _loadingPeople) return;
     _loadingPeople = true;
@@ -382,6 +411,8 @@ class HomeNode extends ChangeNotifier with WidgetsBindingObserver {
     firstRun = false;
     people = null;
     peopleError = null;
+    universe = null;
+    universeError = null;
     me = null;
     posts = [];
     status = null;
