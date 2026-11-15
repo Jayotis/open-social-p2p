@@ -7,7 +7,7 @@ import 'advanced_screen.dart';
 
 /// Your node in plain words (ADR 0031 §1): opened from your star in the
 /// Universe and from You. Everything technical is under Advanced details.
-/// P6 adds what the node has been doing ([ADR 0036]).
+/// It says what the node has been doing, from its own counts (ADR 0036 §3).
 class NodeSummaryScreen extends StatefulWidget {
   const NodeSummaryScreen({super.key, required this.node, required this.open});
 
@@ -63,11 +63,34 @@ class _NodeSummaryScreenState extends State<NodeSummaryScreen> {
                   icon: Icons.schedule,
                   text: 'Running for ${formatUptime(s.uptimeSecs)}.',
                 ),
+                // What it did for the network, from its own counts
+                // (ADR 0036 §3).
+                if (s.hostedPosts > 0)
+                  _Line(
+                    icon: Icons.inventory_2_outlined,
+                    text: s.hostedPosts == 1
+                        ? 'It keeps 1 post you shared available to others.'
+                        : 'It keeps ${s.hostedPosts} posts you shared '
+                              'available to others.',
+                  ),
+                _Line(
+                  icon: Icons.upload_outlined,
+                  text: s.servedLatelyBytes == 0
+                      ? 'It sent no photos or videos to others in the last '
+                            '30 days.'
+                      : 'It sent ${formatBytes(s.servedLatelyBytes)} of '
+                            'photos and videos to others in the last 30 days.',
+                ),
                 _Line(
                   icon: Icons.people_outline,
                   text:
                       'You follow ${_people(s.follows)}, and '
-                      '${_people(s.followers)} follow you.',
+                      '${_people(s.followers)} ${s.followers == 1 ? 'follows' : 'follow'} you.',
+                ),
+                _Line(
+                  icon: Icons.storage_outlined,
+                  text:
+                      'It uses ${formatBytes(s.spaceBytes)} of space for OSP.',
                 ),
                 _Line(
                   icon: problems == 0 ? Icons.favorite_border : Icons.warning,

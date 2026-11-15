@@ -58,7 +58,7 @@ use tracing::{debug, info, warn};
 
 use crate::{
     config::{ServingConfig, StorageConfig, SwarmConfig},
-    db::{BlobClass, Db},
+    db::{BlobClass, Db, day_of, now_ms},
     health,
     peers::{self, Event},
 };
@@ -1666,6 +1666,12 @@ async fn enforce_serving_rules(
                     && let Err(e) = db.count_shared_served(&to_blob_hash(hash), bytes)
                 {
                     debug!("counting what was served of a shared post: {e:#}");
+                }
+                if let Some(bytes) = sent
+                    && bytes > 0
+                    && let Err(e) = db.count_served(day_of(now_ms()), bytes)
+                {
+                    debug!("counting what was served: {e:#}");
                 }
                 if let (Some(peer), Some(bytes)) = (peer, sent) {
                     peers::record(&db, &public_of(&db, peer), Event::Served { bytes });

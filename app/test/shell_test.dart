@@ -111,22 +111,29 @@ class FakeApp implements OspApp {
       throw UnimplementedError('${invocation.memberName}');
 }
 
-NodeStatus nodeStatus({int trustRequests = 0, int replyRequests = 0}) =>
-    NodeStatus(
-      name: 'Alice',
-      version: '0.1.0',
-      uptimeSecs: 3600,
-      follows: 2,
-      followers: 1,
-      devices: 1,
-      relayConnected: true,
-      problems: const ['Tor is still starting'],
-      path: 'relay',
-      rttMs: 80,
-      trustRequests: trustRequests,
-      replyRequests: replyRequests,
-      overTor: false,
-    );
+NodeStatus nodeStatus({
+  int trustRequests = 0,
+  int replyRequests = 0,
+  int hostedPosts = 0,
+  int servedLatelyBytes = 0,
+}) => NodeStatus(
+  name: 'Alice',
+  version: '0.1.0',
+  uptimeSecs: 3600,
+  follows: 2,
+  followers: 1,
+  devices: 1,
+  relayConnected: true,
+  problems: const ['Tor is still starting'],
+  path: 'relay',
+  rttMs: 80,
+  trustRequests: trustRequests,
+  replyRequests: replyRequests,
+  overTor: false,
+  hostedPosts: hostedPosts,
+  servedLatelyBytes: servedLatelyBytes,
+  spaceBytes: 1400 * 1000 * 1000,
+);
 
 /// A snapshot with the owner, Alice, at the centre and [names] after her,
 /// in a row to her right, five units apart, all in group 1.
@@ -268,6 +275,63 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.byType(AdvancedScreen), findsOneWidget);
     expect(find.textContaining('Tor is still starting'), findsOne);
+  });
+
+  testWidgets('your node says what it did, from its own counts', (
+    tester,
+  ) async {
+    app.status_ = nodeStatus(
+      hostedPosts: 11,
+      servedLatelyBytes: 324 * 1024 * 1024,
+    );
+    node.status = app.status_;
+    await start(tester, Place.universe);
+    await tester.tap(find.byTooltip('Your node'));
+    await tester.pumpAndSettle();
+    expect(
+      find.text('It keeps 11 posts you shared available to others.'),
+      findsOne,
+    );
+    expect(
+      find.text(
+        'It sent 324 MB of photos and videos to others in the last 30 days.',
+      ),
+      findsOne,
+    );
+    expect(
+      find.text('You follow 2 people, and 1 person follows you.'),
+      findsOne,
+    );
+    expect(find.text('It uses 1.3 GB of space for OSP.'), findsOne);
+    expectPlainWords(tester);
+  });
+
+  testWidgets('out of reach, the map says it is the last one seen', (
+    tester,
+  ) async {
+    app.snapshot = world(['Kim']);
+    await start(tester, Place.universe);
+    expect(find.textContaining('As last seen'), findsNothing);
+    node.reachability = Reachability.offline;
+    node.lastContact = DateTime.now().subtract(const Duration(hours: 3));
+    await tester.tap(find.widgetWithText(NavigationDestination, 'Home'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(NavigationDestination, 'Universe'));
+    await tester.pumpAndSettle();
+    expect(find.text('As last seen, 3 h ago'), findsOne);
+  });
+
+  testWidgets('a node that served nothing says so, and no hosting', (
+    tester,
+  ) async {
+    await start(tester, Place.universe);
+    await tester.tap(find.byTooltip('Your node'));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('available to others'), findsNothing);
+    expect(
+      find.text('It sent no photos or videos to others in the last 30 days.'),
+      findsOne,
+    );
   });
 
   testWidgets('search opens from Home and the Universe', (tester) async {
@@ -715,10 +779,34 @@ void main() {
     await start(tester, Place.universe);
     await tester.tap(find.text('2 machines'));
     await tester.pumpAndSettle();
+    // What machines are, for a newcomer, first.
+    expect(find.textContaining('other people’s nodes'), findsOne);
+    expectPlainWords(tester);
+    // Then the machines, below it.
+    final sheet = find.descendant(
+      of: find.byType(BottomSheet),
+      matching: find.byType(Scrollable),
+    );
+    await tester.scrollUntilVisible(
+      find.text('dog-easy-fox'),
+      100,
+      scrollable: sheet.first,
+    );
     expect(find.text('able-baker-charlie'), findsOne);
     expect(find.textContaining('lists people who asked to be found'), findsOne);
     expect(find.text('Heard of, hasn’t answered yet'), findsOne);
     expectPlainWords(tester);
+    await tester.scrollUntilVisible(
+      find.text('What your node did'),
+      -100,
+      scrollable: sheet.first,
+    );
+    // And from there, what her own node did.
+    await tester.ensureVisible(find.text('What your node did'));
+    await tester.tap(find.text('What your node did'));
+    await tester.pumpAndSettle();
+    expect(find.byType(NodeSummaryScreen), findsOneWidget);
+    expect(find.text('able-baker-charlie'), findsNothing);
   });
 
   testWidgets('pinching anyhow never loses the map', (tester) async {

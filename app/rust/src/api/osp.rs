@@ -77,6 +77,12 @@ pub struct NodeStatus {
     /// Messages between nodes go through Tor, so they take seconds, and a
     /// first contact up to a few minutes.
     pub over_tor: bool,
+    /// Posts the node reshared with hosting, and keeps available.
+    pub hosted_posts: u32,
+    /// Media bytes it sent other nodes over the last 30 days (ADR 0036 §3).
+    pub served_lately_bytes: i64,
+    /// The space OSP uses on the node.
+    pub space_bytes: i64,
 }
 
 /// A request to be a trusted follower, or someone trusted (ADR 0013).
@@ -537,6 +543,9 @@ impl OspApp {
             trust_requests: s.trust_requests as u32,
             reply_requests: s.reply_requests as u32,
             over_tor: s.tor.is_some(),
+            hosted_posts: s.shared.posts as u32,
+            served_lately_bytes: s.served_lately_bytes as i64,
+            space_bytes: s.space_bytes as i64,
         })
     }
 

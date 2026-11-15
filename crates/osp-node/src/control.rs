@@ -33,7 +33,7 @@ use tracing::{debug, info, warn};
 
 use crate::{
     config::RelayChoice,
-    db::{BlobClass, Choice, VouchKind, now_ms},
+    db::{BlobClass, Choice, VouchKind, day_of, now_ms},
     directory, health, machine, media, network,
     node::{Core, check_addr, remember},
     social::FOLLOWER_SILENCE,
@@ -433,6 +433,8 @@ impl Core {
             }
         }
         let (transfer_places, upload_measured_mbps) = self.store.serving();
+        let storage = self.db.storage_summary()?;
+        let space_bytes = storage.iter().map(|s| s.bytes).sum::<u64>() + self.db.size_bytes()?;
         Ok(StatusInfo {
             name: self.own_name(),
             identity: self.signer.identity(),
@@ -446,7 +448,7 @@ impl Core {
                 .collect(),
             follows: self.db.follows()?.len(),
             followers: self.db.follower_count()?,
-            storage: self.db.storage_summary()?,
+            storage,
             peers,
             nat,
             version: crate::VERSION.to_string(),
@@ -475,6 +477,8 @@ impl Core {
                     served_bytes,
                 }
             },
+            served_lately_bytes: self.db.served_lately(day_of(now_ms()))?,
+            space_bytes,
         })
     }
 

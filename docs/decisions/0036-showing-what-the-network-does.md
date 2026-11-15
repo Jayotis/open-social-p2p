@@ -42,6 +42,8 @@ Each line comes from the node's own counts: posts it hosts as a resharer or a fo
 
 When the node is offline, the summary says when it was last seen, and the Universe shows the last snapshot, marked as such.
 
+*Built (2026-11-15, P6 part 1):* "this month" became **the last 30 days**, which is what's counted: every byte of media the node sends another node, by UTC day, kept for 31 days (`served_days`). That's its own posts' media, copies it keeps for others, everything. **Hosting** counts the posts the node reshared with hosting (`posts_hosted`, as reviewed in [ADR 0033](0033-what-the-universe-may-show.md)). Copies a follower that shares keeps aren't counted post by post, so they show only in what was served. **Space** is the media the node holds plus its database. These come in the node's status, not the snapshot, so the allowlist doesn't change. The machines list starts with a few sentences on what machines are and what the node does with them ([ADR 0015](0015-nodes-meet-first.md)), promising nothing about reputation, and leads to this summary.
+
 ## Options considered
 
 - **A traffic monitor:** connections, peers, transfer rates. Accurate, but it's a packet analyser, and draws machines next to transfers in ways that would link them to people.

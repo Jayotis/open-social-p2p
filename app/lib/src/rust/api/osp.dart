@@ -472,6 +472,15 @@ class NodeStatus {
   /// first contact up to a few minutes.
   final bool overTor;
 
+  /// Posts the node reshared with hosting, and keeps available.
+  final int hostedPosts;
+
+  /// Media bytes it sent other nodes over the last 30 days (ADR 0036 §3).
+  final PlatformInt64 servedLatelyBytes;
+
+  /// The space OSP uses on the node.
+  final PlatformInt64 spaceBytes;
+
   const NodeStatus({
     required this.name,
     required this.version,
@@ -487,6 +496,9 @@ class NodeStatus {
     required this.trustRequests,
     required this.replyRequests,
     required this.overTor,
+    required this.hostedPosts,
+    required this.servedLatelyBytes,
+    required this.spaceBytes,
   });
 
   @override
@@ -504,7 +516,10 @@ class NodeStatus {
       rttMs.hashCode ^
       trustRequests.hashCode ^
       replyRequests.hashCode ^
-      overTor.hashCode;
+      overTor.hashCode ^
+      hostedPosts.hashCode ^
+      servedLatelyBytes.hashCode ^
+      spaceBytes.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -524,7 +539,10 @@ class NodeStatus {
           rttMs == other.rttMs &&
           trustRequests == other.trustRequests &&
           replyRequests == other.replyRequests &&
-          overTor == other.overTor;
+          overTor == other.overTor &&
+          hostedPosts == other.hostedPosts &&
+          servedLatelyBytes == other.servedLatelyBytes &&
+          spaceBytes == other.spaceBytes;
 }
 
 class Post {

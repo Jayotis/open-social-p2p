@@ -501,7 +501,21 @@ const MIGRATIONS: &[&str] = &[
         id    INTEGER PRIMARY KEY CHECK (id = 0),
         saved BLOB NOT NULL
     )",
+    // 34: the bytes of media this node sent other nodes, by UTC day, for its
+    // owner's summary (ADR 0036 §3). Days past `SERVED_DAYS` are dropped.
+    "CREATE TABLE served_days (
+        day   INTEGER PRIMARY KEY,
+        bytes INTEGER NOT NULL
+    )",
 ];
+
+/// How many days of `served_days` are kept: the summary's 30, and today.
+pub const SERVED_DAYS: i64 = 31;
+
+/// The UTC day a time falls on, counted from 1970.
+pub fn day_of(ms: i64) -> i64 {
+    ms.div_euclid(86_400_000)
+}
 
 /// The search index (ADR 0014): a number for each post, by its object ID, and
 /// each profile, by its identity, and FTS5's index of their words by that
@@ -2968,6 +2982,42 @@ impl Db {
             )
             .optional()?;
         Ok(author.flatten().map(|a| a.parse()).transpose()?)
+    }
+
+    /// Counts media bytes sent to another node on `day`, and drops days past
+    /// `SERVED_DAYS`.
+    pub fn count_served(&self, day: i64, bytes: u64) -> Result<()> {
+        let conn = self.conn();
+        conn.execute(
+            "INSERT INTO served_days (day, bytes) VALUES (?1, ?2)
+             ON CONFLICT(day) DO UPDATE SET bytes = bytes + excluded.bytes",
+            params![day, bytes as i64],
+        )?;
+        conn.execute(
+            "DELETE FROM served_days WHERE day <= ?1",
+            params![day - SERVED_DAYS],
+        )?;
+        Ok(())
+    }
+
+    /// The media bytes sent to other nodes over the 30 days up to `today`.
+    pub fn served_lately(&self, today: i64) -> Result<u64> {
+        let bytes: i64 = self.conn().query_row(
+            "SELECT COALESCE(SUM(bytes), 0) FROM served_days WHERE day > ?1 AND day <= ?2",
+            params![today - 30, today],
+            |row| row.get(0),
+        )?;
+        Ok(bytes as u64)
+    }
+
+    /// The database's own size, in bytes.
+    pub fn size_bytes(&self) -> Result<u64> {
+        let size: i64 = self.conn().query_row(
+            "SELECT page_count * page_size FROM pragma_page_count, pragma_page_size",
+            [],
+            |row| row.get(0),
+        )?;
+        Ok(size as u64)
     }
 
     pub fn storage_summary(&self) -> Result<Vec<StorageInfo>> {
@@ -6528,6 +6578,26 @@ mod tests {
     }
 
     #[test]
+    fn served_counts_the_last_30_days_and_drops_older() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(&dir.path().join("t.db")).unwrap();
+        let today = day_of(now_ms());
+        db.count_served(today - 40, 1000).unwrap();
+        db.count_served(today - 30, 100).unwrap();
+        db.count_served(today - 29, 10).unwrap();
+        db.count_served(today, 1).unwrap();
+        db.count_served(today, 2).unwrap();
+        assert_eq!(db.served_lately(today).unwrap(), 13);
+        let days: i64 = db
+            .conn()
+            .query_row("SELECT COUNT(*) FROM served_days", [], |r| r.get(0))
+            .unwrap();
+        // Day -40 was dropped; day -30 is kept, as `SERVED_DAYS` is 31.
+        assert_eq!(days, 3);
+        assert!(db.size_bytes().unwrap() > 0);
+    }
+
+    #[test]
     fn a_search_index_from_before_dates_is_built_again_when_opened() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("t.db");
@@ -6551,7 +6621,7 @@ mod tests {
                      DROP TABLE credits_given; DROP TABLE told_reshares;
                      DROP TABLE side_vouches; DROP TABLE side_gathered;
                      DROP INDEX objects_by_actor_date; DROP TABLE icons;
-                     DROP TABLE universe_places;
+                     DROP TABLE universe_places; DROP TABLE served_days;
                      PRAGMA user_version = 24;",
                 )
                 .unwrap();

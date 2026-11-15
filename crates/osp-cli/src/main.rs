@@ -1968,6 +1968,11 @@ fn print_status(s: &StatusInfo) {
             size(s.shared.served_bytes)
         );
     }
+    println!(
+        "Served:    {} to other nodes in the last 30 days; {} used in all",
+        size(s.served_lately_bytes),
+        size(s.space_bytes)
+    );
     if let Some(own) = &s.endpoints {
         let media = match own.media {
             Some(media) => media.fmt_short().to_string(),

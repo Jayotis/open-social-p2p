@@ -464,7 +464,29 @@ class _UniverseTabState extends State<UniverseTab>
                   spacing: Space.xs,
                   runSpacing: Space.xs,
                   children: [
-                    _Machines(machines: s?.machines ?? const []),
+                    _Machines(
+                      machines: s?.machines ?? const [],
+                      onNode: () => widget.open(
+                        NodeSummaryScreen(node: node, open: widget.open),
+                      ),
+                    ),
+                    // Her node out of reach: what's drawn is from before
+                    // (ADR 0036 §3).
+                    if (s != null && node.reachability == Reachability.offline)
+                      Chip(
+                        avatar: Icon(
+                          Icons.history,
+                          size: 18,
+                          color: colors.onSky,
+                        ),
+                        label: Text(switch (node.lastContact) {
+                          final at? => 'As last seen, ${formatAgo(at)}',
+                          null => 'As last seen',
+                        }),
+                        labelStyle: TextStyle(color: colors.onSky),
+                        backgroundColor: colors.skyHaze,
+                        side: BorderSide.none,
+                      ),
                     if (node.universeLayer case final layer?)
                       InputChip(
                         label: Text(_LayerPicker.chip(layer)),
@@ -1228,9 +1250,12 @@ class _Control extends StatelessWidget {
 /// The machines the node's machine name knows: their own band, apart from
 /// people and never beside one (ADR 0033 §4).
 class _Machines extends StatelessWidget {
-  const _Machines({required this.machines});
+  const _Machines({required this.machines, required this.onNode});
 
   final List<UniverseMachine> machines;
+
+  /// Opens the owner's node's summary.
+  final VoidCallback onNode;
 
   @override
   Widget build(BuildContext context) {
@@ -1247,16 +1272,23 @@ class _Machines extends StatelessWidget {
       onPressed: () => showModalBottomSheet<void>(
         context: context,
         showDragHandle: true,
-        builder: (context) => _MachineList(machines: machines),
+        builder: (context) => _MachineList(
+          machines: machines,
+          onNode: () {
+            Navigator.of(context).pop();
+            onNode();
+          },
+        ),
       ),
     );
   }
 }
 
 class _MachineList extends StatelessWidget {
-  const _MachineList({required this.machines});
+  const _MachineList({required this.machines, required this.onNode});
 
   final List<UniverseMachine> machines;
+  final VoidCallback onNode;
 
   @override
   Widget build(BuildContext context) {
@@ -1271,11 +1303,32 @@ class _MachineList extends StatelessWidget {
             style: theme.textTheme.titleMedium,
           ),
         ),
+        // What machines are, for a newcomer: only what the node does
+        // (ADR 0015), and nothing promised about reputation.
         const Padding(
-          padding: EdgeInsets.fromLTRB(Space.m, Space.xs, Space.m, Space.s),
+          padding: EdgeInsets.fromLTRB(Space.m, Space.xs, Space.m, 0),
           child: Text(
-            'Other people’s nodes, by the names they go by. Which person '
-            'runs which isn’t shown.',
+            'Machines are other people’s nodes, met under names made for '
+            'meeting. A machine’s name isn’t tied to the person who runs it.\n\n'
+            'Your node meets them on its own, while you’re away. They greet '
+            'each other and pass on the names of other machines they’ve met. '
+            'Some list people who asked to be found: that’s how your node '
+            'found people for you.\n\n'
+            'Your node remembers which ones keep answering. That record '
+            'stays on your node.',
+          ),
+        ),
+        Padding(
+          padding: const EdgeInsets.symmetric(
+            horizontal: Space.m,
+            vertical: Space.xs,
+          ),
+          child: Align(
+            alignment: Alignment.centerLeft,
+            child: TextButton(
+              onPressed: onNode,
+              child: const Text('What your node did'),
+            ),
           ),
         ),
         for (final m in machines)
