@@ -24,7 +24,8 @@ use osp_node::{
 };
 use osp_proto::{
     EndpointId, ObjectId,
-    rpc::{ClientRequest, ClientResponse, StatusInfo},
+    connected::{self, Hop, How, SideFrom},
+    rpc::{ClientRequest, ClientResponse, ProfileItemKind, StatusInfo},
     universe::{Layer, Level, MAX_SNAPSHOT_BYTES, SKY_INNER, Snapshot},
 };
 
@@ -350,6 +351,9 @@ async fn the_universe_holds_no_address_and_opening_it_sends_nothing() {
     let connected: HashSet<EndpointId> = status(&kim).await.peers.iter().map(|p| p.node).collect();
     let asked_before = settled(&kim).await;
     let viewing_before = kim.viewing_endpoints_made();
+    let everyone = [&directory, &kim, &jimmy, &alice, &bob, &fred];
+    let who_vouched = || everyone.map(|n| n.who_vouched_askers().len());
+    let who_vouched_before = who_vouched();
     let sent = sent_from(&net, &own, Duration::from_secs(3), async {
         let mut since = None;
         for level in [
@@ -400,6 +404,28 @@ async fn the_universe_holds_no_address_and_opening_it_sends_nothing() {
             regions.extend(snapshot.groups.iter().map(|g| format!("g:{}", g.id)));
         }
         assert!(asked.contains(""), "no way home from {asked:?}");
+        // Selecting each person and opening their profile, as a tap on
+        // them does, short of asking how she's connected (ADR 0037 §2).
+        // Some have no profile here, which is an answer too.
+        for person in &snapshot.people {
+            kim.handle(ClientRequest::Profile {
+                actor: person.actor,
+            })
+            .await;
+            for kind in [
+                ProfileItemKind::Posts,
+                ProfileItemKind::Media,
+                ProfileItemKind::Reshares,
+            ] {
+                let req = ClientRequest::ProfileItems {
+                    actor: person.actor,
+                    kind,
+                    before: None,
+                    limit: 20,
+                };
+                kim.handle(req).await;
+            }
+        }
         call(&kim, universe_request(Level::Universe, vec![], None)).await;
     })
     .await;
@@ -445,6 +471,65 @@ async fn the_universe_holds_no_address_and_opening_it_sends_nothing() {
         "requests and tries: {asked_before:?} before, {asked_after:?} after"
     );
     assert_eq!(kim.viewing_endpoints_made(), viewing_before);
+    // Nor did it ask anyone who vouched for them (ADR 0037 §2).
+    assert_eq!(who_vouched(), who_vouched_before);
+    assert_eq!(kim.throwaways_made(), 0);
+
+    // Kim asks how she's connected to Alice. Her node holds Jimmy's reshare
+    // of Alice, and asks Alice's node who vouched for her, once, from a
+    // throwaway key: Jimmy, whose reshare her node told Alice's of.
+    let jimmy_vouched = || async {
+        let resp = call(&alice, ClientRequest::Vouches { gather: false }).await;
+        matches!(resp, ClientResponse::Vouches { vouchers, .. } if !vouchers.is_empty())
+    };
+    wait_for("Jimmy's vouch for Alice", jimmy_vouched).await;
+    let alice_before = alice.who_vouched_askers();
+    let ask = ClientRequest::HowConnected {
+        actor: alice.identity(),
+    };
+    let ClientResponse::Connected { connection } = call(&kim, ask).await else {
+        panic!("no connection")
+    };
+    assert_eq!(connection.side, SideFrom::Asked { vouches: 1 });
+    // Her own node's line and the one through Alice's side are the same
+    // path, shown once.
+    let path = connected::Path {
+        hops: vec![
+            Hop {
+                to: jimmy.identity(),
+                how: How::Follows,
+            },
+            Hop {
+                to: alice.identity(),
+                how: How::Reshared,
+            },
+        ],
+    };
+    assert_eq!(connection.paths, [path]);
+    let names: Vec<_> = connection
+        .people
+        .iter()
+        .map(|p| p.name.as_deref())
+        .collect();
+    assert_eq!(names, [Some("Alice"), Some("Jimmy")]);
+    assert!(connection.people.iter().all(|p| !p.regions.is_empty()));
+    let askers = alice.who_vouched_askers();
+    assert_eq!(askers.len(), alice_before.len() + 1);
+    let asker = askers.last().unwrap();
+    assert!(
+        !kim.endpoint_ids().contains(asker),
+        "Alice's node was asked from one of Kim's endpoints"
+    );
+    assert_eq!(kim.throwaways_made(), 1);
+    // Fred: nobody vouched for him, so no path, and the answer says so.
+    let ask = ClientRequest::HowConnected {
+        actor: fred.identity(),
+    };
+    let ClientResponse::Connected { connection } = call(&kim, ask).await else {
+        panic!("no connection")
+    };
+    assert_eq!(connection.side, SideFrom::Asked { vouches: 0 });
+    assert!(connection.paths.is_empty());
 
     for node in [directory, kim, jimmy, alice, bob, fred] {
         node.shutdown().await.unwrap();

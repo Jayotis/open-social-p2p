@@ -521,9 +521,16 @@ impl Core {
                 self.found_early(remote, &credit, &profile)?;
                 SocialResponse::Ok
             }
-            SocialRequest::WhoVouched => SocialResponse::Vouches {
-                vouches: self.who_vouched(remote)?,
-            },
+            SocialRequest::WhoVouched => {
+                #[cfg(feature = "sim")]
+                self.who_vouched_askers
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .push(remote);
+                SocialResponse::Vouches {
+                    vouches: self.who_vouched(remote)?,
+                }
+            }
         })
     }
 

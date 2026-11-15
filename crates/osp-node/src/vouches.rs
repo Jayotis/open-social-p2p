@@ -293,7 +293,7 @@ impl Core {
     }
 
     /// The home nodes a voucher's kept profile lists.
-    fn voucher_nodes(&self, actor: &PublicKey) -> Result<Vec<EndpointId>> {
+    pub(crate) fn voucher_nodes(&self, actor: &PublicKey) -> Result<Vec<EndpointId>> {
         Ok(self
             .db
             .voucher_profile(actor)?
@@ -455,7 +455,7 @@ pub(crate) fn vouch_parts(signed: &SignedObject) -> Result<(PublicKey, PublicKey
 
 /// Checks a vouch an answer to `WhoVouched` carried: that it verifies, is
 /// for `subject`, and comes with its voucher's profile. Returns the voucher.
-fn check_carried(carried: &CarriedVouch, subject: &PublicKey) -> Result<PublicKey> {
+pub(crate) fn check_carried(carried: &CarriedVouch, subject: &PublicKey) -> Result<PublicKey> {
     let (voucher, of, _) = vouch_parts(&carried.vouch)?;
     ensure!(of == *subject, "the vouch is for someone else");
     ensure!(

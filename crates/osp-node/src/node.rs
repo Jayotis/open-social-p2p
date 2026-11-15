@@ -274,6 +274,11 @@ pub(crate) struct Core {
     /// Questions about whom the owner's world places each node asked this
     /// hour (ADR 0029).
     pub place_questions: PerHour,
+    /// The owner's "How are we connected?" taps that asked someone's node
+    /// this hour (ADR 0037), all counted under this node's own ID.
+    pub connected_asks: PerHour,
+    /// Throwaway keys made to ask someone's node who vouched for them.
+    pub throwaways_made: std::sync::atomic::AtomicUsize,
     /// Wakes the telling of credits given and reshares made (ADR 0029).
     pub tell_vouches_now: Notify,
     /// How often each host was named in `WhoHosts` (ADR 0025).
@@ -323,6 +328,10 @@ pub(crate) struct Core {
     /// Every meeting of a replier's side, for the simulator (ADR 0029).
     #[cfg(feature = "sim")]
     pub meetings: Mutex<Vec<crate::admission::Meeting>>,
+    /// The endpoints that asked this node who vouched for its owner, for
+    /// tests (ADR 0037).
+    #[cfg(feature = "sim")]
+    pub who_vouched_askers: Mutex<Vec<EndpointId>>,
     /// The Universe's tree and places, kept between snapshots (ADR 0034).
     pub atlas: crate::world::Atlas,
 }
@@ -627,6 +636,8 @@ impl Node {
             credit_senders: PerHour::default(),
             vouch_questions: PerHour::default(),
             place_questions: PerHour::default(),
+            connected_asks: PerHour::default(),
+            throwaways_made: Default::default(),
             tell_vouches_now: Notify::new(),
             named_hosts: NamedHosts::default(),
             heard: Heard::default(),
@@ -652,6 +663,8 @@ impl Node {
             tor_ready: Mutex::new(HashMap::new()),
             #[cfg(feature = "sim")]
             meetings: Mutex::new(Vec::new()),
+            #[cfg(feature = "sim")]
+            who_vouched_askers: Mutex::new(Vec::new()),
             atlas: Default::default(),
         });
 
@@ -798,6 +811,24 @@ impl Node {
     /// 0024).
     pub fn viewing_endpoints_made(&self) -> usize {
         self.core.viewing.made()
+    }
+
+    /// How many throwaway keys this node has made since it started, to ask
+    /// someone's node who vouched for them (ADR 0037).
+    pub fn throwaways_made(&self) -> usize {
+        self.core
+            .throwaways_made
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// The endpoints that asked this node who vouched for its owner.
+    #[cfg(feature = "sim")]
+    pub fn who_vouched_askers(&self) -> Vec<EndpointId> {
+        self.core
+            .who_vouched_askers
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     /// This node's own signed profile, as it gives it to others.

@@ -364,6 +364,9 @@ impl Core {
             ClientRequest::UniverseEvents { since } => ClientResponse::UniverseEvents {
                 events: self.db.events(since)?,
             },
+            ClientRequest::HowConnected { actor } => ClientResponse::Connected {
+                connection: self.how_connected(actor).await?,
+            },
             ClientRequest::Pair { .. }
             | ClientRequest::ReadBlob { .. }
             | ClientRequest::ResumeUpload { .. }
