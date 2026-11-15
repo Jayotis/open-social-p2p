@@ -1028,6 +1028,11 @@ pub struct PersonInfo {
     /// (RFC 3339, like `published`).
     #[serde(default)]
     pub newest: Option<String>,
+    /// Search only (ADR 0035 §3): where they are on the Universe's map, as
+    /// `universe::Region` names regions, the top (empty) first. See
+    /// [`FeedItem::regions`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub regions: Vec<String>,
 }
 
 /// A person's profile as `Profile` gives it (ADR 0032).
@@ -1079,6 +1084,15 @@ pub struct FeedItem {
     /// reshared it (ADR 0029).
     #[serde(default)]
     pub resharers: Option<u32>,
+    /// Search only (ADR 0035 §3): where its author is on the Universe's map,
+    /// as `universe::Region` names regions, the top (empty) first, so a
+    /// device can light the regions that hold it and fly there. A placed
+    /// author's groups follow, the widest first. An author in the public
+    /// sky has one cell, `sky:32/x/y`, their place at full precision: a
+    /// shown cell `sky:l/cx/cy` holds them when `cx`, `cy` are `x`, `y`
+    /// shifted right by `32 - l`. The owner has only the top.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub regions: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

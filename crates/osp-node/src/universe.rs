@@ -183,6 +183,40 @@ impl Core {
         Ok(people)
     }
 
+    /// Where each of `actors` is on the map (ADR 0035 §3), as
+    /// `FeedItem::regions` says: the top, then a placed person's groups,
+    /// widest first, or a sky person's deepest cell. Reads the same world
+    /// a snapshot does, kept while nothing in it changed.
+    pub(crate) fn regions_of(
+        &self,
+        actors: impl IntoIterator<Item = PublicKey>,
+    ) -> Result<HashMap<PublicKey, Vec<String>>> {
+        let me = self.signer.identity();
+        let now = now_ms();
+        let acts = self.lines(now)?;
+        let everyone = self.everyone(&acts)?;
+        let world = self
+            .atlas
+            .world(&self.db, world_input(&everyone, &acts, &me, now))?;
+        let mut out = HashMap::new();
+        for actor in actors {
+            let mut regions = vec![Region::Top];
+            if world.placed(&actor).is_some() {
+                let chain = world.chain_of(&actor);
+                regions.extend(chain.iter().map(|g| Region::Group(world.id(*g))));
+            } else if actor != me {
+                let (x, y) = sky::place(SKY_PEOPLE, &actor);
+                regions.push(Region::Sky {
+                    level: sky::DEEPEST,
+                    x,
+                    y,
+                });
+            }
+            out.insert(actor, regions.iter().map(Region::to_string).collect());
+        }
+        Ok(out)
+    }
+
     /// What a layer that lights up counts for each person (ADR 0035 §1):
     /// their public posts, posts with a video, or reshares from the last
     /// `LIT_DAYS`, as this node holds them. Only people with some.
