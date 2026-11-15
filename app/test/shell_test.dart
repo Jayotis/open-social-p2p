@@ -64,6 +64,19 @@ class FakeApp implements OspApp {
     return since == there.version ? null : there;
   }
 
+  /// What a tap on a group or cell opens, by region, and each one asked.
+  final sheets = <String, Found>{};
+  final sheetsAsked = <String>[];
+
+  @override
+  Future<Found> regionItems({
+    required String region,
+    required int limit,
+  }) async {
+    sheetsAsked.add(region);
+    return sheets[region] ?? const Found(people: [], posts: []);
+  }
+
   @override
   Future<void> followPerson({required String identity}) async =>
       followed.add(identity);
@@ -360,6 +373,14 @@ void main() {
     expectPlainWords(tester);
   });
 
+  testWidgets('a node that found nobody offers an invite code', (tester) async {
+    await start(tester, Place.universe);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Your node is looking for people'));
+    await tester.pumpAndSettle();
+    expect(find.text('Invite and follow'), findsOne);
+  });
+
   testWidgets('the Universe shows the one it holds, then asks since it', (
     tester,
   ) async {
@@ -415,6 +436,44 @@ void main() {
     final star = tester.getCenter(find.byTooltip('Your node'));
     return star + Offset(room * 0.4 * n / count, 0);
   }
+
+  testWidgets('tapping a group opens its people, then the map', (tester) async {
+    final top = world([]);
+    app.snapshot = UniverseSnapshot(
+      version: 'g',
+      level: UniverseLevel.universe,
+      region: '',
+      path: const [],
+      groups: [
+        UniverseGroup(id: BigInt.from(7), people: 12, bright: 40, x: 5, y: 0),
+      ],
+      people: top.people,
+      lines: const [],
+      morePeople: 0,
+      machines: const [],
+      sky: const [],
+    );
+    app.sheets['g:7'] = const Found(
+      people: [FoundPerson(identity: 'id-Kim', name: 'Kim', followed: false)],
+      posts: [],
+    );
+    await start(tester, Place.universe);
+    await tester.pumpAndSettle();
+
+    await tester.tapAt(drawnAt(tester, 1, 1));
+    await tester.pumpAndSettle();
+    expect(app.sheetsAsked, ['g:7']);
+    expect(find.text('A group of 12 people'), findsOne);
+    expect(find.text('Kim'), findsOne);
+    expect(node.universeRegion, '', reason: 'the map stays where it was');
+    expectPlainWords(tester);
+
+    await tester.tap(find.byKey(const Key('region-open-map')));
+    await tester.pumpAndSettle();
+    expect(find.text('A group of 12 people'), findsNothing);
+    expect(app.askedFor.last, 'g:7');
+    expect(node.universeRegion, 'g:7');
+  });
 
   testWidgets('tapping a star stands there, and stepping back keeps going', (
     tester,

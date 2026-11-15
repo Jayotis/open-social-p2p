@@ -217,6 +217,34 @@ impl Core {
         Ok(out)
     }
 
+    /// Everyone in a group (`g:`), at any depth, or in a cell of the public
+    /// sky (`sky:`), for the sheet a tap opens (ADR 0035 §2).
+    pub(crate) fn region_people(&self, region: &str) -> Result<Vec<PublicKey>> {
+        let me = self.signer.identity();
+        let now = now_ms();
+        let acts = self.lines(now)?;
+        let everyone = self.everyone(&acts)?;
+        let world = self
+            .atlas
+            .world(&self.db, world_input(&everyone, &acts, &me, now))?;
+        Ok(match Region::parse(Some(region)) {
+            Some(Region::Group(id)) => match world.members(id) {
+                Some(members) => members,
+                None => bail!("no such group: {region}"),
+            },
+            Some(Region::Sky { level, x, y }) => {
+                let cell = Cell { level, x, y };
+                everyone
+                    .iter()
+                    .map(|(p, _)| p.actor)
+                    .filter(|a| *a != me && world.placed(a).is_none())
+                    .filter(|a| cell.contains(sky::place(SKY_PEOPLE, a)))
+                    .collect()
+            }
+            _ => bail!("a sheet opens a group or a sky cell, not {region:?}"),
+        })
+    }
+
     /// What a layer that lights up counts for each person (ADR 0035 §1):
     /// their public posts, posts with a video, or reshares from the last
     /// `LIT_DAYS`, as this node holds them. Only people with some.

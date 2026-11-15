@@ -149,6 +149,9 @@ impl Core {
                 }
                 self.people(limit.min(500))?
             }
+            ClientRequest::RegionItems { region, limit } => {
+                self.region_items(&region, limit.min(200)).await?
+            }
             ClientRequest::Reshare { id, host } => ClientResponse::Posted {
                 id: self.reshare(&id, host).await?,
             },
@@ -882,6 +885,42 @@ impl Core {
         }
         for p in &mut posts {
             p.regions = regions[&p.actor].clone();
+        }
+        Ok(ClientResponse::Found { people, posts })
+    }
+
+    /// A group's or sky cell's people and posts, newest first (ADR 0035 §2).
+    async fn region_items(&self, region: &str, limit: u32) -> Result<ClientResponse> {
+        let members = self.region_people(region)?;
+        let followed: HashSet<_> = self.db.follows()?.iter().map(|f| f.actor).collect();
+        let me = self.signer.identity();
+        let mut people = Vec::new();
+        // The owner's own star isn't listed; her posts are.
+        for actor in members.iter().filter(|a| **a != me) {
+            // Those who vouched for the owner have profiles kept apart.
+            let held = match self.db.profile(actor)? {
+                Some(obj) => Some(obj),
+                None => self.db.voucher_profile(actor)?,
+            };
+            let Some(obj) = held else {
+                continue;
+            };
+            if let Ok(Payload::Person(person)) = obj.verify() {
+                let newest = self.db.newest_ms(actor)?;
+                people.push((newest, self.person_info(person, &followed, newest)?));
+            }
+        }
+        people.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.name.cmp(&b.1.name)));
+        let people = people
+            .into_iter()
+            .take(limit as usize)
+            .map(|(_, p)| p)
+            .collect();
+        let mut posts = Vec::new();
+        for obj in self.db.feed(&members, limit)? {
+            if let Some(item) = self.feed_item(&obj).await? {
+                posts.push(self.with_found(item)?);
+            }
         }
         Ok(ClientResponse::Found { people, posts })
     }

@@ -129,6 +129,11 @@ abstract class OspApp implements RustOpaqueInterface {
   /// The end of the app's log, for the status screen.
   String recentLog({required int lines});
 
+  /// What a tap on a group or a sky cell opens (ADR 0035 §2): its people,
+  /// newest post first, and their posts, newest first. `region` is `g:`
+  /// or `sky:`. Nothing leaves the node.
+  Future<Found> regionItems({required String region, required int limit});
+
   /// Replies to `post_id` as the owner (ADR 0028). The node keeps it and
   /// sends it to the post's creator, trying again for 30 days. A reshare's
   /// ID answers the post it shares.

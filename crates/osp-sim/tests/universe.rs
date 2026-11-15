@@ -300,6 +300,24 @@ async fn the_universe_holds_no_address_and_opening_it_sends_nothing() {
         };
         assert!(cell.people.iter().any(|p| p.actor == fred_id), "{r:?}");
     }
+    // The whole sky, tapped, opens as a sheet of him and his post
+    // (ADR 0035 §2).
+    let req = ClientRequest::RegionItems {
+        region: "sky:0/0/0".into(),
+        limit: 20,
+    };
+    let ClientResponse::Found { people, posts } = call(&kim, req).await else {
+        panic!("no sheet of the sky")
+    };
+    assert!(people.iter().any(|p| p.actor == fred_id), "{people:?}");
+    assert!(
+        posts.iter().any(|p| p.content == "Fred's table"),
+        "{posts:?}"
+    );
+    assert!(
+        people.iter().all(|p| p.found_through.is_some()),
+        "only the sky's"
+    );
     assert!(snapshot.lines.len() >= 2, "{:?}", snapshot.lines);
     assert!(!snapshot.machines.is_empty(), "Kim's machine knows none");
     assert!(text.len() <= MAX_SNAPSHOT_BYTES);
