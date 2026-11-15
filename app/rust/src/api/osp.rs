@@ -310,6 +310,48 @@ pub struct UniverseSnapshot {
     pub sky: Vec<SkyCell>,
 }
 
+/// Something the node did or saw (ADR 0036 §1), as
+/// `osp_proto::universe::Event`, its kind's fields flattened: those its
+/// kind doesn't have are none.
+pub struct UniverseEvent {
+    /// Rises with each new event and each one summed into: ask `since` the
+    /// highest held. One summed into comes again with the same `first`.
+    pub seq: u64,
+    /// When it first and last happened, in seconds since 1970.
+    pub first: u64,
+    pub last: u64,
+    /// How many times it happened in that while.
+    pub count: u32,
+    pub kind: EventKind,
+    /// `found`: the machine whose list brought them, in words. `machine`:
+    /// the machine, in words.
+    pub words: Option<String>,
+    /// `found`: how many people it brought.
+    pub people: u32,
+    /// `reshared`: who reshared.
+    pub from: Option<String>,
+    /// `reshared`, `fetched`, `served`: whose post, when the node can tell.
+    pub author: Option<String>,
+    pub post: Option<String>,
+    /// `fetched`, `served`.
+    pub bytes: u64,
+    /// `fetched`: the resharer who sent it, only when listed as hosting it.
+    pub host: Option<String>,
+    /// `fetched`: a copy sent it, as the author's node couldn't be reached.
+    pub kept_by_copy: bool,
+    /// `machine`: it answered (true) or faded.
+    pub met: bool,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum EventKind {
+    Found,
+    Reshared,
+    Fetched,
+    Served,
+    Machine,
+}
+
 /// What lights up on the map (ADR 0035 §1). People alone is none.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum UniverseLayer {
@@ -610,6 +652,14 @@ impl OspApp {
             .universe(region, lit, since)
             .await?
             .map(universe))
+    }
+
+    /// What the node did or saw lately (ADR 0036 §1), oldest first: those
+    /// after `since`, the highest `seq` held, or the last day's with none.
+    /// Answered by the node alone.
+    pub async fn universe_events(&self, since: Option<u64>) -> Result<Vec<UniverseEvent>> {
+        let events = self.client.universe_events(since).await?;
+        Ok(events.into_iter().map(universe_event).collect())
     }
 
     /// The last top snapshot fetched, to show before the node answers.
@@ -1363,6 +1413,68 @@ fn universe(s: universe::Snapshot) -> UniverseSnapshot {
             })
             .collect(),
     }
+}
+
+fn universe_event(e: universe::Event) -> UniverseEvent {
+    use universe::EventWhat;
+    let mut out = UniverseEvent {
+        seq: e.seq,
+        first: e.first,
+        last: e.last,
+        count: e.count,
+        kind: EventKind::Found,
+        words: None,
+        people: 0,
+        from: None,
+        author: None,
+        post: None,
+        bytes: 0,
+        host: None,
+        kept_by_copy: false,
+        met: false,
+    };
+    match e.what {
+        EventWhat::Found { directory, people } => {
+            out.words = Some(directory);
+            out.people = people;
+        }
+        EventWhat::Reshared { from, author, post } => {
+            out.kind = EventKind::Reshared;
+            out.from = Some(from.to_string());
+            out.author = Some(author.to_string());
+            out.post = Some(post.to_string());
+        }
+        EventWhat::Fetched {
+            author,
+            post,
+            bytes,
+            host,
+            kept_by_copy,
+        } => {
+            out.kind = EventKind::Fetched;
+            out.author = author.map(|a| a.to_string());
+            out.post = post.map(|p| p.to_string());
+            out.bytes = bytes;
+            out.host = host.map(|h| h.to_string());
+            out.kept_by_copy = kept_by_copy;
+        }
+        EventWhat::Served {
+            author,
+            post,
+            bytes,
+        } => {
+            out.kind = EventKind::Served;
+            out.author = author.map(|a| a.to_string());
+            out.post = post.map(|p| p.to_string());
+            out.bytes = bytes;
+        }
+        EventWhat::Machine { words, met } => {
+            out.kind = EventKind::Machine;
+            out.words = Some(words);
+            out.met = met;
+        }
+    }
+    out
 }
 
 fn found_person(p: osp_client::osp_proto::rpc::PersonInfo) -> FoundPerson {

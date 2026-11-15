@@ -6,8 +6,8 @@
 import '../frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `found_person`, `node_info`, `post`, `profile_of`, `progress`, `reply_info`, `report_to`, `run_post`, `sent_reply`, `trust_entry`, `universe`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`
+// These functions are ignored because they are not marked as `pub`: `found_person`, `node_info`, `post`, `profile_of`, `progress`, `reply_info`, `report_to`, `run_post`, `sent_reply`, `trust_entry`, `universe_event`, `universe`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`
 
 /// A new device key, as 64 hex digits, for the app to keep in the phone's
 /// secure storage.
@@ -215,6 +215,11 @@ abstract class OspApp implements RustOpaqueInterface {
     String? since,
   });
 
+  /// What the node did or saw lately (ADR 0036 §1), oldest first: those
+  /// after `since`, the highest `seq` held, or the last day's with none.
+  /// Answered by the node alone.
+  Future<List<UniverseEvent>> universeEvents({BigInt? since});
+
   /// Stops trusting someone, on every node they were trusted on.
   Future<void> untrust({required String identity});
 
@@ -226,6 +231,8 @@ abstract class OspApp implements RustOpaqueInterface {
 
 /// Recent machine-protocol interaction with the node, in bands.
 enum ActivityBand { none, some, aLot }
+
+enum EventKind { found, reshared, fetched, served, machine }
 
 /// Someone the node follows.
 class Followed {
@@ -1135,6 +1142,103 @@ class TrustList {
           runtimeType == other.runtimeType &&
           requests == other.requests &&
           trusted == other.trusted;
+}
+
+/// Something the node did or saw (ADR 0036 §1), as
+/// `osp_proto::universe::Event`, its kind's fields flattened: those its
+/// kind doesn't have are none.
+class UniverseEvent {
+  /// Rises with each new event and each one summed into: ask `since` the
+  /// highest held. One summed into comes again with the same `first`.
+  final BigInt seq;
+
+  /// When it first and last happened, in seconds since 1970.
+  final BigInt first;
+  final BigInt last;
+
+  /// How many times it happened in that while.
+  final int count;
+  final EventKind kind;
+
+  /// `found`: the machine whose list brought them, in words. `machine`:
+  /// the machine, in words.
+  final String? words;
+
+  /// `found`: how many people it brought.
+  final int people;
+
+  /// `reshared`: who reshared.
+  final String? from;
+
+  /// `reshared`, `fetched`, `served`: whose post, when the node can tell.
+  final String? author;
+  final String? post;
+
+  /// `fetched`, `served`.
+  final BigInt bytes;
+
+  /// `fetched`: the resharer who sent it, only when listed as hosting it.
+  final String? host;
+
+  /// `fetched`: a copy sent it, as the author's node couldn't be reached.
+  final bool keptByCopy;
+
+  /// `machine`: it answered (true) or faded.
+  final bool met;
+
+  const UniverseEvent({
+    required this.seq,
+    required this.first,
+    required this.last,
+    required this.count,
+    required this.kind,
+    this.words,
+    required this.people,
+    this.from,
+    this.author,
+    this.post,
+    required this.bytes,
+    this.host,
+    required this.keptByCopy,
+    required this.met,
+  });
+
+  @override
+  int get hashCode =>
+      seq.hashCode ^
+      first.hashCode ^
+      last.hashCode ^
+      count.hashCode ^
+      kind.hashCode ^
+      words.hashCode ^
+      people.hashCode ^
+      from.hashCode ^
+      author.hashCode ^
+      post.hashCode ^
+      bytes.hashCode ^
+      host.hashCode ^
+      keptByCopy.hashCode ^
+      met.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is UniverseEvent &&
+          runtimeType == other.runtimeType &&
+          seq == other.seq &&
+          first == other.first &&
+          last == other.last &&
+          count == other.count &&
+          kind == other.kind &&
+          words == other.words &&
+          people == other.people &&
+          from == other.from &&
+          author == other.author &&
+          post == other.post &&
+          bytes == other.bytes &&
+          host == other.host &&
+          keptByCopy == other.keptByCopy &&
+          met == other.met;
 }
 
 /// A group of the tree, drawn as one light; opened with `g:` and its ID.

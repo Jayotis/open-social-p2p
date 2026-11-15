@@ -8,6 +8,7 @@ import 'package:flutter/widgets.dart';
 
 import 'device_key.dart';
 import 'format.dart';
+import 'network_events.dart';
 import 'search_lights.dart';
 import 'src/rust/api/osp.dart';
 import 'uploads.dart';
@@ -104,6 +105,11 @@ class HomeNode extends ChangeNotifier with WidgetsBindingObserver {
 
   /// The search the map lights up (ADR 0035 §3), if one is shown there.
   SearchLights? searchLights;
+
+  /// What the node did or saw lately (ADR 0036 §1), asked for with the
+  /// Universe.
+  final events = NetworkEvents();
+  bool _loadingEvents = false;
 
   /// The last snapshots, by layer and region, so a region visited lately
   /// shows at once and is asked for since the one held. The top without a
@@ -404,6 +410,7 @@ class HomeNode extends ChangeNotifier with WidgetsBindingObserver {
   /// unchanged one costs a few bytes. One at a time. The one held stays
   /// on screen if the node can't be asked.
   Future<void> loadUniverse() async {
+    unawaited(loadEvents());
     final region = universeRegion;
     final layer = universeLayer;
     final key = _held(region, layer);
@@ -432,6 +439,30 @@ class HomeNode extends ChangeNotifier with WidgetsBindingObserver {
     } finally {
       _loadingUniverse.remove(key);
     }
+    notifyListeners();
+  }
+
+  /// Asks the node for its events since the newest held (ADR 0036 §1).
+  /// One at a time; a failure leaves those held, and the next try asks
+  /// again.
+  Future<void> loadEvents() async {
+    if (paired == null || _loadingEvents) return;
+    _loadingEvents = true;
+    try {
+      final fresh = await app.universeEvents(since: events.since);
+      if (fresh.isEmpty) return;
+      events.take(fresh);
+      notifyListeners();
+    } catch (e) {
+      debugPrint('Events not loaded: ${describeError(e)}');
+    } finally {
+      _loadingEvents = false;
+    }
+  }
+
+  /// The event drawn on the map is done.
+  void drewEvent() {
+    events.drew();
     notifyListeners();
   }
 
@@ -510,6 +541,7 @@ class HomeNode extends ChangeNotifier with WidgetsBindingObserver {
     universeRegion = '';
     universeLayer = null;
     searchLights = null;
+    events.clear();
     universeError = null;
     me = null;
     posts = [];

@@ -1,13 +1,16 @@
+import 'dart:async';
 import 'dart:math';
 
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 
 import '../format.dart';
+import '../network_events.dart';
 import '../node.dart';
 import '../search_lights.dart';
 import '../src/rust/api/osp.dart';
 import '../theme.dart';
+import 'events_screen.dart';
 import 'found_people_screen.dart';
 import 'node_summary_screen.dart';
 import 'people_screen.dart';
@@ -99,7 +102,7 @@ abstract final class _Fit {
 }
 
 class _UniverseTabState extends State<UniverseTab>
-    with SingleTickerProviderStateMixin {
+    with TickerProviderStateMixin {
   final _camera = _Camera();
   late final AnimationController _fly;
   Offset _fromCentre = Offset.zero, _toCentre = Offset.zero;
@@ -129,6 +132,13 @@ class _UniverseTabState extends State<UniverseTab>
 
   final _labels = _Labels();
 
+  /// The event being drawn (ADR 0036 §1), one at a time, and the last one
+  /// whose line still shows under the map.
+  late final AnimationController _event;
+  UniverseEvent? _playing;
+  UniverseEvent? _captioned;
+  Timer? _captionGone;
+
   HomeNode get _node => widget.node;
 
   @override
@@ -138,11 +148,36 @@ class _UniverseTabState extends State<UniverseTab>
       vsync: this,
       duration: const Duration(milliseconds: 450),
     )..addListener(_flying);
+    _event = AnimationController(vsync: this, duration: _Play.length)
+      ..addStatusListener((status) {
+        if (status != AnimationStatus.completed) return;
+        _playing = null;
+        _captionGone?.cancel();
+        _captionGone = Timer(_Play.caption, () {
+          if (mounted) setState(() => _captioned = null);
+        });
+        _node.drewEvent();
+      });
   }
+
+  /// Draws the next event the node sent, if the map is on screen and none
+  /// is being drawn. With none, the map stays still (ADR 0036 §2).
+  void _playNext() {
+    final next = _node.events.next;
+    if (_playing != null || next == null || !_node.watchingUniverse) return;
+    _captionGone?.cancel();
+    setState(() => _playing = _captioned = next);
+    _event.forward(from: 0);
+  }
+
+  void _openEvents() =>
+      widget.open(EventsScreen(node: _node, open: widget.open));
 
   @override
   void dispose() {
     _fly.dispose();
+    _event.dispose();
+    _captionGone?.cancel();
     _camera.dispose();
     _labels.dispose();
     super.dispose();
@@ -386,6 +421,11 @@ class _UniverseTabState extends State<UniverseTab>
         if (mounted && node.universe == here) _frame(here);
       });
     }
+    if (_playing == null && node.events.next != null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _playNext();
+      });
+    }
     final standing = _standingAt(s, node.universeRegion);
     final lights = node.searchLights;
     // A search just shown on the map: fly there once.
@@ -426,6 +466,8 @@ class _UniverseTabState extends State<UniverseTab>
                           ownName: _ownName(node),
                           layer: node.universeLayer,
                           lights: lights,
+                          event: _playing,
+                          played: _event,
                         ),
                       ),
                     ),
@@ -466,6 +508,9 @@ class _UniverseTabState extends State<UniverseTab>
                   children: [
                     _Machines(
                       machines: s?.machines ?? const [],
+                      turn: _playing?.kind == EventKind.machine
+                          ? _playing!.met
+                          : null,
                       onNode: () => widget.open(
                         NodeSummaryScreen(node: node, open: widget.open),
                       ),
@@ -534,21 +579,36 @@ class _UniverseTabState extends State<UniverseTab>
                 // Narrow, it stays above the Post button; wide, that's
                 // on the right, so the card goes down to the corner.
                 bottom: _sideways(box.biggest) ? Space.s : 96,
-                child: switch ((standing, lights)) {
-                  (final p?, _) => _StandingAt(
-                    person: p,
-                    snapshot: s!,
-                    node: node,
-                    onClose: () => _up(frame: true),
-                  ),
-                  (null, final l?) => _Results(
-                    lights: l,
-                    onFly: _flyToResults,
-                    onList: () => _resultsList(l),
-                    onClose: () => node.showSearch(null),
-                  ),
-                  _ => _FoundPeople(node: node, open: widget.open),
-                },
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    if (_captioned case final e?)
+                      _EventLine(
+                        event: e,
+                        names: EventNames([
+                          ...?node.universeTop?.people,
+                          ...?s?.people,
+                        ]),
+                        onTap: _openEvents,
+                      ),
+                    switch ((standing, lights)) {
+                      (final p?, _) => _StandingAt(
+                        person: p,
+                        snapshot: s!,
+                        node: node,
+                        onClose: () => _up(frame: true),
+                      ),
+                      (null, final l?) => _Results(
+                        lights: l,
+                        onFly: _flyToResults,
+                        onList: () => _resultsList(l),
+                        onClose: () => node.showSearch(null),
+                      ),
+                      _ => _FoundPeople(node: node, open: widget.open),
+                    },
+                  ],
+                ),
               ),
             ],
           );
@@ -769,6 +829,95 @@ List<Offset> _resultsIn(UniverseSnapshot s, SearchLights lights) => [
   return (bounds.center, half > 0 ? room / half : _Fit.near);
 }
 
+/// How long an event is drawn, and how long its line stays after.
+abstract final class _Play {
+  static const length = Duration(milliseconds: 3200);
+  static const caption = Duration(seconds: 8);
+}
+
+/// Each event drawn on the map, by `seq`, so a test can check the map
+/// draws nothing it wasn't sent (ADR 0036 §2).
+@visibleForTesting
+final debugDrawnEvents = <BigInt>[];
+
+/// A mark an event leaves on the map, in the world's units.
+sealed class EventMark {}
+
+/// A ring opening at [at], where people just found are; with none, the
+/// public sky's edge, where they went.
+class EventRing extends EventMark {
+  EventRing(this.at);
+  final Offset? at;
+}
+
+/// Media flowing from [from] to [to]. One that's none is "another node":
+/// the edge of the view at [angle], the same for the same post, which
+/// stands for no place.
+class EventFlow extends EventMark {
+  EventFlow({this.from, this.to, required this.angle, this.kept = false});
+  final Offset? from, to;
+  final double angle;
+
+  /// Kept available by a copy (ADR 0036 §1).
+  final bool kept;
+}
+
+/// A reshare: a line from the author out to whoever reshared.
+class EventLine extends EventMark {
+  EventLine(this.from, this.to);
+  final Offset from, to;
+}
+
+/// What [e] draws on [s]: only what [e] names, where [s] places it. Someone
+/// it names who isn't on the map draws nothing; a machine is shown on the
+/// machines chip, not here.
+@visibleForTesting
+List<EventMark> eventMarks(UniverseEvent e, UniverseSnapshot s) {
+  Offset? at(String? identity) {
+    if (identity == null) return null;
+    for (final p in s.people) {
+      if (p.identity == identity) return Offset(p.x, p.y);
+    }
+    return null;
+  }
+
+  // The owner is at the centre.
+  const home = Offset.zero;
+  final angle = _angleOf(e.post ?? e.author ?? e.kind.name);
+  switch (e.kind) {
+    case EventKind.found:
+      final found = [
+        for (final p in s.people)
+          if (p.step != 0 &&
+              p.foundThrough != null &&
+              p.foundThrough == e.words)
+            EventRing(Offset(p.x, p.y)),
+      ];
+      return found.isEmpty ? [EventRing(null)] : found.take(24).toList();
+    case EventKind.reshared:
+      final author = at(e.author), from = at(e.from);
+      if (author == null || from == null || author == from) return [];
+      return [EventLine(author, from)];
+    case EventKind.fetched:
+      return [
+        EventFlow(from: at(e.host), to: home, angle: angle, kept: e.keptByCopy),
+      ];
+    case EventKind.served:
+      return [EventFlow(from: home, angle: angle)];
+    case EventKind.machine:
+      return [];
+  }
+}
+
+/// An angle from [text], the same each time.
+double _angleOf(String text) {
+  var h = 0x811c9dc5;
+  for (final c in text.codeUnits) {
+    h = ((h ^ c) * 0x01000193) & 0xffffffff;
+  }
+  return h / 0xffffffff * 2 * pi;
+}
+
 sealed class _Hit {}
 
 class _OnPerson extends _Hit {
@@ -858,7 +1007,9 @@ class _Map extends CustomPainter {
     required this.ownName,
     required this.layer,
     required this.lights,
-  }) : super(repaint: camera);
+    required this.event,
+    required this.played,
+  }) : super(repaint: Listenable.merge([camera, played]));
 
   final _Camera camera;
   final OspColors colors;
@@ -874,6 +1025,10 @@ class _Map extends CustomPainter {
 
   /// A search's results to light up (ADR 0035 §3).
   final SearchLights? lights;
+
+  /// The event being drawn (ADR 0036 §1), and how far along it is.
+  final UniverseEvent? event;
+  final Animation<double> played;
 
   /// How bright a light is drawn: as usual, or dimmed when a layer is on
   /// and it holds none of the layer's items, or a search is shown and it
@@ -1072,6 +1227,8 @@ class _Map extends CustomPainter {
       }
     }
 
+    if (event case final e?) _drawEvent(canvas, size, e, s, home);
+
     // Names where there's room: the one stood at first, then those the
     // owner follows or knows, then the rest in the snapshot's order. Her
     // star and her own name under it take their space.
@@ -1106,6 +1263,80 @@ class _Map extends CustomPainter {
     }
   }
 
+  static const _kept = Color(0xFF6FD6C2);
+
+  /// [e]'s marks, from where the snapshot places what it names, faded in
+  /// and out as it plays. Nothing else is drawn for it.
+  void _drawEvent(
+    Canvas canvas,
+    Size size,
+    UniverseEvent e,
+    UniverseSnapshot s,
+    Offset home,
+  ) {
+    final marks = eventMarks(e, s);
+    if (marks.isEmpty) return;
+    debugDrawnEvents.add(e.seq);
+    final t = played.value;
+    final fade = sin(pi * t);
+    // A flow to or from "another node" comes from the edge of the view.
+    final edge = size.shortestSide * 0.45;
+    Offset far(double angle) => home + Offset(cos(angle), sin(angle)) * edge;
+    for (final m in marks) {
+      switch (m) {
+        case EventRing(:final at):
+          final c = at == null ? home : camera.toScreen(at);
+          final r = at == null
+              ? _Fit.skyInner * camera.scale
+              : 6 + 28 * Curves.easeOut.transform(t);
+          canvas.drawCircle(
+            c,
+            r,
+            Paint()
+              ..style = PaintingStyle.stroke
+              ..strokeWidth = at == null ? 1 + 3 * fade : 2
+              ..color = colors.yourStar.withValues(alpha: 0.8 * fade),
+          );
+        case EventFlow(:final from, :final to, :final angle, :final kept):
+          final a = from == null ? far(angle) : camera.toScreen(from);
+          final b = to == null ? far(angle) : camera.toScreen(to);
+          final color = kept
+              ? _kept
+              : (e.kind == EventKind.served ? colors.yourStar : _reshared);
+          canvas.drawLine(
+            a,
+            b,
+            Paint()
+              ..strokeWidth = 1.5
+              ..color = color.withValues(alpha: 0.3 * fade),
+          );
+          final r = min(2.5 + _log2(e.bytes.toDouble() / 65536 + 1) * 0.4, 5.0);
+          for (var i = 0; i < 4; i++) {
+            final along = (t * 1.45 - i * 0.15).clamp(0.0, 1.0);
+            if (along <= 0 || along >= 1) continue;
+            final at = Offset.lerp(a, b, along)!;
+            _glow(canvas, at, r * 3, color, 0.6 * fade);
+            canvas.drawCircle(
+              at,
+              r,
+              Paint()..color = color.withValues(alpha: fade),
+            );
+          }
+        case EventLine(:final from, :final to):
+          final a = camera.toScreen(from), b = camera.toScreen(to);
+          final reach = Curves.easeOut.transform((t * 1.6).clamp(0.0, 1.0));
+          canvas.drawLine(
+            a,
+            Offset.lerp(a, b, reach)!,
+            Paint()
+              ..strokeWidth = 2.5
+              ..strokeCap = StrokeCap.round
+              ..color = _reshared.withValues(alpha: 0.9 * fade),
+          );
+      }
+    }
+  }
+
   /// The owner's star: her node.
   void _yourStar(Canvas canvas, Offset at) {
     _glow(canvas, at, 34, colors.yourStar, 0.55);
@@ -1137,7 +1368,8 @@ class _Map extends CustomPainter {
       old.colors != colors ||
       old.standing != standing ||
       old.layer != layer ||
-      old.lights != lights;
+      old.lights != lights ||
+      old.event != event;
 }
 
 /// The owner's star: a button over where the map draws it, with her name
@@ -1250,9 +1482,12 @@ class _Control extends StatelessWidget {
 /// The machines the node's machine name knows: their own band, apart from
 /// people and never beside one (ADR 0033 §4).
 class _Machines extends StatelessWidget {
-  const _Machines({required this.machines, required this.onNode});
+  const _Machines({required this.machines, required this.onNode, this.turn});
 
   final List<UniverseMachine> machines;
+
+  /// While a machine event is drawn: one met (true) or faded.
+  final bool? turn;
 
   /// Opens the owner's node's summary.
   final VoidCallback onNode;
@@ -1266,7 +1501,11 @@ class _Machines extends StatelessWidget {
       avatar: Icon(Icons.dns_outlined, size: 18, color: colors.onSky),
       label: Text(n == 1 ? '1 machine' : '$n machines'),
       labelStyle: TextStyle(color: colors.onSky),
-      backgroundColor: colors.skyHaze,
+      backgroundColor: switch (turn) {
+        true => colors.yourStar.withValues(alpha: 0.45),
+        false => colors.sky,
+        null => colors.skyHaze,
+      },
       side: BorderSide.none,
       tooltip: 'Machines your node knows',
       onPressed: () => showModalBottomSheet<void>(
@@ -1620,6 +1859,58 @@ class _Results extends StatelessWidget {
               ],
             ),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+/// The event drawn, in a line under the map (ADR 0036 §1). Tapping it
+/// opens the day's list.
+class _EventLine extends StatelessWidget {
+  const _EventLine({
+    required this.event,
+    required this.names,
+    required this.onTap,
+  });
+
+  final UniverseEvent event;
+  final EventNames names;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = OspColors.of(context);
+    return Padding(
+      padding: const EdgeInsets.only(bottom: Space.xs),
+      child: Material(
+        color: colors.skyHaze,
+        borderRadius: BorderRadius.circular(20),
+        child: InkWell(
+          key: const Key('event-line'),
+          borderRadius: BorderRadius.circular(20),
+          onTap: onTap,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(
+              horizontal: Space.m,
+              vertical: Space.s,
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(eventIcon(event.kind), size: 18, color: colors.onSky),
+                const SizedBox(width: Space.s),
+                Flexible(
+                  child: Text(
+                    describeEvent(event, names),
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(color: colors.onSky),
+                  ),
+                ),
+              ],
+            ),
+          ),
         ),
       ),
     );

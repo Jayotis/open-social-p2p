@@ -1015,10 +1015,11 @@ async fn a_node_fetching_in_parts_keeps_its_place_for_its_next_part() {
     held.pop();
     let freed = Instant::now();
     let (ok, _) = waited.await.unwrap();
-    // Not after the 2 seconds a place is kept.
+    // Not after the 2 seconds a place is kept. The time includes fetching
+    // the whole photo, which took a busy CI runner just over a second.
     assert!(ok, "the waiting stranger was refused");
     assert!(
-        freed.elapsed() < Duration::from_secs(1),
+        freed.elapsed() < Duration::from_millis(1500),
         "{:?}",
         freed.elapsed()
     );

@@ -66,7 +66,7 @@ class RustLib extends BaseEntrypoint<RustLibApi, RustLibApiImpl, RustLibWire> {
   String get codegenVersion => '2.13.0';
 
   @override
-  int get rustContentHash => -1347132752;
+  int get rustContentHash => 1370682281;
 
   static const kDefaultExternalLibraryLoaderConfig =
       ExternalLibraryLoaderConfig(
@@ -269,6 +269,11 @@ abstract class RustLibApi extends BaseApi {
     String? region,
     UniverseLayer? lit,
     String? since,
+  });
+
+  Future<List<UniverseEvent>> crateApiOspOspAppUniverseEvents({
+    required OspApp that,
+    BigInt? since,
   });
 
   Future<void> crateApiOspOspAppUntrust({
@@ -1940,6 +1945,44 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   );
 
   @override
+  Future<List<UniverseEvent>> crateApiOspOspAppUniverseEvents({
+    required OspApp that,
+    BigInt? since,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerOspApp(
+            that,
+            serializer,
+          );
+          sse_encode_opt_box_autoadd_u_64(since, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 47,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_list_universe_event,
+          decodeErrorData: sse_decode_AnyhowException,
+        ),
+        constMeta: kCrateApiOspOspAppUniverseEventsConstMeta,
+        argValues: [that, since],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiOspOspAppUniverseEventsConstMeta =>
+      const TaskConstMeta(
+        debugName: "OspApp_universe_events",
+        argNames: ["that", "since"],
+      );
+
+  @override
   Future<void> crateApiOspOspAppUntrust({
     required OspApp that,
     required String identity,
@@ -1956,7 +1999,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 47,
+            funcId: 48,
             port: port_,
           );
         },
@@ -1993,7 +2036,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 48,
+            funcId: 49,
             port: port_,
           );
         },
@@ -2023,7 +2066,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 49,
+            funcId: 50,
             port: port_,
           );
         },
@@ -2048,7 +2091,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         callFfi: () {
           final serializer = SseSerializer(generalizedFrbRustBinding);
           sse_encode_String(text, serializer);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 50)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 51)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_bool,
@@ -2071,7 +2114,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         callFfi: () {
           final serializer = SseSerializer(generalizedFrbRustBinding);
           sse_encode_String(text, serializer);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 51)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 52)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_bool,
@@ -2093,7 +2136,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       SyncTask(
         callFfi: () {
           final serializer = SseSerializer(generalizedFrbRustBinding);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 52)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 53)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_String,
@@ -2237,6 +2280,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  EventKind dco_decode_event_kind(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return EventKind.values[raw as int];
+  }
+
+  @protected
   double dco_decode_f_32(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return raw as double;
@@ -2366,6 +2415,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   List<TrustEntry> dco_decode_list_trust_entry(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return (raw as List<dynamic>).map(dco_decode_trust_entry).toList();
+  }
+
+  @protected
+  List<UniverseEvent> dco_decode_list_universe_event(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return (raw as List<dynamic>).map(dco_decode_universe_event).toList();
   }
 
   @protected
@@ -2770,6 +2825,30 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  UniverseEvent dco_decode_universe_event(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 14)
+      throw Exception('unexpected arr length: expect 14 but see ${arr.length}');
+    return UniverseEvent(
+      seq: dco_decode_u_64(arr[0]),
+      first: dco_decode_u_64(arr[1]),
+      last: dco_decode_u_64(arr[2]),
+      count: dco_decode_u_32(arr[3]),
+      kind: dco_decode_event_kind(arr[4]),
+      words: dco_decode_opt_String(arr[5]),
+      people: dco_decode_u_32(arr[6]),
+      from: dco_decode_opt_String(arr[7]),
+      author: dco_decode_opt_String(arr[8]),
+      post: dco_decode_opt_String(arr[9]),
+      bytes: dco_decode_u_64(arr[10]),
+      host: dco_decode_opt_String(arr[11]),
+      keptByCopy: dco_decode_bool(arr[12]),
+      met: dco_decode_bool(arr[13]),
+    );
+  }
+
+  @protected
   UniverseGroup dco_decode_universe_group(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
@@ -3044,6 +3123,13 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  EventKind sse_decode_event_kind(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var inner = sse_decode_i_32(deserializer);
+    return EventKind.values[inner];
+  }
+
+  @protected
   double sse_decode_f_32(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     return deserializer.buffer.getFloat32();
@@ -3235,6 +3321,20 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var ans_ = <TrustEntry>[];
     for (var idx_ = 0; idx_ < len_; ++idx_) {
       ans_.add(sse_decode_trust_entry(deserializer));
+    }
+    return ans_;
+  }
+
+  @protected
+  List<UniverseEvent> sse_decode_list_universe_event(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    var len_ = sse_decode_i_32(deserializer);
+    var ans_ = <UniverseEvent>[];
+    for (var idx_ = 0; idx_ < len_; ++idx_) {
+      ans_.add(sse_decode_universe_event(deserializer));
     }
     return ans_;
   }
@@ -3786,6 +3886,41 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  UniverseEvent sse_decode_universe_event(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_seq = sse_decode_u_64(deserializer);
+    var var_first = sse_decode_u_64(deserializer);
+    var var_last = sse_decode_u_64(deserializer);
+    var var_count = sse_decode_u_32(deserializer);
+    var var_kind = sse_decode_event_kind(deserializer);
+    var var_words = sse_decode_opt_String(deserializer);
+    var var_people = sse_decode_u_32(deserializer);
+    var var_from = sse_decode_opt_String(deserializer);
+    var var_author = sse_decode_opt_String(deserializer);
+    var var_post = sse_decode_opt_String(deserializer);
+    var var_bytes = sse_decode_u_64(deserializer);
+    var var_host = sse_decode_opt_String(deserializer);
+    var var_keptByCopy = sse_decode_bool(deserializer);
+    var var_met = sse_decode_bool(deserializer);
+    return UniverseEvent(
+      seq: var_seq,
+      first: var_first,
+      last: var_last,
+      count: var_count,
+      kind: var_kind,
+      words: var_words,
+      people: var_people,
+      from: var_from,
+      author: var_author,
+      post: var_post,
+      bytes: var_bytes,
+      host: var_host,
+      keptByCopy: var_keptByCopy,
+      met: var_met,
+    );
+  }
+
+  @protected
   UniverseGroup sse_decode_universe_group(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var var_id = sse_decode_u_64(deserializer);
@@ -4110,6 +4245,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_event_kind(EventKind self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.index, serializer);
+  }
+
+  @protected
   void sse_encode_f_32(double self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     serializer.buffer.putFloat32(self);
@@ -4269,6 +4410,18 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_i_32(self.length, serializer);
     for (final item in self) {
       sse_encode_trust_entry(item, serializer);
+    }
+  }
+
+  @protected
+  void sse_encode_list_universe_event(
+    List<UniverseEvent> self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.length, serializer);
+    for (final item in self) {
+      sse_encode_universe_event(item, serializer);
     }
   }
 
@@ -4688,6 +4841,25 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   @protected
   void sse_encode_unit(void self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
+  }
+
+  @protected
+  void sse_encode_universe_event(UniverseEvent self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_u_64(self.seq, serializer);
+    sse_encode_u_64(self.first, serializer);
+    sse_encode_u_64(self.last, serializer);
+    sse_encode_u_32(self.count, serializer);
+    sse_encode_event_kind(self.kind, serializer);
+    sse_encode_opt_String(self.words, serializer);
+    sse_encode_u_32(self.people, serializer);
+    sse_encode_opt_String(self.from, serializer);
+    sse_encode_opt_String(self.author, serializer);
+    sse_encode_opt_String(self.post, serializer);
+    sse_encode_u_64(self.bytes, serializer);
+    sse_encode_opt_String(self.host, serializer);
+    sse_encode_bool(self.keptByCopy, serializer);
+    sse_encode_bool(self.met, serializer);
   }
 
   @protected
@@ -5115,6 +5287,14 @@ class OspAppImpl extends RustOpaque implements OspApp {
     lit: lit,
     since: since,
   );
+
+  /// What the node did or saw lately (ADR 0036 §1), oldest first: those
+  /// after `since`, the highest `seq` held, or the last day's with none.
+  /// Answered by the node alone.
+  Future<List<UniverseEvent>> universeEvents({BigInt? since}) => RustLib
+      .instance
+      .api
+      .crateApiOspOspAppUniverseEvents(that: this, since: since);
 
   /// Stops trusting someone, on every node they were trusted on.
   Future<void> untrust({required String identity}) => RustLib.instance.api

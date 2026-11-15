@@ -4,6 +4,7 @@ import '../format.dart';
 import '../node.dart';
 import '../theme.dart';
 import 'advanced_screen.dart';
+import 'events_screen.dart';
 
 /// Your node in plain words (ADR 0031 §1): opened from your star in the
 /// Universe and from You. Everything technical is under Advanced details.
@@ -121,6 +122,12 @@ class _NodeSummaryScreenState extends State<NodeSummaryScreen> {
                       onPressed: node.refresh,
                       child: const Text('Try again'),
                     ),
+                  OutlinedButton(
+                    onPressed: () => widget.open(
+                      EventsScreen(node: node, open: widget.open),
+                    ),
+                    child: const Text('What it did today'),
+                  ),
                   OutlinedButton(
                     onPressed: () => widget.open(AdvancedScreen(node: node)),
                     child: const Text('Advanced details'),
