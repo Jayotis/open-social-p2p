@@ -39,11 +39,23 @@ class _Camera extends ChangeNotifier {
   Offset toWorld(Offset screen) =>
       centre + (screen - size.center(Offset.zero)) / scale;
 
+  /// Moves the camera. A value that isn't a finite number is refused, so
+  /// the map can't be lost, and the centre stays within reach of the sky.
   void set(Offset c, double s) {
-    centre = c;
+    if (!c.isFinite || !s.isFinite) {
+      if (!_warned) {
+        _warned = true;
+        debugPrint('Universe camera refused centre $c, scale $s');
+      }
+      return;
+    }
+    const reach = _Fit.skyOuter * 4;
+    centre = Offset(c.dx.clamp(-reach, reach), c.dy.clamp(-reach, reach));
     scale = s.clamp(_Fit.farthest, _Fit.nearest);
     notifyListeners();
   }
+
+  bool _warned = false;
 }
 
 /// How the camera frames a region.
@@ -85,8 +97,12 @@ class _UniverseTabState extends State<UniverseTab>
   /// The last snapshot drawn, kept while the next region's comes.
   UniverseSnapshot? _shown;
 
-  Offset _startFocal = Offset.zero, _startCentre = Offset.zero;
-  double _startScale = 1;
+  /// The last gesture update: where the fingers were, the recognizer's
+  /// scale then, and how many fingers. Each update moves the camera by what
+  /// changed since, so a finger landing or lifting doesn't make it jump.
+  Offset _lastFocal = Offset.zero;
+  double _lastFactor = 1;
+  int _lastFingers = 0;
 
   final _labels = _Labels();
 
@@ -165,6 +181,7 @@ class _UniverseTabState extends State<UniverseTab>
   }
 
   void _home() {
+    _stay = false;
     if (_node.universeRegion.isEmpty) {
       _framed = null;
       final top = _node.universe;
@@ -195,17 +212,28 @@ class _UniverseTabState extends State<UniverseTab>
 
   void _scaleStart(ScaleStartDetails d) {
     _fly.stop();
-    _startFocal = d.localFocalPoint;
-    _startCentre = _camera.centre;
-    _startScale = _camera.scale;
+    _lastFocal = d.localFocalPoint;
+    _lastFactor = 1;
+    _lastFingers = d.pointerCount;
   }
 
   void _scaleUpdate(ScaleUpdateDetails d) {
-    final mid = _camera.size.center(Offset.zero);
-    // The world point under the fingers stays under them.
-    final held = _startCentre + (_startFocal - mid) / _startScale;
-    final scale = (_startScale * d.scale).clamp(_Fit.farthest, _Fit.nearest);
-    _camera.set(held - (d.localFocalPoint - mid) / scale, scale);
+    // A finger landed or lifted: the recognizer starts its scale again.
+    final steady =
+        d.pointerCount == _lastFingers && _lastFactor > 0 && d.scale > 0;
+    if (steady) {
+      final mid = _camera.size.center(Offset.zero);
+      // The world point under the fingers stays under them.
+      final held = _camera.toWorld(_lastFocal);
+      final scale = (_camera.scale * d.scale / _lastFactor).clamp(
+        _Fit.farthest,
+        _Fit.nearest,
+      );
+      _camera.set(held - (d.localFocalPoint - mid) / scale, scale);
+    }
+    _lastFocal = d.localFocalPoint;
+    _lastFactor = d.scale;
+    _lastFingers = d.pointerCount;
   }
 
   void _scaleEnd() {
@@ -245,7 +273,9 @@ class _UniverseTabState extends State<UniverseTab>
       child: LayoutBuilder(
         builder: (context, box) {
           _camera.size = box.biggest;
+          // Every child is placed; the map fills the tab whatever they are.
           return Stack(
+            fit: StackFit.expand,
             children: [
               Positioned.fill(
                 child: Listener(
@@ -731,7 +761,10 @@ class _YourStar extends StatelessWidget {
       builder: (context, child) {
         final at = camera.toScreen(Offset.zero);
         final view = Offset.zero & camera.size;
-        if (!view.inflate(star).contains(at)) return const SizedBox.shrink();
+        // Off screen: still a placed child, so the Stack keeps its size.
+        if (!view.inflate(star).contains(at)) {
+          return const Positioned(left: 0, top: 0, child: SizedBox.shrink());
+        }
         return Positioned(
           left: at.dx - width / 2,
           top: at.dy - star / 2,

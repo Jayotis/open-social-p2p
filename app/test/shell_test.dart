@@ -58,7 +58,9 @@ class FakeApp implements OspApp {
     asked.add(since);
     askedFor.add(region ?? '');
     if (unreachable) throw Exception('no contact');
-    final there = region == null ? snapshot : regions[region]!;
+    final there = region == null
+        ? snapshot
+        : regions[region] ?? world(const [], region: region, path: const ['']);
     return since == there.version ? null : there;
   }
 
@@ -484,6 +486,53 @@ void main() {
     expect(find.textContaining('lists people who asked to be found'), findsOne);
     expect(find.text('Heard of, hasn’t answered yet'), findsOne);
     expectPlainWords(tester);
+  });
+
+  testWidgets('pinching anyhow never loses the map', (tester) async {
+    app.snapshot = world(['Kim', 'Sam', 'Lee']);
+    await start(tester, Place.universe);
+    final home = tester.getCenter(find.byTooltip('Your node'));
+    final map = tester.getRect(find.byKey(const Key('universe-map')));
+    final r = Random(1);
+    Offset any() => Offset(
+      map.left + r.nextDouble() * map.width,
+      map.top + r.nextDouble() * map.height,
+    );
+    // Two or three fingers landing one by one, moving anywhere, sometimes
+    // all to one point, and lifting one by one.
+    for (var round = 0; round < 60; round++) {
+      final n = 2 + r.nextInt(2);
+      final fingers = <TestGesture>[];
+      final at = <Offset>[];
+      for (var i = 0; i < n; i++) {
+        at.add(any());
+        fingers.add(await tester.startGesture(at[i], pointer: 10 + i));
+        await tester.pump(const Duration(milliseconds: 8));
+      }
+      for (var step = 0; step < 8; step++) {
+        for (var i = 0; i < n; i++) {
+          // Sometimes all fingers meet at one point.
+          final to = r.nextInt(6) == 0 ? map.center : any();
+          await fingers[i].moveTo(to);
+        }
+        await tester.pump(const Duration(milliseconds: 16));
+      }
+      for (final f in fingers) {
+        await f.up();
+        await tester.pump(const Duration(milliseconds: 8));
+      }
+      await tester.pump(const Duration(milliseconds: 500));
+      expect(tester.takeException(), isNull, reason: 'round $round');
+    }
+    // A stray tap may have opened a screen over the map.
+    tester
+        .state<NavigatorState>(find.byType(Navigator))
+        .popUntil((route) => route.isFirst);
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('My star'));
+    await tester.pumpAndSettle();
+    final star = tester.getCenter(find.byTooltip('Your node'));
+    expect((star - home).distance, lessThan(1));
   });
 }
 
