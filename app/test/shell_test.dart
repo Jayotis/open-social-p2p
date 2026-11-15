@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:math';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -403,10 +404,14 @@ void main() {
   });
 
   /// Where [world]'s person [n] (1 the first after Alice) is drawn, with
-  /// the top framed: the farthest of [count] at 0.4 of the shortest side.
+  /// the top framed: they're in a row to the right of her star, the
+  /// farthest of [count] at 0.4 of the room the controls leave clear.
   Offset drawnAt(WidgetTester tester, int n, int count) {
     final map = tester.getRect(find.byKey(const Key('universe-map')));
-    return map.center + Offset(map.shortestSide * 0.4 * n / count, 0);
+    final room = min(map.width, max(map.height - 254, map.height / 3));
+    // The button over her star is centred on it.
+    final star = tester.getCenter(find.byTooltip('Your node'));
+    return star + Offset(room * 0.4 * n / count, 0);
   }
 
   testWidgets('tapping a star stands there, and stepping back keeps going', (
@@ -440,17 +445,18 @@ void main() {
       path: [''],
     );
     await start(tester, Place.universe);
+    final home = tester.getCenter(find.byTooltip('Your node'));
     await tester.tapAt(drawnAt(tester, 2, 2));
     await tester.pumpAndSettle();
     expect(node.universeRegion, 'p:id-Sam');
+    expect(tester.getCenter(find.byTooltip('Your node')), isNot(home));
     await tester.tap(find.byTooltip('My star'));
     await tester.pumpAndSettle();
     expect(node.universeRegion, '');
     expect(app.askedFor.last, '');
-    // Her star is back where it was: in the middle.
-    final map = tester.getRect(find.byKey(const Key('universe-map')));
+    // Her star is back where it was.
     final star = tester.getCenter(find.byTooltip('Your node'));
-    expect((star - map.center).distance, lessThan(1));
+    expect((star - home).distance, lessThan(1));
   });
 
   testWidgets('machines have their own list, in plain words', (tester) async {

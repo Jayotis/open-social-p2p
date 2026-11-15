@@ -59,6 +59,10 @@ abstract final class _Fit {
   /// path (ADR 0034 §6).
   static const up = 0.4;
 
+  /// What the controls above and the card below cover, in pixels.
+  static const clearTop = 64.0;
+  static const clearBottom = 190.0;
+
   /// Where the public sky starts and ends (`osp_proto::universe`).
   static const skyInner = 64.0;
   static const skyOuter = 1024.0;
@@ -126,7 +130,15 @@ class _UniverseTabState extends State<UniverseTab>
   void _frame(UniverseSnapshot s) {
     if (_framed == s.region || _camera.size.isEmpty) return;
     _framed = s.region;
-    final (centre, scale) = _fitOf(s, _camera.size);
+    // Framed in the room the controls and the card leave clear.
+    final size = _camera.size;
+    final clear = Size(
+      size.width,
+      max(size.height - _Fit.clearTop - _Fit.clearBottom, size.height / 3),
+    );
+    final (middle, scale) = _fitOf(s, clear);
+    final lift = (size.height - clear.height) / 2 - _Fit.clearTop;
+    final centre = middle + Offset(0, lift / scale);
     _fits[s.region] = scale;
     if (_stay) {
       _stay = false;
@@ -254,6 +266,7 @@ class _UniverseTabState extends State<UniverseTab>
                           snapshot: s,
                           standing: standing,
                           labels: _labels,
+                          ownName: _ownName(node),
                         ),
                       ),
                     ),
@@ -324,6 +337,12 @@ class _UniverseTabState extends State<UniverseTab>
         '${groups > 0 ? ' and $groups groups' : ''} shown. '
         'The list of who your node found is below it.';
   }
+}
+
+/// The owner's name, as shown under her star.
+String _ownName(HomeNode node) {
+  final name = node.status?.name ?? node.paired?.name ?? '';
+  return name.isEmpty ? 'You' : name;
 }
 
 /// The person stood at, if the region is someone other than the owner.
@@ -472,6 +491,7 @@ class _Map extends CustomPainter {
     required this.snapshot,
     required this.standing,
     required this.labels,
+    required this.ownName,
   }) : super(repaint: camera);
 
   final _Camera camera;
@@ -479,6 +499,9 @@ class _Map extends CustomPainter {
   final UniverseSnapshot? snapshot;
   final UniversePerson? standing;
   final _Labels labels;
+
+  /// The owner's name as drawn under her star, to keep clear.
+  final String ownName;
 
   static const _reshared = Color(0xFF7F95E8);
   static const _creditedEarly = Color(0xFFE8C46A);
@@ -621,8 +644,16 @@ class _Map extends CustomPainter {
 
     // Names where there's room: the one stood at first, then those the
     // owner follows or knows, then the rest in the snapshot's order. Her
-    // own name is under her star, so that space is taken.
-    final taken = <Rect>[Rect.fromCenter(center: home, width: 200, height: 90)];
+    // star and her own name under it take their space.
+    final own = labels.of(ownName, colors.onSky, 16);
+    final taken = <Rect>[
+      Rect.fromCircle(center: home, radius: 14),
+      Rect.fromCenter(
+        center: home + Offset(0, 28 + own.height / 2),
+        width: own.width + 8,
+        height: own.height + 4,
+      ),
+    ];
     int rank(UniversePerson p) =>
         p == standing ? 0 : (p.followed || p.known ? 1 : 2);
     names.sort((a, b) => rank(a.$1).compareTo(rank(b.$1)));
@@ -633,7 +664,9 @@ class _Map extends CustomPainter {
         here ? colors.onSky : colors.onSkyQuiet,
         11,
       );
-      final box = (at + Offset(-label.width / 2, r + 3)) & label.size;
+      // Below the ring round the one stood at.
+      final below = here ? r + 9 : r + 3;
+      final box = (at + Offset(-label.width / 2, below)) & label.size;
       if (!here && taken.any((t) => t.overlaps(box))) continue;
       taken.add(box.inflate(2));
       label.paint(canvas, box.topLeft);
@@ -686,7 +719,7 @@ class _YourStar extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final name = node.status?.name ?? node.paired?.name ?? '';
+    final name = _ownName(node);
     final line = switch (node.reachability) {
       Reachability.online => 'Your node is running.',
       Reachability.offline => "Your phone can't reach your node right now.",
@@ -722,7 +755,7 @@ class _YourStar extends StatelessWidget {
             ),
           ),
           Text(
-            name.isEmpty ? 'You' : name,
+            name,
             style: theme.textTheme.titleMedium?.copyWith(color: colors.onSky),
           ),
           if (!crowded || node.reachability != Reachability.online) ...[
