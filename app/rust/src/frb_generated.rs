@@ -3883,6 +3883,7 @@ impl SseDecode for crate::api::osp::UniverseEvent {
         let mut var_bytes = <u64>::sse_decode(deserializer);
         let mut var_host = <Option<String>>::sse_decode(deserializer);
         let mut var_keptByCopy = <bool>::sse_decode(deserializer);
+        let mut var_fromAuthor = <bool>::sse_decode(deserializer);
         let mut var_met = <bool>::sse_decode(deserializer);
         return crate::api::osp::UniverseEvent {
             seq: var_seq,
@@ -3898,6 +3899,7 @@ impl SseDecode for crate::api::osp::UniverseEvent {
             bytes: var_bytes,
             host: var_host,
             kept_by_copy: var_keptByCopy,
+            from_author: var_fromAuthor,
             met: var_met,
         };
     }
@@ -4706,6 +4708,7 @@ impl flutter_rust_bridge::IntoDart for crate::api::osp::UniverseEvent {
             self.bytes.into_into_dart().into_dart(),
             self.host.into_into_dart().into_dart(),
             self.kept_by_copy.into_into_dart().into_dart(),
+            self.from_author.into_into_dart().into_dart(),
             self.met.into_into_dart().into_dart(),
         ]
         .into_dart()
@@ -5655,6 +5658,7 @@ impl SseEncode for crate::api::osp::UniverseEvent {
         <u64>::sse_encode(self.bytes, serializer);
         <Option<String>>::sse_encode(self.host, serializer);
         <bool>::sse_encode(self.kept_by_copy, serializer);
+        <bool>::sse_encode(self.from_author, serializer);
         <bool>::sse_encode(self.met, serializer);
     }
 }

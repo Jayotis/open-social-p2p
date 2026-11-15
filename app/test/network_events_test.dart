@@ -102,6 +102,13 @@ void main() {
           keptByCopy: true,
         ),
         anEvent(
+          10,
+          EventKind.fetched,
+          author: 'id-Jimmy',
+          bytes: 458 << 10,
+          fromAuthor: true,
+        ),
+        anEvent(
           6,
           EventKind.served,
           author: 'id-Jimmy',
@@ -122,6 +129,7 @@ void main() {
       'Your node fetched 0 B of Jimmy\'s post from Kim, who keeps it '
           'available. Kept available by a copy while its author\'s node was '
           'away',
+      'Your node fetched 458 KB of Jimmy\'s post from Jimmy\'s node',
       'Your node sent Jimmy\'s post to other nodes 14 times, 4.0 MB',
       'Your node sent 0 B of someone\'s post to another node',
       'Your node met the machine amber-fox',
@@ -169,6 +177,22 @@ void main() {
           eventMarks(anEvent(2, EventKind.fetched, post: 'p'), s).single
               as EventFlow;
       expect((other.from, other.to), (null, Offset.zero));
+    });
+
+    test("a fetch the author's own node sent flows from their star", () {
+      final flow =
+          eventMarks(
+                anEvent(
+                  1,
+                  EventKind.fetched,
+                  author: 'id-Jimmy',
+                  post: 'p',
+                  fromAuthor: true,
+                ),
+                s,
+              ).single
+              as EventFlow;
+      expect((flow.from, flow.to), (const Offset(5, 0), Offset.zero));
     });
 
     test('a copy served flows out from your star', () {

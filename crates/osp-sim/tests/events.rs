@@ -239,6 +239,7 @@ async fn each_event_comes_from_a_real_action() {
         bytes,
         host,
         kept_by_copy,
+        from_author,
         ..
     } = fetched.what
     else {
@@ -247,6 +248,7 @@ async fn each_event_comes_from_a_real_action() {
     assert_eq!(author, Some(alice_id));
     assert!(bytes > 0);
     assert_eq!(host, None, "Alice sent it herself");
+    assert!(from_author, "Alice's node sent it");
     assert!(!kept_by_copy);
     let served = event_when(
         &alice,
@@ -307,12 +309,16 @@ async fn each_event_comes_from_a_real_action() {
     )
     .await;
     let EventWhat::Fetched {
-        host, kept_by_copy, ..
+        host,
+        kept_by_copy,
+        from_author,
+        ..
     } = kept.what
     else {
         unreachable!()
     };
     assert!(kept_by_copy, "{kept:?}");
+    assert!(!from_author, "Alice's node was away");
     // Named only as the resharer hosting it, if at all.
     assert!(host.is_none() || host == Some(jimmy_id), "{host:?}");
 

@@ -148,7 +148,13 @@ String describeEvent(UniverseEvent e, EventNames names) {
           ? '$who reshared $whose post'
           : '$who reshared $whose posts $n times';
     case EventKind.fetched:
-      final from = e.host == null
+      final from = e.fromAuthor
+          ? switch (names.whose(e.author)) {
+              'your' => 'your own node',
+              'a' || "someone's" => "its author's node",
+              final whose => '$whose node',
+            }
+          : e.host == null
           ? 'another node'
           : '${names.who(e.host)}, who keeps it available';
       final kept = e.keptByCopy

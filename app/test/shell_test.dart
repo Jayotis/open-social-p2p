@@ -885,6 +885,7 @@ void main() {
         post: 'p1',
         bytes: BigInt.from(3 << 20),
         keptByCopy: false,
+        fromAuthor: false,
         met: false,
       ),
     ];

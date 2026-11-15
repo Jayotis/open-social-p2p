@@ -416,7 +416,8 @@ impl ContentStore {
     }
 
     /// Notes a fetch the node made (ADR 0036 §1): whose media, how much
-    /// came, the hosting resharer who sent most of it, and whether a copy
+    /// came, who sent most of it (the author's own node, or a hosting
+    /// resharer), and whether a copy
     /// sent it while the author's node couldn't be reached, in this fetch
     /// or the last sync with them.
     fn note_fetched(&self, blob: &BlobHash, tally: &Tally) -> Result<()> {
@@ -436,9 +437,11 @@ impl ContentStore {
                 .as_ref()
                 .is_some_and(|a| self.db.last_sync_failed(a).unwrap_or(false));
         let kept_by_copy = from_copies().next().is_some() && author_away;
+        let most = tally.sent.iter().max_by_key(|(_, bytes)| *bytes);
+        let from_author = most.is_some_and(|(node, _)| authors.contains(node));
         let host = match from_copies().max_by_key(|(_, bytes)| *bytes) {
-            Some((node, _)) => self.db.hosting_resharer(blob, node)?,
-            None => None,
+            Some((node, _)) if !from_author => self.db.hosting_resharer(blob, node)?,
+            _ => None,
         };
         self.db.add_event(EventWhat::Fetched {
             author,
@@ -446,6 +449,7 @@ impl ContentStore {
             bytes: tally.sent.iter().map(|(_, b)| b).sum(),
             host,
             kept_by_copy,
+            from_author,
         })
     }
 

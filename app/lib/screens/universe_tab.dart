@@ -861,7 +861,9 @@ class EventRing extends EventMark {
   final Offset? at;
 }
 
-/// Media flowing from [from] to [to]. One that's none is "another node":
+/// Media flowing from [from] to [to]: for a fetch, from the author's star
+/// when their own node sent it, or a hosting resharer's. One that's none is
+/// "another node":
 /// the edge of the view at [angle], the same for the same post, which
 /// stands for no place.
 class EventFlow extends EventMark {
@@ -911,7 +913,12 @@ List<EventMark> eventMarks(UniverseEvent e, UniverseSnapshot s) {
       return [EventLine(author, from)];
     case EventKind.fetched:
       return [
-        EventFlow(from: at(e.host), to: home, angle: angle, kept: e.keptByCopy),
+        EventFlow(
+          from: at(e.fromAuthor ? e.author : e.host),
+          to: home,
+          angle: angle,
+          kept: e.keptByCopy,
+        ),
       ];
     case EventKind.served:
       return [EventFlow(from: home, angle: angle)];

@@ -1562,11 +1562,13 @@ fn print_events(events: &[osp_proto::universe::Event]) {
                 bytes,
                 host,
                 kept_by_copy,
+                from_author,
                 ..
             } => {
-                let from = match host {
-                    Some(h) => format!("from {}, who hosts it", h.fmt_short()),
-                    None => "from another node".to_string(),
+                let from = match (host, from_author) {
+                    (_, true) => "from the author's node".to_string(),
+                    (Some(h), false) => format!("from {}, who hosts it", h.fmt_short()),
+                    (None, false) => "from another node".to_string(),
                 };
                 let kept = match kept_by_copy {
                     true => ", kept available by a copy",

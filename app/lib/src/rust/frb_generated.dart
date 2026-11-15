@@ -2828,8 +2828,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   UniverseEvent dco_decode_universe_event(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 14)
-      throw Exception('unexpected arr length: expect 14 but see ${arr.length}');
+    if (arr.length != 15)
+      throw Exception('unexpected arr length: expect 15 but see ${arr.length}');
     return UniverseEvent(
       seq: dco_decode_u_64(arr[0]),
       first: dco_decode_u_64(arr[1]),
@@ -2844,7 +2844,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       bytes: dco_decode_u_64(arr[10]),
       host: dco_decode_opt_String(arr[11]),
       keptByCopy: dco_decode_bool(arr[12]),
-      met: dco_decode_bool(arr[13]),
+      fromAuthor: dco_decode_bool(arr[13]),
+      met: dco_decode_bool(arr[14]),
     );
   }
 
@@ -3901,6 +3902,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_bytes = sse_decode_u_64(deserializer);
     var var_host = sse_decode_opt_String(deserializer);
     var var_keptByCopy = sse_decode_bool(deserializer);
+    var var_fromAuthor = sse_decode_bool(deserializer);
     var var_met = sse_decode_bool(deserializer);
     return UniverseEvent(
       seq: var_seq,
@@ -3916,6 +3918,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       bytes: var_bytes,
       host: var_host,
       keptByCopy: var_keptByCopy,
+      fromAuthor: var_fromAuthor,
       met: var_met,
     );
   }
@@ -4859,6 +4862,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_u_64(self.bytes, serializer);
     sse_encode_opt_String(self.host, serializer);
     sse_encode_bool(self.keptByCopy, serializer);
+    sse_encode_bool(self.fromAuthor, serializer);
     sse_encode_bool(self.met, serializer);
   }
 
