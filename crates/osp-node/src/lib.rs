@@ -25,6 +25,8 @@ mod meet;
 mod network;
 mod node;
 mod peers;
+#[allow(dead_code)] // used by the Universe's snapshot in P4's next parts
+mod places;
 mod profiles;
 mod relays;
 mod replies;

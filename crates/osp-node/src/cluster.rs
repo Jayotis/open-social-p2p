@@ -54,6 +54,15 @@ impl Graph {
     pub fn people(&self) -> usize {
         self.adj.len()
     }
+
+    /// Each line once, as (lower, higher, weight), in order.
+    pub fn lines(&self) -> impl Iterator<Item = (u32, u32, f64)> + '_ {
+        self.adj.iter().enumerate().flat_map(|(a, n)| {
+            n.iter()
+                .filter(move |(b, _)| *b as usize > a)
+                .map(move |(b, w)| (a as u32, *b, *w))
+        })
+    }
 }
 
 /// One child of a group.
@@ -74,8 +83,8 @@ pub struct Group {
 /// The grouped world.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Tree {
-    /// Every group; a group's number is its place here. Not yet stable from
-    /// one tree to the next: that's ADR 0034 §4's work.
+    /// Every group; a group's number is its place here, and changes from one
+    /// tree to the next. The IDs that stay are `places`' (ADR 0034 §4).
     pub groups: Vec<Group>,
     /// The top: one group for each separate part of the world. Parts with
     /// no line between them are never grouped together.
