@@ -139,6 +139,8 @@ pub enum Light {
         cell: Cell,
         people: u32,
         creators: u32,
+        /// The sum of its people's `lit` counts, as `Sky::new` was given.
+        lit: u32,
     },
     /// One person, by the index the caller gave.
     Star(u32),
@@ -151,28 +153,36 @@ pub struct Sky {
     stars: Vec<(u64, u32)>,
     /// How many creators come before each place in `stars`.
     creators_before: Vec<u32>,
+    /// The sum of `lit` before each place in `stars`.
+    lit_before: Vec<u64>,
 }
 
 impl Sky {
-    /// `people`: each one's place and whether they're a creator, indexed
-    /// as the caller wants `Light::Star` to name them.
-    pub fn new(people: impl IntoIterator<Item = (Place, bool)>) -> Sky {
-        let mut stars: Vec<(u64, u32, bool)> = people
+    /// `people`: each one's place, whether they're a creator, and a count
+    /// a lit layer gives them (0 for none), indexed as the caller wants
+    /// `Light::Star` to name them.
+    pub fn new(people: impl IntoIterator<Item = (Place, bool, u32)>) -> Sky {
+        let mut stars: Vec<(u64, u32, bool, u32)> = people
             .into_iter()
             .enumerate()
-            .map(|(i, ((x, y), creator))| (z_order(x, y), i as u32, creator))
+            .map(|(i, ((x, y), creator, lit))| (z_order(x, y), i as u32, creator, lit))
             .collect();
         stars.sort_unstable();
         let mut creators_before = Vec::with_capacity(stars.len() + 1);
-        let mut count = 0;
+        let mut lit_before = Vec::with_capacity(stars.len() + 1);
+        let (mut creators, mut lit) = (0, 0);
         creators_before.push(0);
+        lit_before.push(0);
         for s in &stars {
-            count += s.2 as u32;
-            creators_before.push(count);
+            creators += s.2 as u32;
+            lit += s.3 as u64;
+            creators_before.push(creators);
+            lit_before.push(lit);
         }
         Sky {
-            stars: stars.into_iter().map(|(z, i, _)| (z, i)).collect(),
+            stars: stars.into_iter().map(|(z, i, _, _)| (z, i)).collect(),
             creators_before,
+            lit_before,
         }
     }
 
@@ -196,6 +206,8 @@ impl Sky {
                 cell,
                 people: n as u32,
                 creators: self.creators_before[run.end] - self.creators_before[run.start],
+                lit: (self.lit_before[run.end] - self.lit_before[run.start]).min(u32::MAX as u64)
+                    as u32,
             },
         }
     }
@@ -344,7 +356,7 @@ mod tests {
         let sky = Sky::new(
             keys.iter()
                 .enumerate()
-                .map(|(i, k)| (place("person", k), i % 7 == 0)),
+                .map(|(i, k)| (place("person", k), i % 7 == 0, (i % 3) as u32)),
         );
         let top = sky.open(Cell::ALL, MAX_POINTS);
         assert!(top.len() <= MAX_POINTS && top.len() > MAX_POINTS - 4);
@@ -364,6 +376,14 @@ mod tests {
             })
             .sum();
         assert_eq!(creators, keys.len().div_ceil(7) as u32);
+        let lit: u32 = top
+            .iter()
+            .map(|l| match l {
+                Light::Cell { lit, .. } => *lit,
+                Light::Star(i) => *i % 3,
+            })
+            .sum();
+        assert_eq!(lit, (0..keys.len() as u32).map(|i| i % 3).sum::<u32>());
 
         // Each person: zoom into the light that holds them until it's them.
         let mut deepest = 0;
@@ -405,7 +425,7 @@ mod tests {
             cell = parent;
         }
         assert_eq!(cell, Cell::ALL);
-        let sky = Sky::new([(p, false)]);
+        let sky = Sky::new([(p, false, 0)]);
         assert_eq!(sky.open(Cell::ALL, 10), [Light::Star(0)]);
         assert_eq!(Sky::new([]).open(Cell::ALL, 10), []);
     }

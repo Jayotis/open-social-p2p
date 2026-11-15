@@ -21,6 +21,41 @@ pub(crate) struct HeldPerson {
 }
 
 impl Db {
+    /// How many objects of `kind` (`Note`, `Announce`) each person published
+    /// from `since_ms` on, as this node holds them, `me` included.
+    pub fn recent_counts(&self, kind: &str, since_ms: i64) -> Result<Vec<(PublicKey, u64)>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT actor, COUNT(*) FROM objects
+             WHERE kind = ?1 AND published_ms >= ?2 GROUP BY actor",
+        )?;
+        let rows = stmt
+            .query_map(params![kind, since_ms], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|(actor, n)| Some((actor.parse().ok()?, n as u64)))
+            .collect())
+    }
+
+    /// The posts with media published from `since_ms` on. Unchecked here;
+    /// the caller verifies each and reads its attachments.
+    pub fn recent_media_posts(&self, since_ms: i64) -> Result<Vec<SignedObject>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(&format!(
+            "SELECT signed FROM objects
+             WHERE kind = 'Note' AND published_ms >= ?1 AND {HAS_MEDIA}"
+        ))?;
+        let rows = stmt
+            .query_map(params![since_ms], |row| row.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        rows.iter()
+            .map(|json| serde_json::from_str(json).context("corrupt stored object"))
+            .collect()
+    }
+
     /// Every profile held other than `me`'s, with how many posts, posts with
     /// media and reshares of theirs are here, and their newest's date. That
     /// includes those who vouched for `me` (ADR 0029), whose profiles are

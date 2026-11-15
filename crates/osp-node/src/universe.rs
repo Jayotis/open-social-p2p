@@ -11,12 +11,12 @@ use std::collections::{HashMap, HashSet};
 use anyhow::{Result, bail};
 use iroh::PublicKey;
 use osp_proto::{
-    Payload, SignedObject,
+    MediaKind, Payload, SignedObject,
     rpc::ClientResponse,
     universe::{
-        ALL_LAYERS, ActivityBand, GroupPoint, LINE_DAYS, Layer, Level, Line, LineKind, MAX_LINES,
-        MAX_POINTS, MAX_SNAPSHOT_BYTES, MachinePoint, MachineState, NetworkTotals, PersonPoint,
-        Region, SkyCell, Snapshot,
+        ALL_LAYERS, ActivityBand, GroupPoint, LINE_DAYS, LIT_DAYS, Layer, Level, Line, LineKind,
+        MAX_LINES, MAX_POINTS, MAX_SNAPSHOT_BYTES, MachinePoint, MachineState, NetworkTotals,
+        PersonPoint, Region, SkyCell, Snapshot,
     },
 };
 
@@ -50,6 +50,9 @@ impl Core {
         let Some(region) = Region::parse(region) else {
             bail!("no such region: {}", region.unwrap_or_default());
         };
+        if layers.iter().filter(|l| l.lights()).count() > 1 {
+            bail!("one layer lights up at a time");
+        }
         let snapshot = self.snapshot(layers, region, now_ms())?;
         Ok(match since == Some(snapshot.version.as_str()) {
             true => ClientResponse::UniverseUnchanged,
@@ -60,8 +63,16 @@ impl Core {
     }
 
     fn snapshot(&self, layers: &[Layer], region: Region, now: i64) -> Result<Snapshot> {
-        let shown = match layers.contains(&Layer::People) {
-            true => self.people_layer(region, now)?,
+        // A layer that lights up lights the people layer, so it brings it.
+        let light = layers.iter().copied().find(|l| l.lights());
+        let shown = match layers.contains(&Layer::People) || light.is_some() {
+            true => {
+                let lit = match light {
+                    Some(layer) => self.lit(layer, now)?,
+                    None => HashMap::new(),
+                };
+                self.people_layer(region, &lit, now)?
+            }
             false => Shown {
                 region,
                 ..Shown::default()
@@ -138,6 +149,7 @@ impl Core {
                     at: [0.0, 0.0],
                     group: None,
                     bright: 0,
+                    lit: 0,
                 },
                 newest,
             ));
@@ -163,6 +175,7 @@ impl Core {
                     at: [0.0, 0.0],
                     group: None,
                     bright: 0,
+                    lit: 0,
                 },
                 held.newest_ms,
             ));
@@ -170,9 +183,45 @@ impl Core {
         Ok(people)
     }
 
+    /// What a layer that lights up counts for each person (ADR 0035 §1):
+    /// their public posts, posts with a video, or reshares from the last
+    /// `LIT_DAYS`, as this node holds them. Only people with some.
+    fn lit(&self, layer: Layer, now: i64) -> Result<HashMap<PublicKey, u32>> {
+        let since = now - LIT_DAYS as i64 * DAY_MS;
+        let counts = match layer {
+            Layer::Posts => self.db.recent_counts("Note", since)?,
+            Layer::Shared => self.db.recent_counts("Announce", since)?,
+            Layer::Video => {
+                let mut counts: HashMap<PublicKey, u64> = HashMap::new();
+                for obj in self.db.recent_media_posts(since)? {
+                    let Ok(Payload::Note(note)) = obj.verify() else {
+                        continue;
+                    };
+                    if note.attachment.iter().any(|a| a.kind == MediaKind::Video) {
+                        *counts.entry(note.actor).or_default() += 1;
+                    }
+                }
+                counts.into_iter().collect()
+            }
+            _ => vec![],
+        };
+        Ok(counts
+            .into_iter()
+            .filter(|(_, n)| *n > 0)
+            .map(|(actor, n)| (actor, n.min(u32::MAX as u64) as u32))
+            .collect())
+    }
+
     /// The people layer of `region`: groups, people and sky cells within
-    /// the limits, and the public lines between the people shown.
-    fn people_layer(&self, region: Region, now: i64) -> Result<Shown> {
+    /// the limits, and the public lines between the people shown. `lit` is
+    /// a lit layer's count for each person, if one was asked for.
+    fn people_layer(
+        &self,
+        region: Region,
+        lit: &HashMap<PublicKey, u32>,
+        now: i64,
+    ) -> Result<Shown> {
+        let lit_of = |actor: &PublicKey| lit.get(actor).copied().unwrap_or(0);
         let me = self.signer.identity();
         let acts = self.lines(now)?;
         let everyone = self.everyone(&acts)?;
@@ -199,7 +248,7 @@ impl Core {
         let sky = Sky::new(unplaced.iter().map(|i| {
             let (p, newest) = &everyone[*i];
             let creator = p.posts > 0 && newest.is_some_and(|n| n >= recent);
-            (sky::place(SKY_PEOPLE, &p.actor), creator)
+            (sky::place(SKY_PEOPLE, &p.actor), creator, lit_of(&p.actor))
         }));
 
         // What's shown: by the world's numbers, then the sky's.
@@ -269,6 +318,7 @@ impl Core {
                     cell,
                     people,
                     creators,
+                    lit,
                 } => cells.push(SkyCell {
                     level: cell.level,
                     x: cell.x,
@@ -276,6 +326,7 @@ impl Core {
                     people: *people,
                     creators: *creators,
                     at: round(sky::ring(cell.centre())),
+                    lit: *lit,
                 }),
             }
         }
@@ -294,17 +345,20 @@ impl Core {
             }
         }
 
-        // Each group's posts and reshares, for its brightness.
+        // Each group's posts and reshares, for its brightness, and its lit
+        // layer's count.
         let tree = &world.tree;
-        let mut sums = vec![(0u64, 0u64); tree.groups.len()];
+        let mut sums = vec![(0u64, 0u64, 0u64); tree.groups.len()];
         for (p, _) in &everyone {
             let Some((i, _)) = world.placed(&p.actor) else {
                 continue;
             };
+            let lit = lit_of(&p.actor) as u64;
             let mut g = tree.group_of[i as usize];
             while let Some(at) = g {
                 sums[at as usize].0 += p.posts;
                 sums[at as usize].1 += p.reshares;
+                sums[at as usize].2 += lit;
                 g = tree.groups[at as usize].parent;
             }
         }
@@ -313,7 +367,7 @@ impl Core {
             .iter()
             .map(|g| {
                 let group = &tree.groups[*g as usize];
-                let (posts, reshares) = sums[*g as usize];
+                let (posts, reshares, lit) = sums[*g as usize];
                 GroupPoint {
                     id: world.id(*g),
                     parent: group.parent.map(|p| world.id(p)),
@@ -321,6 +375,7 @@ impl Core {
                     people: group.people,
                     bright: bright(group.people, posts, reshares),
                     at: round(world.placed.group_at[*g as usize]),
+                    lit: lit.min(u32::MAX as u64) as u32,
                 }
             })
             .collect();
@@ -343,6 +398,7 @@ impl Core {
                     None => p.at = round(sky::ring(sky::unit(sky::place(SKY_PEOPLE, &p.actor)))),
                 }
                 p.bright = bright(1, p.posts, p.reshares);
+                p.lit = lit_of(&p.actor);
                 p
             })
             .collect();
@@ -632,6 +688,7 @@ mod tests {
                 at: [-1023.99, -1023.99],
                 group: Some(u64::MAX),
                 bright: 100,
+                lit: u32::MAX,
             })
             .collect();
         let lines = (0..MAX_LINES)
@@ -729,6 +786,7 @@ mod tests {
                 people: u32::MAX,
                 bright: 100,
                 at: [-1023.99, -1023.99],
+                lit: u32::MAX,
             })
             .collect();
         lights.sky = (0..MAX_POINTS / 2)
@@ -739,6 +797,7 @@ mod tests {
                 people: u32::MAX,
                 creators: u32::MAX,
                 at: [-1023.99, -1023.99],
+                lit: u32::MAX,
             })
             .collect();
         let fitted = fit(lights.clone()).unwrap();
