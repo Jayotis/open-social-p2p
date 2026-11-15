@@ -163,6 +163,16 @@ class _UniverseTabState extends State<UniverseTab>
   /// Draws the next event the node sent, if the map is on screen and none
   /// is being drawn. With none, the map stays still (ADR 0036 §2).
   void _playNext() {
+    // One drawn lately has grown: its line again, with the total.
+    final grown = _node.events.grown;
+    if (grown != null && _playing == null) {
+      _node.events.grown = null;
+      _captionGone?.cancel();
+      setState(() => _captioned = grown);
+      _captionGone = Timer(_Play.caption, () {
+        if (mounted) setState(() => _captioned = null);
+      });
+    }
     final next = _node.events.next;
     if (_playing != null || next == null || !_node.watchingUniverse) return;
     _captionGone?.cancel();
@@ -421,7 +431,8 @@ class _UniverseTabState extends State<UniverseTab>
         if (mounted && node.universe == here) _frame(here);
       });
     }
-    if (_playing == null && node.events.next != null) {
+    if (_playing == null &&
+        (node.events.next != null || node.events.grown != null)) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted) _playNext();
       });
@@ -585,7 +596,7 @@ class _UniverseTabState extends State<UniverseTab>
                   children: [
                     if (_captioned case final e?)
                       _EventLine(
-                        event: e,
+                        event: node.events.latest(e),
                         names: EventNames([
                           ...?node.universeTop?.people,
                           ...?s?.people,

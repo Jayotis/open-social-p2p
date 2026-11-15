@@ -39,19 +39,21 @@ void main() {
         now: now,
       );
       events.take([first], now: now);
-      events.drew();
-      final later = now.add(const Duration(minutes: 10));
+      events.drew(now: now);
+      final later = now.add(const Duration(minutes: 1));
       final summed = anEvent(
         2,
         EventKind.served,
         author: 'id-Jimmy',
         post: 'p1',
         count: 2,
-        lasted: const Duration(minutes: 10),
+        lasted: const Duration(minutes: 1),
         now: later,
       );
       events.take([summed], now: later);
       expect(events.next, isNull, reason: 'drawn once');
+      expect(events.grown?.seq, BigInt.two, reason: 'told again, grown');
+      expect(events.latest(first).count, 2);
       expect(events.today.single.count, 2, reason: 'the list has the sum');
       expect(events.since, BigInt.two);
     });
