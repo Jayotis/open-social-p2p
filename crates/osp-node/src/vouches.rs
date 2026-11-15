@@ -13,6 +13,7 @@ use anyhow::{Context, Result, bail, ensure};
 use iroh::{EndpointAddr, EndpointId, PublicKey};
 use osp_proto::{
     FoundEarly, ObjectId, Payload, SignedObject,
+    connected::How,
     social::{CarriedVouch, MAX_SIDE_VOUCHES, MAX_VOUCHES_ANSWERED, SocialRequest, SocialResponse},
 };
 use tracing::{debug, info, warn};
@@ -436,11 +437,12 @@ pub struct Gathered {
     pub asked: usize,
 }
 
-/// Who signed a vouch, and whom it's for. Checks its signatures.
-pub(crate) fn vouch_parts(signed: &SignedObject) -> Result<(PublicKey, PublicKey)> {
-    let (voucher, subject) = match signed.verify()? {
-        Payload::Announce(a) => (a.actor, a.object_actor),
-        Payload::FoundEarly(f) => (f.actor, f.finder),
+/// Who signed a vouch, whom it's for, and which kind it is. Checks its
+/// signatures.
+pub(crate) fn vouch_parts(signed: &SignedObject) -> Result<(PublicKey, PublicKey, How)> {
+    let (voucher, subject, how) = match signed.verify()? {
+        Payload::Announce(a) => (a.actor, a.object_actor, How::Reshared),
+        Payload::FoundEarly(f) => (f.actor, f.finder, How::CreditedEarly),
         other => bail!("a {} isn't a vouch", other.kind()),
     };
     ensure!(
@@ -448,13 +450,13 @@ pub(crate) fn vouch_parts(signed: &SignedObject) -> Result<(PublicKey, PublicKey
         "the vouch isn't signed by its voucher"
     );
     ensure!(voucher != subject, "nobody vouches for themselves");
-    Ok((voucher, subject))
+    Ok((voucher, subject, how))
 }
 
 /// Checks a vouch an answer to `WhoVouched` carried: that it verifies, is
 /// for `subject`, and comes with its voucher's profile. Returns the voucher.
 fn check_carried(carried: &CarriedVouch, subject: &PublicKey) -> Result<PublicKey> {
-    let (voucher, of) = vouch_parts(&carried.vouch)?;
+    let (voucher, of, _) = vouch_parts(&carried.vouch)?;
     ensure!(of == *subject, "the vouch is for someone else");
     ensure!(
         carried.profile.signer() == voucher,

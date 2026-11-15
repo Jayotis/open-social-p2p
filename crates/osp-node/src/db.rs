@@ -522,6 +522,10 @@ const MIGRATIONS: &[&str] = &[
     );
     CREATE INDEX events_by_subject ON events(subject, first_ms);
     ALTER TABLE declared_sizes ADD COLUMN post TEXT;",
+    // 36: the paths from the owner to a stranger who replied, as the meeting
+    // of their side found them (ADR 0037, `connected::Path` as JSON), so
+    // "How are we connected?" shows what let the reply in.
+    "ALTER TABLE received_replies ADD COLUMN paths TEXT",
 ];
 
 /// How many days of `served_days` are kept: the summary's 30, and today.

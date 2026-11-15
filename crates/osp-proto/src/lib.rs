@@ -6,6 +6,7 @@
 //! and follow tickets. This crate does no networking of its own.
 
 pub mod binding;
+pub mod connected;
 pub mod framing;
 pub mod machine;
 pub mod object;
