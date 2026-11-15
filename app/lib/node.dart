@@ -93,14 +93,41 @@ class HomeNode extends ChangeNotifier with WidgetsBindingObserver {
 
   bool _loadingPeople = false;
 
-  /// What the Universe may show (ADR 0033): the last snapshot, kept on the
-  /// phone, so it shows at once. Null until there is one.
-  UniverseSnapshot? universe;
+  /// What the Universe opens (ADR 0034 §6), as the node names regions:
+  /// empty for the top, `g:<id>` a group, `p:<identity>` standing at
+  /// someone, `sky:<l>/<x>/<y>` a cell of the sky.
+  String universeRegion = '';
+
+  /// The last snapshots, by region, so a region visited lately shows at
+  /// once and is asked for since the one held. The top is also kept on
+  /// disk, for the next start.
+  final Map<String, UniverseSnapshot> _universes = {};
+
+  /// How many regions' snapshots are held: each is at most 128 KiB.
+  static const _universesHeld = 16;
+
+  /// What the Universe may show (ADR 0033) at [universeRegion], as last
+  /// fetched. Null until there is one.
+  UniverseSnapshot? get universe => _universes[universeRegion];
+  set universe(UniverseSnapshot? s) => _hold(universeRegion, s);
+
+  /// The top's snapshot: everyone the node found.
+  UniverseSnapshot? get universeTop => _universes[''];
+
+  void _hold(String region, UniverseSnapshot? s) {
+    _universes.remove(region);
+    if (s == null) return;
+    _universes[region] = s;
+    // The least lately used goes first; the top always stays.
+    while (_universes.length > _universesHeld) {
+      _universes.remove(_universes.keys.firstWhere((r) => r.isNotEmpty));
+    }
+  }
 
   /// Why asking for [universe] failed, if the last try did.
   String? universeError;
 
-  bool _loadingUniverse = false;
+  final Set<String> _loadingUniverse = {};
 
   /// Set while the Universe is on screen: [universe] is asked for again
   /// with each status check, so people appear as the node finds them.
@@ -136,7 +163,7 @@ class HomeNode extends ChangeNotifier with WidgetsBindingObserver {
     }
     node.paired = node.app.pairedNode();
     node._showSaved();
-    node.universe = node.app.savedUniverse();
+    node._hold('', node.app.savedUniverse());
     node.unsent = node.app.pendingPost();
     await uploads.clean(keep: [...?node.unsent?.files.map((f) => f.path)]);
     WidgetsBinding.instance.addObserver(node);
@@ -347,18 +374,40 @@ class HomeNode extends ChangeNotifier with WidgetsBindingObserver {
   /// unchanged one costs a few bytes. One at a time. The one held stays
   /// on screen if the node can't be asked.
   Future<void> loadUniverse() async {
-    if (paired == null || _loadingUniverse) return;
-    _loadingUniverse = true;
+    final region = universeRegion;
+    if (paired == null || !_loadingUniverse.add(region)) return;
     try {
-      final fresh = await app.universe(since: universe?.version);
-      if (fresh != null) universe = fresh;
+      final held = _universes[region];
+      final fresh = await app.universe(
+        region: region.isEmpty ? null : region,
+        since: held?.version,
+      );
+      if (fresh != null) {
+        _hold(region, fresh);
+        // A group that's gone is answered by the one most of its people
+        // went to: that's where the Universe is now.
+        if (fresh.region != region) {
+          _hold(fresh.region, fresh);
+          if (universeRegion == region) universeRegion = fresh.region;
+        }
+      } else if (held != null) {
+        _hold(region, held);
+      }
       universeError = null;
     } catch (e) {
       universeError = describeError(e);
     } finally {
-      _loadingUniverse = false;
+      _loadingUniverse.remove(region);
     }
     notifyListeners();
+  }
+
+  /// Opens [region] in the Universe: the one held at once, if any, then
+  /// the node's. Asks no other node anything (ADR 0034 §6).
+  Future<void> openUniverse(String region) {
+    universeRegion = region;
+    notifyListeners();
+    return loadUniverse();
   }
 
   /// Asks the node for everyone it holds a profile of (the list the
@@ -411,7 +460,8 @@ class HomeNode extends ChangeNotifier with WidgetsBindingObserver {
     firstRun = false;
     people = null;
     peopleError = null;
-    universe = null;
+    _universes.clear();
+    universeRegion = '';
     universeError = null;
     me = null;
     posts = [];

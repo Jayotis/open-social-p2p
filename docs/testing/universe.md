@@ -74,3 +74,19 @@ cargo test -p osp-node --release --lib a_million_people_are_explored -- --ignore
 **Result (2026-11-14, desktop, one thread):** 1,000,000 people in 50,000 friend groups of 20, the groups joined in a ring. Every snapshot from the top down opened: 23,965 of them, at most 300 points each, and everyone was reached. Grouping and placing took 47 s, making the world's keys included. Opening a snapshot from the kept tree takes about a microsecond. The top showed groups 2, 3 and 4 levels down.
 
 **Moving around** (`osp-sim`, `the_universe_holds_no_address_and_opening_it_sends_nothing`, in every run): Kim's node stands at each person it shows, opens each region on the way back up and each group shown, and opens four sky cells. It sends nothing new: no new connection, no request, no viewing endpoint.
+
+## On the phone
+
+ADR 0034's gate: a world of 20 people and 5 machines opens at Local and looks right on the test phones, and pan and zoom stay smooth on the slowest one (Pixel 3 XL).
+
+**The world.** `osp-world` starts 20 made-up people as real nodes on one computer: two groups of seven friends who follow and reshare each other, one reshare between the groups, a group of three, and three people the owner follows who have no lines. The owner, Rae, follows a few in each group. A phone pairs with Rae's node by the code it prints. The people's nodes talk only to each other, on loopback; Rae's has relays, as an ordinary node does, so the phone can reach it.
+
+```sh
+cargo run --release -p osp-sim --bin osp-world -- --dir <empty directory>
+```
+
+It has no directory and no machines: on real nodes both need machine names, and those need Tor. The machines were checked on a lab node instead, which knew 10.
+
+**Smoothness.** The app draws with Flutter, so Android's own frame counts (`dumpsys gfxinfo`) see nothing. Frame times come from the compositor instead: `adb shell dumpsys SurfaceFlinger --latency '<the app's SurfaceView (BLAST) layer>'`, cleared with `--latency-clear` before the gesture.
+
+**Result (2026-11-14, Pixel 3 XL, app build 9):** Rae's Universe opened at Local with 21 people and 14 lines, no groups, every name readable, the two friend groups apart and the reshare between them drawn. 14 lines, not 17: three reshares are between people Rae doesn't follow, so her node never gets them. A 1.5 s pan drew 88 frames, every one at the screen's 16.7 ms, none missed. Standing at someone framed them with their lines brighter, and stepping back went up one step with the map unmoved. On a lab node with 13 people and 10 machines, the machines' list read in plain words.

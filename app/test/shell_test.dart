@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:math';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -44,16 +45,23 @@ class FakeApp implements OspApp {
   @override
   Future<List<FoundPerson>> people({required int limit}) async => found;
 
-  /// The node's Universe now, and each `since` it was asked with.
+  /// The node's Universe now: the top, and other regions by name. Each
+  /// `since` it was asked with, and each region.
   UniverseSnapshot snapshot = world([]);
+  final regions = <String, UniverseSnapshot>{};
   final asked = <String?>[];
+  final askedFor = <String>[];
   bool unreachable = false;
 
   @override
-  Future<UniverseSnapshot?> universe({String? since}) async {
+  Future<UniverseSnapshot?> universe({String? region, String? since}) async {
     asked.add(since);
+    askedFor.add(region ?? '');
     if (unreachable) throw Exception('no contact');
-    return since == snapshot.version ? null : snapshot;
+    final there = region == null
+        ? snapshot
+        : regions[region] ?? world(const [], region: region, path: const ['']);
+    return since == there.version ? null : there;
   }
 
   @override
@@ -88,9 +96,16 @@ NodeStatus nodeStatus({int trustRequests = 0, int replyRequests = 0}) =>
       overTor: false,
     );
 
-/// A snapshot with the owner, Alice, and [names] after her.
-UniverseSnapshot world(List<String> names, {String? version}) {
-  UniversePerson person(String name, int? step) => UniversePerson(
+/// A snapshot with the owner, Alice, at the centre and [names] after her,
+/// in a row to her right, five units apart, all in group 1.
+UniverseSnapshot world(
+  List<String> names, {
+  String? version,
+  String region = '',
+  List<String> path = const [],
+  List<UniverseMachine> machines = const [],
+}) {
+  UniversePerson person(String name, int? step, double x) => UniversePerson(
     identity: 'id-$name',
     name: name,
     step: step,
@@ -99,13 +114,34 @@ UniverseSnapshot world(List<String> names, {String? version}) {
     posts: 0,
     media: 0,
     reshares: 0,
+    x: x,
+    y: 0,
+    group: step == 0 ? null : BigInt.one,
+    bright: 0,
   );
   return UniverseSnapshot(
-    version: version ?? 'v-${names.join('-')}',
-    people: [person('Alice', 0), for (final n in names) person(n, 1)],
-    lines: const [],
+    version: version ?? 'v-$region-${names.join('-')}',
+    level: UniverseLevel.local,
+    region: region,
+    path: path,
+    groups: const [],
+    people: [
+      person('Alice', 0, 0),
+      for (final (i, n) in names.indexed) person(n, 1, 5.0 * (i + 1)),
+    ],
+    lines: [
+      for (var i = 1; i <= names.length; i++)
+        UniverseLine(
+          kind: LineKind.reshared,
+          from: 0,
+          to: i,
+          count: 1,
+          last: '2026-11-14',
+        ),
+    ],
     morePeople: 0,
-    machines: const [],
+    machines: machines,
+    sky: const [],
   );
 }
 
@@ -354,14 +390,149 @@ void main() {
     final some = world(['Kim', 'Sam']);
     app.snapshot = UniverseSnapshot(
       version: 'v',
+      level: UniverseLevel.local,
+      region: '',
+      path: const [],
+      groups: const [],
       people: some.people,
       lines: const [],
       morePeople: 40,
       machines: const [],
+      sky: const [],
     );
     await start(tester, Place.universe);
     expect(find.text('Your node found 42 people'), findsOne);
     expect(find.text('Kim, Sam and 40 more'), findsOne);
+  });
+
+  /// Where [world]'s person [n] (1 the first after Alice) is drawn, with
+  /// the top framed: they're in a row to the right of her star, the
+  /// farthest of [count] at 0.4 of the room the controls leave clear.
+  Offset drawnAt(WidgetTester tester, int n, int count) {
+    final map = tester.getRect(find.byKey(const Key('universe-map')));
+    final room = min(map.width, max(map.height - 254, map.height / 3));
+    // The button over her star is centred on it.
+    final star = tester.getCenter(find.byTooltip('Your node'));
+    return star + Offset(room * 0.4 * n / count, 0);
+  }
+
+  testWidgets('tapping a star stands there, and stepping back keeps going', (
+    tester,
+  ) async {
+    app.snapshot = world(['Kim']);
+    app.regions['p:id-Kim'] = world(['Kim'], region: 'p:id-Kim', path: ['']);
+    await start(tester, Place.universe);
+    expect(find.byTooltip('Zoom out'), findsNothing, reason: 'at the top');
+
+    await tester.tapAt(drawnAt(tester, 1, 1));
+    await tester.pumpAndSettle();
+    expect(app.askedFor.last, 'p:id-Kim');
+    expect(node.universeRegion, 'p:id-Kim');
+    expect(find.text('Kim'), findsOne);
+    expect(find.textContaining('1 public line shown'), findsOne);
+    expectPlainWords(tester);
+
+    // Stepping back goes up the path: the top, as held.
+    await tester.tap(find.byTooltip('Step back'));
+    await tester.pumpAndSettle();
+    expect(node.universeRegion, '');
+    expect(find.text('Your node found 1 person'), findsOne);
+  });
+
+  testWidgets('My star flies home from anywhere', (tester) async {
+    app.snapshot = world(['Kim', 'Sam']);
+    app.regions['p:id-Sam'] = world(
+      ['Kim', 'Sam'],
+      region: 'p:id-Sam',
+      path: [''],
+    );
+    await start(tester, Place.universe);
+    final home = tester.getCenter(find.byTooltip('Your node'));
+    await tester.tapAt(drawnAt(tester, 2, 2));
+    await tester.pumpAndSettle();
+    expect(node.universeRegion, 'p:id-Sam');
+    expect(tester.getCenter(find.byTooltip('Your node')), isNot(home));
+    await tester.tap(find.byTooltip('My star'));
+    await tester.pumpAndSettle();
+    expect(node.universeRegion, '');
+    expect(app.askedFor.last, '');
+    // Her star is back where it was.
+    final star = tester.getCenter(find.byTooltip('Your node'));
+    expect((star - home).distance, lessThan(1));
+  });
+
+  testWidgets('machines have their own list, in plain words', (tester) async {
+    app.snapshot = world(
+      ['Kim'],
+      machines: const [
+        UniverseMachine(
+          words: 'able-baker-charlie',
+          state: MachineState.answeredLately,
+          directory: true,
+          activity: ActivityBand.aLot,
+        ),
+        UniverseMachine(
+          words: 'dog-easy-fox',
+          state: MachineState.heardOf,
+          directory: false,
+          activity: ActivityBand.none,
+        ),
+      ],
+    );
+    await start(tester, Place.universe);
+    await tester.tap(find.text('2 machines'));
+    await tester.pumpAndSettle();
+    expect(find.text('able-baker-charlie'), findsOne);
+    expect(find.textContaining('lists people who asked to be found'), findsOne);
+    expect(find.text('Heard of, hasn’t answered yet'), findsOne);
+    expectPlainWords(tester);
+  });
+
+  testWidgets('pinching anyhow never loses the map', (tester) async {
+    app.snapshot = world(['Kim', 'Sam', 'Lee']);
+    await start(tester, Place.universe);
+    final home = tester.getCenter(find.byTooltip('Your node'));
+    final map = tester.getRect(find.byKey(const Key('universe-map')));
+    final r = Random(1);
+    Offset any() => Offset(
+      map.left + r.nextDouble() * map.width,
+      map.top + r.nextDouble() * map.height,
+    );
+    // Two or three fingers landing one by one, moving anywhere, sometimes
+    // all to one point, and lifting one by one.
+    for (var round = 0; round < 60; round++) {
+      final n = 2 + r.nextInt(2);
+      final fingers = <TestGesture>[];
+      final at = <Offset>[];
+      for (var i = 0; i < n; i++) {
+        at.add(any());
+        fingers.add(await tester.startGesture(at[i], pointer: 10 + i));
+        await tester.pump(const Duration(milliseconds: 8));
+      }
+      for (var step = 0; step < 8; step++) {
+        for (var i = 0; i < n; i++) {
+          // Sometimes all fingers meet at one point.
+          final to = r.nextInt(6) == 0 ? map.center : any();
+          await fingers[i].moveTo(to);
+        }
+        await tester.pump(const Duration(milliseconds: 16));
+      }
+      for (final f in fingers) {
+        await f.up();
+        await tester.pump(const Duration(milliseconds: 8));
+      }
+      await tester.pump(const Duration(milliseconds: 500));
+      expect(tester.takeException(), isNull, reason: 'round $round');
+    }
+    // A stray tap may have opened a screen over the map.
+    tester
+        .state<NavigatorState>(find.byType(Navigator))
+        .popUntil((route) => route.isFirst);
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('My star'));
+    await tester.pumpAndSettle();
+    final star = tester.getCenter(find.byTooltip('Your node'));
+    expect((star - home).distance, lessThan(1));
   });
 }
 

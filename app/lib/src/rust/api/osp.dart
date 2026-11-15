@@ -7,7 +7,7 @@ import '../frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
 // These functions are ignored because they are not marked as `pub`: `found_person`, `node_info`, `post`, `profile_of`, `progress`, `reply_info`, `report_to`, `run_post`, `sent_reply`, `trust_entry`, `universe`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`
 
 /// A new device key, as 64 hex digits, for the app to keep in the phone's
 /// secure storage.
@@ -146,7 +146,7 @@ abstract class OspApp implements RustOpaqueInterface {
 
   SavedFeed? savedFeed();
 
-  /// The last snapshot fetched, to show before the node answers.
+  /// The last top snapshot fetched, to show before the node answers.
   UniverseSnapshot? savedUniverse();
 
   /// Looks through the posts and profiles the node has received. Nothing
@@ -198,9 +198,12 @@ abstract class OspApp implements RustOpaqueInterface {
   Future<void> unfollow({required String identity});
 
   /// What the Universe may show (ADR 0033), built on the node from what
-  /// it already knows: asking sends nothing to any other node. With
-  /// `since` the version the app holds, none means it's unchanged.
-  Future<UniverseSnapshot?> universe({String? since});
+  /// it already knows: asking sends nothing to any other node. `region`
+  /// is what it opens (ADR 0034 §6): none or empty for the top, `g:<id>`
+  /// a group, `p:<identity>` standing at someone, `sky:<l>/<x>/<y>` a
+  /// cell of the sky. With `since` the version the app holds, none means
+  /// it's unchanged.
+  Future<UniverseSnapshot?> universe({String? region, String? since});
 
   /// Stops trusting someone, on every node they were trusted on.
   Future<void> untrust({required String identity});
@@ -914,6 +917,55 @@ class SentReply {
           nextTrySecs == other.nextTrySecs;
 }
 
+/// Many people of the public sky as one light; opened with
+/// `sky:level/x/y`. Not a group: its people aren't related.
+class SkyCell {
+  final int level;
+  final int x;
+  final int y;
+  final int people;
+
+  /// Those of them with public posts lately.
+  final int creators;
+
+  /// Its centre.
+  final double atX;
+  final double atY;
+
+  const SkyCell({
+    required this.level,
+    required this.x,
+    required this.y,
+    required this.people,
+    required this.creators,
+    required this.atX,
+    required this.atY,
+  });
+
+  @override
+  int get hashCode =>
+      level.hashCode ^
+      x.hashCode ^
+      y.hashCode ^
+      people.hashCode ^
+      creators.hashCode ^
+      atX.hashCode ^
+      atY.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is SkyCell &&
+          runtimeType == other.runtimeType &&
+          level == other.level &&
+          x == other.x &&
+          y == other.y &&
+          people == other.people &&
+          creators == other.creators &&
+          atX == other.atX &&
+          atY == other.atY;
+}
+
 /// A post's replies, a page at a time.
 class Thread {
   /// `off`, `circle` or `network`. Only the owner's own posts say.
@@ -1037,6 +1089,59 @@ class TrustList {
           trusted == other.trusted;
 }
 
+/// A group of the tree, drawn as one light; opened with `g:` and its ID.
+class UniverseGroup {
+  final BigInt id;
+  final BigInt? parent;
+
+  /// For a group new since the last grouping, the one it split from.
+  final BigInt? from;
+
+  /// Everyone in it, at any depth.
+  final int people;
+
+  /// 0 to 100.
+  final int bright;
+  final double x;
+  final double y;
+
+  const UniverseGroup({
+    required this.id,
+    this.parent,
+    this.from,
+    required this.people,
+    required this.bright,
+    required this.x,
+    required this.y,
+  });
+
+  @override
+  int get hashCode =>
+      id.hashCode ^
+      parent.hashCode ^
+      from.hashCode ^
+      people.hashCode ^
+      bright.hashCode ^
+      x.hashCode ^
+      y.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is UniverseGroup &&
+          runtimeType == other.runtimeType &&
+          id == other.id &&
+          parent == other.parent &&
+          from == other.from &&
+          people == other.people &&
+          bright == other.bright &&
+          x == other.x &&
+          y == other.y;
+}
+
+/// How close the camera is (ADR 0034's zoom bands).
+enum UniverseLevel { universe, galaxy, cluster, local, close }
+
 /// A public act between two people, each by their place in `people`.
 class UniverseLine {
   final LineKind kind;
@@ -1130,6 +1235,17 @@ class UniversePerson {
   /// The day of their newest post or reshare (`YYYY-MM-DD`, UTC).
   final String? lastPost;
 
+  /// Where they are: placed by their lines, or in the public sky. The
+  /// owner is at the centre.
+  final double x;
+  final double y;
+
+  /// The group they're directly in; none in the sky.
+  final BigInt? group;
+
+  /// 0 to 100.
+  final int bright;
+
   const UniversePerson({
     required this.identity,
     required this.name,
@@ -1142,6 +1258,10 @@ class UniversePerson {
     required this.media,
     required this.reshares,
     this.lastPost,
+    required this.x,
+    required this.y,
+    this.group,
+    required this.bright,
   });
 
   @override
@@ -1156,7 +1276,11 @@ class UniversePerson {
       posts.hashCode ^
       media.hashCode ^
       reshares.hashCode ^
-      lastPost.hashCode;
+      lastPost.hashCode ^
+      x.hashCode ^
+      y.hashCode ^
+      group.hashCode ^
+      bright.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -1173,7 +1297,11 @@ class UniversePerson {
           posts == other.posts &&
           media == other.media &&
           reshares == other.reshares &&
-          lastPost == other.lastPost;
+          lastPost == other.lastPost &&
+          x == other.x &&
+          y == other.y &&
+          group == other.group &&
+          bright == other.bright;
 }
 
 /// What the Universe may show (ADR 0033): one snapshot from the node, field
@@ -1181,8 +1309,22 @@ class UniversePerson {
 class UniverseSnapshot {
   /// Ask `since` this; it changes whenever anything else does.
   final String version;
+  final UniverseLevel level;
 
-  /// The owner first, then the nearest and most active.
+  /// What it opens, as `universe`'s `region` names it: empty for the top.
+  /// A group that's gone is answered by the one most of its people went
+  /// to, named here.
+  final String region;
+
+  /// The regions above it, the top (empty) first: zooming out asks for
+  /// the last of them (ADR 0034 §6).
+  final List<String> path;
+
+  /// Groups shown closed, each one light.
+  final List<UniverseGroup> groups;
+
+  /// The owner first, then the one stood at, then the nearest and most
+  /// active.
   final List<UniversePerson> people;
 
   /// Public acts between people, newest first.
@@ -1193,23 +1335,36 @@ class UniverseSnapshot {
   final List<UniverseMachine> machines;
   final NetworkTotals? network;
 
+  /// Cells of the public sky, each many people drawn as one light.
+  final List<SkyCell> sky;
+
   const UniverseSnapshot({
     required this.version,
+    required this.level,
+    required this.region,
+    required this.path,
+    required this.groups,
     required this.people,
     required this.lines,
     required this.morePeople,
     required this.machines,
     this.network,
+    required this.sky,
   });
 
   @override
   int get hashCode =>
       version.hashCode ^
+      level.hashCode ^
+      region.hashCode ^
+      path.hashCode ^
+      groups.hashCode ^
       people.hashCode ^
       lines.hashCode ^
       morePeople.hashCode ^
       machines.hashCode ^
-      network.hashCode;
+      network.hashCode ^
+      sky.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -1217,11 +1372,16 @@ class UniverseSnapshot {
       other is UniverseSnapshot &&
           runtimeType == other.runtimeType &&
           version == other.version &&
+          level == other.level &&
+          region == other.region &&
+          path == other.path &&
+          groups == other.groups &&
           people == other.people &&
           lines == other.lines &&
           morePeople == other.morePeople &&
           machines == other.machines &&
-          network == other.network;
+          network == other.network &&
+          sky == other.sky;
 }
 
 class UnsentFile {

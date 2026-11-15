@@ -73,6 +73,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   int dco_decode_box_autoadd_u_32(dynamic raw);
 
   @protected
+  BigInt dco_decode_box_autoadd_u_64(dynamic raw);
+
+  @protected
   int dco_decode_box_autoadd_u_8(dynamic raw);
 
   @protected
@@ -80,6 +83,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   UnsentPost dco_decode_box_autoadd_unsent_post(dynamic raw);
+
+  @protected
+  double dco_decode_f_32(dynamic raw);
 
   @protected
   Followed dco_decode_followed(dynamic raw);
@@ -127,7 +133,13 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   List<SentReply> dco_decode_list_sent_reply(dynamic raw);
 
   @protected
+  List<SkyCell> dco_decode_list_sky_cell(dynamic raw);
+
+  @protected
   List<TrustEntry> dco_decode_list_trust_entry(dynamic raw);
+
+  @protected
+  List<UniverseGroup> dco_decode_list_universe_group(dynamic raw);
 
   @protected
   List<UniverseLine> dco_decode_list_universe_line(dynamic raw);
@@ -175,6 +187,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   int? dco_decode_opt_box_autoadd_u_32(dynamic raw);
 
   @protected
+  BigInt? dco_decode_opt_box_autoadd_u_64(dynamic raw);
+
+  @protected
   int? dco_decode_opt_box_autoadd_u_8(dynamic raw);
 
   @protected
@@ -211,6 +226,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   SentReply dco_decode_sent_reply(dynamic raw);
 
   @protected
+  SkyCell dco_decode_sky_cell(dynamic raw);
+
+  @protected
   Thread dco_decode_thread(dynamic raw);
 
   @protected
@@ -223,10 +241,19 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   int dco_decode_u_32(dynamic raw);
 
   @protected
+  BigInt dco_decode_u_64(dynamic raw);
+
+  @protected
   int dco_decode_u_8(dynamic raw);
 
   @protected
   void dco_decode_unit(dynamic raw);
+
+  @protected
+  UniverseGroup dco_decode_universe_group(dynamic raw);
+
+  @protected
+  UniverseLevel dco_decode_universe_level(dynamic raw);
 
   @protected
   UniverseLine dco_decode_universe_line(dynamic raw);
@@ -302,6 +329,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   int sse_decode_box_autoadd_u_32(SseDeserializer deserializer);
 
   @protected
+  BigInt sse_decode_box_autoadd_u_64(SseDeserializer deserializer);
+
+  @protected
   int sse_decode_box_autoadd_u_8(SseDeserializer deserializer);
 
   @protected
@@ -311,6 +341,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   UnsentPost sse_decode_box_autoadd_unsent_post(SseDeserializer deserializer);
+
+  @protected
+  double sse_decode_f_32(SseDeserializer deserializer);
 
   @protected
   Followed sse_decode_followed(SseDeserializer deserializer);
@@ -360,7 +393,15 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   List<SentReply> sse_decode_list_sent_reply(SseDeserializer deserializer);
 
   @protected
+  List<SkyCell> sse_decode_list_sky_cell(SseDeserializer deserializer);
+
+  @protected
   List<TrustEntry> sse_decode_list_trust_entry(SseDeserializer deserializer);
+
+  @protected
+  List<UniverseGroup> sse_decode_list_universe_group(
+    SseDeserializer deserializer,
+  );
 
   @protected
   List<UniverseLine> sse_decode_list_universe_line(
@@ -418,6 +459,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   int? sse_decode_opt_box_autoadd_u_32(SseDeserializer deserializer);
 
   @protected
+  BigInt? sse_decode_opt_box_autoadd_u_64(SseDeserializer deserializer);
+
+  @protected
   int? sse_decode_opt_box_autoadd_u_8(SseDeserializer deserializer);
 
   @protected
@@ -458,6 +502,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   SentReply sse_decode_sent_reply(SseDeserializer deserializer);
 
   @protected
+  SkyCell sse_decode_sky_cell(SseDeserializer deserializer);
+
+  @protected
   Thread sse_decode_thread(SseDeserializer deserializer);
 
   @protected
@@ -470,10 +517,19 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   int sse_decode_u_32(SseDeserializer deserializer);
 
   @protected
+  BigInt sse_decode_u_64(SseDeserializer deserializer);
+
+  @protected
   int sse_decode_u_8(SseDeserializer deserializer);
 
   @protected
   void sse_decode_unit(SseDeserializer deserializer);
+
+  @protected
+  UniverseGroup sse_decode_universe_group(SseDeserializer deserializer);
+
+  @protected
+  UniverseLevel sse_decode_universe_level(SseDeserializer deserializer);
 
   @protected
   UniverseLine sse_decode_universe_line(SseDeserializer deserializer);
@@ -566,6 +622,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_encode_box_autoadd_u_32(int self, SseSerializer serializer);
 
   @protected
+  void sse_encode_box_autoadd_u_64(BigInt self, SseSerializer serializer);
+
+  @protected
   void sse_encode_box_autoadd_u_8(int self, SseSerializer serializer);
 
   @protected
@@ -579,6 +638,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
     UnsentPost self,
     SseSerializer serializer,
   );
+
+  @protected
+  void sse_encode_f_32(double self, SseSerializer serializer);
 
   @protected
   void sse_encode_followed(Followed self, SseSerializer serializer);
@@ -638,8 +700,17 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_list_sky_cell(List<SkyCell> self, SseSerializer serializer);
+
+  @protected
   void sse_encode_list_trust_entry(
     List<TrustEntry> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_universe_group(
+    List<UniverseGroup> self,
     SseSerializer serializer,
   );
 
@@ -713,6 +784,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_encode_opt_box_autoadd_u_32(int? self, SseSerializer serializer);
 
   @protected
+  void sse_encode_opt_box_autoadd_u_64(BigInt? self, SseSerializer serializer);
+
+  @protected
   void sse_encode_opt_box_autoadd_u_8(int? self, SseSerializer serializer);
 
   @protected
@@ -758,6 +832,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_encode_sent_reply(SentReply self, SseSerializer serializer);
 
   @protected
+  void sse_encode_sky_cell(SkyCell self, SseSerializer serializer);
+
+  @protected
   void sse_encode_thread(Thread self, SseSerializer serializer);
 
   @protected
@@ -770,10 +847,19 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_encode_u_32(int self, SseSerializer serializer);
 
   @protected
+  void sse_encode_u_64(BigInt self, SseSerializer serializer);
+
+  @protected
   void sse_encode_u_8(int self, SseSerializer serializer);
 
   @protected
   void sse_encode_unit(void self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_universe_group(UniverseGroup self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_universe_level(UniverseLevel self, SseSerializer serializer);
 
   @protected
   void sse_encode_universe_line(UniverseLine self, SseSerializer serializer);
