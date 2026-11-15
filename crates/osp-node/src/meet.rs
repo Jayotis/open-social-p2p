@@ -23,8 +23,11 @@ use std::{
 use anyhow::{Context, Result, bail, ensure};
 use iroh::EndpointId;
 use n0_future::{BufferedStreamExt, StreamExt, stream};
-use osp_proto::machine::{
-    IntroduceRequest, MAX_INTRODUCE_LIFETIME_SECS, MAX_KNOWN, MachineRecord, OFFERS_DIRECTORY,
+use osp_proto::{
+    machine::{
+        IntroduceRequest, MAX_INTRODUCE_LIFETIME_SECS, MAX_KNOWN, MachineRecord, OFFERS_DIRECTORY,
+    },
+    universe::EventWhat,
 };
 use serde::{Deserialize, Serialize};
 use tracing::{debug, warn};
@@ -359,6 +362,9 @@ pub(crate) struct Table {
     /// Introductions (ADR 0016), kept in memory only: after a restart a
     /// machine may ask a little longer, and its limits start afresh.
     intro: Introductions,
+    /// The machines last noted as answering, for events (ADR 0036 §1). In
+    /// memory only: a machine that fades while the node is off is no event.
+    told_answering: HashSet<EndpointId>,
 }
 
 /// What a machine keeps of introductions.
@@ -426,6 +432,7 @@ impl Table {
             removed: HashSet::new(),
             dials_changed: false,
             intro: Introductions::default(),
+            told_answering: HashSet::new(),
         }
     }
 
@@ -460,7 +467,32 @@ impl Table {
             };
             table.remove(&worst);
         }
+        table.turns(now);
         table
+    }
+
+    /// The machines that began answering, first or after fading (`true`),
+    /// or stopped, since this was last asked (ADR 0036 §1).
+    pub fn turns(&mut self, now: i64) -> Vec<(EndpointId, bool)> {
+        let answering: HashSet<EndpointId> = self
+            .entries
+            .values()
+            .filter(|e| e.met_ms.is_some() && self.answering(e, now))
+            .map(|e| e.machine)
+            .collect();
+        let mut turns: Vec<(EndpointId, bool)> = answering
+            .difference(&self.told_answering)
+            .map(|m| (*m, true))
+            .collect();
+        // One forgotten isn't told: it faded first.
+        turns.extend(
+            self.told_answering
+                .difference(&answering)
+                .filter(|m| self.entries.contains_key(*m))
+                .map(|m| (*m, false)),
+        );
+        self.told_answering = answering;
+        turns
     }
 
     #[cfg(test)]
@@ -1416,6 +1448,20 @@ impl Acquaintances {
     pub fn seen(&self) -> Vec<Seen> {
         self.with(|t| t.seen(now_ms()))
     }
+
+    /// Notes the machines that began or stopped answering as events
+    /// (ADR 0036 §1), by their words.
+    pub fn note_turns(&self) {
+        for (machine, met) in self.with(|t| t.turns(now_ms())) {
+            let what = EventWhat::Machine {
+                words: crate::machine::words(&machine),
+                met,
+            };
+            if let Err(e) = self.db.add_event(what) {
+                debug!("noting a machine's turn: {e:#}");
+            }
+        }
+    }
 }
 
 /// What a conversation with a machine brought.
@@ -1432,7 +1478,7 @@ pub(crate) struct Talk {
 impl Core {
     /// One round: dials machines heard of, within the limits, checks in with
     /// some met, and goes back to the directories if all else fails.
-    async fn meet_round(&self) -> Result<()> {
+    pub(crate) async fn meet_round(&self) -> Result<()> {
         let Some(side) = &self.machine else {
             bail!("no machine name");
         };
@@ -1458,6 +1504,7 @@ impl Core {
             .buffered_unordered(AT_ONCE)
             .collect::<Vec<()>>();
         tokio::join!(talks, pass_ons);
+        acquaintances.note_turns();
         if !self.config.directory.known.is_empty() && acquaintances.stuck(now_ms()) {
             self.read_directories_now.notify_one();
         }
@@ -1555,6 +1602,30 @@ mod tests {
 
     fn shares_of(t: &Table, now: i64) -> HashMap<Source, usize> {
         t.shares(&t.protected(now))
+    }
+
+    #[test]
+    fn a_machine_answering_or_fading_is_told_once() {
+        let now = start();
+        let mut t = table();
+        let (id, record) = machine(now);
+        t.hear(&record, Source::Greeted, now).unwrap();
+        // Heard of isn't met.
+        assert!(t.turns(now).is_empty());
+        meet(&mut t, &id, now);
+        assert_eq!(t.turns(now), [(id, true)]);
+        assert!(t.turns(now + HOUR_MS).is_empty());
+        // Silent past `still_answering`: faded, once.
+        let later = now + 4 * DAY_MS;
+        assert_eq!(t.turns(later), [(id, false)]);
+        assert!(t.turns(later + HOUR_MS).is_empty());
+        // Answering again is met again.
+        meet(&mut t, &id, later + 2 * HOUR_MS);
+        assert_eq!(t.turns(later + 2 * HOUR_MS), [(id, true)]);
+        // A table loaded afresh tells nothing of what it already knew.
+        let stored: Vec<Entry> = t.entries.values().cloned().collect();
+        let mut loaded = Table::load(stored, vec![], HashSet::new(), times(), later + 3 * HOUR_MS);
+        assert!(loaded.turns(later + 3 * HOUR_MS).is_empty());
     }
 
     #[test]

@@ -25,6 +25,8 @@ The host of a fetch is drawn only as a person when it is one publicly, as a resh
 
 Busy events are summed (for example "served 14 copies of Jimmy's video in the last hour"), and drawn once.
 
+*Built (2026-11-15, P6 part 2):* the node keeps them in `events` (migration 35), and gives a device those after the `seq` it holds. Events about one thing within an hour of the first are summed into one, which comes again with a new `seq`. A fetch is an event only when the node fetched by itself, ahead of time or to keep a copy: media Kim opened is what she watched, which the Universe never shows ([ADR 0033](0033-what-the-universe-may-show.md) §4). The author's node is asked last, so a copy often sends it all before anyone asks the author's node. So "kept available by a copy" also counts a last sync with the author that failed. `osp events` prints them. The fields are reviewed in ADR 0033.
+
 ### 2. Nothing made up
 
 Every animation comes from an event or an honest total. With no events, the map is still. There's no demo mode in a release build, and a test checks that the phone draws no flow it wasn't sent.

@@ -28,6 +28,7 @@ use osp_proto::{
         MAX_LISTED_RESHARES, MAX_LISTING_PAGE, OFFERS_DIRECTORY,
     },
     social::{SocialRequest, SocialResponse},
+    universe::EventWhat,
 };
 use tokio::{
     sync::{Semaphore, mpsc},
@@ -789,6 +790,7 @@ impl Core {
         entries: Vec<ListingEntry>,
         latest: u64,
     ) -> Result<u64> {
+        let mut new = 0u32;
         for entry in entries {
             ensure!(
                 entry.seq > cursor && entry.seq <= latest,
@@ -800,16 +802,26 @@ impl Core {
                     profile,
                     posts,
                     reshares,
-                } => {
-                    if let Err(e) = self.take_person(directory, &profile, posts, reshares) {
-                        debug!("skipping a directory's entry: {e:#}");
-                    }
-                }
+                } => match self.take_person(directory, &profile, posts, reshares) {
+                    Ok(true) => new += 1,
+                    Ok(false) => {}
+                    Err(e) => debug!("skipping a directory's entry: {e:#}"),
+                },
                 ListingItem::Gone { actor } => self.db.forget_found(&directory, &actor)?,
                 // The node's first machines to meet, counted against the
                 // directory as their source, as any other machine's would be.
                 ListingItem::Machine { record } => side.acquaintances.on_map(directory, &record),
                 ListingItem::Unknown => {}
+            }
+        }
+        // A read's pages are summed into one event (ADR 0036 §1).
+        if new > 0 {
+            let what = EventWhat::Found {
+                directory: machine::words(&directory),
+                people: new,
+            };
+            if let Err(e) = self.db.add_event(what) {
+                debug!("noting what a directory brought: {e:#}");
             }
         }
         Ok(cursor)
@@ -824,11 +836,11 @@ impl Core {
         profile: &SignedObject,
         posts: Vec<SignedObject>,
         reshares: Vec<ListedReshare>,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         let actor = profile.signer();
         // This node has better than a directory's copy of these.
         if actor == self.signer.identity() || self.db.is_following(&actor)? {
-            return Ok(());
+            return Ok(false);
         }
         ensure!(
             posts.len() <= MAX_LISTED_POSTS,
@@ -848,7 +860,8 @@ impl Core {
         profile_date(&person)?;
         // Consent travels with the record, and a later profile can take it back.
         if !person.discoverable || self.taken_back(&person)? {
-            return self.db.forget_found(&directory, &actor);
+            self.db.forget_found(&directory, &actor)?;
+            return Ok(false);
         }
         for post in &posts {
             ensure!(post.signer() == actor, "a post signed by someone else");

@@ -48,7 +48,7 @@ use iroh_blobs::{
     util::connection_pool::{self, ConnectionPool, PoolConnectError},
 };
 use n0_future::{FuturesUnordered, StreamExt, boxed::BoxStream};
-use osp_proto::BlobHash;
+use osp_proto::{BlobHash, universe::EventWhat};
 use tokio::{
     io::{AsyncWrite, AsyncWriteExt},
     sync::{Notify, OwnedSemaphorePermit, Semaphore, mpsc, watch},
@@ -389,21 +389,64 @@ impl ContentStore {
         // Keeps the collector off the partial blob until it has its tag.
         let _downloading = self.store.tags().temp_tag(h).await?;
         debug!(%hash, ?sources, "downloading");
-        self.fetch(
-            h,
-            &sources,
-            declared,
-            Instant::now() + DOWNLOAD_TIMEOUT,
-            via,
-        )
-        .await
-        .with_context(|| format!("download of {} failed", hash.fmt_short()))?;
+        let tally = self
+            .fetch(
+                h,
+                &sources,
+                declared,
+                Instant::now() + DOWNLOAD_TIMEOUT,
+                via,
+            )
+            .await
+            .with_context(|| format!("download of {} failed", hash.fmt_short()))?;
         let size = self
             .size(h)
             .await?
             .context("downloaded blob is incomplete")?;
         self.keep(h, class, size).await?;
+        // Only what the node fetched by itself: what its owner opened, or
+        // watched through a viewing identity, is no event (ADR 0033 §4).
+        if via.is_none()
+            && matches!(class, BlobClass::Prefetch | BlobClass::Replica)
+            && let Err(e) = self.note_fetched(hash, &tally)
+        {
+            debug!("noting a fetch: {e:#}");
+        }
         Ok(size)
+    }
+
+    /// Notes a fetch the node made (ADR 0036 §1): whose media, how much
+    /// came, the hosting resharer who sent most of it, and whether a copy
+    /// sent it while the author's node couldn't be reached, in this fetch
+    /// or the last sync with them.
+    fn note_fetched(&self, blob: &BlobHash, tally: &Tally) -> Result<()> {
+        if tally.sent.is_empty() {
+            return Ok(());
+        }
+        let (author, post) = self.db.media_names(blob)?;
+        let authors = match &author {
+            Some(author) => self.db.nodes_of(author)?,
+            None => Vec::new(),
+        };
+        let from_copies = || tally.sent.iter().filter(|(n, _)| !authors.contains(n));
+        // The author's node is asked last, so a copy that sent it all may
+        // have left it unasked: then the last sync with the author says.
+        let author_away = tally.unreachable.iter().any(|n| authors.contains(n))
+            || author
+                .as_ref()
+                .is_some_and(|a| self.db.last_sync_failed(a).unwrap_or(false));
+        let kept_by_copy = from_copies().next().is_some() && author_away;
+        let host = match from_copies().max_by_key(|(_, bytes)| *bytes) {
+            Some((node, _)) => self.db.hosting_resharer(blob, node)?,
+            None => None,
+        };
+        self.db.add_event(EventWhat::Fetched {
+            author,
+            post,
+            bytes: tally.sent.iter().map(|(_, b)| b).sum(),
+            host,
+            kept_by_copy,
+        })
     }
 
     /// Keeps the collector off what has arrived of `hash`, as a download in
@@ -560,7 +603,8 @@ impl ContentStore {
         declared: u64,
         deadline: Instant,
         via: Option<&ConnectionPool>,
-    ) -> Result<()> {
+    ) -> Result<Tally> {
+        let mut tally = Tally::default();
         let request = Arc::new(GetRequest::blob(hash));
         let remote = self.store.remote();
         let in_parts = self.max_sources > 1
@@ -571,7 +615,7 @@ impl ContentStore {
                 .await?
                 .is_complete();
         let failed = if in_parts {
-            self.fetch_in_parts(hash, &sources.at_once, declared, deadline, via)
+            self.fetch_in_parts(hash, &sources.at_once, declared, deadline, via, &mut tally)
                 .await?
         } else {
             Vec::new()
@@ -591,7 +635,7 @@ impl ContentStore {
             }
             let local = remote.local_for_request(request.clone()).await?;
             if local.is_complete() {
-                return Ok(());
+                return Ok(tally);
             }
             let stop = Stop::PastDeclared {
                 local: local.local_bytes(),
@@ -600,9 +644,9 @@ impl ContentStore {
             let attempt = self
                 .attempt(node, local.missing(), stop, deadline, via)
                 .await;
-            self.record(hash, &attempt);
+            self.record(hash, &attempt, &mut tally);
             match attempt.outcome {
-                Outcome::Completed => return Ok(()),
+                Outcome::Completed => return Ok(tally),
                 Outcome::Stopped => {
                     bail!("it is bigger than its post says ({declared} bytes), so it was stopped")
                 }
@@ -618,7 +662,7 @@ impl ContentStore {
         }
         // The parts may have brought all of it, with no node left to ask.
         if remote.local_for_request(request).await?.is_complete() {
-            return Ok(());
+            return Ok(tally);
         }
         if busy {
             return Err(Busy.into());
@@ -646,6 +690,7 @@ impl ContentStore {
         declared: u64,
         deadline: Instant,
         via: Option<&ConnectionPool>,
+        tally: &mut Tally,
     ) -> Result<Vec<(Source, Outcome)>> {
         let have = self.store.observe(hash).await?;
         let sources = nodes.len().min(self.max_sources);
@@ -696,7 +741,7 @@ impl ContentStore {
                 break;
             };
             running.retain(|p| !Arc::ptr_eq(p, &part));
-            self.record(hash, &attempt);
+            self.record(hash, &attempt, tally);
             if attempt.outcome == Outcome::Completed {
                 done.push((attempt.source, attempt.rate()));
             } else {
@@ -731,8 +776,9 @@ impl ContentStore {
     }
 
     /// Logs how an attempt ended, and adds it to the node's record (ADR 0011).
-    fn record(&self, hash: Hash, attempt: &Attempt) {
+    fn record(&self, hash: Hash, attempt: &Attempt, tally: &mut Tally) {
         attempt.log(hash);
+        tally.count(attempt);
         peers::record(
             &self.db,
             &attempt.source.node,
@@ -1335,6 +1381,29 @@ struct Attempt {
     first_byte: Option<Duration>,
 }
 
+/// What a fetch's attempts brought, for its event: the bytes each node
+/// sent, and the nodes that couldn't be reached.
+#[derive(Debug, Default)]
+struct Tally {
+    sent: Vec<(EndpointId, u64)>,
+    unreachable: Vec<EndpointId>,
+}
+
+impl Tally {
+    fn count(&mut self, attempt: &Attempt) {
+        let node = attempt.source.node;
+        if attempt.bytes > 0 {
+            match self.sent.iter_mut().find(|(n, _)| *n == node) {
+                Some((_, bytes)) => *bytes += attempt.bytes,
+                None => self.sent.push((node, attempt.bytes)),
+            }
+        }
+        if attempt.outcome == Outcome::Unreachable && !self.unreachable.contains(&node) {
+            self.unreachable.push(node);
+        }
+    }
+}
+
 /// How an attempt ended (ADR 0011).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Outcome {
@@ -1673,6 +1742,13 @@ async fn enforce_serving_rules(
                 {
                     debug!("counting what was served: {e:#}");
                 }
+                // Which post, never to whom (ADR 0036 §1).
+                if let (Some(hash), Some(bytes)) = (served, sent)
+                    && bytes > 0
+                    && let Err(e) = note_served(&db, &to_blob_hash(hash), bytes)
+                {
+                    debug!("noting what was served: {e:#}");
+                }
                 if let (Some(peer), Some(bytes)) = (peer, sent) {
                     peers::record(&db, &public_of(&db, peer), Event::Served { bytes });
                 }
@@ -1989,6 +2065,15 @@ fn verdict(ok: bool) -> Result<(), AbortReason> {
 }
 
 /// The blob's size, if `peer` may download it.
+fn note_served(db: &Db, blob: &BlobHash, bytes: u64) -> Result<()> {
+    let (author, post) = db.media_names(blob)?;
+    db.add_event(EventWhat::Served {
+        author,
+        post,
+        bytes,
+    })
+}
+
 fn may_serve(db: &Db, hash: Hash, peer: Option<EndpointId>, share_prefetched: bool) -> Option<u64> {
     let (class, size) = match db.blob(&to_blob_hash(hash)) {
         Ok(Some((class, size))) => (Some(class), size),

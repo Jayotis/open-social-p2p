@@ -940,6 +940,12 @@ impl Node {
         self.core.tell_vouches_now.notify_one();
     }
 
+    /// Runs a round of meeting machines now, as the node does about every
+    /// `MeetingTimes::round`. For tests.
+    pub async fn meet_round_now(&self) -> Result<()> {
+        self.core.meet_round().await
+    }
+
     /// Every meeting of a replier's side this node made, oldest first (ADR
     /// 0029). For the simulator.
     #[cfg(feature = "sim")]

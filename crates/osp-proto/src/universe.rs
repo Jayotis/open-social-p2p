@@ -9,7 +9,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::{BlobHash, PublicKey};
+use crate::{BlobHash, ObjectId, PublicKey};
 
 /// Most people in one snapshot (ADR 0034's starting values).
 pub const MAX_POINTS: usize = 300;
@@ -373,6 +373,95 @@ pub const ALLOWLIST: &[&str] = &[
     "sky[].lit",
 ];
 
+/// How long a node keeps its events (ADR 0036 §1)...
+pub const EVENT_HOURS: u64 = 24;
+/// ...and at most how many.
+pub const MAX_EVENTS: usize = 500;
+/// Events of one kind about one thing within this long of the first are
+/// summed into one, drawn once: "served 14 copies in the last hour".
+pub const SUM_MINUTES: u64 = 60;
+
+/// Something the node did or saw (ADR 0036 §1), for `UniverseEvents`. Only
+/// its owner's devices get it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Event {
+    /// Rises with each new event, and each one summed into: a device asks
+    /// for those since the highest it holds.
+    pub seq: u64,
+    /// When it first and last happened, in seconds since 1970, to the
+    /// minute.
+    pub first: u64,
+    pub last: u64,
+    /// How many times it happened in that while.
+    pub count: u32,
+    #[serde(flatten)]
+    pub what: EventWhat,
+}
+
+/// What happened, by kind. Each is a line in ADR 0033's tables.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum EventWhat {
+    /// A directory read brought `people` this node didn't hold before.
+    Found {
+        /// The directory's machine name, in words, as `found_through`.
+        directory: String,
+        people: u32,
+    },
+    /// `from` reshared `post`, by `author`, which this node holds: a public
+    /// signed act, made in the last day. Summed by `from` and `author`;
+    /// `post` is the newest.
+    Reshared {
+        from: PublicKey,
+        author: PublicKey,
+        post: ObjectId,
+    },
+    /// The node fetched media in the background, to have it ready or to
+    /// keep a copy: never media its owner opened (ADR 0033 §4).
+    Fetched {
+        /// Whose media it is, and its post, when the node can tell.
+        author: Option<PublicKey>,
+        post: Option<ObjectId>,
+        bytes: u64,
+        /// The resharer who sent most of it, only when it's listed as
+        /// hosting that post (ADR 0025). Otherwise it was "another node".
+        host: Option<PublicKey>,
+        /// The author's node couldn't be reached, and a copy sent it.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        kept_by_copy: bool,
+    },
+    /// The node sent media to another node: never which one.
+    Served {
+        author: Option<PublicKey>,
+        post: Option<ObjectId>,
+        bytes: u64,
+    },
+    /// A machine answered, first or after it had faded (`met`), or
+    /// stopped answering. By its words, never its key.
+    Machine { words: String, met: bool },
+}
+
+/// Every field an event may hold, as [`ALLOWLIST`] writes them: `[]` for
+/// the reply's list.
+pub const EVENT_ALLOWLIST: &[&str] = &[
+    "events",
+    "events[].seq",
+    "events[].first",
+    "events[].last",
+    "events[].count",
+    "events[].kind",
+    "events[].directory",
+    "events[].people",
+    "events[].from",
+    "events[].author",
+    "events[].post",
+    "events[].bytes",
+    "events[].host",
+    "events[].kept_by_copy",
+    "events[].words",
+    "events[].met",
+];
+
 /// Every field path in a JSON value, as [`ALLOWLIST`] writes them.
 pub fn field_paths(value: &serde_json::Value) -> std::collections::BTreeSet<String> {
     fn walk(v: &serde_json::Value, at: &str, out: &mut std::collections::BTreeSet<String>) {
@@ -471,6 +560,55 @@ mod tests {
                 lit: 3,
             }],
         }
+    }
+
+    #[test]
+    fn events_hold_exactly_the_fields_on_their_allowlist() {
+        let post = ObjectId::from_bytes([4; 32]);
+        let whats = [
+            EventWhat::Found {
+                directory: "able-baker-charlie".into(),
+                people: 3,
+            },
+            EventWhat::Reshared {
+                from: key(1),
+                author: key(2),
+                post,
+            },
+            EventWhat::Fetched {
+                author: Some(key(2)),
+                post: Some(post),
+                bytes: 10,
+                host: Some(key(1)),
+                kept_by_copy: true,
+            },
+            EventWhat::Served {
+                author: Some(key(2)),
+                post: Some(post),
+                bytes: 10,
+            },
+            EventWhat::Machine {
+                words: "able-baker-charlie".into(),
+                met: true,
+            },
+        ];
+        let events: Vec<Event> = whats
+            .into_iter()
+            .enumerate()
+            .map(|(n, what)| Event {
+                seq: n as u64,
+                first: 60,
+                last: 120,
+                count: 1,
+                what,
+            })
+            .collect();
+        let json = serde_json::json!({ "events": events });
+        let allowed: std::collections::BTreeSet<String> =
+            EVENT_ALLOWLIST.iter().map(|s| s.to_string()).collect();
+        assert_eq!(field_paths(&json), allowed);
+        let back: Vec<Event> = serde_json::from_value(json["events"].clone()).unwrap();
+        assert_eq!(back, events);
     }
 
     #[test]
