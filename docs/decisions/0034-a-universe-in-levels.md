@@ -71,6 +71,23 @@ The algorithm can change during development. Stability can't: it's tested (below
 
 A point's brightness mixes how many people it holds, its recent public posts, its reshares and, in the Network layer, the hosting it does. Each enters as a logarithm, with a cap, so one very large creator can't outshine every small group. Brightness never uses follower counts, which the node doesn't know ([ADR 0032](0032-profiles-people-want-to-follow.md)).
 
+### 6. Moving around: a person at the centre, and the public sky
+
+*Added 2026-11-14, the maintainer's decision.* The Universe is for exploring a network with no central list: finding people to follow, content, and machines worth meeting, one step at a time.
+
+**Tap a star to stand there.** Tapping a person makes them the centre. Around them are the people their public lines reach, from what Kim's node already holds ([ADR 0033](0033-what-the-universe-may-show.md)). Tap one of those, and they become the centre in turn: six degrees, hop by hop. Zooming out from anyone brings Kim back to her own star. The phone asks for a person-centred snapshot with `region` naming them.
+
+- Around Kim's own star are also her follows, her followers and the people she knows: her own data.
+- Around anyone else, only public lines: reshares, found-early credits and vouches. Their follows and followers stay private (§1), as the maintainer confirmed.
+- Moving to a star asks no node anything ([ADR 0033](0033-what-the-universe-may-show.md) §2). The map shows only what Kim's node already knows about that person.
+
+**The public sky.** Someone with no follows has no lines, so they need somewhere else to start. Zooming out past the placed world shows the public sky: those who asked to be found.
+
+- **People** a directory lists, each by consent in their own signed profile ([ADR 0015](0015-nodes-meet-first.md)). Creators, those with recent public posts, are brighter. They stay unplaced: each keeps their hashed place and is never grouped by the directory that listed them (§1). Hunters join the sky when doc [10](../10-exploration-divergence-and-hunters.md)'s work comes, after the alpha.
+- **Machines** that run a directory, or that have answered Kim's node lately, in the machine layer, apart from people ([ADR 0033](0033-what-the-universe-may-show.md) §4). "Reputable" means only what Kim's own node has seen: their state and activity band. No score is shared between nodes. What a machine contributes, such as hosting and serving, comes with P6 ([ADR 0036](0036-showing-what-the-network-does.md)).
+
+A newcomer opens at their own star with the public sky around it. As follows and public lines arrive, the placed world grows between them and the sky. For a newcomer, the sky is [ADR 0035](0035-exploring-the-universe.md) §4's background field, shown as a place to go rather than as texture.
+
 ## Options considered
 
 - **Draw everyone, and let the phone cope.** Works for 50 people, fails long before a million.
@@ -89,6 +106,7 @@ A point's brightness mixes how many people it holds, its recent public posts, it
 
 - A synthetic world of at least **1,000,000 people** can be explored down the tree on a desktop node, with every snapshot within the limits above, and with dense and sparse regions opening to different depths. The time and memory the node takes to cluster it are recorded, with the SBC estimate beside them.
 - A world of **20 people and 5 machines** opens at Local and looks right on the test phones.
+- **Moving around** (§6): standing at another person's star and coming back home sends nothing new between nodes, counted in `osp-sim` as in P3. A node with no follows opens with the public sky, and every person and directory machine it holds can be reached from there.
 - **No false geography:** in a world where a directory lists 5,000 people with no lines, none of them is in any cluster, and their field shows no structure (a uniformity test on their positions). Each one joins a cluster once a public line places them.
 - **Stability test:** adding 1% new people to a world moves no unrelated region's centre by more than a set distance, and keeps the IDs of nine groups in ten.
 - Pan and zoom stay smooth on the slowest test phone (Pixel 3 XL).
