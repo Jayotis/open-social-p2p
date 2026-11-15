@@ -26,7 +26,7 @@ use iroh::{
     endpoint::{ConnectOptions, Connection, RecvStream, SendStream, presets},
 };
 use osp_proto::{
-    BlobHash, CLIENT_ALPN, ObjectId, PairingTicket,
+    BlobHash, CLIENT_ALPN, ObjectId, PairingTicket, connected,
     framing::{read_frame, write_frame},
     rpc::{
         ClientRequest, ClientResponse, FeedItem, IconChange, PersonInfo, ProfileInfo,
@@ -501,6 +501,15 @@ impl Client {
         {
             ClientResponse::UniverseEvents { events } => Ok(events),
             _ => bail!("unexpected reply to UniverseEvents"),
+        }
+    }
+
+    /// "How are we connected?" (ADR 0037): the paths the node knows to
+    /// `actor`. Only for the owner's own tap: it may ask `actor`'s node once.
+    pub async fn how_connected(&self, actor: PublicKey) -> Result<connected::Connection> {
+        match self.request(&ClientRequest::HowConnected { actor }).await? {
+            ClientResponse::Connected { connection } => Ok(connection),
+            _ => bail!("unexpected reply to HowConnected"),
         }
     }
 

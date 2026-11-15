@@ -6,6 +6,7 @@ import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:device_info_plus/device_info_plus.dart';
 import 'package:flutter/widgets.dart';
 
+import 'connection_lights.dart';
 import 'device_key.dart';
 import 'format.dart';
 import 'network_events.dart';
@@ -105,6 +106,15 @@ class HomeNode extends ChangeNotifier with WidgetsBindingObserver {
 
   /// The search the map lights up (ADR 0035 §3), if one is shown there.
   SearchLights? searchLights;
+
+  /// "How are we connected?" (ADR 0037), if the map shows it, and why
+  /// asking failed, if it did.
+  ConnectionLights? connection;
+  String? connectionError;
+
+  /// Set when a screen asks for the map, as asking how you're connected
+  /// from a profile does; the shell takes it and shows the Universe.
+  bool mapWanted = false;
 
   /// What the node did or saw lately (ADR 0036 §1), asked for with the
   /// Universe.
@@ -484,7 +494,44 @@ class HomeNode extends ChangeNotifier with WidgetsBindingObserver {
   /// Shows a search's results on the map (ADR 0035 §3), or none.
   void showSearch(SearchLights? lights) {
     searchLights = lights;
+    // One thing lit at a time.
+    if (lights != null) connection = null;
     notifyListeners();
+  }
+
+  /// Asks the node how its owner is connected to [identity], from the
+  /// owner's own tap only (ADR 0037 §2): it may ask their node once. The map
+  /// shows it, the search it showed put away.
+  Future<void> askConnection(String identity, String name) async {
+    final asking = ConnectionLights.asking(identity, name);
+    connection = asking;
+    connectionError = null;
+    searchLights = null;
+    notifyListeners();
+    try {
+      final c = await app.howConnected(identity: identity);
+      if (!identical(connection, asking)) return;
+      connection = ConnectionLights(identity, name, c);
+    } catch (e) {
+      if (!identical(connection, asking)) return;
+      connection = null;
+      connectionError = describeError(e);
+    }
+    notifyListeners();
+  }
+
+  /// Puts away the connection the map shows.
+  void showConnection(ConnectionLights? lights) {
+    connection = lights;
+    connectionError = null;
+    notifyListeners();
+  }
+
+  /// Takes a screen's wish to show the map.
+  bool takeMapWanted() {
+    final wanted = mapWanted;
+    mapWanted = false;
+    return wanted;
   }
 
   /// Asks the node for everyone it holds a profile of (the list the
@@ -541,6 +588,8 @@ class HomeNode extends ChangeNotifier with WidgetsBindingObserver {
     universeRegion = '';
     universeLayer = null;
     searchLights = null;
+    connection = null;
+    connectionError = null;
     events.clear();
     universeError = null;
     me = null;

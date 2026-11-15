@@ -6,8 +6,8 @@
 import '../frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `found_person`, `node_info`, `post`, `profile_of`, `progress`, `reply_info`, `report_to`, `run_post`, `sent_reply`, `trust_entry`, `universe_event`, `universe`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`
+// These functions are ignored because they are not marked as `pub`: `found_person`, `node_info`, `path_hop`, `post`, `profile_of`, `progress`, `reply_info`, `report_to`, `run_post`, `sent_reply`, `trust_entry`, `universe_event`, `universe`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`
 
 /// A new device key, as 64 hex digits, for the app to keep in the phone's
 /// secure storage.
@@ -70,6 +70,11 @@ abstract class OspApp implements RustOpaqueInterface {
   /// Hides a published reply to one of the owner's posts, or shows it again.
   /// Nothing is deleted.
   Future<void> hideReply({required String reply, required bool hidden});
+
+  /// "How are we connected?" (ADR 0037), for the owner's own tap only:
+  /// the node may ask `identity`'s node once who vouched for them, from a
+  /// throwaway key, and can take most of a minute.
+  Future<Connection> howConnected({required String identity});
 
   /// The node owner's follow ticket, to show as a QR code.
   Future<String> invite();
@@ -232,6 +237,92 @@ abstract class OspApp implements RustOpaqueInterface {
 /// Recent machine-protocol interaction with the node, in bands.
 enum ActivityBand { none, some, aLot }
 
+class ConnectedPerson {
+  final String identity;
+  final String? name;
+
+  /// Where they are on the map, as search gives it; none if the node
+  /// doesn't hold them.
+  final List<String> regions;
+
+  const ConnectedPerson({
+    required this.identity,
+    this.name,
+    required this.regions,
+  });
+
+  @override
+  int get hashCode => identity.hashCode ^ name.hashCode ^ regions.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is ConnectedPerson &&
+          runtimeType == other.runtimeType &&
+          identity == other.identity &&
+          name == other.name &&
+          regions == other.regions;
+}
+
+/// "How are we connected?" (ADR 0037): the paths the node knows from its
+/// owner to `identity`, nearest first. None means the node hasn't found a
+/// connection, not that there is none.
+class Connection {
+  final String identity;
+  final List<ConnectionPath> paths;
+
+  /// Everyone a path names, `identity` first.
+  final List<ConnectedPerson> people;
+  final SideFrom side;
+
+  /// `asked`: how many people their node named who vouched for them.
+  final int vouches;
+
+  const Connection({
+    required this.identity,
+    required this.paths,
+    required this.people,
+    required this.side,
+    required this.vouches,
+  });
+
+  @override
+  int get hashCode =>
+      identity.hashCode ^
+      paths.hashCode ^
+      people.hashCode ^
+      side.hashCode ^
+      vouches.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is Connection &&
+          runtimeType == other.runtimeType &&
+          identity == other.identity &&
+          paths == other.paths &&
+          people == other.people &&
+          side == other.side &&
+          vouches == other.vouches;
+}
+
+/// One path, nearest hop first: the first from the owner.
+class ConnectionPath {
+  final List<PathHop> hops;
+
+  const ConnectionPath({required this.hops});
+
+  @override
+  int get hashCode => hops.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is ConnectionPath &&
+          runtimeType == other.runtimeType &&
+          hops == other.hops;
+}
+
 enum EventKind { found, reshared, fetched, served, machine }
 
 /// Someone the node follows.
@@ -332,6 +423,24 @@ class FoundPerson {
           foundThrough == other.foundThrough &&
           newest == other.newest &&
           regions == other.regions;
+}
+
+enum HopKind {
+  /// Known: the owner follows them.
+  follows,
+
+  /// Known: the owner knows them.
+  knows,
+
+  /// Signed: the one before reshared them.
+  reshared,
+
+  /// Signed: the one before credited them with finding a post early.
+  creditedEarly,
+
+  /// A gap: the node of the one before placed them within `steps` of its
+  /// owner. Nobody inside is named.
+  gap,
 }
 
 enum LineKind {
@@ -550,6 +659,33 @@ class NodeStatus {
           hostedPosts == other.hostedPosts &&
           servedLatelyBytes == other.servedLatelyBytes &&
           spaceBytes == other.spaceBytes;
+}
+
+/// One hop, from whoever the hop before reached, to `identity`.
+class PathHop {
+  final String identity;
+  final HopKind how;
+
+  /// `gap`: how many steps it covers; 1 for the rest.
+  final int steps;
+
+  const PathHop({
+    required this.identity,
+    required this.how,
+    required this.steps,
+  });
+
+  @override
+  int get hashCode => identity.hashCode ^ how.hashCode ^ steps.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is PathHop &&
+          runtimeType == other.runtimeType &&
+          identity == other.identity &&
+          how == other.how &&
+          steps == other.steps;
 }
 
 class Post {
@@ -964,6 +1100,21 @@ class SentReply {
           status == other.status &&
           error == other.error &&
           nextTrySecs == other.nextTrySecs;
+}
+
+/// Where the paths through someone's side came from.
+enum SideFrom {
+  /// From when they replied to the owner.
+  replied,
+
+  /// Their node was asked who vouched for them.
+  asked,
+
+  /// Their node was asked and didn't answer.
+  noAnswer,
+
+  /// Their node wasn't asked.
+  notAsked,
 }
 
 /// Many people of the public sky as one light; opened with

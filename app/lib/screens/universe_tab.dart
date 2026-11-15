@@ -4,6 +4,7 @@ import 'dart:math';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 
+import '../connection_lights.dart';
 import '../format.dart';
 import '../network_events.dart';
 import '../node.dart';
@@ -122,6 +123,11 @@ class _UniverseTabState extends State<UniverseTab>
   /// framed on its results.
   SearchLights? _flown;
   bool _onResults = false;
+
+  /// The connection last flown to (ADR 0037), and whether the next region
+  /// framed is framed on its paths.
+  ConnectionLights? _flownPaths;
+  bool _onPaths = false;
 
   /// The last gesture update: where the fingers were, the recognizer's
   /// scale then, and how many fingers. Each update moves the camera by what
@@ -243,7 +249,45 @@ class _UniverseTabState extends State<UniverseTab>
       _onResults = false;
       if (_frameResults(s)) return;
     }
+    if (_onPaths) {
+      _onPaths = false;
+      if (_framePaths(s)) return;
+    }
     _flyTo(_lifted(middle, scale), scale);
+  }
+
+  /// Shows the paths of "How are we connected?" (ADR 0037): they start at
+  /// the owner, so from the top, framed on what they light.
+  void _flyToPaths() {
+    final here = _node.universe;
+    if (_node.universeRegion.isEmpty && here != null) {
+      _framePaths(here);
+      return;
+    }
+    _stay = false;
+    _onPaths = true;
+    _framed = null;
+    _node.openUniverse('');
+  }
+
+  /// Frames the owner and the ends of the paths drawn on [s]; false if
+  /// none is drawn.
+  bool _framePaths(UniverseSnapshot s) {
+    final c = _node.connection;
+    if (c == null || _camera.size.isEmpty) return false;
+    final lines = c.lines(s);
+    if (lines.isEmpty) return false;
+    var bounds = Rect.fromPoints(Offset.zero, Offset.zero);
+    for (final l in lines) {
+      bounds = bounds
+          .expandToInclude(Rect.fromPoints(l.from, l.from))
+          .expandToInclude(Rect.fromPoints(l.to, l.to));
+    }
+    final half = max(bounds.width, bounds.height) / 2;
+    final room = _clear.shortestSide / 2 * 0.8;
+    final scale = half > 0 ? min(room / half, _Fit.near * 2) : _Fit.near;
+    _flyTo(_lifted(bounds.center, scale), scale);
+    return true;
   }
 
   /// Flies to the search's results (ADR 0035 §3): opens the deepest region
@@ -439,6 +483,14 @@ class _UniverseTabState extends State<UniverseTab>
     }
     final standing = _standingAt(s, node.universeRegion);
     final lights = node.searchLights;
+    final paths = node.connection;
+    // A connection just answered: fly to its paths once.
+    if (paths != null && !paths.asking && !identical(paths, _flownPaths)) {
+      _flownPaths = paths;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && identical(node.connection, paths)) _flyToPaths();
+      });
+    }
     // A search just shown on the map: fly there once.
     if (lights != null && !identical(lights, _flown)) {
       _flown = lights;
@@ -477,6 +529,7 @@ class _UniverseTabState extends State<UniverseTab>
                           ownName: _ownName(node),
                           layer: node.universeLayer,
                           lights: lights,
+                          connection: paths,
                           event: _playing,
                           played: _event,
                         ),
@@ -603,21 +656,28 @@ class _UniverseTabState extends State<UniverseTab>
                         ]),
                         onTap: _openEvents,
                       ),
-                    switch ((standing, lights)) {
-                      (final p?, _) => _StandingAt(
-                        person: p,
-                        snapshot: s!,
-                        node: node,
-                        onClose: () => _up(frame: true),
-                      ),
-                      (null, final l?) => _Results(
-                        lights: l,
-                        onFly: _flyToResults,
-                        onList: () => _resultsList(l),
-                        onClose: () => node.showSearch(null),
-                      ),
-                      _ => _FoundPeople(node: node, open: widget.open),
-                    },
+                    if (paths != null || node.connectionError != null)
+                      _PathsCard(
+                        paths: paths,
+                        error: node.connectionError,
+                        onClose: () => node.showConnection(null),
+                      )
+                    else
+                      switch ((standing, lights)) {
+                        (final p?, _) => _StandingAt(
+                          person: p,
+                          snapshot: s!,
+                          node: node,
+                          onClose: () => _up(frame: true),
+                        ),
+                        (null, final l?) => _Results(
+                          lights: l,
+                          onFly: _flyToResults,
+                          onList: () => _resultsList(l),
+                          onClose: () => node.showSearch(null),
+                        ),
+                        _ => _FoundPeople(node: node, open: widget.open),
+                      },
                   ],
                 ),
               ),
@@ -1025,6 +1085,7 @@ class _Map extends CustomPainter {
     required this.ownName,
     required this.layer,
     required this.lights,
+    required this.connection,
     required this.event,
     required this.played,
   }) : super(repaint: Listenable.merge([camera, played]));
@@ -1044,6 +1105,9 @@ class _Map extends CustomPainter {
   /// A search's results to light up (ADR 0035 §3).
   final SearchLights? lights;
 
+  /// The paths of "How are we connected?" to draw (ADR 0037).
+  final ConnectionLights? connection;
+
   /// The event being drawn (ADR 0036 §1), and how far along it is.
   final UniverseEvent? event;
   final Animation<double> played;
@@ -1053,9 +1117,17 @@ class _Map extends CustomPainter {
   /// holds no result.
   double _shade(int lit, bool found) {
     if (layer != null && lit == 0) return 0.35;
-    if (layer == null && lights != null && !found) return 0.5;
+    final lighting = lights != null || connection != null;
+    if (layer == null && lighting && !found) return 0.5;
     return 1;
   }
+
+  /// Whether a person or group is lit by the search or the connection.
+  bool _foundPerson(UniversePerson p) =>
+      (lights?.holdsPerson(p) ?? false) ||
+      (connection?.holdsPerson(p) ?? false);
+  bool _foundGroup(UniverseGroup g) =>
+      (lights?.holdsGroup(g) ?? false) || (connection?.holdsGroup(g) ?? false);
 
   /// A lit light's extra glow, by how many items it holds, and a found
   /// one's ring.
@@ -1180,12 +1252,14 @@ class _Map extends CustomPainter {
       canvas.drawLine(a, b, line);
     }
 
+    if (connection case final c?) _drawPaths(canvas, c.lines(s), view);
+
     // Groups, closed, each one light with how many it holds.
     for (final g in s.groups) {
       final at = camera.toScreen(Offset(g.x, g.y));
       final r = _groupRadius(g.people);
       if (!seen(at, r)) continue;
-      final found = lights?.holdsGroup(g) ?? false;
+      final found = _foundGroup(g);
       _marks(canvas, at, r * 0.6, g.lit, found);
       _glow(
         canvas,
@@ -1217,7 +1291,7 @@ class _Map extends CustomPainter {
           ? colors.distantStar
           : (p.followed || p.known ? _followed : _near);
       final r = _personRadius(p.bright) * (few ? 1.8 : 1);
-      final found = lights?.holdsPerson(p) ?? false;
+      final found = _foundPerson(p);
       final shade = _shade(p.lit, found);
       _marks(canvas, at, r, p.lit, found);
       if (p.bright > 30) {
@@ -1261,7 +1335,7 @@ class _Map extends CustomPainter {
     ];
     int rank(UniversePerson p) => p == standing
         ? 0
-        : (lights?.holdsPerson(p) ?? false)
+        : _foundPerson(p)
         ? 1
         : (p.followed || p.known ? 2 : 3);
     names.sort((a, b) => rank(a.$1).compareTo(rank(b.$1)));
@@ -1282,6 +1356,36 @@ class _Map extends CustomPainter {
   }
 
   static const _kept = Color(0xFF6FD6C2);
+
+  /// The paths of "How are we connected?" (ADR 0037 §3): the owner's own
+  /// follows and the people she knows in one colour, signed reshares and
+  /// credits in theirs, and a gap dashed, with nobody inside.
+  void _drawPaths(Canvas canvas, List<PathLine> lines, Rect view) {
+    for (final l in lines) {
+      final a = camera.toScreen(l.from), b = camera.toScreen(l.to);
+      if (!view.overlaps(Rect.fromPoints(a, b).inflate(2))) continue;
+      final paint = Paint()
+        ..strokeWidth = 2.5
+        ..strokeCap = StrokeCap.round
+        ..color = switch (l.how) {
+          HopKind.follows || HopKind.knows => _followed,
+          HopKind.reshared => _reshared,
+          HopKind.creditedEarly => _creditedEarly,
+          HopKind.gap => colors.onSkyQuiet,
+        }.withValues(alpha: 0.95);
+      if (l.how != HopKind.gap) {
+        canvas.drawLine(a, b, paint);
+        continue;
+      }
+      final length = (b - a).distance;
+      if (length == 0) continue;
+      final step = (b - a) / length;
+      const dash = 6.0, space = 5.0;
+      for (var d = 0.0; d < length; d += dash + space) {
+        canvas.drawLine(a + step * d, a + step * min(d + dash, length), paint);
+      }
+    }
+  }
 
   /// [e]'s marks, from where the snapshot places what it names, faded in
   /// and out as it plays. Nothing else is drawn for it.
@@ -1654,22 +1758,117 @@ class _StandingAt extends StatelessWidget {
       if (p.group == null && p.step == null) 'In the public sky',
     ].join(' · ');
     return Card(
-      child: ListTile(
-        leading: CircleAvatar(child: Text(name.characters.first)),
-        title: Text(name, style: theme.textTheme.titleSmall),
-        subtitle: detail.isEmpty
-            ? null
-            : Text(detail, maxLines: 2, overflow: TextOverflow.ellipsis),
-        onTap: () => Navigator.of(context).push(
-          MaterialPageRoute<void>(
-            builder: (_) =>
-                ProfileScreen(node: node, identity: p.identity, name: p.name),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          ListTile(
+            leading: CircleAvatar(child: Text(name.characters.first)),
+            title: Text(name, style: theme.textTheme.titleSmall),
+            subtitle: detail.isEmpty
+                ? null
+                : Text(detail, maxLines: 2, overflow: TextOverflow.ellipsis),
+            onTap: () => Navigator.of(context).push(
+              MaterialPageRoute<void>(
+                builder: (_) => ProfileScreen(
+                  node: node,
+                  identity: p.identity,
+                  name: p.name,
+                ),
+              ),
+            ),
+            trailing: IconButton(
+              tooltip: 'Step back',
+              icon: const Icon(Icons.close),
+              onPressed: onClose,
+            ),
           ),
-        ),
-        trailing: IconButton(
-          tooltip: 'Step back',
-          icon: const Icon(Icons.close),
-          onPressed: onClose,
+          // Only this tap asks (ADR 0037 §2): selecting them never does.
+          Align(
+            alignment: Alignment.centerRight,
+            child: Padding(
+              padding: const EdgeInsets.only(right: Space.s, bottom: Space.xs),
+              child: TextButton.icon(
+                onPressed: () => node.askConnection(p.identity, p.name),
+                icon: const Icon(Icons.route),
+                label: const Text('How are we connected?'),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// "How are we connected?" under the map (ADR 0037 §1): each path the node
+/// knows, in words, nearest first, while the map lights them up.
+class _PathsCard extends StatelessWidget {
+  const _PathsCard({
+    required this.paths,
+    required this.error,
+    required this.onClose,
+  });
+
+  final ConnectionLights? paths;
+  final String? error;
+  final VoidCallback onClose;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final c = paths;
+    final who = c == null ? 'them' : c.nameOf(c.identity);
+    return Card(
+      key: const Key('paths-card'),
+      child: Padding(
+        padding: const EdgeInsets.only(bottom: Space.s),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.route),
+              title: Text(
+                'How you’re connected to $who',
+                style: theme.textTheme.titleSmall,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+              subtitle: Text(
+                error == null ? c!.source : 'Couldn’t ask your node: $error',
+              ),
+              trailing: IconButton(
+                tooltip: 'Put away',
+                icon: const Icon(Icons.close),
+                onPressed: onClose,
+              ),
+            ),
+            if (c != null && c.asking)
+              const Padding(
+                padding: EdgeInsets.symmetric(horizontal: Space.m),
+                child: LinearProgressIndicator(),
+              )
+            else if (c != null && c.paths.isEmpty)
+              const Padding(
+                padding: EdgeInsets.symmetric(horizontal: Space.m),
+                child: Text('Your node hasn’t found a connection.'),
+              )
+            else if (c != null)
+              ConstrainedBox(
+                constraints: const BoxConstraints(maxHeight: 150),
+                child: ListView(
+                  shrinkWrap: true,
+                  padding: const EdgeInsets.symmetric(horizontal: Space.m),
+                  children: [
+                    for (final (i, path) in c.paths.indexed)
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: Space.xs),
+                        child: Text('${i + 1}. ${c.words(path)}'),
+                      ),
+                  ],
+                ),
+              ),
+          ],
         ),
       ),
     );

@@ -88,6 +88,15 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   UnsentPost dco_decode_box_autoadd_unsent_post(dynamic raw);
 
   @protected
+  ConnectedPerson dco_decode_connected_person(dynamic raw);
+
+  @protected
+  Connection dco_decode_connection(dynamic raw);
+
+  @protected
+  ConnectionPath dco_decode_connection_path(dynamic raw);
+
+  @protected
   EventKind dco_decode_event_kind(dynamic raw);
 
   @protected
@@ -103,6 +112,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   FoundPerson dco_decode_found_person(dynamic raw);
 
   @protected
+  HopKind dco_decode_hop_kind(dynamic raw);
+
+  @protected
   int dco_decode_i_32(dynamic raw);
 
   @protected
@@ -115,6 +127,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   List<String> dco_decode_list_String(dynamic raw);
 
   @protected
+  List<ConnectedPerson> dco_decode_list_connected_person(dynamic raw);
+
+  @protected
+  List<ConnectionPath> dco_decode_list_connection_path(dynamic raw);
+
+  @protected
   List<Followed> dco_decode_list_followed(dynamic raw);
 
   @protected
@@ -122,6 +140,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   List<Media> dco_decode_list_media(dynamic raw);
+
+  @protected
+  List<PathHop> dco_decode_list_path_hop(dynamic raw);
 
   @protected
   List<Post> dco_decode_list_post(dynamic raw);
@@ -211,6 +232,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   UnsentPost? dco_decode_opt_box_autoadd_unsent_post(dynamic raw);
 
   @protected
+  PathHop dco_decode_path_hop(dynamic raw);
+
+  @protected
   Post dco_decode_post(dynamic raw);
 
   @protected
@@ -236,6 +260,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   SentReply dco_decode_sent_reply(dynamic raw);
+
+  @protected
+  SideFrom dco_decode_side_from(dynamic raw);
 
   @protected
   SkyCell dco_decode_sky_cell(dynamic raw);
@@ -366,6 +393,15 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   UnsentPost sse_decode_box_autoadd_unsent_post(SseDeserializer deserializer);
 
   @protected
+  ConnectedPerson sse_decode_connected_person(SseDeserializer deserializer);
+
+  @protected
+  Connection sse_decode_connection(SseDeserializer deserializer);
+
+  @protected
+  ConnectionPath sse_decode_connection_path(SseDeserializer deserializer);
+
+  @protected
   EventKind sse_decode_event_kind(SseDeserializer deserializer);
 
   @protected
@@ -381,6 +417,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   FoundPerson sse_decode_found_person(SseDeserializer deserializer);
 
   @protected
+  HopKind sse_decode_hop_kind(SseDeserializer deserializer);
+
+  @protected
   int sse_decode_i_32(SseDeserializer deserializer);
 
   @protected
@@ -393,6 +432,16 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   List<String> sse_decode_list_String(SseDeserializer deserializer);
 
   @protected
+  List<ConnectedPerson> sse_decode_list_connected_person(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  List<ConnectionPath> sse_decode_list_connection_path(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   List<Followed> sse_decode_list_followed(SseDeserializer deserializer);
 
   @protected
@@ -400,6 +449,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   List<Media> sse_decode_list_media(SseDeserializer deserializer);
+
+  @protected
+  List<PathHop> sse_decode_list_path_hop(SseDeserializer deserializer);
 
   @protected
   List<Post> sse_decode_list_post(SseDeserializer deserializer);
@@ -511,6 +563,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  PathHop sse_decode_path_hop(SseDeserializer deserializer);
+
+  @protected
   Post sse_decode_post(SseDeserializer deserializer);
 
   @protected
@@ -536,6 +591,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   SentReply sse_decode_sent_reply(SseDeserializer deserializer);
+
+  @protected
+  SideFrom sse_decode_side_from(SseDeserializer deserializer);
 
   @protected
   SkyCell sse_decode_sky_cell(SseDeserializer deserializer);
@@ -688,6 +746,21 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_connected_person(
+    ConnectedPerson self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_connection(Connection self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_connection_path(
+    ConnectionPath self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_event_kind(EventKind self, SseSerializer serializer);
 
   @protected
@@ -703,6 +776,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_encode_found_person(FoundPerson self, SseSerializer serializer);
 
   @protected
+  void sse_encode_hop_kind(HopKind self, SseSerializer serializer);
+
+  @protected
   void sse_encode_i_32(int self, SseSerializer serializer);
 
   @protected
@@ -715,6 +791,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_encode_list_String(List<String> self, SseSerializer serializer);
 
   @protected
+  void sse_encode_list_connected_person(
+    List<ConnectedPerson> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_connection_path(
+    List<ConnectionPath> self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_list_followed(List<Followed> self, SseSerializer serializer);
 
   @protected
@@ -725,6 +813,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_list_media(List<Media> self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_list_path_hop(List<PathHop> self, SseSerializer serializer);
 
   @protected
   void sse_encode_list_post(List<Post> self, SseSerializer serializer);
@@ -865,6 +956,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_path_hop(PathHop self, SseSerializer serializer);
+
+  @protected
   void sse_encode_post(Post self, SseSerializer serializer);
 
   @protected
@@ -893,6 +987,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_sent_reply(SentReply self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_side_from(SideFrom self, SseSerializer serializer);
 
   @protected
   void sse_encode_sky_cell(SkyCell self, SseSerializer serializer);

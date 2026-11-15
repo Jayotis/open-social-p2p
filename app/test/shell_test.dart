@@ -113,6 +113,23 @@ class FakeApp implements OspApp {
     return sheets[region] ?? const Found(people: [], posts: []);
   }
 
+  /// What "How are we connected?" answers, and each one asked.
+  Connection? connectionAnswer;
+  final connectedAsked = <String>[];
+
+  @override
+  Future<Connection> howConnected({required String identity}) async {
+    connectedAsked.add(identity);
+    return connectionAnswer ??
+        Connection(
+          identity: identity,
+          paths: const [],
+          people: const [],
+          side: SideFrom.asked,
+          vouches: 0,
+        );
+  }
+
   @override
   Future<void> followPerson({required String identity}) async =>
       followed.add(identity);
@@ -622,6 +639,76 @@ void main() {
     expect(find.text('Your node found 1 person'), findsOne);
     final back = tester.getCenter(find.byTooltip('Your node'));
     expect((back - home).distance, lessThan(1), reason: 'framed as before');
+  });
+
+  testWidgets('only a tap asks how you are connected, and the paths show', (
+    tester,
+  ) async {
+    app.snapshot = world(['Kim', 'Jimmy']);
+    app.regions['p:id-Kim'] = world(
+      ['Kim', 'Jimmy'],
+      region: 'p:id-Kim',
+      path: [''],
+    );
+    app.connectionAnswer = const Connection(
+      identity: 'id-Kim',
+      paths: [
+        ConnectionPath(
+          hops: [
+            PathHop(identity: 'id-Jimmy', how: HopKind.follows, steps: 1),
+            PathHop(identity: 'id-Kim', how: HopKind.reshared, steps: 1),
+          ],
+        ),
+      ],
+      people: [
+        ConnectedPerson(identity: 'id-Kim', name: 'Kim', regions: []),
+        ConnectedPerson(identity: 'id-Jimmy', name: 'Jimmy', regions: []),
+      ],
+      side: SideFrom.asked,
+      vouches: 1,
+    );
+    await start(tester, Place.universe);
+    await tester.tapAt(drawnAt(tester, 1, 2));
+    await tester.pumpAndSettle();
+    expect(node.universeRegion, 'p:id-Kim');
+    expect(
+      app.connectedAsked,
+      isEmpty,
+      reason: 'standing at someone asks nothing (ADR 0037 §2)',
+    );
+
+    await tester.tap(find.text('How are we connected?'));
+    await tester.pumpAndSettle();
+    expect(app.connectedAsked, ['id-Kim']);
+    expect(node.universeRegion, '', reason: 'the paths start at your star');
+    expect(find.text('How you’re connected to Kim'), findsOne);
+    expect(
+      find.text('Their node named 1 person who vouched for them'),
+      findsOne,
+    );
+    expect(find.text('1. You follow Jimmy. Jimmy reshared Kim.'), findsOne);
+    expectPlainWords(tester);
+
+    await tester.tap(find.byTooltip('Put away'));
+    await tester.pumpAndSettle();
+    expect(node.connection, isNull);
+    expect(find.byKey(const Key('paths-card')), findsNothing);
+    expect(app.connectedAsked, hasLength(1));
+  });
+
+  testWidgets('no path found says so, not that you are not connected', (
+    tester,
+  ) async {
+    app.snapshot = world(['Kim']);
+    app.regions['p:id-Kim'] = world(['Kim'], region: 'p:id-Kim', path: ['']);
+    await start(tester, Place.universe);
+    await tester.tapAt(drawnAt(tester, 1, 1));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('How are we connected?'));
+    await tester.pumpAndSettle();
+    expect(find.text('Your node hasn’t found a connection.'), findsOne);
+    expect(find.textContaining('not connected'), findsNothing);
+    expect(find.text('Their node named nobody who vouched for them'), findsOne);
   });
 
   testWidgets('a newcomer with only sky people sees them, not the whole sky', (
