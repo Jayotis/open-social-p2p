@@ -275,7 +275,18 @@ pub struct SavedFeed {
 pub struct UniverseSnapshot {
     /// Ask `since` this; it changes whenever anything else does.
     pub version: String,
-    /// The owner first, then the nearest and most active.
+    pub level: UniverseLevel,
+    /// What it opens, as `universe`'s `region` names it: empty for the top.
+    /// A group that's gone is answered by the one most of its people went
+    /// to, named here.
+    pub region: String,
+    /// The regions above it, the top (empty) first: zooming out asks for
+    /// the last of them (ADR 0034 §6).
+    pub path: Vec<String>,
+    /// Groups shown closed, each one light.
+    pub groups: Vec<UniverseGroup>,
+    /// The owner first, then the one stood at, then the nearest and most
+    /// active.
     pub people: Vec<UniversePerson>,
     /// Public acts between people, newest first.
     pub lines: Vec<UniverseLine>,
@@ -283,6 +294,46 @@ pub struct UniverseSnapshot {
     pub more_people: i64,
     pub machines: Vec<UniverseMachine>,
     pub network: Option<NetworkTotals>,
+    /// Cells of the public sky, each many people drawn as one light.
+    pub sky: Vec<SkyCell>,
+}
+
+/// How close the camera is (ADR 0034's zoom bands).
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum UniverseLevel {
+    Universe,
+    Galaxy,
+    Cluster,
+    Local,
+    Close,
+}
+
+/// A group of the tree, drawn as one light; opened with `g:` and its ID.
+pub struct UniverseGroup {
+    pub id: u64,
+    pub parent: Option<u64>,
+    /// For a group new since the last grouping, the one it split from.
+    pub from: Option<u64>,
+    /// Everyone in it, at any depth.
+    pub people: u32,
+    /// 0 to 100.
+    pub bright: u8,
+    pub x: f32,
+    pub y: f32,
+}
+
+/// Many people of the public sky as one light; opened with
+/// `sky:level/x/y`. Not a group: its people aren't related.
+pub struct SkyCell {
+    pub level: u8,
+    pub x: u32,
+    pub y: u32,
+    pub people: u32,
+    /// Those of them with public posts lately.
+    pub creators: u32,
+    /// Its centre.
+    pub at_x: f32,
+    pub at_y: f32,
 }
 
 pub struct UniversePerson {
@@ -303,6 +354,14 @@ pub struct UniversePerson {
     pub reshares: i64,
     /// The day of their newest post or reshare (`YYYY-MM-DD`, UTC).
     pub last_post: Option<String>,
+    /// Where they are: placed by their lines, or in the public sky. The
+    /// owner is at the centre.
+    pub x: f32,
+    pub y: f32,
+    /// The group they're directly in; none in the sky.
+    pub group: Option<u64>,
+    /// 0 to 100.
+    pub bright: u8,
 }
 
 /// A public act between two people, each by their place in `people`.
@@ -486,13 +545,20 @@ impl OspApp {
     }
 
     /// What the Universe may show (ADR 0033), built on the node from what
-    /// it already knows: asking sends nothing to any other node. With
-    /// `since` the version the app holds, none means it's unchanged.
-    pub async fn universe(&self, since: Option<String>) -> Result<Option<UniverseSnapshot>> {
-        Ok(self.client.universe(since).await?.map(universe))
+    /// it already knows: asking sends nothing to any other node. `region`
+    /// is what it opens (ADR 0034 §6): none or empty for the top, `g:<id>`
+    /// a group, `p:<identity>` standing at someone, `sky:<l>/<x>/<y>` a
+    /// cell of the sky. With `since` the version the app holds, none means
+    /// it's unchanged.
+    pub async fn universe(
+        &self,
+        region: Option<String>,
+        since: Option<String>,
+    ) -> Result<Option<UniverseSnapshot>> {
+        Ok(self.client.universe(region, since).await?.map(universe))
     }
 
-    /// The last snapshot fetched, to show before the node answers.
+    /// The last top snapshot fetched, to show before the node answers.
     #[frb(sync)]
     pub fn saved_universe(&self) -> Option<UniverseSnapshot> {
         self.client.cached_universe().map(universe)
@@ -1143,6 +1209,28 @@ fn universe(s: universe::Snapshot) -> UniverseSnapshot {
     let count = |n: u64| n.min(i64::MAX as u64) as i64;
     UniverseSnapshot {
         version: s.version,
+        level: match s.level {
+            universe::Level::Universe => UniverseLevel::Universe,
+            universe::Level::Galaxy => UniverseLevel::Galaxy,
+            universe::Level::Cluster => UniverseLevel::Cluster,
+            universe::Level::Local => UniverseLevel::Local,
+            universe::Level::Close => UniverseLevel::Close,
+        },
+        region: s.region,
+        path: s.path,
+        groups: s
+            .groups
+            .into_iter()
+            .map(|g| UniverseGroup {
+                id: g.id,
+                parent: g.parent,
+                from: g.from,
+                people: g.people,
+                bright: g.bright,
+                x: g.at[0],
+                y: g.at[1],
+            })
+            .collect(),
         people: s
             .people
             .into_iter()
@@ -1158,6 +1246,10 @@ fn universe(s: universe::Snapshot) -> UniverseSnapshot {
                 media: count(p.media),
                 reshares: count(p.reshares),
                 last_post: p.last_post,
+                x: p.at[0],
+                y: p.at[1],
+                group: p.group,
+                bright: p.bright,
             })
             .collect(),
         lines: s
@@ -1199,6 +1291,19 @@ fn universe(s: universe::Snapshot) -> UniverseSnapshot {
             bytes_served: count(n.bytes_served),
             people_found: count(n.people_found),
         }),
+        sky: s
+            .sky
+            .into_iter()
+            .map(|c| SkyCell {
+                level: c.level,
+                x: c.x,
+                y: c.y,
+                people: c.people,
+                creators: c.creators,
+                at_x: c.at[0],
+                at_y: c.at[1],
+            })
+            .collect(),
     }
 }
 

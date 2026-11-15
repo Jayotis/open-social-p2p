@@ -450,14 +450,20 @@ impl Client {
         read_json(&self.dir.join("feed.json")).ok().flatten()
     }
 
-    /// What the Universe may show (ADR 0033): the whole world the node
-    /// knows, as one snapshot. With `since` the version of the one the
-    /// device holds, `None` means it's still the node's. A new one is saved
-    /// for the next start, so the Universe shows at once.
-    pub async fn universe(&self, since: Option<String>) -> Result<Option<Snapshot>> {
+    /// What the Universe may show (ADR 0033): the part of the world
+    /// `region` opens (ADR 0034 §6; none for the top), as one snapshot.
+    /// With `since` the version of the one the device holds, `None` means
+    /// it's still the node's. A new top is saved for the next start, so the
+    /// Universe shows at once.
+    pub async fn universe(
+        &self,
+        region: Option<String>,
+        since: Option<String>,
+    ) -> Result<Option<Snapshot>> {
+        let top = region.as_deref().is_none_or(str::is_empty);
         let req = ClientRequest::Universe {
             level: Level::default(),
-            region: None,
+            region,
             layers: vec![],
             since,
         };
@@ -466,13 +472,13 @@ impl Client {
             ClientResponse::UniverseUnchanged => return Ok(None),
             _ => bail!("unexpected reply to Universe"),
         };
-        if let Err(e) = write_json(&self.dir.join(UNIVERSE), &snapshot) {
+        if top && let Err(e) = write_json(&self.dir.join(UNIVERSE), &snapshot) {
             debug!("couldn't save the Universe: {e:#}");
         }
         Ok(Some(snapshot))
     }
 
-    /// The Universe as last fetched, if any.
+    /// The top of the Universe as last fetched, if any.
     pub fn cached_universe(&self) -> Option<Snapshot> {
         read_json(&self.dir.join(UNIVERSE)).ok().flatten()
     }

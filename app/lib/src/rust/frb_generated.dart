@@ -260,6 +260,7 @@ abstract class RustLibApi extends BaseApi {
 
   Future<UniverseSnapshot?> crateApiOspOspAppUniverse({
     required OspApp that,
+    String? region,
     String? since,
   });
 
@@ -1853,6 +1854,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   @override
   Future<UniverseSnapshot?> crateApiOspOspAppUniverse({
     required OspApp that,
+    String? region,
     String? since,
   }) {
     return handler.executeNormal(
@@ -1863,6 +1865,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             that,
             serializer,
           );
+          sse_encode_opt_String(region, serializer);
           sse_encode_opt_String(since, serializer);
           pdeCallFfi(
             generalizedFrbRustBinding,
@@ -1876,7 +1879,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           decodeErrorData: sse_decode_AnyhowException,
         ),
         constMeta: kCrateApiOspOspAppUniverseConstMeta,
-        argValues: [that, since],
+        argValues: [that, region, since],
         apiImpl: this,
       ),
     );
@@ -1884,7 +1887,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
 
   TaskConstMeta get kCrateApiOspOspAppUniverseConstMeta => const TaskConstMeta(
     debugName: "OspApp_universe",
-    argNames: ["that", "since"],
+    argNames: ["that", "region", "since"],
   );
 
   @override
@@ -2155,6 +2158,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  BigInt dco_decode_box_autoadd_u_64(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return dco_decode_u_64(raw);
+  }
+
+  @protected
   int dco_decode_box_autoadd_u_8(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return raw as int;
@@ -2170,6 +2179,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   UnsentPost dco_decode_box_autoadd_unsent_post(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return dco_decode_unsent_post(raw);
+  }
+
+  @protected
+  double dco_decode_f_32(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return raw as double;
   }
 
   @protected
@@ -2286,9 +2301,21 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  List<SkyCell> dco_decode_list_sky_cell(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return (raw as List<dynamic>).map(dco_decode_sky_cell).toList();
+  }
+
+  @protected
   List<TrustEntry> dco_decode_list_trust_entry(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return (raw as List<dynamic>).map(dco_decode_trust_entry).toList();
+  }
+
+  @protected
+  List<UniverseGroup> dco_decode_list_universe_group(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return (raw as List<dynamic>).map(dco_decode_universe_group).toList();
   }
 
   @protected
@@ -2424,6 +2451,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   int? dco_decode_opt_box_autoadd_u_32(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return raw == null ? null : dco_decode_box_autoadd_u_32(raw);
+  }
+
+  @protected
+  BigInt? dco_decode_opt_box_autoadd_u_64(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return raw == null ? null : dco_decode_box_autoadd_u_64(raw);
   }
 
   @protected
@@ -2584,6 +2617,23 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  SkyCell dco_decode_sky_cell(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 7)
+      throw Exception('unexpected arr length: expect 7 but see ${arr.length}');
+    return SkyCell(
+      level: dco_decode_u_8(arr[0]),
+      x: dco_decode_u_32(arr[1]),
+      y: dco_decode_u_32(arr[2]),
+      people: dco_decode_u_32(arr[3]),
+      creators: dco_decode_u_32(arr[4]),
+      atX: dco_decode_f_32(arr[5]),
+      atY: dco_decode_f_32(arr[6]),
+    );
+  }
+
+  @protected
   Thread dco_decode_thread(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
@@ -2635,6 +2685,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  BigInt dco_decode_u_64(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return dcoDecodeU64(raw);
+  }
+
+  @protected
   int dco_decode_u_8(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return raw as int;
@@ -2644,6 +2700,29 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   void dco_decode_unit(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return;
+  }
+
+  @protected
+  UniverseGroup dco_decode_universe_group(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 7)
+      throw Exception('unexpected arr length: expect 7 but see ${arr.length}');
+    return UniverseGroup(
+      id: dco_decode_u_64(arr[0]),
+      parent: dco_decode_opt_box_autoadd_u_64(arr[1]),
+      from: dco_decode_opt_box_autoadd_u_64(arr[2]),
+      people: dco_decode_u_32(arr[3]),
+      bright: dco_decode_u_8(arr[4]),
+      x: dco_decode_f_32(arr[5]),
+      y: dco_decode_f_32(arr[6]),
+    );
+  }
+
+  @protected
+  UniverseLevel dco_decode_universe_level(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return UniverseLevel.values[raw as int];
   }
 
   @protected
@@ -2679,8 +2758,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   UniversePerson dco_decode_universe_person(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 11)
-      throw Exception('unexpected arr length: expect 11 but see ${arr.length}');
+    if (arr.length != 15)
+      throw Exception('unexpected arr length: expect 15 but see ${arr.length}');
     return UniversePerson(
       identity: dco_decode_String(arr[0]),
       name: dco_decode_String(arr[1]),
@@ -2693,6 +2772,10 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       media: dco_decode_i_64(arr[8]),
       reshares: dco_decode_i_64(arr[9]),
       lastPost: dco_decode_opt_String(arr[10]),
+      x: dco_decode_f_32(arr[11]),
+      y: dco_decode_f_32(arr[12]),
+      group: dco_decode_opt_box_autoadd_u_64(arr[13]),
+      bright: dco_decode_u_8(arr[14]),
     );
   }
 
@@ -2700,15 +2783,20 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   UniverseSnapshot dco_decode_universe_snapshot(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 6)
-      throw Exception('unexpected arr length: expect 6 but see ${arr.length}');
+    if (arr.length != 11)
+      throw Exception('unexpected arr length: expect 11 but see ${arr.length}');
     return UniverseSnapshot(
       version: dco_decode_String(arr[0]),
-      people: dco_decode_list_universe_person(arr[1]),
-      lines: dco_decode_list_universe_line(arr[2]),
-      morePeople: dco_decode_i_64(arr[3]),
-      machines: dco_decode_list_universe_machine(arr[4]),
-      network: dco_decode_opt_box_autoadd_network_totals(arr[5]),
+      level: dco_decode_universe_level(arr[1]),
+      region: dco_decode_String(arr[2]),
+      path: dco_decode_list_String(arr[3]),
+      groups: dco_decode_list_universe_group(arr[4]),
+      people: dco_decode_list_universe_person(arr[5]),
+      lines: dco_decode_list_universe_line(arr[6]),
+      morePeople: dco_decode_i_64(arr[7]),
+      machines: dco_decode_list_universe_machine(arr[8]),
+      network: dco_decode_opt_box_autoadd_network_totals(arr[9]),
+      sky: dco_decode_list_sky_cell(arr[10]),
     );
   }
 
@@ -2847,6 +2935,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  BigInt sse_decode_box_autoadd_u_64(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return (sse_decode_u_64(deserializer));
+  }
+
+  @protected
   int sse_decode_box_autoadd_u_8(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     return (sse_decode_u_8(deserializer));
@@ -2864,6 +2958,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   UnsentPost sse_decode_box_autoadd_unsent_post(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     return (sse_decode_unsent_post(deserializer));
+  }
+
+  @protected
+  double sse_decode_f_32(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return deserializer.buffer.getFloat32();
   }
 
   @protected
@@ -3031,6 +3131,18 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  List<SkyCell> sse_decode_list_sky_cell(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    var len_ = sse_decode_i_32(deserializer);
+    var ans_ = <SkyCell>[];
+    for (var idx_ = 0; idx_ < len_; ++idx_) {
+      ans_.add(sse_decode_sky_cell(deserializer));
+    }
+    return ans_;
+  }
+
+  @protected
   List<TrustEntry> sse_decode_list_trust_entry(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
 
@@ -3038,6 +3150,20 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var ans_ = <TrustEntry>[];
     for (var idx_ = 0; idx_ < len_; ++idx_) {
       ans_.add(sse_decode_trust_entry(deserializer));
+    }
+    return ans_;
+  }
+
+  @protected
+  List<UniverseGroup> sse_decode_list_universe_group(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    var len_ = sse_decode_i_32(deserializer);
+    var ans_ = <UniverseGroup>[];
+    for (var idx_ = 0; idx_ < len_; ++idx_) {
+      ans_.add(sse_decode_universe_group(deserializer));
     }
     return ans_;
   }
@@ -3256,6 +3382,17 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  BigInt? sse_decode_opt_box_autoadd_u_64(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    if (sse_decode_bool(deserializer)) {
+      return (sse_decode_box_autoadd_u_64(deserializer));
+    } else {
+      return null;
+    }
+  }
+
+  @protected
   int? sse_decode_opt_box_autoadd_u_8(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
 
@@ -3453,6 +3590,27 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  SkyCell sse_decode_sky_cell(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_level = sse_decode_u_8(deserializer);
+    var var_x = sse_decode_u_32(deserializer);
+    var var_y = sse_decode_u_32(deserializer);
+    var var_people = sse_decode_u_32(deserializer);
+    var var_creators = sse_decode_u_32(deserializer);
+    var var_atX = sse_decode_f_32(deserializer);
+    var var_atY = sse_decode_f_32(deserializer);
+    return SkyCell(
+      level: var_level,
+      x: var_x,
+      y: var_y,
+      people: var_people,
+      creators: var_creators,
+      atX: var_atX,
+      atY: var_atY,
+    );
+  }
+
+  @protected
   Thread sse_decode_thread(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var var_policy = sse_decode_String(deserializer);
@@ -3503,6 +3661,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  BigInt sse_decode_u_64(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return deserializer.buffer.getBigUint64();
+  }
+
+  @protected
   int sse_decode_u_8(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     return deserializer.buffer.getUint8();
@@ -3511,6 +3675,34 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   @protected
   void sse_decode_unit(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
+  }
+
+  @protected
+  UniverseGroup sse_decode_universe_group(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_id = sse_decode_u_64(deserializer);
+    var var_parent = sse_decode_opt_box_autoadd_u_64(deserializer);
+    var var_from = sse_decode_opt_box_autoadd_u_64(deserializer);
+    var var_people = sse_decode_u_32(deserializer);
+    var var_bright = sse_decode_u_8(deserializer);
+    var var_x = sse_decode_f_32(deserializer);
+    var var_y = sse_decode_f_32(deserializer);
+    return UniverseGroup(
+      id: var_id,
+      parent: var_parent,
+      from: var_from,
+      people: var_people,
+      bright: var_bright,
+      x: var_x,
+      y: var_y,
+    );
+  }
+
+  @protected
+  UniverseLevel sse_decode_universe_level(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var inner = sse_decode_i_32(deserializer);
+    return UniverseLevel.values[inner];
   }
 
   @protected
@@ -3559,6 +3751,10 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_media = sse_decode_i_64(deserializer);
     var var_reshares = sse_decode_i_64(deserializer);
     var var_lastPost = sse_decode_opt_String(deserializer);
+    var var_x = sse_decode_f_32(deserializer);
+    var var_y = sse_decode_f_32(deserializer);
+    var var_group = sse_decode_opt_box_autoadd_u_64(deserializer);
+    var var_bright = sse_decode_u_8(deserializer);
     return UniversePerson(
       identity: var_identity,
       name: var_name,
@@ -3571,6 +3767,10 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       media: var_media,
       reshares: var_reshares,
       lastPost: var_lastPost,
+      x: var_x,
+      y: var_y,
+      group: var_group,
+      bright: var_bright,
     );
   }
 
@@ -3578,18 +3778,28 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   UniverseSnapshot sse_decode_universe_snapshot(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var var_version = sse_decode_String(deserializer);
+    var var_level = sse_decode_universe_level(deserializer);
+    var var_region = sse_decode_String(deserializer);
+    var var_path = sse_decode_list_String(deserializer);
+    var var_groups = sse_decode_list_universe_group(deserializer);
     var var_people = sse_decode_list_universe_person(deserializer);
     var var_lines = sse_decode_list_universe_line(deserializer);
     var var_morePeople = sse_decode_i_64(deserializer);
     var var_machines = sse_decode_list_universe_machine(deserializer);
     var var_network = sse_decode_opt_box_autoadd_network_totals(deserializer);
+    var var_sky = sse_decode_list_sky_cell(deserializer);
     return UniverseSnapshot(
       version: var_version,
+      level: var_level,
+      region: var_region,
+      path: var_path,
+      groups: var_groups,
       people: var_people,
       lines: var_lines,
       morePeople: var_morePeople,
       machines: var_machines,
       network: var_network,
+      sky: var_sky,
     );
   }
 
@@ -3742,6 +3952,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_box_autoadd_u_64(BigInt self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_u_64(self, serializer);
+  }
+
+  @protected
   void sse_encode_box_autoadd_u_8(int self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_u_8(self, serializer);
@@ -3763,6 +3979,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_unsent_post(self, serializer);
+  }
+
+  @protected
+  void sse_encode_f_32(double self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    serializer.buffer.putFloat32(self);
   }
 
   @protected
@@ -3901,6 +4123,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_list_sky_cell(List<SkyCell> self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.length, serializer);
+    for (final item in self) {
+      sse_encode_sky_cell(item, serializer);
+    }
+  }
+
+  @protected
   void sse_encode_list_trust_entry(
     List<TrustEntry> self,
     SseSerializer serializer,
@@ -3909,6 +4140,18 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_i_32(self.length, serializer);
     for (final item in self) {
       sse_encode_trust_entry(item, serializer);
+    }
+  }
+
+  @protected
+  void sse_encode_list_universe_group(
+    List<UniverseGroup> self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.length, serializer);
+    for (final item in self) {
+      sse_encode_universe_group(item, serializer);
     }
   }
 
@@ -4088,6 +4331,16 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_opt_box_autoadd_u_64(BigInt? self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    sse_encode_bool(self != null, serializer);
+    if (self != null) {
+      sse_encode_box_autoadd_u_64(self, serializer);
+    }
+  }
+
+  @protected
   void sse_encode_opt_box_autoadd_u_8(int? self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
 
@@ -4226,6 +4479,18 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_sky_cell(SkyCell self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_u_8(self.level, serializer);
+    sse_encode_u_32(self.x, serializer);
+    sse_encode_u_32(self.y, serializer);
+    sse_encode_u_32(self.people, serializer);
+    sse_encode_u_32(self.creators, serializer);
+    sse_encode_f_32(self.atX, serializer);
+    sse_encode_f_32(self.atY, serializer);
+  }
+
+  @protected
   void sse_encode_thread(Thread self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_String(self.policy, serializer);
@@ -4262,6 +4527,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_u_64(BigInt self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    serializer.buffer.putBigUint64(self);
+  }
+
+  @protected
   void sse_encode_u_8(int self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     serializer.buffer.putUint8(self);
@@ -4270,6 +4541,24 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   @protected
   void sse_encode_unit(void self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
+  }
+
+  @protected
+  void sse_encode_universe_group(UniverseGroup self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_u_64(self.id, serializer);
+    sse_encode_opt_box_autoadd_u_64(self.parent, serializer);
+    sse_encode_opt_box_autoadd_u_64(self.from, serializer);
+    sse_encode_u_32(self.people, serializer);
+    sse_encode_u_8(self.bright, serializer);
+    sse_encode_f_32(self.x, serializer);
+    sse_encode_f_32(self.y, serializer);
+  }
+
+  @protected
+  void sse_encode_universe_level(UniverseLevel self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.index, serializer);
   }
 
   @protected
@@ -4311,6 +4600,10 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_i_64(self.media, serializer);
     sse_encode_i_64(self.reshares, serializer);
     sse_encode_opt_String(self.lastPost, serializer);
+    sse_encode_f_32(self.x, serializer);
+    sse_encode_f_32(self.y, serializer);
+    sse_encode_opt_box_autoadd_u_64(self.group, serializer);
+    sse_encode_u_8(self.bright, serializer);
   }
 
   @protected
@@ -4320,11 +4613,16 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_String(self.version, serializer);
+    sse_encode_universe_level(self.level, serializer);
+    sse_encode_String(self.region, serializer);
+    sse_encode_list_String(self.path, serializer);
+    sse_encode_list_universe_group(self.groups, serializer);
     sse_encode_list_universe_person(self.people, serializer);
     sse_encode_list_universe_line(self.lines, serializer);
     sse_encode_i_64(self.morePeople, serializer);
     sse_encode_list_universe_machine(self.machines, serializer);
     sse_encode_opt_box_autoadd_network_totals(self.network, serializer);
+    sse_encode_list_sky_cell(self.sky, serializer);
   }
 
   @protected
@@ -4549,7 +4847,7 @@ class OspAppImpl extends RustOpaque implements OspApp {
   SavedFeed? savedFeed() =>
       RustLib.instance.api.crateApiOspOspAppSavedFeed(that: this);
 
-  /// The last snapshot fetched, to show before the node answers.
+  /// The last top snapshot fetched, to show before the node answers.
   UniverseSnapshot? savedUniverse() =>
       RustLib.instance.api.crateApiOspOspAppSavedUniverse(that: this);
 
@@ -4636,10 +4934,15 @@ class OspAppImpl extends RustOpaque implements OspApp {
       .crateApiOspOspAppUnfollow(that: this, identity: identity);
 
   /// What the Universe may show (ADR 0033), built on the node from what
-  /// it already knows: asking sends nothing to any other node. With
-  /// `since` the version the app holds, none means it's unchanged.
-  Future<UniverseSnapshot?> universe({String? since}) =>
-      RustLib.instance.api.crateApiOspOspAppUniverse(that: this, since: since);
+  /// it already knows: asking sends nothing to any other node. `region`
+  /// is what it opens (ADR 0034 §6): none or empty for the top, `g:<id>`
+  /// a group, `p:<identity>` standing at someone, `sky:<l>/<x>/<y>` a
+  /// cell of the sky. With `since` the version the app holds, none means
+  /// it's unchanged.
+  Future<UniverseSnapshot?> universe({String? region, String? since}) => RustLib
+      .instance
+      .api
+      .crateApiOspOspAppUniverse(that: this, region: region, since: since);
 
   /// Stops trusting someone, on every node they were trusted on.
   Future<void> untrust({required String identity}) => RustLib.instance.api
