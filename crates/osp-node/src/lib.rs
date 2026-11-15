@@ -8,6 +8,8 @@
 mod admission;
 pub mod backup;
 mod client;
+#[allow(dead_code)] // used by the Universe's snapshot in P4's next parts
+mod cluster;
 pub mod config;
 mod control;
 mod db;
