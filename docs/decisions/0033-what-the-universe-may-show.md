@@ -68,7 +68,7 @@ Opening, panning or zooming the map, and anything the node does in the backgroun
 
 ### 5. Kim's own data stays hers
 
-Kim's followers, the people she knows and her own counts are hers to see on her phone. They aren't on this list's "never", but they are on the share card's ([ADR 0039](0039-sharing-your-universe.md)), which has its own, stricter allowlist.
+Whom Kim follows, the people she knows and her own counts (her followers' number among them) are hers to see on her phone. Her followers are follower nodes, not people: one is shown as a person only when her node already knows its owner through another tie ([ADR 0038](0038-likes-and-activity.md)). They aren't on this list's "never", but they are on the share card's ([ADR 0039](0039-sharing-your-universe.md)), which has its own, stricter allowlist.
 
 ## Options considered
 
