@@ -135,6 +135,4 @@ ADR 0036's gate, on the phone: what the map draws comes only from the node's eve
 
 **What the run showed, and what changed:**
 - The line under the map said "fetched 19 KB": the first part of the photo was its own event, and the rest was summed into it on the node after the phone had drawn it. An event drawn in the last two minutes that grows now has its line shown again with the total, without being drawn again.
-
-**Still open:**
-- The photo came from its author's node, whose star was right beside the owner's, but the flow came from the edge as "another node". An event names a host only when it's a resharer listed as hosting the post (ADR 0033).
+- The photo came from its author's node, whose star was right beside the owner's, but the flow came from the edge as "another node": an event named a host only when it was a resharer listed as hosting the post. A fetch now says when the author's own node sent most of it (`from_author`, ADR 0033), and flows from their star: "Your node fetched 458 KB of Kim's post from Kim's node".
