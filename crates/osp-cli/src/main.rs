@@ -173,6 +173,14 @@ enum Command {
     /// to you and the public lines between them, the machines it knows, and
     /// its totals. Built on your node alone; nothing leaves it
     Universe,
+    /// What your node did or saw in the last day, oldest first: people a
+    /// directory brought, reshares, media fetched and served, machines met
+    /// or faded. Nothing leaves your node
+    Events {
+        /// Only those after this number, as the last one printed showed
+        #[arg(long)]
+        since: Option<u64>,
+    },
     /// Show someone's profile and how many of their posts your node holds,
     /// or one page of them. With no one named, your own
     Profile {
@@ -646,6 +654,7 @@ async fn main() -> Result<()> {
             layers: vec![],
             since: None,
         },
+        Command::Events { since } => ClientRequest::UniverseEvents { since },
         Command::Profile {
             who,
             posts,
@@ -1518,6 +1527,63 @@ async fn send(home: &Path, req: ClientRequest) -> Result<ClientResponse> {
     read_frame(&mut reader).await
 }
 
+fn print_events(events: &[osp_proto::universe::Event]) {
+    use osp_proto::universe::EventWhat;
+    if events.is_empty() {
+        println!("Nothing in the last day.");
+        return;
+    }
+    let whose = |author: &Option<osp_proto::PublicKey>| match author {
+        Some(a) => format!("{}'s media", a.fmt_short()),
+        None => "media".to_string(),
+    };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    for e in events {
+        let at = match now.saturating_sub(e.last) / 60 {
+            0 => "just now".to_string(),
+            m if m < 60 => format!("{m} min ago"),
+            m => format!("{} h ago", m / 60),
+        };
+        let times = match e.count {
+            1 => String::new(),
+            n => format!(" ({n} times)"),
+        };
+        let what = match &e.what {
+            EventWhat::Found { directory, people } => {
+                format!("directory {directory} brought {people} new people")
+            }
+            EventWhat::Reshared { from, author, .. } => {
+                format!("{} reshared {}", from.fmt_short(), author.fmt_short())
+            }
+            EventWhat::Fetched {
+                author,
+                bytes,
+                host,
+                kept_by_copy,
+                ..
+            } => {
+                let from = match host {
+                    Some(h) => format!("from {}, who hosts it", h.fmt_short()),
+                    None => "from another node".to_string(),
+                };
+                let kept = match kept_by_copy {
+                    true => ", kept available by a copy",
+                    false => "",
+                };
+                format!("fetched {} of {} {from}{kept}", size(*bytes), whose(author))
+            }
+            EventWhat::Served { author, bytes, .. } => {
+                format!("served {} of {}", size(*bytes), whose(author))
+            }
+            EventWhat::Machine { words, met: true } => format!("machine {words} answered"),
+            EventWhat::Machine { words, met: false } => format!("machine {words} faded"),
+        };
+        println!("{:>5}  {at:>10}  {what}{times}", e.seq);
+    }
+}
+
 fn print_universe(snapshot: &osp_proto::universe::Snapshot) {
     use osp_proto::universe::{ActivityBand, LineKind, MachineState};
     let name = |place: u32| {
@@ -1815,6 +1881,7 @@ fn print(resp: ClientResponse, json: bool) -> Result<()> {
         }
         ClientResponse::Universe { snapshot } => print_universe(&snapshot),
         ClientResponse::UniverseUnchanged => println!("Unchanged."),
+        ClientResponse::UniverseEvents { events } => print_events(&events),
         ClientResponse::Fetched { files } => {
             for f in files {
                 match f.path {

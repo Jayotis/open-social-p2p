@@ -12,15 +12,16 @@ use std::{
 use anyhow::{Context, Result, ensure};
 use iroh::{EndpointAddr, EndpointId, PublicKey};
 use osp_proto::{
-    BlobHash, BoundEndpoint, Delete, EarlierKeys, EndpointBinding, EndpointKind, Key, Note,
-    ObjectId, Payload, Person, SignedObject,
+    Announce, BlobHash, BoundEndpoint, Delete, EarlierKeys, EndpointBinding, EndpointKind, Key,
+    Note, ObjectId, Payload, Person, SignedObject,
     machine::{ListingEntry, ListingItem, MAX_LISTING_PAGE_BYTES, MachineRecord},
     rpc::{FollowInfo, PeerCounts, StorageInfo, Upload, UploadId},
+    universe::{EVENT_HOURS, Event, EventWhat},
 };
 use rusqlite::{Connection, OptionalExtension, params};
 use tracing::info;
 
-use crate::{meet, peers, trust};
+use crate::{events, meet, peers, trust};
 
 mod profiles;
 mod replies;
@@ -507,6 +508,20 @@ const MIGRATIONS: &[&str] = &[
         day   INTEGER PRIMARY KEY,
         bytes INTEGER NOT NULL
     )",
+    // 35: what the node did or saw lately, for its owner's devices to draw
+    // (ADR 0036 §1, `events`): `what` is the event as JSON, `subject` what
+    // it's about, so events about one thing are summed. And the first post
+    // stored that declares each blob, so an event can name it.
+    "CREATE TABLE events (
+        seq      INTEGER PRIMARY KEY AUTOINCREMENT,
+        subject  TEXT NOT NULL,
+        first_ms INTEGER NOT NULL,
+        last_ms  INTEGER NOT NULL,
+        count    INTEGER NOT NULL,
+        what     TEXT NOT NULL
+    );
+    CREATE INDEX events_by_subject ON events(subject, first_ms);
+    ALTER TABLE declared_sizes ADD COLUMN post TEXT;",
 ];
 
 /// How many days of `served_days` are kept: the summary's 30, and today.
@@ -873,7 +888,10 @@ impl Db {
         let tx = conn.unchecked_transaction()?;
         let is_new = insert_object(&tx, obj, payload, received, held_until)?;
         if let (true, Payload::Note(note)) = (is_new, payload) {
-            declare_sizes(&tx, note)?;
+            declare_sizes(&tx, note, Some(&obj.id()))?;
+        }
+        if let (true, Payload::Announce(a)) = (is_new, payload) {
+            note_reshare(&tx, a, now_ms())?;
         }
         // One a directory brought now has another reason to be here.
         if !is_new {
@@ -2218,13 +2236,14 @@ impl Db {
         profile: &SignedObject,
         posts: &[(SignedObject, Payload)],
         now: i64,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         self.keep_found_with(directory, person, profile, posts, &[], now)
     }
 
     /// The same, with their reshares (ADR 0025): each reshare and the post it
     /// points at are kept as found, and one the directory marked hosting
-    /// names its resharer as a source of that post's media.
+    /// names its resharer as a source of that post's media. Returns whether
+    /// they're new here: the node held no profile of theirs.
     pub fn keep_found_with(
         &self,
         directory: &EndpointId,
@@ -2233,10 +2252,15 @@ impl Db {
         posts: &[(SignedObject, Payload)],
         reshares: &[FoundReshare],
         now: i64,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         let actor = person.actor.to_string();
         let conn = self.conn();
         let tx = conn.unchecked_transaction()?;
+        let held: bool = tx.query_row(
+            "SELECT EXISTS (SELECT 1 FROM profiles WHERE actor = ?1)",
+            params![actor],
+            |row| row.get(0),
+        )?;
         let earlier: Vec<String> = {
             let mut stmt = tx.prepare("SELECT id FROM found_posts WHERE actor = ?1")?;
             let rows = stmt.query_map(params![actor], |row| row.get(0))?;
@@ -2293,7 +2317,7 @@ impl Db {
             params![actor, directory.to_string(), now, bytes as i64],
         )?;
         tx.commit()?;
-        Ok(())
+        Ok(!held)
     }
 
     /// Drops what `directory` brought of someone, if that's where they came
@@ -2998,6 +3022,86 @@ impl Db {
             params![day - SERVED_DAYS],
         )?;
         Ok(())
+    }
+
+    /// Whose media `blob` is, and the first post stored that includes it,
+    /// for an event: a profile picture has no post.
+    pub fn media_names(&self, blob: &BlobHash) -> Result<(Option<PublicKey>, Option<ObjectId>)> {
+        let Some(author) = self.blob_author(blob)? else {
+            return Ok((None, None));
+        };
+        let post: Option<Option<String>> = self
+            .conn()
+            .query_row(
+                "SELECT COALESCE(
+                     (SELECT post FROM declared_sizes WHERE blob = ?1),
+                     (SELECT post FROM found_blobs WHERE blob = ?1 LIMIT 1))",
+                params![blob.to_string()],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok((Some(author), post.flatten().map(|p| p.parse()).transpose()?))
+    }
+
+    /// The resharer whose node `node` is noted as hosting `blob` (ADR 0025),
+    /// by their own signed reshare.
+    pub fn hosting_resharer(
+        &self,
+        blob: &BlobHash,
+        node: &EndpointId,
+    ) -> Result<Option<PublicKey>> {
+        let actor: Option<String> = self
+            .conn()
+            .query_row(
+                "SELECT actor FROM resharer_hosts WHERE blob = ?1 AND node = ?2 LIMIT 1",
+                params![blob.to_string(), node.to_string()],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(actor.map(|a| a.parse()).transpose()?)
+    }
+
+    /// The nodes `actor`'s profile here names.
+    pub fn nodes_of(&self, actor: &PublicKey) -> Result<Vec<EndpointId>> {
+        Ok(match self.profile(actor)?.map(|p| p.verify()) {
+            Some(Ok(Payload::Person(person))) => person.nodes,
+            _ => Vec::new(),
+        })
+    }
+
+    /// Whether the last sync with `actor`, someone followed, failed.
+    pub fn last_sync_failed(&self, actor: &PublicKey) -> Result<bool> {
+        let failed: Option<bool> = self
+            .conn()
+            .query_row(
+                "SELECT last_error IS NOT NULL FROM follows WHERE actor = ?1",
+                params![actor.to_string()],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(failed.unwrap_or(false))
+    }
+
+    /// Adds an event that just happened (ADR 0036 §1).
+    pub fn add_event(&self, what: EventWhat) -> Result<()> {
+        self.add_event_at(what, now_ms())
+    }
+
+    pub fn add_event_at(&self, what: EventWhat, now: i64) -> Result<()> {
+        let conn = self.conn();
+        let tx = conn.unchecked_transaction()?;
+        events::add(&tx, what, now)?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// The events after `since`, oldest first.
+    pub fn events(&self, since: Option<u64>) -> Result<Vec<Event>> {
+        self.events_at(since, now_ms())
+    }
+
+    pub fn events_at(&self, since: Option<u64>, now: i64) -> Result<Vec<Event>> {
+        events::since(&self.conn(), since, now)
     }
 
     /// The media bytes sent to other nodes over the 30 days up to `today`.
@@ -4129,7 +4233,7 @@ fn found_post_is_kept(conn: &Connection, id: &str) -> Result<()> {
         )?;
         let obj: SignedObject = serde_json::from_str(&signed).context("corrupt stored object")?;
         if let Payload::Note(note) = obj.verify()? {
-            declare_sizes(conn, &note)?;
+            declare_sizes(conn, &note, Some(&obj.id()))?;
         }
     }
     Ok(())
@@ -4360,6 +4464,9 @@ fn migrate(conn: &Connection) -> Result<()> {
         if version == 32 {
             profiles::backfill_icons(&tx)?;
         }
+        if version == 35 {
+            backfill_declared_posts(&tx)?;
+        }
         tx.pragma_update(None, "user_version", version)?;
         tx.commit()?;
     }
@@ -4382,14 +4489,69 @@ fn signed_before(obj: &SignedObject, before_ms: i64) -> bool {
 
 /// Records the sizes a post declares for its media and thumbnails, and who
 /// posted them. If two people post the same file, the first is kept.
-fn declare_sizes(conn: &Connection, note: &Note) -> Result<()> {
+/// Notes the sizes `note` declares for its blobs, and `post`, its ID, as
+/// the first post to declare each: none before migration 35.
+fn declare_sizes(conn: &Connection, note: &Note, post: Option<&ObjectId>) -> Result<()> {
     for (blob, size) in note.sized_blobs() {
-        conn.execute(
-            "INSERT INTO declared_sizes (blob, size, author) VALUES (?1, ?2, ?3)
-             ON CONFLICT(blob) DO UPDATE SET size = MAX(size, excluded.size),
-                 author = COALESCE(author, excluded.author)",
-            params![blob.to_string(), size as i64, note.actor.to_string()],
-        )?;
+        let (blob, size, author) = (blob.to_string(), size as i64, note.actor.to_string());
+        match post {
+            Some(post) => conn.execute(
+                "INSERT INTO declared_sizes (blob, size, author, post) VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT(blob) DO UPDATE SET size = MAX(size, excluded.size),
+                     author = COALESCE(author, excluded.author),
+                     post = COALESCE(post, excluded.post)",
+                params![blob, size, author, post.to_string()],
+            )?,
+            None => conn.execute(
+                "INSERT INTO declared_sizes (blob, size, author) VALUES (?1, ?2, ?3)
+                 ON CONFLICT(blob) DO UPDATE SET size = MAX(size, excluded.size),
+                     author = COALESCE(author, excluded.author)",
+                params![blob, size, author],
+            )?,
+        };
+    }
+    Ok(())
+}
+
+/// Names the first post stored that declares each blob, for the posts
+/// stored before `declared_sizes` had them.
+fn backfill_declared_posts(conn: &Connection) -> Result<()> {
+    let mut stmt =
+        conn.prepare("SELECT signed FROM objects WHERE kind = 'Note' ORDER BY received_ms")?;
+    let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+    for json in rows {
+        let obj: SignedObject = serde_json::from_str(&json?).context("corrupt stored object")?;
+        if let Ok(Payload::Note(note)) = obj.verify() {
+            for (blob, _) in note.sized_blobs() {
+                conn.execute(
+                    "UPDATE declared_sizes SET post = ?2 WHERE blob = ?1 AND post IS NULL",
+                    params![blob.to_string(), obj.id().to_string()],
+                )?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// A reshare that just arrived is an event (ADR 0036 §1) if it was made in
+/// the last day, of a post this node holds: a follow or a restore that
+/// brings old reshares isn't someone resharing now.
+fn note_reshare(tx: &Connection, a: &Announce, now: i64) -> Result<()> {
+    let day = (EVENT_HOURS * 60 * 60 * 1000) as i64;
+    let recent = osp_proto::parse_rfc3339_ms(&a.published)
+        .is_some_and(|at| at > now - day && at <= now + day);
+    let held: bool = tx.query_row(
+        "SELECT EXISTS (SELECT 1 FROM objects WHERE id = ?1)",
+        params![a.object.to_string()],
+        |row| row.get(0),
+    )?;
+    if recent && held {
+        let what = EventWhat::Reshared {
+            from: a.actor,
+            author: a.object_actor,
+            post: a.object,
+        };
+        events::add(tx, what, now)?;
     }
     Ok(())
 }
@@ -4402,7 +4564,7 @@ fn backfill_declared_sizes(conn: &Connection) -> Result<()> {
         let obj: SignedObject = serde_json::from_str(&json?).context("corrupt stored object")?;
         // Checked when it arrived; one that fails today's checks gets no sizes.
         if let Ok(Payload::Note(note)) = obj.verify() {
-            declare_sizes(conn, &note)?;
+            declare_sizes(conn, &note, None)?;
         }
     }
     Ok(())
@@ -6622,6 +6784,7 @@ mod tests {
                      DROP TABLE side_vouches; DROP TABLE side_gathered;
                      DROP INDEX objects_by_actor_date; DROP TABLE icons;
                      DROP TABLE universe_places; DROP TABLE served_days;
+                     DROP TABLE events; ALTER TABLE declared_sizes DROP COLUMN post;
                      PRAGMA user_version = 24;",
                 )
                 .unwrap();

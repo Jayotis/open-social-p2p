@@ -14,6 +14,7 @@ mod control;
 mod db;
 mod directory;
 mod endpoints;
+mod events;
 mod health;
 mod home;
 mod hosting;

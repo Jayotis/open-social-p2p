@@ -17,7 +17,7 @@ use crate::{
     object::ObjectId,
     social::ReplyPolicy,
     types::{Attachment, BlobHash, Person, ProfileLink},
-    universe::{Layer, Level, Snapshot},
+    universe::{Event, Layer, Level, Snapshot},
 };
 
 /// Largest request frame a node reads from a paired device, in bytes. The
@@ -334,6 +334,14 @@ pub enum ClientRequest {
         #[serde(default)]
         since: Option<String>,
     },
+    /// What the node did or saw lately (ADR 0036 §1): its events after
+    /// `since`, a `seq` the device holds, oldest first. With none, or one
+    /// past the newest the node has given (a node restored afresh), all it
+    /// keeps. Answered from the node alone.
+    UniverseEvents {
+        #[serde(default)]
+        since: Option<u64>,
+    },
 }
 
 /// Most items in one page of `ProfileItems`.
@@ -551,6 +559,10 @@ pub enum ClientResponse {
     },
     /// The snapshot named by `since` is still the node's.
     UniverseUnchanged,
+    /// The answer to `UniverseEvents`.
+    UniverseEvents {
+        events: Vec<Event>,
+    },
     Error {
         message: String,
     },

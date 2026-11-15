@@ -63,6 +63,18 @@ Opening, panning or zooming the map, and anything the node does in the backgroun
 
 **Network:** totals only. Copies served, bytes served, posts hosted, people found through directories, as counts over a day or a week. And the recent events of [ADR 0036](0036-showing-what-the-network-does.md).
 
+**Events** ([ADR 0036](0036-showing-what-the-network-does.md) §1). Its own request, `UniverseEvents { since }`, not in the snapshot. Each event has `seq`, `first` and `last` (to the minute), and `count`, the times it was summed into within an hour.
+
+| Event | Fields | Why it may be shown | Review (2026-11-15, P6) |
+| --- | --- | --- | --- |
+| a directory read brought new people | `directory`, `people` | the directory's words, as `found_through`; a count of people then shown | Counts only people the node held no profile of. |
+| a reshare of a post Kim's node holds | `from`, `author`, `post` | a public signed act, as `lines` | Only one made in the last day, of a post the node held already: following someone or a restore brings old reshares, which aren't anyone resharing now. |
+| media fetched | `author`, `post`, `bytes`, `host`, `kept_by_copy` | Kim's own record of her node's work | Only what the node fetched by itself, ahead of time or to keep a copy. Media Kim opened, or watched through a viewing identity, is no event, since what she watched is never shown (§4). `host` names a person only when they're noted as a resharer hosting that file, by their own signed reshare (ADR 0025); otherwise it's left out, so "another node". `kept_by_copy`: a copy sent it, and the author's node couldn't be reached in that fetch or the last sync with them. |
+| media served | `author`, `post`, `bytes` | Kim's own record | Which post, never to whom. |
+| a machine met, or faded | `words`, `met` | as the machines table | Met when it starts answering, first or after fading; faded when it stops. Kept in memory, so a node off while one fades tells nothing. |
+
+A test fails if an event holds a field not on this list, and the simulator checks that none holds any node's endpoint ID.
+
 *Review (2026-11-14):* built from Kim's own counts: `posts_hosted` and `bytes_served` (everything served since each was reshared with hosting) and `people_found`. Copies served over a day or a week need a count the node doesn't keep yet. They come with ADR 0036's events (P6), as do the events themselves. Content isn't in the snapshot yet: a device reads a person's posts through `ProfileItems`, as their profile does. Also in the snapshot: `version`, a hash of the rest, so a device can ask `since` it; `level`; `more_people`, how many didn't fit.
 
 ### 4. What it never shows

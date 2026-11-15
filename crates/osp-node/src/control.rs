@@ -361,6 +361,9 @@ impl Core {
                 layers,
                 since,
             } => self.universe(region.as_deref(), &layers, since.as_deref())?,
+            ClientRequest::UniverseEvents { since } => ClientResponse::UniverseEvents {
+                events: self.db.events(since)?,
+            },
             ClientRequest::Pair { .. }
             | ClientRequest::ReadBlob { .. }
             | ClientRequest::ResumeUpload { .. }
