@@ -7,7 +7,7 @@ import '../frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
 // These functions are ignored because they are not marked as `pub`: `found_person`, `node_info`, `post`, `profile_of`, `progress`, `reply_info`, `report_to`, `run_post`, `sent_reply`, `trust_entry`, `universe`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`
 
 /// A new device key, as 64 hex digits, for the app to keep in the phone's
 /// secure storage.
@@ -206,9 +206,14 @@ abstract class OspApp implements RustOpaqueInterface {
   /// it already knows: asking sends nothing to any other node. `region`
   /// is what it opens (ADR 0034 §6): none or empty for the top, `g:<id>`
   /// a group, `p:<identity>` standing at someone, `sky:<l>/<x>/<y>` a
-  /// cell of the sky. With `since` the version the app holds, none means
-  /// it's unchanged.
-  Future<UniverseSnapshot?> universe({String? region, String? since});
+  /// cell of the sky. `lit` lights up where that kind of item is (ADR
+  /// 0035 §1); none shows people alone. With `since` the version the app
+  /// holds, none means it's unchanged.
+  Future<UniverseSnapshot?> universe({
+    String? region,
+    UniverseLayer? lit,
+    String? since,
+  });
 
   /// Stops trusting someone, on every node they were trusted on.
   Future<void> untrust({required String identity});
@@ -283,6 +288,11 @@ class FoundPerson {
   /// When their newest post the node holds was published (RFC 3339).
   final String? newest;
 
+  /// Search only (ADR 0035 §3): where they are on the map, as a
+  /// snapshot names regions, the top (empty) first, then their groups,
+  /// the widest first; or one `sky:32/x/y` in the public sky.
+  final List<String> regions;
+
   const FoundPerson({
     required this.identity,
     required this.name,
@@ -290,6 +300,7 @@ class FoundPerson {
     required this.followed,
     this.foundThrough,
     this.newest,
+    required this.regions,
   });
 
   @override
@@ -299,7 +310,8 @@ class FoundPerson {
       summary.hashCode ^
       followed.hashCode ^
       foundThrough.hashCode ^
-      newest.hashCode;
+      newest.hashCode ^
+      regions.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -311,7 +323,8 @@ class FoundPerson {
           summary == other.summary &&
           followed == other.followed &&
           foundThrough == other.foundThrough &&
-          newest == other.newest;
+          newest == other.newest &&
+          regions == other.regions;
 }
 
 enum LineKind {
@@ -544,6 +557,9 @@ class Post {
   /// reshared it (ADR 0029). `None` for anyone else's.
   final int? resharers;
 
+  /// Search only: where its author is on the map, as for a person.
+  final List<String> regions;
+
   const Post({
     required this.id,
     required this.author,
@@ -556,6 +572,7 @@ class Post {
     this.foundThrough,
     this.deletable,
     this.resharers,
+    required this.regions,
   });
 
   @override
@@ -570,7 +587,8 @@ class Post {
       resharerHosts.hashCode ^
       foundThrough.hashCode ^
       deletable.hashCode ^
-      resharers.hashCode;
+      resharers.hashCode ^
+      regions.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -587,7 +605,8 @@ class Post {
           resharerHosts == other.resharerHosts &&
           foundThrough == other.foundThrough &&
           deletable == other.deletable &&
-          resharers == other.resharers;
+          resharers == other.resharers &&
+          regions == other.regions;
 }
 
 class PostProgress {
@@ -933,6 +952,9 @@ class SkyCell {
   /// Those of them with public posts lately.
   final int creators;
 
+  /// With a layer lit: its people's recent items of that kind.
+  final int lit;
+
   /// Its centre.
   final double atX;
   final double atY;
@@ -943,6 +965,7 @@ class SkyCell {
     required this.y,
     required this.people,
     required this.creators,
+    required this.lit,
     required this.atX,
     required this.atY,
   });
@@ -954,6 +977,7 @@ class SkyCell {
       y.hashCode ^
       people.hashCode ^
       creators.hashCode ^
+      lit.hashCode ^
       atX.hashCode ^
       atY.hashCode;
 
@@ -967,6 +991,7 @@ class SkyCell {
           y == other.y &&
           people == other.people &&
           creators == other.creators &&
+          lit == other.lit &&
           atX == other.atX &&
           atY == other.atY;
 }
@@ -1107,6 +1132,9 @@ class UniverseGroup {
 
   /// 0 to 100.
   final int bright;
+
+  /// With a layer lit: its people's recent items of that kind.
+  final int lit;
   final double x;
   final double y;
 
@@ -1116,6 +1144,7 @@ class UniverseGroup {
     this.from,
     required this.people,
     required this.bright,
+    required this.lit,
     required this.x,
     required this.y,
   });
@@ -1127,6 +1156,7 @@ class UniverseGroup {
       from.hashCode ^
       people.hashCode ^
       bright.hashCode ^
+      lit.hashCode ^
       x.hashCode ^
       y.hashCode;
 
@@ -1140,8 +1170,21 @@ class UniverseGroup {
           from == other.from &&
           people == other.people &&
           bright == other.bright &&
+          lit == other.lit &&
           x == other.x &&
           y == other.y;
+}
+
+/// What lights up on the map (ADR 0035 §1). People alone is none.
+enum UniverseLayer {
+  /// Where recent public posts are.
+  posts,
+
+  /// Where recent public video is.
+  video,
+
+  /// Where reshares are spreading.
+  shared,
 }
 
 /// How close the camera is (ADR 0034's zoom bands).
@@ -1251,6 +1294,9 @@ class UniversePerson {
   /// 0 to 100.
   final int bright;
 
+  /// With a layer lit: their own recent items of that kind.
+  final int lit;
+
   const UniversePerson({
     required this.identity,
     required this.name,
@@ -1267,6 +1313,7 @@ class UniversePerson {
     required this.y,
     this.group,
     required this.bright,
+    required this.lit,
   });
 
   @override
@@ -1285,7 +1332,8 @@ class UniversePerson {
       x.hashCode ^
       y.hashCode ^
       group.hashCode ^
-      bright.hashCode;
+      bright.hashCode ^
+      lit.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -1306,7 +1354,8 @@ class UniversePerson {
           x == other.x &&
           y == other.y &&
           group == other.group &&
-          bright == other.bright;
+          bright == other.bright &&
+          lit == other.lit;
 }
 
 /// What the Universe may show (ADR 0033): one snapshot from the node, field

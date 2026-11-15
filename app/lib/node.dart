@@ -8,6 +8,7 @@ import 'package:flutter/widgets.dart';
 
 import 'device_key.dart';
 import 'format.dart';
+import 'search_lights.dart';
 import 'src/rust/api/osp.dart';
 import 'uploads.dart';
 import 'waiting_deletes.dart';
@@ -98,26 +99,38 @@ class HomeNode extends ChangeNotifier with WidgetsBindingObserver {
   /// someone, `sky:<l>/<x>/<y>` a cell of the sky.
   String universeRegion = '';
 
-  /// The last snapshots, by region, so a region visited lately shows at
-  /// once and is asked for since the one held. The top is also kept on
-  /// disk, for the next start.
+  /// What lights up on the map (ADR 0035 §1): none for people alone.
+  UniverseLayer? universeLayer;
+
+  /// The search the map lights up (ADR 0035 §3), if one is shown there.
+  SearchLights? searchLights;
+
+  /// The last snapshots, by layer and region, so a region visited lately
+  /// shows at once and is asked for since the one held. The top without a
+  /// layer is also kept on disk, for the next start.
   final Map<String, UniverseSnapshot> _universes = {};
+
+  /// How a region's snapshot is held with [layer] lit.
+  static String _held(String region, UniverseLayer? layer) =>
+      layer == null ? region : '${layer.name}|$region';
 
   /// How many regions' snapshots are held: each is at most 128 KiB.
   static const _universesHeld = 16;
 
   /// What the Universe may show (ADR 0033) at [universeRegion], as last
   /// fetched. Null until there is one.
-  UniverseSnapshot? get universe => _universes[universeRegion];
-  set universe(UniverseSnapshot? s) => _hold(universeRegion, s);
+  UniverseSnapshot? get universe =>
+      _universes[_held(universeRegion, universeLayer)];
+  set universe(UniverseSnapshot? s) =>
+      _hold(_held(universeRegion, universeLayer), s);
 
   /// The top's snapshot: everyone the node found.
   UniverseSnapshot? get universeTop => _universes[''];
 
-  void _hold(String region, UniverseSnapshot? s) {
-    _universes.remove(region);
+  void _hold(String held, UniverseSnapshot? s) {
+    _universes.remove(held);
     if (s == null) return;
-    _universes[region] = s;
+    _universes[held] = s;
     // The least lately used goes first; the top always stays.
     while (_universes.length > _universesHeld) {
       _universes.remove(_universes.keys.firstWhere((r) => r.isNotEmpty));
@@ -375,29 +388,32 @@ class HomeNode extends ChangeNotifier with WidgetsBindingObserver {
   /// on screen if the node can't be asked.
   Future<void> loadUniverse() async {
     final region = universeRegion;
-    if (paired == null || !_loadingUniverse.add(region)) return;
+    final layer = universeLayer;
+    final key = _held(region, layer);
+    if (paired == null || !_loadingUniverse.add(key)) return;
     try {
-      final held = _universes[region];
+      final held = _universes[key];
       final fresh = await app.universe(
         region: region.isEmpty ? null : region,
+        lit: layer,
         since: held?.version,
       );
       if (fresh != null) {
-        _hold(region, fresh);
+        _hold(key, fresh);
         // A group that's gone is answered by the one most of its people
         // went to: that's where the Universe is now.
         if (fresh.region != region) {
-          _hold(fresh.region, fresh);
+          _hold(_held(fresh.region, layer), fresh);
           if (universeRegion == region) universeRegion = fresh.region;
         }
       } else if (held != null) {
-        _hold(region, held);
+        _hold(key, held);
       }
       universeError = null;
     } catch (e) {
       universeError = describeError(e);
     } finally {
-      _loadingUniverse.remove(region);
+      _loadingUniverse.remove(key);
     }
     notifyListeners();
   }
@@ -408,6 +424,19 @@ class HomeNode extends ChangeNotifier with WidgetsBindingObserver {
     universeRegion = region;
     notifyListeners();
     return loadUniverse();
+  }
+
+  /// Lights up [layer] on the map, or none for people alone, where it is.
+  Future<void> lightUniverse(UniverseLayer? layer) {
+    universeLayer = layer;
+    notifyListeners();
+    return loadUniverse();
+  }
+
+  /// Shows a search's results on the map (ADR 0035 §3), or none.
+  void showSearch(SearchLights? lights) {
+    searchLights = lights;
+    notifyListeners();
   }
 
   /// Asks the node for everyone it holds a profile of (the list the
@@ -462,6 +491,8 @@ class HomeNode extends ChangeNotifier with WidgetsBindingObserver {
     peopleError = null;
     _universes.clear();
     universeRegion = '';
+    universeLayer = null;
+    searchLights = null;
     universeError = null;
     me = null;
     posts = [];

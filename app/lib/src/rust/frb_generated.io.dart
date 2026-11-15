@@ -79,6 +79,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   int dco_decode_box_autoadd_u_8(dynamic raw);
 
   @protected
+  UniverseLayer dco_decode_box_autoadd_universe_layer(dynamic raw);
+
+  @protected
   UniverseSnapshot dco_decode_box_autoadd_universe_snapshot(dynamic raw);
 
   @protected
@@ -193,6 +196,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   int? dco_decode_opt_box_autoadd_u_8(dynamic raw);
 
   @protected
+  UniverseLayer? dco_decode_opt_box_autoadd_universe_layer(dynamic raw);
+
+  @protected
   UniverseSnapshot? dco_decode_opt_box_autoadd_universe_snapshot(dynamic raw);
 
   @protected
@@ -251,6 +257,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   UniverseGroup dco_decode_universe_group(dynamic raw);
+
+  @protected
+  UniverseLayer dco_decode_universe_layer(dynamic raw);
 
   @protected
   UniverseLevel dco_decode_universe_level(dynamic raw);
@@ -333,6 +342,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   int sse_decode_box_autoadd_u_8(SseDeserializer deserializer);
+
+  @protected
+  UniverseLayer sse_decode_box_autoadd_universe_layer(
+    SseDeserializer deserializer,
+  );
 
   @protected
   UniverseSnapshot sse_decode_box_autoadd_universe_snapshot(
@@ -465,6 +479,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   int? sse_decode_opt_box_autoadd_u_8(SseDeserializer deserializer);
 
   @protected
+  UniverseLayer? sse_decode_opt_box_autoadd_universe_layer(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   UniverseSnapshot? sse_decode_opt_box_autoadd_universe_snapshot(
     SseDeserializer deserializer,
   );
@@ -527,6 +546,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   UniverseGroup sse_decode_universe_group(SseDeserializer deserializer);
+
+  @protected
+  UniverseLayer sse_decode_universe_layer(SseDeserializer deserializer);
 
   @protected
   UniverseLevel sse_decode_universe_level(SseDeserializer deserializer);
@@ -626,6 +648,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_box_autoadd_u_8(int self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_box_autoadd_universe_layer(
+    UniverseLayer self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_box_autoadd_universe_snapshot(
@@ -790,6 +818,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_encode_opt_box_autoadd_u_8(int? self, SseSerializer serializer);
 
   @protected
+  void sse_encode_opt_box_autoadd_universe_layer(
+    UniverseLayer? self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_opt_box_autoadd_universe_snapshot(
     UniverseSnapshot? self,
     SseSerializer serializer,
@@ -857,6 +891,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_universe_group(UniverseGroup self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_universe_layer(UniverseLayer self, SseSerializer serializer);
 
   @protected
   void sse_encode_universe_level(UniverseLevel self, SseSerializer serializer);

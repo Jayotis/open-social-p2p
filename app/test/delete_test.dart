@@ -54,6 +54,7 @@ Post post(
   String? resharedBy,
   int? resharers,
 }) => Post(
+  regions: const [],
   id: 'id-$text',
   author: 'Ann',
   authorIdentity: 'id-Ann',

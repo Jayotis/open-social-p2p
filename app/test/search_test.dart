@@ -40,6 +40,7 @@ class FakeApp implements OspApp {
 }
 
 Post post(String text, {String? foundThrough}) => Post(
+  regions: const [],
   id: 'id-$text',
   author: 'Bob',
   authorIdentity: 'id-Bob',
@@ -56,6 +57,7 @@ FoundPerson person(
   bool followed = false,
   String? foundThrough,
 }) => FoundPerson(
+  regions: const [],
   identity: 'id-$name',
   name: name,
   summary: summary,

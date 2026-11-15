@@ -19,6 +19,7 @@ use osp_node::{BlobClass, Config, Node, SimSettings, simnet::TorDelay};
 use osp_proto::{
     Attachment, BlobHash,
     rpc::{ClientRequest, ClientResponse, StatusInfo},
+    universe::Layer,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -397,22 +398,45 @@ async fn phone_pairs_posts_plays_and_is_revoked() {
 
     // The Universe (ADR 0033): saved, then unchanged when asked since it.
     let world = phone
-        .universe(None, None)
+        .universe(None, None, None)
         .await
         .unwrap()
         .expect("a snapshot");
     assert_eq!(world.people[0].step, Some(0), "the owner comes first");
     assert_eq!(phone.cached_universe(), Some(world.clone()));
     let again = phone
-        .universe(None, Some(world.version.clone()))
+        .universe(None, None, Some(world.version.clone()))
         .await
         .unwrap();
     assert!(again.is_none(), "unchanged");
     // Standing at the owner: a region's snapshot isn't saved over the top.
     let me = format!("p:{}", world.people[0].actor);
-    let there = phone.universe(Some(me), None).await.unwrap().expect("one");
+    let there = phone
+        .universe(Some(me), None, None)
+        .await
+        .unwrap()
+        .expect("one");
     assert_eq!(there.path.first(), Some(&String::new()), "the top above it");
     assert_eq!(phone.cached_universe(), Some(world.clone()));
+    // A layer that lights up (ADR 0035 §1): the owner's video, and the top
+    // saved stays the plain one.
+    let lit = phone
+        .universe(None, Some(Layer::Video), None)
+        .await
+        .unwrap()
+        .expect("lit");
+    assert!(
+        lit.people[0].lit >= 1,
+        "the owner's video lights the owner up"
+    );
+    assert_eq!(phone.cached_universe(), Some(world.clone()));
+    assert!(
+        phone
+            .universe(None, Some(Layer::People), None)
+            .await
+            .is_err(),
+        "only a layer that lights up is asked for this way"
+    );
 
     // Playback: the whole video, then a range, then refusals.
     let url = phone

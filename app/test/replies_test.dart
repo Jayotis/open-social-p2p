@@ -90,6 +90,7 @@ class FakeApp implements OspApp {
 }
 
 Post post(String author, {String text = 'A walk by the river'}) => Post(
+  regions: const [],
   id: 'post-$author',
   author: author,
   authorIdentity: 'id-$author',
