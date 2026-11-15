@@ -51,6 +51,11 @@ impl Graph {
         Graph { adj }
     }
 
+    /// Whom `person` has lines with, and their weight.
+    pub fn neighbours(&self, person: u32) -> &[(u32, f64)] {
+        &self.adj[person as usize]
+    }
+
     pub fn people(&self) -> usize {
         self.adj.len()
     }
@@ -98,6 +103,7 @@ pub struct Tree {
 impl Tree {
     /// How many levels the deepest person is below the top, counting their
     /// own group as 1.
+    #[cfg(test)]
     pub fn depth(&self) -> usize {
         let mut deepest = 0;
         for g in self.group_of.iter().flatten() {

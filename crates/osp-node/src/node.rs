@@ -323,6 +323,8 @@ pub(crate) struct Core {
     /// Every meeting of a replier's side, for the simulator (ADR 0029).
     #[cfg(feature = "sim")]
     pub meetings: Mutex<Vec<crate::admission::Meeting>>,
+    /// The Universe's tree and places, kept between snapshots (ADR 0034).
+    pub atlas: crate::world::Atlas,
 }
 
 impl Node {
@@ -650,6 +652,7 @@ impl Node {
             tor_ready: Mutex::new(HashMap::new()),
             #[cfg(feature = "sim")]
             meetings: Mutex::new(Vec::new()),
+            atlas: Default::default(),
         });
 
         core.start_uploads()?;

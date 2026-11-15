@@ -353,11 +353,11 @@ impl Core {
             // Unlike `People`, it reads no directory first: opening the
             // Universe asks nobody anything (ADR 0033).
             ClientRequest::Universe {
-                level,
-                region: _,
+                level: _,
+                region,
                 layers,
                 since,
-            } => self.universe(level, &layers, since.as_deref())?,
+            } => self.universe(region.as_deref(), &layers, since.as_deref())?,
             ClientRequest::Pair { .. }
             | ClientRequest::ReadBlob { .. }
             | ClientRequest::ResumeUpload { .. }

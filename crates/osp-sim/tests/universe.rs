@@ -25,7 +25,7 @@ use osp_node::{
 use osp_proto::{
     EndpointId, ObjectId,
     rpc::{ClientRequest, ClientResponse, StatusInfo},
-    universe::{Layer, Level, MAX_SNAPSHOT_BYTES, Snapshot},
+    universe::{Layer, Level, MAX_SNAPSHOT_BYTES, SKY_INNER, Snapshot},
 };
 
 fn sim(net: &SimNet) -> SimSettings {
@@ -252,6 +252,16 @@ async fn the_universe_holds_no_address_and_opening_it_sends_nothing() {
     assert_eq!(step("Bob"), Some(3));
     let fred_point = snapshot.people.iter().find(|p| p.name == "Fred");
     assert!(fred_point.is_some_and(|p| p.found_through.is_some()));
+    // Only a directory lists Fred, so he's in the public sky, ungrouped,
+    // on the ring around the placed world (ADR 0034 §1, §6).
+    let fred_point = fred_point.unwrap();
+    let [x, y] = fred_point.at;
+    assert!(fred_point.group.is_none());
+    assert!(
+        (x * x + y * y).sqrt() >= SKY_INNER - 0.01,
+        "{:?}",
+        fred_point.at
+    );
     assert!(snapshot.lines.len() >= 2, "{:?}", snapshot.lines);
     assert!(!snapshot.machines.is_empty(), "Kim's machine knows none");
     assert!(text.len() <= MAX_SNAPSHOT_BYTES);
@@ -305,6 +315,33 @@ async fn the_universe_holds_no_address_and_opening_it_sends_nothing() {
                 }
             }
         }
+        // Moving around (ADR 0034 §6): standing at each person, zooming out
+        // from them a step at a time, flying home, and opening the sky.
+        let mut regions: Vec<String> = snapshot
+            .people
+            .iter()
+            .map(|p| format!("p:{}", p.actor))
+            .collect();
+        regions.extend(["sky:0/0/0", "sky:1/0/0", "sky:1/1/1", "sky:3/5/2"].map(String::from));
+        let mut asked = HashSet::new();
+        while let Some(region) = regions.pop() {
+            if !asked.insert(region.clone()) {
+                continue;
+            }
+            let req = ClientRequest::Universe {
+                level: Level::Close,
+                region: Some(region.clone()),
+                layers: vec![],
+                since: None,
+            };
+            let ClientResponse::Universe { snapshot } = call(&kim, req).await else {
+                panic!("no snapshot of {region}");
+            };
+            regions.extend(snapshot.path.iter().cloned());
+            regions.extend(snapshot.groups.iter().map(|g| format!("g:{}", g.id)));
+        }
+        assert!(asked.contains(""), "no way home from {asked:?}");
+        call(&kim, universe_request(Level::Universe, vec![], None)).await;
     })
     .await;
     let new: Vec<_> = sent

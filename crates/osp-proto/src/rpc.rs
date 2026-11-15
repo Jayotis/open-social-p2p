@@ -309,11 +309,12 @@ pub enum ClientRequest {
     },
     /// What the Universe may show (ADR 0033): one snapshot, built on the
     /// node alone from what it already knows. Asking for it sends nothing to
-    /// any other node. `region` names a part of the tree once ADR 0034's
-    /// exists; until then it's ignored, and every `level` gets the whole
-    /// world as `Local`. No `layers` means all of them. With `since` the
-    /// `version` of the snapshot the device holds, the reply is
-    /// `UniverseUnchanged` if nothing changed.
+    /// any other node. `region` is what to open (ADR 0034 §2, §6), as
+    /// `universe::Region` writes it: none for the top, `g:` a group, `p:`
+    /// standing at a person, `sky:` a cell of the public sky. `level` is
+    /// ignored: the snapshot says which band it shows. No `layers` means all
+    /// of them. With `since` the `version` of the snapshot the device holds,
+    /// the reply is `UniverseUnchanged` if nothing changed.
     Universe {
         #[serde(default)]
         level: Level,

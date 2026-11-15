@@ -8,14 +8,15 @@
 
 use std::collections::{HashMap, HashSet};
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 use iroh::PublicKey;
 use osp_proto::{
     Payload, SignedObject,
     rpc::ClientResponse,
     universe::{
-        ALL_LAYERS, ActivityBand, LINE_DAYS, Layer, Level, Line, LineKind, MAX_LINES, MAX_POINTS,
-        MAX_SNAPSHOT_BYTES, MachinePoint, MachineState, NetworkTotals, PersonPoint, Snapshot,
+        ALL_LAYERS, ActivityBand, GroupPoint, LINE_DAYS, Layer, Level, Line, LineKind, MAX_LINES,
+        MAX_POINTS, MAX_SNAPSHOT_BYTES, MachinePoint, MachineState, NetworkTotals, PersonPoint,
+        Region, SkyCell, Snapshot,
     },
 };
 
@@ -24,15 +25,21 @@ use crate::{
     machine,
     meet::{Seen, SeenState},
     node::Core,
+    sky::{self, Cell, Light, Sky},
+    world::{Input, Opened},
 };
 
 const DAY_MS: i64 = 24 * 60 * 60 * 1000;
+
+/// At the top, the sky's share of the points while it has people: the
+/// placed world keeps the rest.
+const SKY_SHARE: usize = 60;
 
 impl Core {
     /// Answers `Universe`.
     pub(crate) fn universe(
         &self,
-        _level: Level,
+        region: Option<&str>,
         layers: &[Layer],
         since: Option<&str>,
     ) -> Result<ClientResponse> {
@@ -40,7 +47,10 @@ impl Core {
             true => &ALL_LAYERS[..],
             false => layers,
         };
-        let snapshot = self.snapshot(layers, now_ms())?;
+        let Some(region) = Region::parse(region) else {
+            bail!("no such region: {}", region.unwrap_or_default());
+        };
+        let snapshot = self.snapshot(layers, region, now_ms())?;
         Ok(match since == Some(snapshot.version.as_str()) {
             true => ClientResponse::UniverseUnchanged,
             false => ClientResponse::Universe {
@@ -49,10 +59,13 @@ impl Core {
         })
     }
 
-    fn snapshot(&self, layers: &[Layer], now: i64) -> Result<Snapshot> {
-        let (people, lines, more_people) = match layers.contains(&Layer::People) {
-            true => self.people_layer(now)?,
-            false => (vec![], vec![], 0),
+    fn snapshot(&self, layers: &[Layer], region: Region, now: i64) -> Result<Snapshot> {
+        let shown = match layers.contains(&Layer::People) {
+            true => self.people_layer(region, now)?,
+            false => Shown {
+                region,
+                ..Shown::default()
+            },
         };
         let machines = match (layers.contains(&Layer::Machines), &self.machine) {
             (true, Some(side)) => machine_points(side.acquaintances.seen()),
@@ -71,30 +84,33 @@ impl Core {
         };
         fit(Snapshot {
             version: String::new(),
-            level: Level::Local,
-            people,
-            lines,
-            more_people,
+            level: shown.level,
+            region: shown.region.to_string(),
+            path: shown.path.iter().map(Region::to_string).collect(),
+            groups: shown.groups,
+            people: shown.people,
+            lines: shown.lines,
+            more_people: shown.more_people,
             machines,
             network,
+            sky: shown.sky,
         })
     }
 
-    /// The people the node knows, nearest and most active first, within the
-    /// limits, and the public lines between them.
-    fn people_layer(&self, now: i64) -> Result<(Vec<PersonPoint>, Vec<Line>, u64)> {
+    /// Everyone the node holds a profile of, the owner first, each with the
+    /// date of their newest post here.
+    fn everyone(&self, lines: &[Act]) -> Result<Vec<(PersonPoint, Option<i64>)>> {
         let me = self.signer.identity();
         let followed: HashSet<PublicKey> = self.db.follows()?.iter().map(|f| f.actor).collect();
         let known: HashSet<PublicKey> = self.db.trusted()?.iter().map(|t| t.actor).collect();
         let found = self.db.found_directories()?;
 
-        let lines = self.lines(now)?;
         // Step 1: the owner's circle. Step 2: whom the circle, or the owner,
         // reshared. Step 3: the owner's gathered side.
         let circle: HashSet<PublicKey> = followed.union(&known).copied().collect();
         let mut steps: HashMap<PublicKey, u8> = circle.iter().map(|a| (*a, 1)).collect();
         steps.insert(me, 0);
-        for line in &lines {
+        for line in lines {
             if line.kind == LineKind::Reshared && (line.from == me || circle.contains(&line.from)) {
                 steps.entry(line.to).or_insert(2);
             }
@@ -119,6 +135,9 @@ impl Core {
                     media,
                     reshares,
                     last_post: newest.map(day),
+                    at: [0.0, 0.0],
+                    group: None,
+                    bright: 0,
                 },
                 newest,
             ));
@@ -141,31 +160,200 @@ impl Core {
                     media: held.media,
                     reshares: held.reshares,
                     last_post: held.newest_ms.map(day),
+                    at: [0.0, 0.0],
+                    group: None,
+                    bright: 0,
                 },
                 held.newest_ms,
             ));
         }
+        Ok(people)
+    }
+
+    /// The people layer of `region`: groups, people and sky cells within
+    /// the limits, and the public lines between the people shown.
+    fn people_layer(&self, region: Region, now: i64) -> Result<Shown> {
+        let me = self.signer.identity();
+        let acts = self.lines(now)?;
+        let everyone = self.everyone(&acts)?;
+        let at: HashMap<PublicKey, usize> = everyone
+            .iter()
+            .enumerate()
+            .map(|(i, (p, _))| (p.actor, i))
+            .collect();
+        if let Region::Person(key) = region
+            && !at.contains_key(&key)
+        {
+            bail!("this node holds no profile of {key}");
+        }
+
+        let world = self
+            .atlas
+            .world(&self.db, world_input(&everyone, &acts, &me, now))?;
+
+        // The unplaced are the public sky (ADR 0034 §1, §6), the owner aside.
+        let unplaced: Vec<usize> = (0..everyone.len())
+            .filter(|i| everyone[*i].0.actor != me && world.placed(&everyone[*i].0.actor).is_none())
+            .collect();
+        let recent = now - LINE_DAYS as i64 * DAY_MS;
+        let sky = Sky::new(unplaced.iter().map(|i| {
+            let (p, newest) = &everyone[*i];
+            let creator = p.posts > 0 && newest.is_some_and(|n| n >= recent);
+            (sky::place(SKY_PEOPLE, &p.actor), creator)
+        }));
+
+        // What's shown: by the world's numbers, then the sky's.
+        let mut shown_people: Vec<usize> = Vec::new();
+        let mut lights = Vec::new();
+        let opened = match region {
+            Region::Sky { level, x, y } => {
+                let cell = Cell { level, x, y };
+                lights = sky.open(cell, MAX_POINTS - 1);
+                let level = match lights.iter().any(|l| matches!(l, Light::Cell { .. })) {
+                    true => Level::Universe,
+                    false => Level::Local,
+                };
+                let path = std::iter::once(Region::Top)
+                    .chain((1..cell.level).map(|l| {
+                        let up = (cell.level - l) as u32;
+                        Region::Sky {
+                            level: l,
+                            x: cell.x >> up,
+                            y: cell.y >> up,
+                        }
+                    }))
+                    .collect();
+                Opened {
+                    region,
+                    path,
+                    level,
+                    groups: vec![],
+                    people: vec![],
+                }
+            }
+            _ => {
+                let sky_share = match region {
+                    Region::Top => SKY_SHARE.min(unplaced.len()),
+                    _ => 0,
+                };
+                let budget = MAX_POINTS - 1 - sky_share;
+                let opened = world.open(region, &me, budget).unwrap_or(Opened {
+                    // Someone unplaced: alone in the sky, with the owner.
+                    region,
+                    path: vec![Region::Top],
+                    level: Level::Close,
+                    groups: vec![],
+                    people: vec![],
+                });
+                if region == Region::Top {
+                    let used = opened.groups.len() + opened.people.len();
+                    lights = sky.open(Cell::ALL, MAX_POINTS - 1 - used);
+                }
+                opened
+            }
+        };
+        shown_people.extend(at.get(&me));
+        if let Region::Person(key) = opened.region {
+            shown_people.extend(at.get(&key));
+        }
+        let mut rest: Vec<usize> = opened
+            .people
+            .iter()
+            .filter_map(|p| at.get(world.key(*p)).copied())
+            .collect();
+        let mut cells = Vec::new();
+        for light in &lights {
+            match light {
+                Light::Star(i) => rest.push(unplaced[*i as usize]),
+                Light::Cell {
+                    cell,
+                    people,
+                    creators,
+                } => cells.push(SkyCell {
+                    level: cell.level,
+                    x: cell.x,
+                    y: cell.y,
+                    people: *people,
+                    creators: *creators,
+                    at: round(sky::ring(cell.centre())),
+                }),
+            }
+        }
         // Nearest first, those with no step last; then the newest posters.
-        people.sort_by(|(a, a_new), (b, b_new)| {
+        rest.sort_by(|a, b| {
+            let ((a, a_new), (b, b_new)) = (&everyone[*a], &everyone[*b]);
             let step = |p: &PersonPoint| p.step.unwrap_or(u8::MAX);
             step(a)
                 .cmp(&step(b))
                 .then(b_new.cmp(a_new))
                 .then(a.name.cmp(&b.name))
         });
-        let more = people.len().saturating_sub(MAX_POINTS) as u64;
-        let people: Vec<PersonPoint> = people
-            .into_iter()
-            .take(MAX_POINTS)
-            .map(|(p, _)| p)
+        for i in rest {
+            if !shown_people.contains(&i) {
+                shown_people.push(i);
+            }
+        }
+
+        // Each group's posts and reshares, for its brightness.
+        let tree = &world.tree;
+        let mut sums = vec![(0u64, 0u64); tree.groups.len()];
+        for (p, _) in &everyone {
+            let Some((i, _)) = world.placed(&p.actor) else {
+                continue;
+            };
+            let mut g = tree.group_of[i as usize];
+            while let Some(at) = g {
+                sums[at as usize].0 += p.posts;
+                sums[at as usize].1 += p.reshares;
+                g = tree.groups[at as usize].parent;
+            }
+        }
+        let groups: Vec<GroupPoint> = opened
+            .groups
+            .iter()
+            .map(|g| {
+                let group = &tree.groups[*g as usize];
+                let (posts, reshares) = sums[*g as usize];
+                GroupPoint {
+                    id: world.id(*g),
+                    parent: group.parent.map(|p| world.id(p)),
+                    from: world.placed.from[*g as usize],
+                    people: group.people,
+                    bright: bright(group.people, posts, reshares),
+                    at: round(world.placed.group_at[*g as usize]),
+                }
+            })
             .collect();
+
+        let in_lights: u64 = groups.iter().map(|g| g.people as u64).sum::<u64>()
+            + cells.iter().map(|c| c.people as u64).sum::<u64>();
+        let more_people = (everyone.len() as u64)
+            .saturating_sub(shown_people.len() as u64)
+            .saturating_sub(in_lights);
+        let people: Vec<PersonPoint> = shown_people
+            .iter()
+            .map(|i| {
+                let mut p = everyone[*i].0.clone();
+                match world.placed(&p.actor) {
+                    Some((w, point)) => {
+                        p.at = round(point);
+                        p.group = tree.group_of[w as usize].map(|g| world.id(g));
+                    }
+                    None if p.actor == me => p.at = [0.0, 0.0],
+                    None => p.at = round(sky::ring(sky::unit(sky::place(SKY_PEOPLE, &p.actor)))),
+                }
+                p.bright = bright(1, p.posts, p.reshares);
+                p
+            })
+            .collect();
+
         // A line names its two people by their place in `people`.
         let place: HashMap<PublicKey, u32> = people
             .iter()
             .enumerate()
             .map(|(i, p)| (p.actor, i as u32))
             .collect();
-        let lines: Vec<Line> = lines
+        let lines: Vec<Line> = acts
             .into_iter()
             .filter_map(|act| {
                 Some(Line {
@@ -178,7 +366,16 @@ impl Core {
             })
             .take(MAX_LINES)
             .collect();
-        Ok((people, lines, more))
+        Ok(Shown {
+            region: opened.region,
+            path: opened.path,
+            level: opened.level,
+            groups,
+            people,
+            lines,
+            more_people,
+            sky: cells,
+        })
     }
 
     /// Public acts between people within the last 90 days, one line per kind
@@ -219,6 +416,88 @@ impl Core {
         });
         Ok(lines)
     }
+}
+
+/// The people's sky, apart from the machines' (ADR 0033 §4).
+const SKY_PEOPLE: &str = "person";
+
+/// The people layer of a snapshot.
+#[derive(Default)]
+struct Shown {
+    region: Region,
+    path: Vec<Region>,
+    level: Level,
+    groups: Vec<GroupPoint>,
+    people: Vec<PersonPoint>,
+    lines: Vec<Line>,
+    more_people: u64,
+    sky: Vec<SkyCell>,
+}
+
+/// What the world is grouped from: everyone held, and the public lines
+/// between them, each fading over 90 days as vouches do; and the owner's
+/// own follows and the people she knows, as lines from her (ADR 0034 §1).
+fn world_input(
+    everyone: &[(PersonPoint, Option<i64>)],
+    acts: &[Act],
+    me: &PublicKey,
+    now: i64,
+) -> Input {
+    let mut keys: Vec<PublicKey> = everyone.iter().map(|(p, _)| p.actor).collect();
+    keys.sort();
+    let at = |k: &PublicKey| keys.binary_search(k).ok().map(|i| i as u32);
+    let mut stamp = blake3::Hasher::new();
+    for k in &keys {
+        stamp.update(k.as_bytes());
+    }
+    let mut lines = Vec::new();
+    for act in acts {
+        let (Some(from), Some(to)) = (at(&act.from), at(&act.to)) else {
+            continue;
+        };
+        let age = (now - act.at).max(0) as f64 / (LINE_DAYS as i64 * DAY_MS) as f64;
+        lines.push((from, to, act.count as f64 * (1.0 - age).clamp(0.1, 1.0)));
+        stamp.update(&[act.kind as u8]);
+        stamp.update(act.from.as_bytes());
+        stamp.update(act.to.as_bytes());
+        stamp.update(&act.count.to_le_bytes());
+        stamp.update(&act.at.to_le_bytes());
+    }
+    let kim = at(me);
+    let mut circle: Vec<u32> = everyone
+        .iter()
+        .filter(|(p, _)| p.followed || p.known)
+        .filter_map(|(p, _)| at(&p.actor))
+        .collect();
+    circle.sort_unstable();
+    if let Some(kim) = kim {
+        for c in circle {
+            lines.push((kim, c, 1.0));
+            stamp.update(&c.to_le_bytes());
+        }
+    }
+    Input {
+        keys,
+        lines,
+        kim,
+        stamp: *stamp.finalize().as_bytes(),
+    }
+}
+
+/// A point's brightness, 0 to 100 (ADR 0034 §5): how many people it holds,
+/// their posts and their reshares, each as a logarithm with a cap, so one
+/// large creator can't outshine every small group.
+fn bright(people: u32, posts: u64, reshares: u64) -> u8 {
+    let part = |v: f64, cap: f64| (v.ln_1p() / cap.ln_1p()).min(1.0);
+    let b = 0.5 * part(people as f64, 10_000.0)
+        + 0.3 * part(posts as f64, 1_000.0)
+        + 0.2 * part(reshares as f64, 1_000.0);
+    (b * 100.0).round() as u8
+}
+
+/// A place to a hundredth of a person's width, which keeps it short in JSON.
+fn round([x, y]: [f32; 2]) -> [f32; 2] {
+    [(x * 100.0).round() / 100.0, (y * 100.0).round() / 100.0]
 }
 
 /// Public acts of one kind from one person to another, before they're
@@ -350,6 +629,9 @@ mod tests {
                 media: u64::MAX,
                 reshares: u64::MAX,
                 last_post: Some("2026-11-14".into()),
+                at: [-1023.99, -1023.99],
+                group: Some(u64::MAX),
+                bright: 100,
             })
             .collect();
         let lines = (0..MAX_LINES)
@@ -369,9 +651,18 @@ mod tests {
                 activity: ActivityBand::ALot,
             })
             .collect();
+        // The longest path: a sky cell at the deepest level.
+        let deep = |level: u8| Region::Sky {
+            level,
+            x: ((1u64 << level) - 1) as u32,
+            y: ((1u64 << level) - 1) as u32,
+        };
         Snapshot {
             version: String::new(),
             level: Level::Local,
+            region: deep(32).to_string(),
+            path: (0..32).map(|l| deep(l).to_string()).collect(),
+            groups: vec![],
             people,
             lines,
             more_people: u64::MAX / 2,
@@ -381,6 +672,7 @@ mod tests {
                 bytes_served: u64::MAX,
                 people_found: u64::MAX,
             }),
+            sky: vec![],
         }
     }
 
@@ -420,6 +712,48 @@ mod tests {
         assert_eq!(fitted.people, small.people);
         assert_eq!(fitted.machines, small.machines);
         assert_eq!(fitted.version.len(), 16);
+    }
+
+    /// Points, groups and sky cells share the 300: a snapshot of them all
+    /// as groups and cells, at their largest, fits too.
+    #[test]
+    fn the_largest_lights_fit_their_limit() {
+        let mut lights = worst_case("Kim");
+        lights.people.truncate(1);
+        lights.lines.clear();
+        lights.groups = (0..MAX_POINTS / 2)
+            .map(|_| GroupPoint {
+                id: u64::MAX,
+                parent: Some(u64::MAX),
+                from: Some(u64::MAX),
+                people: u32::MAX,
+                bright: 100,
+                at: [-1023.99, -1023.99],
+            })
+            .collect();
+        lights.sky = (0..MAX_POINTS / 2)
+            .map(|_| SkyCell {
+                level: 32,
+                x: u32::MAX,
+                y: u32::MAX,
+                people: u32::MAX,
+                creators: u32::MAX,
+                at: [-1023.99, -1023.99],
+            })
+            .collect();
+        let fitted = fit(lights.clone()).unwrap();
+        assert_eq!(fitted.groups, lights.groups);
+        assert_eq!(fitted.sky, lights.sky);
+        assert_eq!(fitted.machines.len(), MAX_MACHINES);
+    }
+
+    #[test]
+    fn brightness_grows_slowly_and_is_capped() {
+        assert!(bright(1, 0, 0) < bright(20, 0, 0));
+        assert!(bright(20, 0, 0) < bright(20, 10, 0));
+        assert_eq!(bright(u32::MAX, u64::MAX, u64::MAX), 100);
+        // One very large creator is no brighter than a busy group.
+        assert!(bright(1, 1_000_000, 1_000_000) <= bright(50, 200, 100));
     }
 
     #[test]

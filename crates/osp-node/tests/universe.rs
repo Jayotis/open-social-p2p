@@ -168,6 +168,45 @@ async fn the_universe_shows_steps_and_public_lines_and_nothing_else() {
     };
     assert!(only.people.is_empty() && only.lines.is_empty() && only.network.is_some());
 
+    // Their lines place all three, Kim at the centre, in one group: a
+    // world this small opens at Local, with no group drawn closed.
+    assert_eq!(snapshot.people[0].at, [0.0, 0.0]);
+    assert!(snapshot.groups.is_empty() && snapshot.sky.is_empty());
+    assert!(snapshot.people.iter().all(|p| p.group.is_some()));
+    assert_eq!((snapshot.region.as_str(), snapshot.path.len()), ("", 0));
+
+    // Standing at Jimmy shows him and Alice, whom he reshared, and the way
+    // back up; each step up opens, and none of it asks anyone anything.
+    let at = |region: String| ClientRequest::Universe {
+        level: Level::Close,
+        region: Some(region),
+        layers: vec![Layer::People],
+        since: None,
+    };
+    let ClientResponse::Universe { snapshot: close } =
+        call(&kim, at(format!("p:{jimmy_id}"))).await
+    else {
+        panic!("no snapshot at Jimmy")
+    };
+    assert_eq!(close.level, Level::Close);
+    assert_eq!(close.region, format!("p:{jimmy_id}"));
+    assert_eq!(close.people[0].name, "Kim");
+    assert_eq!(close.people[1].name, "Jimmy");
+    assert!(close.people.iter().any(|p| p.name == "Alice"));
+    assert_eq!(close.path.first().map(String::as_str), Some(""));
+    for up in &close.path {
+        let resp = call(&kim, at(up.clone())).await;
+        assert!(
+            matches!(resp, ClientResponse::Universe { .. }),
+            "{up}: {resp:?}"
+        );
+    }
+    for bad in ["g:x", "sky:1/2/2"] {
+        let resp = kim.handle(at(bad.into())).await;
+        assert!(matches!(resp, ClientResponse::Error { .. }), "{resp:?}");
+    }
+    assert!(requests_sent(&kim).await <= before);
+
     for node in [kim, jimmy, alice] {
         node.shutdown().await.unwrap();
     }

@@ -56,3 +56,21 @@ ADR 0034's gate: in a world where a directory lists 5,000 people with no lines, 
 | Zooms from the top to the furthest person | 1 | |
 
 One public line between two of them puts both in a group, and their places in the sky stay the same. People and machines get separate skies (ADR 0033 §4).
+
+## Exploring the snapshot
+
+ADR 0034's gate: a million people explored down the tree, with every snapshot within its limits, and dense and sparse regions opening to different depths. And moving around (§6) sends nothing new between nodes.
+
+**How a region opens.** The top starts from the tree's roots, with Kim's own way down first. A group starts from its children. Then the node opens the largest group shown, again and again, while its children still fit in the 300 points. So a small group opens to its people while a large one beside it stays one light. Standing at someone opens their own group, adds up to 50 of the people they have lines with, and lists the groups above them as the way back up. At the top, the public sky gets 60 of the points while it has people.
+
+**Where the sky sits.** The sky is a ring around the placed world, from 64 to 1,024 units from Kim (a person is about 1 unit across). A hashed place goes round the ring and outwards so that equal areas stay equal, which keeps an even spread even. The ring never moves as the placed world grows.
+
+**The test** (`world::tests::a_million_people_are_explored`, run by hand):
+
+```sh
+cargo test -p osp-node --release --lib a_million_people_are_explored -- --ignored --nocapture
+```
+
+**Result (2026-11-14, desktop, one thread):** 1,000,000 people in 50,000 friend groups of 20, the groups joined in a ring. Every snapshot from the top down opened: 23,965 of them, at most 300 points each, and everyone was reached. Grouping and placing took 47 s, making the world's keys included. Opening a snapshot from the kept tree takes about a microsecond. The top showed groups 2, 3 and 4 levels down.
+
+**Moving around** (`osp-sim`, `the_universe_holds_no_address_and_opening_it_sends_nothing`, in every run): Kim's node stands at each person it shows, opens each region on the way back up and each group shown, and opens four sky cells. It sends nothing new: no new connection, no request, no viewing endpoint.
