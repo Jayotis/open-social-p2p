@@ -63,7 +63,7 @@ class _PersonTileState extends State<PersonTile> {
       if (person.summary != null) person.summary!,
       if (DateTime.tryParse(person.newest ?? '') case final newest?)
         'Posted ${formatAgo(newest)}',
-      if (person.foundThrough != null) 'Found through ${person.foundThrough}',
+      if (person.foundThrough != null) listedBy(person.foundThrough!),
     ];
     return ListTile(
       leading: CircleAvatar(

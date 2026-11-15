@@ -171,7 +171,7 @@ class PostCard extends StatelessWidget {
             Padding(
               padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
               child: Text(
-                'Found through ${post.foundThrough}',
+                listedBy(post.foundThrough!),
                 style: theme.textTheme.bodySmall,
               ),
             ),

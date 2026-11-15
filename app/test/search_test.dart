@@ -164,7 +164,10 @@ void main() {
           posts: [post('A table', foundThrough: 'oak-ash-elm')],
         ),
       );
-      expect(find.text('Found through oak-ash-elm'), findsNWidgets(2));
+      expect(
+        find.text('Asked to be found, listed by oak-ash-elm'),
+        findsNWidgets(2),
+      );
     });
 
     testWidgets('can be followed, and shows it once they are', (tester) async {

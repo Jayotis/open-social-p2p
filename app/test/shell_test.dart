@@ -522,6 +522,7 @@ void main() {
     app.regions['p:id-Kim'] = world(['Kim'], region: 'p:id-Kim', path: ['']);
     await start(tester, Place.universe);
     expect(find.byTooltip('Zoom out'), findsNothing, reason: 'at the top');
+    final home = tester.getCenter(find.byTooltip('Your node'));
 
     await tester.tapAt(drawnAt(tester, 1, 1));
     await tester.pumpAndSettle();
@@ -531,11 +532,31 @@ void main() {
     expect(find.textContaining('1 public line shown'), findsOne);
     expectPlainWords(tester);
 
-    // Stepping back goes up the path: the top, as held.
+    // Stepping back goes up the path, the top as held, and shows all of
+    // it again rather than only the one stood at.
     await tester.tap(find.byTooltip('Step back'));
     await tester.pumpAndSettle();
     expect(node.universeRegion, '');
     expect(find.text('Your node found 1 person'), findsOne);
+    final back = tester.getCenter(find.byTooltip('Your node'));
+    expect((back - home).distance, lessThan(1), reason: 'framed as before');
+  });
+
+  testWidgets('on its side, the card leaves the buttons clear', (tester) async {
+    await tester.binding.setSurfaceSize(const Size(846, 387));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    app.snapshot = world(['Kim']);
+    await start(tester, Place.universe);
+    final card = tester.getRect(
+      find.ancestor(
+        of: find.text('Your node found 1 person'),
+        matching: find.byType(Card),
+      ),
+    );
+    for (final button in ['My star', 'Layers']) {
+      final rect = tester.getRect(find.byTooltip(button));
+      expect(rect.overlaps(card), isFalse, reason: button);
+    }
   });
 
   testWidgets('My star flies home from anywhere', (tester) async {

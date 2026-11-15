@@ -3,6 +3,7 @@ import 'dart:math';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 
+import '../format.dart';
 import '../node.dart';
 import '../search_lights.dart';
 import '../src/rust/api/osp.dart';
@@ -78,6 +79,10 @@ abstract final class _Fit {
   /// Zooming out below this share of a region's own framing goes up its
   /// path (ADR 0034 §6).
   static const up = 0.4;
+
+  /// Wider than this, the card below keeps to the left, this wide.
+  static const wide = 600.0;
+  static const card = 440.0;
 
   /// What the controls above and the card below cover, in pixels.
   static const clearTop = 64.0;
@@ -256,12 +261,13 @@ class _UniverseTabState extends State<UniverseTab>
     _node.openUniverse(region);
   }
 
-  /// Zooms out one step along the path, the map where it is.
-  void _up({bool zoom = false}) {
+  /// Goes up one step along the path. A pinch leaves the map where it is
+  /// (ADR 0034 §6); a button frames everything in the region above, as one
+  /// press should show more than the step back.
+  void _up({bool frame = false}) {
     final path = (_node.universe ?? _shown)?.path ?? const [];
     if (path.isEmpty) return;
-    if (zoom) _flyTo(_camera.centre, _camera.scale / 2.5);
-    _stay = true;
+    _stay = !frame;
     _framed = null;
     _node.openUniverse(path.last);
   }
@@ -461,21 +467,24 @@ class _UniverseTabState extends State<UniverseTab>
                       _Control(
                         tooltip: 'Zoom out',
                         icon: Icons.zoom_out,
-                        onPressed: () => _up(zoom: true),
+                        onPressed: () => _up(frame: true),
                       ),
                   ],
                 ),
               ),
               Positioned(
                 left: Space.m,
-                right: Space.m,
+                // On a wide screen (a phone on its side) it keeps to the
+                // left, clear of the buttons on the right.
+                right: box.maxWidth > _Fit.wide ? null : Space.m,
+                width: box.maxWidth > _Fit.wide ? _Fit.card : null,
                 bottom: 96,
                 child: switch ((standing, lights)) {
                   (final p?, _) => _StandingAt(
                     person: p,
                     snapshot: s!,
                     node: node,
-                    onClose: () => _up(zoom: true),
+                    onClose: () => _up(frame: true),
                   ),
                   (null, final l?) => _Results(
                     lights: l,
@@ -840,7 +849,10 @@ class _Map extends CustomPainter {
     }
 
     // People, one by one. The owner is her node's star.
-    final named = s.people.length <= 40 || camera.scale >= 60;
+    // With few people, each is drawn larger and named, the sky's too, so
+    // a newcomer's handful stands out.
+    final few = s.people.length <= 40;
+    final named = few || camera.scale >= 60;
     final names = <(UniversePerson, Offset, double)>[];
     for (var i = 0; i < s.people.length; i++) {
       final p = s.people[i];
@@ -857,7 +869,7 @@ class _Map extends CustomPainter {
       final color = inSky
           ? colors.distantStar
           : (p.followed || p.known ? _followed : _near);
-      final r = _personRadius(p.bright);
+      final r = _personRadius(p.bright) * (few ? 1.8 : 1);
       final found = lights?.holdsPerson(p) ?? false;
       final shade = _shade(p.lit, found);
       _marks(canvas, at, r, p.lit, found);
@@ -877,7 +889,11 @@ class _Map extends CustomPainter {
             ..color = colors.yourStar,
         );
       }
-      if (here || found || p.followed || p.known || (named && !inSky)) {
+      if (here ||
+          found ||
+          p.followed ||
+          p.known ||
+          (named && (few || !inSky))) {
         names.add((p, at, r));
       }
     }
@@ -1163,7 +1179,7 @@ class _StandingAt extends StatelessWidget {
       if (p.followed) 'You follow them',
       if (p.known) 'Someone you know',
       if (!p.followed && !p.known && p.foundThrough != null)
-        'Found through ${p.foundThrough}',
+        listedBy(p.foundThrough!),
       if (posts > 0) posts == 1 ? '1 post here' : '$posts posts here',
       if (lines > 0)
         lines == 1 ? '1 public line shown' : '$lines public lines shown',

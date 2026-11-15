@@ -3,6 +3,11 @@ library;
 
 import 'package:flutter_rust_bridge/flutter_rust_bridge.dart';
 
+/// Why someone the owner doesn't follow is on the node: they asked to be
+/// found, and the machine named (by its name in words) lists them. The
+/// Universe's machine list says what such a machine is.
+String listedBy(String machine) => 'Asked to be found, listed by $machine';
+
 /// `1.2 MB`, `340 KB`.
 String formatBytes(int bytes) {
   const units = ['B', 'KB', 'MB', 'GB', 'TB'];
