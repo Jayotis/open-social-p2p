@@ -41,8 +41,9 @@ use crate::{
 /// owner's own world's and those kept from replies.
 pub(crate) const MAX_ASKS_PER_HOUR: u32 = 10;
 /// How long a tap waits for the other node: a first connection over Tor
-/// takes up to a minute.
-const ASK_TIMEOUT: Duration = Duration::from_secs(60);
+/// can take most of a minute, and the owner's device waits a minute for any
+/// answer (`osp-client`'s `REPLY_TIMEOUT`), so the node answers first.
+const ASK_TIMEOUT: Duration = Duration::from_secs(45);
 
 impl Core {
     /// The paths this node knows from its owner to `actor`, nearest first.
