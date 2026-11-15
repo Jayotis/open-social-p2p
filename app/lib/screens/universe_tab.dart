@@ -922,7 +922,11 @@ class _Map extends CustomPainter {
       );
     }
     final s = snapshot;
-    if (s == null) return;
+    // Nothing from her node yet, or it couldn't answer: her star still.
+    if (s == null) {
+      _yourStar(canvas, home);
+      return;
+    }
     bool seen(Offset p, double r) => view.inflate(r).contains(p);
 
     // Where the public sky starts: a faint ring, named when it's in view.
@@ -1010,9 +1014,7 @@ class _Map extends CustomPainter {
       if (!seen(at, 80)) continue;
       if (p.step == 0) {
         _marks(canvas, at, 14, p.lit, false);
-        _glow(canvas, at, 34, colors.yourStar, 0.55);
-        paint.color = colors.yourStar;
-        canvas.drawCircle(at, 11, paint);
+        _yourStar(canvas, at);
         continue;
       }
       final inSky = p.group == null && p.step == null;
@@ -1080,6 +1082,12 @@ class _Map extends CustomPainter {
       taken.add(box.inflate(2));
       label.paint(canvas, box.topLeft);
     }
+  }
+
+  /// The owner's star: her node.
+  void _yourStar(Canvas canvas, Offset at) {
+    _glow(canvas, at, 34, colors.yourStar, 0.55);
+    canvas.drawCircle(at, 11, Paint()..color = colors.yourStar);
   }
 
   void _glow(Canvas canvas, Offset at, double r, Color color, double alpha) {

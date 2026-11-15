@@ -585,6 +585,31 @@ void main() {
     expect(node.universeRegion, 'p:id-Sam');
   });
 
+  testWidgets('her star stays when her node can\'t say who it found', (
+    tester,
+  ) async {
+    app.unreachable = true;
+    await start(tester, Place.universe);
+    expect(find.text("Couldn't ask your node who it found"), findsOne);
+    final map = tester.renderObject(
+      find
+          .descendant(
+            of: find.byKey(const Key('universe-map')),
+            matching: find.byType(CustomPaint),
+          )
+          .first,
+    );
+    final star = tester.getCenter(find.byTooltip('Your node'));
+    final mapAt = tester.getTopLeft(find.byKey(const Key('universe-map')));
+    final at = star - mapAt;
+    expect(
+      map,
+      paints..something(
+        (call, args) => call == #drawCircle && args[0] == at && args[1] == 11.0,
+      ),
+    );
+  });
+
   /// Opens the Universe with the zoom hint due, stopping while it plays.
   Future<void> startHinting(WidgetTester tester) async {
     node.zoomHintDue = true;
