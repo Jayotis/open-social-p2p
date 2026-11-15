@@ -143,6 +143,24 @@ impl World {
         None
     }
 
+    /// Everyone in the group a lasting ID names, at any depth; none if it
+    /// names no group.
+    pub fn members(&self, id: u64) -> Option<Vec<PublicKey>> {
+        let g = self.group(id)?;
+        let mut members = Vec::new();
+        for (i, key) in self.keys.iter().enumerate() {
+            let mut at = self.tree.group_of[i];
+            while let Some(here) = at {
+                if here == g {
+                    members.push(*key);
+                    break;
+                }
+                at = self.tree.groups[here as usize].parent;
+            }
+        }
+        Some(members)
+    }
+
     /// `group` and the groups above it, the top first.
     fn chain(&self, group: u32) -> Vec<u32> {
         let mut chain = vec![group];

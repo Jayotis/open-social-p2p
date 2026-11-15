@@ -84,7 +84,6 @@ impl Cell {
     };
 
     /// The cell at `level` holding `place`.
-    #[cfg(test)]
     pub fn of(place: Place, level: u8) -> Cell {
         let shift = DEEPEST - level;
         let cut = |v: u32| v.checked_shr(shift as u32).unwrap_or(0);
@@ -95,7 +94,6 @@ impl Cell {
         }
     }
 
-    #[cfg(test)]
     pub fn contains(&self, place: Place) -> bool {
         Cell::of(place, self.level) == *self
     }

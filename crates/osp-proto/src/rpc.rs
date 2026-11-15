@@ -307,6 +307,15 @@ pub enum ClientRequest {
         #[serde(default = "default_feed_limit")]
         limit: u32,
     },
+    /// What a tap on a group or a sky cell opens (ADR 0035 §2): the people
+    /// in it, newest post first, and their posts and reshares, newest
+    /// first, `limit` of each. `region` is `g:` or `sky:`, as in
+    /// `Universe`. Answered with `Found`, from the node alone.
+    RegionItems {
+        region: String,
+        #[serde(default = "default_feed_limit")]
+        limit: u32,
+    },
     /// What the Universe may show (ADR 0033): one snapshot, built on the
     /// node alone from what it already knows. Asking for it sends nothing to
     /// any other node. `region` is what to open (ADR 0034 §2, §6), as

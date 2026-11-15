@@ -500,6 +500,23 @@ impl Client {
     }
 
     /// Everyone the node holds a profile of but its owner, newest post first.
+    /// A group's or sky cell's people and posts, newest first (ADR 0035
+    /// §2). `region` is `g:` or `sky:`, as a snapshot names them.
+    pub async fn region_items(
+        &self,
+        region: &str,
+        limit: u32,
+    ) -> Result<(Vec<PersonInfo>, Vec<FeedItem>)> {
+        let req = ClientRequest::RegionItems {
+            region: region.to_string(),
+            limit,
+        };
+        let ClientResponse::Found { people, posts } = self.request(&req).await? else {
+            bail!("unexpected reply to RegionItems");
+        };
+        Ok((people, posts))
+    }
+
     pub async fn people(&self, limit: u32) -> Result<Vec<PersonInfo>> {
         let req = ClientRequest::People { limit };
         let ClientResponse::People { people } = self.request(&req).await? else {

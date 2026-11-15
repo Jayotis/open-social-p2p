@@ -8,13 +8,17 @@ import '../src/rust/api/osp.dart';
 import '../theme.dart';
 import 'found_people_screen.dart';
 import 'node_summary_screen.dart';
+import 'people_screen.dart';
 import 'profile_screen.dart';
+import 'region_sheet.dart';
 
 /// The Universe (ADR 0031 §1, ADR 0034): the network as a map, with your
 /// star at the centre. One canvas, panned and zoomed by hand, drawn from
 /// the node's snapshot of a region (ADR 0033). Tapping a star stands
 /// there, tapping a light opens it, and zooming out goes up the region's
-/// path without moving the map. Places are the node's, so they stay put.
+/// path without moving the map. Tapping a group opens a sheet of its people
+/// and posts, which can open it on the map (ADR 0035 §2). Places are the
+/// node's, so they stay put.
 /// What it shows comes from the node's real state only (ADR 0036).
 class UniverseTab extends StatefulWidget {
   const UniverseTab({super.key, required this.node, required this.open});
@@ -198,7 +202,16 @@ class _UniverseTabState extends State<UniverseTab>
       case _OnPerson(:final person):
         _open('p:${person.identity}', toward: Offset(person.x, person.y));
       case _OnGroup(:final group):
-        _open('g:${group.id}', toward: Offset(group.x, group.y), zoom: 2);
+        RegionSheet.show(
+          context,
+          node: _node,
+          region: 'g:${group.id}',
+          title: group.people == 1
+              ? 'A group of 1 person'
+              : 'A group of ${group.people} people',
+          onOpenMap: () =>
+              _open('g:${group.id}', toward: Offset(group.x, group.y), zoom: 2),
+        );
       case _OnCell(:final cell):
         _open(
           'sky:${cell.level}/${cell.x}/${cell.y}',
@@ -1005,7 +1018,7 @@ class _FoundPeople extends StatelessWidget {
       null => ('Your node is finding people…', null),
       _ when count == 0 => (
         'Your node is looking for people',
-        'It checks every few minutes.',
+        'It checks every few minutes. Or paste someone’s invite code.',
       ),
       _ when count == 1 => (
         'Your node found 1 person',
@@ -1021,7 +1034,12 @@ class _FoundPeople extends StatelessWidget {
             ? null
             : Text(detail, maxLines: 1, overflow: TextOverflow.ellipsis),
         trailing: const Icon(Icons.chevron_right),
-        onTap: () => open(FoundPeopleScreen(node: node)),
+        // With nobody found, an invite code is the way in (ADR 0035 §4).
+        onTap: () => open(
+          people != null && count == 0
+              ? PeopleScreen(node: node)
+              : FoundPeopleScreen(node: node),
+        ),
       ),
     );
   }

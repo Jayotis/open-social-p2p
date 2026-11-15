@@ -303,6 +303,39 @@ async fn the_universe_shows_steps_and_public_lines_and_nothing_else() {
     }
     assert!(requests_sent(&kim).await <= before_search);
 
+    // Tapping their group opens its people and posts, newest first
+    // (ADR 0035 §2); a sheet opens only a group or a sky cell.
+    let group = jimmy_point.group.expect("Jimmy is placed");
+    let req = ClientRequest::RegionItems {
+        region: format!("g:{group}"),
+        limit: 20,
+    };
+    let ClientResponse::Found { people, posts } = call(&kim, req).await else {
+        panic!("no sheet")
+    };
+    let names: BTreeSet<&str> = people.iter().map(|p| p.name.as_str()).collect();
+    assert_eq!(
+        names,
+        BTreeSet::from(["Alice", "Jimmy"]),
+        "Kim isn't listed"
+    );
+    let texts: Vec<&str> = posts.iter().map(|p| p.content.as_str()).collect();
+    assert!(texts.contains(&"A birch stool") && texts.contains(&"Jimmy's own"));
+    let when: Vec<&str> = posts.iter().map(|p| p.published.as_str()).collect();
+    assert!(
+        when.windows(2).all(|w| w[0] >= w[1]),
+        "newest first: {when:?}"
+    );
+    for bad in [format!("p:{jimmy_id}"), "g:999999".into(), String::new()] {
+        let req = ClientRequest::RegionItems {
+            region: bad,
+            limit: 20,
+        };
+        let resp = kim.handle(req).await;
+        assert!(matches!(resp, ClientResponse::Error { .. }), "{resp:?}");
+    }
+    assert!(requests_sent(&kim).await <= before_search);
+
     for bad in ["g:x", "sky:1/2/2"] {
         let resp = kim.handle(at(bad.into())).await;
         assert!(matches!(resp, ClientResponse::Error { .. }), "{resp:?}");

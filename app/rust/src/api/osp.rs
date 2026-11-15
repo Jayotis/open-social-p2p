@@ -537,6 +537,17 @@ impl OspApp {
         })
     }
 
+    /// What a tap on a group or a sky cell opens (ADR 0035 §2): its people,
+    /// newest post first, and their posts, newest first. `region` is `g:`
+    /// or `sky:`. Nothing leaves the node.
+    pub async fn region_items(&self, region: String, limit: u32) -> Result<Found> {
+        let (people, posts) = self.client.region_items(&region, limit).await?;
+        Ok(Found {
+            people: people.into_iter().map(found_person).collect(),
+            posts: posts.into_iter().map(post).collect(),
+        })
+    }
+
     /// Everyone the node holds a profile of: those it follows and those
     /// directories brought, newest post first. Nothing leaves the node.
     pub async fn people(&self, limit: u32) -> Result<Vec<FoundPerson>> {
