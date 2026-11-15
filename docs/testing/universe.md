@@ -117,3 +117,27 @@ So the gate's reach is met: nothing the node holds needed a search. The 5 posts 
 **Still open:**
 - The first view frames the whole sky ring, so a few people sit close round the owner's star and their names don't fit until one zooms in. A newcomer might not know the map zooms at all.
 - Nothing explains why the machines shown have no names, or how a node comes to know people.
+
+## What the network does
+
+ADR 0036's gate, on the phone: what the map draws comes only from the node's events, and says in plain words what the node did. (The summary's lines against the node's own counts are checked in `osp-sim`: `osp-sim/tests/summary.rs`.)
+
+**The node.** Three lab nodes on P6 part 3 (migration 35), a phone paired with one of them (Pixel 3 XL, app build 15), the Universe on screen and recorded. Someone that node follows posted two photos.
+
+**Result (2026-11-15):**
+
+| | |
+| --- | --- |
+| Before anything happened | No events on any node, and the map still. |
+| First photo | The node fetched it ahead of time: one event, 274 KB in two parts. The author's node had one: served 548 KB in four parts, to two nodes. The list on the phone said "Your node fetched 274 KB of Kim's post from another node", as `osp events` did. |
+| Second photo | Drawn about 20 s after the node fetched it: a flow from the edge of the view into the owner's star, about 3 s, with its line under the map. Then the map was still again. |
+| Not seen | Reshares, people found and machines met or faded: none happened in the run. They're covered by `osp-sim/tests/events.rs` and the app's tests. |
+
+**What the run showed, and what changed:**
+- The line under the map said "fetched 19 KB": the first part of the photo was its own event, and the rest was summed into it on the node after the phone had drawn it. An event drawn in the last two minutes that grows now has its line shown again with the total, without being drawn again.
+- The photo came from its author's node, whose star was right beside the owner's, but the flow came from the edge as "another node": an event named a host only when it was a resharer listed as hosting the post. A fetch now says when the author's own node sent most of it (`from_author`, ADR 0033), and flows from their star: "Your node fetched 458 KB of Kim's post from Kim's node".
+
+**Again with both fixes (app build 16), a third photo:** opening the app drew the earlier fetch from the last hour, with its total. The new one was drawn as a flow from Kim's star into the owner's, its line saying "fetched 36 KB of Kim's post from Kim's node", and about 20 s later the line came back with the total, 593 KB. `osp events` said "from the author's node".
+
+**Still open:**
+- Kim's star is close to the owner's, so the flow from it is short and easy to miss. The line under the map says it either way.

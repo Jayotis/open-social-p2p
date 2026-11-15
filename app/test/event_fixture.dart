@@ -16,6 +16,7 @@ UniverseEvent anEvent(
   int bytes = 0,
   String? host,
   bool keptByCopy = false,
+  bool fromAuthor = false,
   bool met = false,
   DateTime? now,
 }) {
@@ -36,6 +37,7 @@ UniverseEvent anEvent(
     bytes: BigInt.from(bytes),
     host: host,
     keptByCopy: keptByCopy,
+    fromAuthor: fromAuthor,
     met: met,
   );
 }

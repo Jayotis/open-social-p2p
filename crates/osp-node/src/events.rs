@@ -45,6 +45,7 @@ fn sum(earlier: EventWhat, then: EventWhat) -> EventWhat {
                 bytes: a,
                 host: earlier_host,
                 kept_by_copy: earlier_kept,
+                from_author: earlier_from_author,
                 ..
             },
             EventWhat::Fetched {
@@ -53,6 +54,7 @@ fn sum(earlier: EventWhat, then: EventWhat) -> EventWhat {
                 bytes,
                 host,
                 kept_by_copy,
+                from_author,
             },
         ) => EventWhat::Fetched {
             author,
@@ -60,6 +62,7 @@ fn sum(earlier: EventWhat, then: EventWhat) -> EventWhat {
             bytes: a.saturating_add(bytes),
             host: host.or(earlier_host),
             kept_by_copy: kept_by_copy || earlier_kept,
+            from_author: from_author || earlier_from_author,
         },
         (
             EventWhat::Served { bytes: a, .. },

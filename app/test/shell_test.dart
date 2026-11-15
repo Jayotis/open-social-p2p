@@ -868,6 +868,9 @@ void main() {
     expectPlainWords(tester);
 
     // Summed into on the node: the same start, a new seq. Not drawn again.
+    // Its line is gone by then.
+    await tester.pump(const Duration(seconds: 9));
+    expect(find.text(served), findsNothing);
     final earlier = app.events.last;
     app.events = [
       app.events.first,
@@ -882,10 +885,19 @@ void main() {
         post: 'p1',
         bytes: BigInt.from(3 << 20),
         keptByCopy: false,
+        fromAuthor: false,
         met: false,
       ),
     ];
     await node.checkStatus();
+    // The events come, then the line is shown after the next frame.
+    await tester.pump();
+    await tester.pump();
+    // Its line again, with the total: the first part was small.
+    expect(
+      find.text("Your node sent Jimmy's post to other nodes 2 times, 3.0 MB"),
+      findsOne,
+    );
     await tester.pump(const Duration(seconds: 10));
     expect(app.eventsAsked.last, BigInt.two, reason: 'since the newest held');
     expect(debugDrawnEvents.toSet(), {BigInt.two});

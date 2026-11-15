@@ -429,6 +429,9 @@ pub enum EventWhat {
         /// The author's node couldn't be reached, and a copy sent it.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         kept_by_copy: bool,
+        /// The author's own node sent most of it.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        from_author: bool,
     },
     /// The node sent media to another node: never which one.
     Served {
@@ -458,6 +461,7 @@ pub const EVENT_ALLOWLIST: &[&str] = &[
     "events[].bytes",
     "events[].host",
     "events[].kept_by_copy",
+    "events[].from_author",
     "events[].words",
     "events[].met",
 ];
@@ -581,6 +585,7 @@ mod tests {
                 bytes: 10,
                 host: Some(key(1)),
                 kept_by_copy: true,
+                from_author: true,
             },
             EventWhat::Served {
                 author: Some(key(2)),

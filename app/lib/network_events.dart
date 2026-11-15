@@ -22,8 +22,16 @@ class NetworkEvents {
   /// At most this many wait to be drawn; the oldest go first.
   static const maxWaiting = 12;
 
+  /// How long after it's drawn an event that grows is told again.
+  static const growing = Duration(minutes: 2);
+
   final Map<String, UniverseEvent> _byKey = {};
   final Set<String> _drawn = {};
+  final Map<String, DateTime> _drawnAt = {};
+
+  /// An event drawn lately that has grown since: its line says it again,
+  /// with the new total, but it isn't drawn again.
+  UniverseEvent? grown;
   final List<UniverseEvent> _waiting = [];
 
   /// The highest `seq` held: what to ask `since`.
@@ -39,9 +47,14 @@ class NetworkEvents {
   /// The next event to draw, if any.
   UniverseEvent? get next => _waiting.firstOrNull;
 
+  /// The newest the phone holds of what [e] is about: summed into since it
+  /// was drawn, it says the total so far.
+  UniverseEvent latest(UniverseEvent e) => _byKey[keyOf(e)] ?? e;
+
   /// [next] was drawn.
-  void drew() {
-    if (_waiting.isNotEmpty) _waiting.removeAt(0);
+  void drew({DateTime? now}) {
+    if (_waiting.isEmpty) return;
+    _drawnAt[keyOf(_waiting.removeAt(0))] = now ?? clock.now();
   }
 
   /// Takes what the node answered, oldest first.
@@ -54,6 +67,8 @@ class NetworkEvents {
       final key = keyOf(e);
       _byKey[key] = e;
       final last = _time(e.last);
+      final drawnAt = _drawnAt[key];
+      if (drawnAt != null && at.difference(drawnAt) < growing) grown = e;
       if (last.isBefore(soon) || !_drawn.add(key)) continue;
       _waiting.add(e);
     }
@@ -66,6 +81,8 @@ class NetworkEvents {
   void clear() {
     _byKey.clear();
     _drawn.clear();
+    _drawnAt.clear();
+    grown = null;
     _waiting.clear();
     since = null;
   }
@@ -131,7 +148,13 @@ String describeEvent(UniverseEvent e, EventNames names) {
           ? '$who reshared $whose post'
           : '$who reshared $whose posts $n times';
     case EventKind.fetched:
-      final from = e.host == null
+      final from = e.fromAuthor
+          ? switch (names.whose(e.author)) {
+              'your' => 'your own node',
+              'a' || "someone's" => "its author's node",
+              final whose => '$whose node',
+            }
+          : e.host == null
           ? 'another node'
           : '${names.who(e.host)}, who keeps it available';
       final kept = e.keptByCopy

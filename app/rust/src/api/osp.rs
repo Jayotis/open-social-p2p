@@ -339,6 +339,8 @@ pub struct UniverseEvent {
     pub host: Option<String>,
     /// `fetched`: a copy sent it, as the author's node couldn't be reached.
     pub kept_by_copy: bool,
+    /// `fetched`: the author's own node sent most of it.
+    pub from_author: bool,
     /// `machine`: it answered (true) or faded.
     pub met: bool,
 }
@@ -1431,6 +1433,7 @@ fn universe_event(e: universe::Event) -> UniverseEvent {
         bytes: 0,
         host: None,
         kept_by_copy: false,
+        from_author: false,
         met: false,
     };
     match e.what {
@@ -1450,8 +1453,10 @@ fn universe_event(e: universe::Event) -> UniverseEvent {
             bytes,
             host,
             kept_by_copy,
+            from_author,
         } => {
             out.kind = EventKind::Fetched;
+            out.from_author = from_author;
             out.author = author.map(|a| a.to_string());
             out.post = post.map(|p| p.to_string());
             out.bytes = bytes;

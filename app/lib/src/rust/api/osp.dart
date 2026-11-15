@@ -1183,6 +1183,9 @@ class UniverseEvent {
   /// `fetched`: a copy sent it, as the author's node couldn't be reached.
   final bool keptByCopy;
 
+  /// `fetched`: the author's own node sent most of it.
+  final bool fromAuthor;
+
   /// `machine`: it answered (true) or faded.
   final bool met;
 
@@ -1200,6 +1203,7 @@ class UniverseEvent {
     required this.bytes,
     this.host,
     required this.keptByCopy,
+    required this.fromAuthor,
     required this.met,
   });
 
@@ -1218,6 +1222,7 @@ class UniverseEvent {
       bytes.hashCode ^
       host.hashCode ^
       keptByCopy.hashCode ^
+      fromAuthor.hashCode ^
       met.hashCode;
 
   @override
@@ -1238,6 +1243,7 @@ class UniverseEvent {
           bytes == other.bytes &&
           host == other.host &&
           keptByCopy == other.keptByCopy &&
+          fromAuthor == other.fromAuthor &&
           met == other.met;
 }
 
