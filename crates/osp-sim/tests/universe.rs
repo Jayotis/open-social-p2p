@@ -13,13 +13,13 @@
 //!   nothing new from any of Kim's endpoints, and makes no viewing endpoint.
 
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     path::Path,
     time::{Duration, Instant},
 };
 
 use osp_node::{
-    Config, KnownDirectory, Node, SimSettings,
+    Config, KnownDirectory, MeetingTimes, Node, SimSettings,
     simnet::{Link, SimNet},
 };
 use osp_proto::{
@@ -32,6 +32,14 @@ fn sim(net: &SimNet) -> SimSettings {
     SimSettings {
         network: Some(net.link(Link::default())),
         machine_names: true,
+        // Machines meet in the background, with a first round anywhere in
+        // the first ten minutes, which once fell in the window where Kim's
+        // sends are counted. Opening the Universe is what's measured, so
+        // the rounds come long after these tests end.
+        meeting: MeetingTimes {
+            round: Duration::from_secs(1_000 * 24 * 60 * 60),
+            ..MeetingTimes::default()
+        },
         ..SimSettings::default()
     }
 }
@@ -303,7 +311,38 @@ async fn the_universe_holds_no_address_and_opening_it_sends_nothing() {
         .iter()
         .filter(|(from, to)| *from != public || !connected.contains(to))
         .collect();
-    assert!(new.is_empty(), "opening the Universe sent: {new:?}");
+    let mut names: HashMap<EndpointId, String> = HashMap::new();
+    for (node, name) in [
+        (&directory, "the directory"),
+        (&kim, "Kim"),
+        (&jimmy, "Jimmy"),
+        (&alice, "Alice"),
+        (&bob, "Bob"),
+        (&fred, "Fred"),
+    ] {
+        let ids = node.endpoint_ids();
+        for (i, id) in ids.iter().enumerate() {
+            let what = match (i, Some(*id) == node.machine_id()) {
+                (0, _) => "public",
+                (_, true) => "machine",
+                _ => "other",
+            };
+            names.insert(*id, format!("{name}'s {what} endpoint"));
+        }
+    }
+    let named: Vec<_> = new
+        .iter()
+        .map(|(from, to)| {
+            let name = |id: &EndpointId| {
+                names
+                    .get(id)
+                    .cloned()
+                    .unwrap_or_else(|| id.fmt_short().to_string())
+            };
+            format!("{} to {}", name(from), name(to))
+        })
+        .collect();
+    assert!(new.is_empty(), "opening the Universe sent: {named:?}");
     let asked_after = asked(&kim).await;
     assert!(
         asked_after.0 <= asked_before.0 && asked_after.1 <= asked_before.1,
