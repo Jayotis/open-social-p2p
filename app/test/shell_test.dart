@@ -53,15 +53,34 @@ class FakeApp implements OspApp {
   final askedFor = <String>[];
   bool unreachable = false;
 
+  /// The top with a layer lit, by layer, and each layer asked with.
+  final litTops = <UniverseLayer, UniverseSnapshot>{};
+  final layersAsked = <UniverseLayer?>[];
+
   @override
-  Future<UniverseSnapshot?> universe({String? region, String? since}) async {
+  Future<UniverseSnapshot?> universe({
+    String? region,
+    UniverseLayer? lit,
+    String? since,
+  }) async {
     asked.add(since);
     askedFor.add(region ?? '');
+    layersAsked.add(lit);
     if (unreachable) throw Exception('no contact');
     final there = region == null
-        ? snapshot
+        ? (lit == null ? snapshot : litTops[lit] ?? snapshot)
         : regions[region] ?? world(const [], region: region, path: const ['']);
     return since == there.version ? null : there;
+  }
+
+  /// What a search finds, and each one asked for.
+  Found searchAnswer = const Found(people: [], posts: []);
+  final searched = <String>[];
+
+  @override
+  Future<Found> search({required String words, required int limit}) async {
+    searched.add(words);
+    return searchAnswer;
   }
 
   /// What a tap on a group or cell opens, by region, and each one asked.
@@ -119,6 +138,7 @@ UniverseSnapshot world(
   List<UniverseMachine> machines = const [],
 }) {
   UniversePerson person(String name, int? step, double x) => UniversePerson(
+    lit: 0,
     identity: 'id-$name',
     name: name,
     step: step,
@@ -340,6 +360,7 @@ void main() {
         .toIso8601String();
     app.found = [
       FoundPerson(
+        regions: const [],
         identity: 'id-Kim',
         name: 'Kim',
         summary: 'Plays the cello',
@@ -347,7 +368,12 @@ void main() {
         foundThrough: 'upset-slot-only',
         newest: posted,
       ),
-      const FoundPerson(identity: 'id-Sam', name: 'Sam', followed: true),
+      const FoundPerson(
+        regions: [],
+        identity: 'id-Sam',
+        name: 'Sam',
+        followed: true,
+      ),
     ];
     app.snapshot = world(['Kim', 'Sam']);
     await start(tester, Place.universe);
@@ -445,7 +471,14 @@ void main() {
       region: '',
       path: const [],
       groups: [
-        UniverseGroup(id: BigInt.from(7), people: 12, bright: 40, x: 5, y: 0),
+        UniverseGroup(
+          lit: 0,
+          id: BigInt.from(7),
+          people: 12,
+          bright: 40,
+          x: 5,
+          y: 0,
+        ),
       ],
       people: top.people,
       lines: const [],
@@ -454,7 +487,14 @@ void main() {
       sky: const [],
     );
     app.sheets['g:7'] = const Found(
-      people: [FoundPerson(identity: 'id-Kim', name: 'Kim', followed: false)],
+      people: [
+        FoundPerson(
+          regions: [],
+          identity: 'id-Kim',
+          name: 'Kim',
+          followed: false,
+        ),
+      ],
       posts: [],
     );
     await start(tester, Place.universe);
@@ -592,6 +632,121 @@ void main() {
     await tester.pumpAndSettle();
     final star = tester.getCenter(find.byTooltip('Your node'));
     expect((star - home).distance, lessThan(1));
+  });
+
+  testWidgets('a layer lights up the map where it is, one at a time', (
+    tester,
+  ) async {
+    app.snapshot = world(['Kim']);
+    app.litTops[UniverseLayer.posts] = world(['Kim'], version: 'lit');
+    await start(tester, Place.universe);
+
+    await tester.tap(find.byTooltip('Layers'));
+    await tester.pumpAndSettle();
+    expect(find.text('What lights up'), findsOne);
+    final network = tester.widget<ListTile>(
+      find.widgetWithText(ListTile, 'Network'),
+    );
+    expect(network.enabled, isFalse, reason: 'Network comes with P6');
+    expectPlainWords(tester);
+
+    await tester.tap(find.text('Posts'));
+    await tester.pumpAndSettle();
+    expect(app.layersAsked.last, UniverseLayer.posts);
+    expect(node.universeRegion, '', reason: 'the map stays where it was');
+    expect(node.universe?.version, 'lit');
+    expect(find.text('Posts, last 90 days'), findsOne);
+    expectPlainWords(tester);
+
+    await tester.tap(find.byTooltip('Back to people'));
+    await tester.pumpAndSettle();
+    expect(app.layersAsked.last, isNull);
+    expect(find.text('Posts, last 90 days'), findsNothing);
+    expect(node.universe?.version, isNot('lit'), reason: 'held by layer');
+  });
+
+  testWidgets('a search lights up its results, flies there, and lists them', (
+    tester,
+  ) async {
+    final top = world([]);
+    app.snapshot = UniverseSnapshot(
+      version: 'g',
+      level: UniverseLevel.universe,
+      region: '',
+      path: const [],
+      groups: [
+        UniverseGroup(
+          lit: 0,
+          id: BigInt.from(7),
+          people: 12,
+          bright: 40,
+          x: 5,
+          y: 0,
+        ),
+      ],
+      people: top.people,
+      lines: const [],
+      morePeople: 0,
+      machines: const [],
+      sky: const [],
+    );
+    app.regions['g:7'] = world(['Kim'], region: 'g:7', path: ['']);
+    app.searchAnswer = const Found(
+      people: [
+        FoundPerson(
+          regions: ['', 'g:7'],
+          identity: 'id-Kim',
+          name: 'Kim',
+          followed: false,
+        ),
+      ],
+      posts: [
+        Post(
+          regions: ['', 'g:7'],
+          id: 'cello-post',
+          author: 'Kim',
+          authorIdentity: 'id-Kim',
+          published: '2026-11-14T00:00:00Z',
+          text: 'Cello at noon',
+          media: [],
+          resharerHosts: false,
+        ),
+      ],
+    );
+    await start(tester, Place.home);
+
+    await tester.tap(find.byTooltip('Search'));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byType(TextField), 'cello');
+    await tester.testTextInput.receiveAction(TextInputAction.search);
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('Show on the map'));
+    await tester.pumpAndSettle();
+    expect(find.byType(SearchScreen), findsNothing);
+    expect(_title('Universe'), findsOneWidget);
+    expect(
+      node.universeRegion,
+      'g:7',
+      reason: 'the deepest region holding them all',
+    );
+    expect(find.text('1 person and 1 post, lit up'), findsOne);
+    expectPlainWords(tester);
+
+    await tester.tap(find.text('List'));
+    await tester.pumpAndSettle();
+    expect(find.byType(SearchScreen), findsOneWidget);
+    expect(find.text('Cello at noon'), findsOne);
+    expect(app.searched, ['cello', 'cello']);
+
+    await tester.tap(find.byTooltip('Show on the map'));
+    await tester.pumpAndSettle();
+    expect(find.byType(SearchScreen), findsNothing);
+    expect(find.text('1 person and 1 post, lit up'), findsOne);
+
+    await tester.tap(find.byTooltip('Clear the search'));
+    await tester.pumpAndSettle();
+    expect(node.searchLights, isNull);
+    expect(find.textContaining('Your node found'), findsOne);
   });
 }
 

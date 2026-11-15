@@ -137,6 +137,10 @@ pub struct FoundPerson {
     pub found_through: Option<String>,
     /// When their newest post the node holds was published (RFC 3339).
     pub newest: Option<String>,
+    /// Search only (ADR 0035 §3): where they are on the map, as a
+    /// snapshot names regions, the top (empty) first, then their groups,
+    /// the widest first; or one `sky:32/x/y` in the public sky.
+    pub regions: Vec<String>,
 }
 
 pub struct Post {
@@ -161,6 +165,8 @@ pub struct Post {
     /// For one of the owner's own posts, how many people's nodes said they
     /// reshared it (ADR 0029). `None` for anyone else's.
     pub resharers: Option<u32>,
+    /// Search only: where its author is on the map, as for a person.
+    pub regions: Vec<String>,
 }
 
 /// A reply to a post (ADR 0028).
@@ -298,6 +304,17 @@ pub struct UniverseSnapshot {
     pub sky: Vec<SkyCell>,
 }
 
+/// What lights up on the map (ADR 0035 §1). People alone is none.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum UniverseLayer {
+    /// Where recent public posts are.
+    Posts,
+    /// Where recent public video is.
+    Video,
+    /// Where reshares are spreading.
+    Shared,
+}
+
 /// How close the camera is (ADR 0034's zoom bands).
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum UniverseLevel {
@@ -318,6 +335,8 @@ pub struct UniverseGroup {
     pub people: u32,
     /// 0 to 100.
     pub bright: u8,
+    /// With a layer lit: its people's recent items of that kind.
+    pub lit: u32,
     pub x: f32,
     pub y: f32,
 }
@@ -331,6 +350,8 @@ pub struct SkyCell {
     pub people: u32,
     /// Those of them with public posts lately.
     pub creators: u32,
+    /// With a layer lit: its people's recent items of that kind.
+    pub lit: u32,
     /// Its centre.
     pub at_x: f32,
     pub at_y: f32,
@@ -362,6 +383,8 @@ pub struct UniversePerson {
     pub group: Option<u64>,
     /// 0 to 100.
     pub bright: u8,
+    /// With a layer lit: their own recent items of that kind.
+    pub lit: u32,
 }
 
 /// A public act between two people, each by their place in `people`.
@@ -559,14 +582,25 @@ impl OspApp {
     /// it already knows: asking sends nothing to any other node. `region`
     /// is what it opens (ADR 0034 §6): none or empty for the top, `g:<id>`
     /// a group, `p:<identity>` standing at someone, `sky:<l>/<x>/<y>` a
-    /// cell of the sky. With `since` the version the app holds, none means
-    /// it's unchanged.
+    /// cell of the sky. `lit` lights up where that kind of item is (ADR
+    /// 0035 §1); none shows people alone. With `since` the version the app
+    /// holds, none means it's unchanged.
     pub async fn universe(
         &self,
         region: Option<String>,
+        lit: Option<UniverseLayer>,
         since: Option<String>,
     ) -> Result<Option<UniverseSnapshot>> {
-        Ok(self.client.universe(region, since).await?.map(universe))
+        let lit = lit.map(|l| match l {
+            UniverseLayer::Posts => universe::Layer::Posts,
+            UniverseLayer::Video => universe::Layer::Video,
+            UniverseLayer::Shared => universe::Layer::Shared,
+        });
+        Ok(self
+            .client
+            .universe(region, lit, since)
+            .await?
+            .map(universe))
     }
 
     /// The last top snapshot fetched, to show before the node answers.
@@ -1194,6 +1228,7 @@ fn post(item: FeedItem) -> Post {
         found_through: item.found_through,
         deletable: item.deletable.map(|id| id.to_string()),
         resharers: item.resharers,
+        regions: item.regions,
     }
 }
 
@@ -1238,6 +1273,7 @@ fn universe(s: universe::Snapshot) -> UniverseSnapshot {
                 from: g.from,
                 people: g.people,
                 bright: g.bright,
+                lit: g.lit,
                 x: g.at[0],
                 y: g.at[1],
             })
@@ -1261,6 +1297,7 @@ fn universe(s: universe::Snapshot) -> UniverseSnapshot {
                 y: p.at[1],
                 group: p.group,
                 bright: p.bright,
+                lit: p.lit,
             })
             .collect(),
         lines: s
@@ -1311,6 +1348,7 @@ fn universe(s: universe::Snapshot) -> UniverseSnapshot {
                 y: c.y,
                 people: c.people,
                 creators: c.creators,
+                lit: c.lit,
                 at_x: c.at[0],
                 at_y: c.at[1],
             })
@@ -1326,5 +1364,6 @@ fn found_person(p: osp_client::osp_proto::rpc::PersonInfo) -> FoundPerson {
         followed: p.followed,
         found_through: p.found_through,
         newest: p.newest,
+        regions: p.regions,
     }
 }

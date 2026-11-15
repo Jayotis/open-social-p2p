@@ -4,6 +4,7 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 
 import '../node.dart';
+import '../search_lights.dart';
 import '../src/rust/api/osp.dart';
 import '../theme.dart';
 import 'found_people_screen.dart';
@@ -11,14 +12,17 @@ import 'node_summary_screen.dart';
 import 'people_screen.dart';
 import 'profile_screen.dart';
 import 'region_sheet.dart';
+import 'search_screen.dart';
 
 /// The Universe (ADR 0031 §1, ADR 0034): the network as a map, with your
 /// star at the centre. One canvas, panned and zoomed by hand, drawn from
 /// the node's snapshot of a region (ADR 0033). Tapping a star stands
 /// there, tapping a light opens it, and zooming out goes up the region's
 /// path without moving the map. Tapping a group opens a sheet of its people
-/// and posts, which can open it on the map (ADR 0035 §2). Places are the
-/// node's, so they stay put.
+/// and posts, which can open it on the map (ADR 0035 §2). A layer lights
+/// up where posts, video or reshares are, and a search lights up where its
+/// results are and flies there (ADR 0035 §1, §3). Places are the node's,
+/// so they stay put.
 /// What it shows comes from the node's real state only (ADR 0036).
 class UniverseTab extends StatefulWidget {
   const UniverseTab({super.key, required this.node, required this.open});
@@ -101,6 +105,11 @@ class _UniverseTabState extends State<UniverseTab>
   /// The last snapshot drawn, kept while the next region's comes.
   UniverseSnapshot? _shown;
 
+  /// The search last flown to, and whether the next region framed is
+  /// framed on its results.
+  SearchLights? _flown;
+  bool _onResults = false;
+
   /// The last gesture update: where the fingers were, the recognizer's
   /// scale then, and how many fingers. Each update moves the camera by what
   /// changed since, so a finger landing or lifting doesn't make it jump.
@@ -146,25 +155,98 @@ class _UniverseTabState extends State<UniverseTab>
     _fly.forward(from: 0);
   }
 
+  /// The room the controls and the card leave clear.
+  Size get _clear {
+    final size = _camera.size;
+    return Size(
+      size.width,
+      max(size.height - _Fit.clearTop - _Fit.clearBottom, size.height / 3),
+    );
+  }
+
+  /// Where the camera's centre goes for [middle] to be in the clear room.
+  Offset _lifted(Offset middle, double scale) {
+    final lift = (_camera.size.height - _clear.height) / 2 - _Fit.clearTop;
+    return middle + Offset(0, lift / scale);
+  }
+
   /// Frames a newly arrived region, unless it came from zooming out.
   void _frame(UniverseSnapshot s) {
     if (_framed == s.region || _camera.size.isEmpty) return;
     _framed = s.region;
-    // Framed in the room the controls and the card leave clear.
-    final size = _camera.size;
-    final clear = Size(
-      size.width,
-      max(size.height - _Fit.clearTop - _Fit.clearBottom, size.height / 3),
-    );
-    final (middle, scale) = _fitOf(s, clear);
-    final lift = (size.height - clear.height) / 2 - _Fit.clearTop;
-    final centre = middle + Offset(0, lift / scale);
+    final (middle, scale) = _fitOf(s, _clear);
     _fits[s.region] = scale;
     if (_stay) {
       _stay = false;
       return;
     }
-    _flyTo(centre, scale);
+    if (_onResults) {
+      _onResults = false;
+      if (_frameResults(s)) return;
+    }
+    _flyTo(_lifted(middle, scale), scale);
+  }
+
+  /// Flies to the search's results (ADR 0035 §3): opens the deepest region
+  /// holding them all, then frames what's lit there.
+  void _flyToResults() {
+    final lights = _node.searchLights;
+    if (lights == null) return;
+    _flown = lights;
+    final here = _node.universe;
+    if (_node.universeRegion == lights.region && here != null) {
+      _frameResults(here);
+      return;
+    }
+    _stay = false;
+    _onResults = true;
+    _framed = null;
+    _node.openUniverse(lights.region);
+  }
+
+  /// Frames the lit results in [s]; false if none of them is in it.
+  bool _frameResults(UniverseSnapshot s) {
+    final lights = _node.searchLights;
+    if (lights == null || _camera.size.isEmpty) return false;
+    final points = _resultsIn(s, lights);
+    if (points.isEmpty) return false;
+    var bounds = Rect.fromPoints(points.first, points.first);
+    for (final p in points) {
+      bounds = bounds.expandToInclude(Rect.fromPoints(p, p));
+    }
+    final half = max(bounds.width, bounds.height) / 2;
+    final room = _clear.shortestSide / 2 * 0.8;
+    // One alone is shown close; never closer than a region alone.
+    final scale = half > 0 ? min(room / half, _Fit.near * 2) : _Fit.near;
+    _flyTo(_lifted(bounds.center, scale), scale);
+    return true;
+  }
+
+  void _pickLayer() {
+    showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      // As tall as its rows, so every layer shows at once.
+      isScrollControlled: true,
+      builder: (context) => _LayerPicker(
+        layer: _node.universeLayer,
+        onPick: (layer) {
+          Navigator.of(context).pop();
+          _node.lightUniverse(layer);
+        },
+      ),
+    );
+  }
+
+  /// Back to the plain list of the search's results.
+  void _resultsList(SearchLights lights) {
+    widget.open(
+      SearchScreen(
+        node: _node,
+        words: lights.words,
+        onMap: () => Navigator.of(context).pop(),
+      ),
+    );
   }
 
   void _open(String region, {Offset? toward, double zoom = 1}) {
@@ -281,6 +363,14 @@ class _UniverseTabState extends State<UniverseTab>
       });
     }
     final standing = _standingAt(s, node.universeRegion);
+    final lights = node.searchLights;
+    // A search just shown on the map: fly there once.
+    if (lights != null && !identical(lights, _flown)) {
+      _flown = lights;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && identical(node.searchLights, lights)) _flyToResults();
+      });
+    }
     return ColoredBox(
       color: colors.sky,
       child: LayoutBuilder(
@@ -301,7 +391,7 @@ class _UniverseTabState extends State<UniverseTab>
                     onScaleEnd: (_) => _scaleEnd(),
                     onTapUp: s == null ? null : (d) => _tap(d.localPosition, s),
                     child: Semantics(
-                      label: _describe(s),
+                      label: _describe(s, node.universeLayer, lights),
                       child: CustomPaint(
                         painter: _Map(
                           camera: _camera,
@@ -310,6 +400,8 @@ class _UniverseTabState extends State<UniverseTab>
                           standing: standing,
                           labels: _labels,
                           ownName: _ownName(node),
+                          layer: node.universeLayer,
+                          lights: lights,
                         ),
                       ),
                     ),
@@ -330,7 +422,25 @@ class _UniverseTabState extends State<UniverseTab>
               Positioned(
                 left: Space.m,
                 top: Space.s,
-                child: _Machines(machines: s?.machines ?? const []),
+                right: 64,
+                child: Wrap(
+                  spacing: Space.xs,
+                  runSpacing: Space.xs,
+                  children: [
+                    _Machines(machines: s?.machines ?? const []),
+                    if (node.universeLayer case final layer?)
+                      InputChip(
+                        label: Text(_LayerPicker.chip(layer)),
+                        labelStyle: TextStyle(color: colors.onSky),
+                        backgroundColor: colors.skyHaze,
+                        side: BorderSide.none,
+                        onPressed: _pickLayer,
+                        deleteIconColor: colors.onSky,
+                        deleteButtonTooltipMessage: 'Back to people',
+                        onDeleted: () => node.lightUniverse(null),
+                      ),
+                  ],
+                ),
               ),
               Positioned(
                 right: Space.s,
@@ -341,6 +451,11 @@ class _UniverseTabState extends State<UniverseTab>
                       tooltip: 'My star',
                       icon: Icons.my_location,
                       onPressed: _home,
+                    ),
+                    _Control(
+                      tooltip: 'Layers',
+                      icon: Icons.layers_outlined,
+                      onPressed: _pickLayer,
                     ),
                     if ((s?.path ?? const []).isNotEmpty)
                       _Control(
@@ -355,14 +470,21 @@ class _UniverseTabState extends State<UniverseTab>
                 left: Space.m,
                 right: Space.m,
                 bottom: 96,
-                child: standing == null
-                    ? _FoundPeople(node: node, open: widget.open)
-                    : _StandingAt(
-                        person: standing,
-                        snapshot: s!,
-                        node: node,
-                        onClose: () => _up(zoom: true),
-                      ),
+                child: switch ((standing, lights)) {
+                  (final p?, _) => _StandingAt(
+                    person: p,
+                    snapshot: s!,
+                    node: node,
+                    onClose: () => _up(zoom: true),
+                  ),
+                  (null, final l?) => _Results(
+                    lights: l,
+                    onFly: _flyToResults,
+                    onList: () => _resultsList(l),
+                    onClose: () => node.showSearch(null),
+                  ),
+                  _ => _FoundPeople(node: node, open: widget.open),
+                },
               ),
             ],
           );
@@ -371,14 +493,21 @@ class _UniverseTabState extends State<UniverseTab>
     );
   }
 
-  static String _describe(UniverseSnapshot? s) {
+  static String _describe(
+    UniverseSnapshot? s,
+    UniverseLayer? layer,
+    SearchLights? lights,
+  ) {
     if (s == null) return 'The map of your Universe, still empty';
     final people = s.people.length;
     final groups = s.groups.length;
+    final lit = layer == null ? '' : ' ${_LayerPicker.chip(layer)} lit up.';
+    final found = lights == null
+        ? ' The list of who your node found is below it.'
+        : ' Results for ${lights.words} lit up, their list below it.';
     return 'The map of your Universe: $people '
         '${people == 1 ? 'person' : 'people'}'
-        '${groups > 0 ? ' and $groups groups' : ''} shown. '
-        'The list of who your node found is below it.';
+        '${groups > 0 ? ' and $groups groups' : ''} shown.$lit$found';
   }
 }
 
@@ -397,6 +526,17 @@ UniversePerson? _standingAt(UniverseSnapshot? s, String region) {
   }
   return null;
 }
+
+/// Where in [s] the search's results are: the people found or whose posts
+/// were, and the closed groups and sky cells holding them.
+List<Offset> _resultsIn(UniverseSnapshot s, SearchLights lights) => [
+  for (final p in s.people)
+    if (p.step != 0 && lights.holdsPerson(p)) Offset(p.x, p.y),
+  for (final g in s.groups)
+    if (lights.holdsGroup(g)) Offset(g.x, g.y),
+  for (final c in s.sky)
+    if (lights.holdsCell(c)) Offset(c.atX, c.atY),
+];
 
 /// How a region is framed: its middle, and the scale that shows it.
 (Offset, double) _fitOf(UniverseSnapshot s, Size size) {
@@ -535,6 +675,8 @@ class _Map extends CustomPainter {
     required this.standing,
     required this.labels,
     required this.ownName,
+    required this.layer,
+    required this.lights,
   }) : super(repaint: camera);
 
   final _Camera camera;
@@ -545,6 +687,39 @@ class _Map extends CustomPainter {
 
   /// The owner's name as drawn under her star, to keep clear.
   final String ownName;
+
+  /// What lights up, if anything does but people (ADR 0035 §1).
+  final UniverseLayer? layer;
+
+  /// A search's results to light up (ADR 0035 §3).
+  final SearchLights? lights;
+
+  /// How bright a light is drawn: as usual, or dimmed when a layer is on
+  /// and it holds none of the layer's items, or a search is shown and it
+  /// holds no result.
+  double _shade(int lit, bool found) {
+    if (layer != null && lit == 0) return 0.35;
+    if (layer == null && lights != null && !found) return 0.5;
+    return 1;
+  }
+
+  /// A lit light's extra glow, by how many items it holds, and a found
+  /// one's ring.
+  void _marks(Canvas canvas, Offset at, double r, int lit, bool found) {
+    if (layer != null && lit > 0) {
+      _glow(canvas, at, r * 1.6 + 5 * _log2(lit + 1), colors.yourStar, 0.5);
+    }
+    if (found) {
+      canvas.drawCircle(
+        at,
+        r + 4,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 2
+          ..color = colors.yourStar,
+      );
+    }
+  }
 
   static const _reshared = Color(0xFF7F95E8);
   static const _creditedEarly = Color(0xFFE8C46A);
@@ -615,7 +790,15 @@ class _Map extends CustomPainter {
       final r = _cellRadius(c.people);
       if (!seen(at, r)) continue;
       final share = c.people == 0 ? 0 : c.creators / c.people;
-      _glow(canvas, at, r, colors.distantStar, 0.35 + 0.4 * share);
+      final found = lights?.holdsCell(c) ?? false;
+      _marks(canvas, at, r * 0.6, c.lit, found);
+      _glow(
+        canvas,
+        at,
+        r,
+        colors.distantStar,
+        (0.35 + 0.4 * share) * _shade(c.lit, found),
+      );
       _count(canvas, at, r, c.people);
     }
 
@@ -644,7 +827,15 @@ class _Map extends CustomPainter {
       final at = camera.toScreen(Offset(g.x, g.y));
       final r = _groupRadius(g.people);
       if (!seen(at, r)) continue;
-      _glow(canvas, at, r, _group, 0.45 + g.bright / 100 * 0.5);
+      final found = lights?.holdsGroup(g) ?? false;
+      _marks(canvas, at, r * 0.6, g.lit, found);
+      _glow(
+        canvas,
+        at,
+        r,
+        _group,
+        (0.45 + g.bright / 100 * 0.5) * _shade(g.lit, found),
+      );
       _count(canvas, at, r, g.people);
     }
 
@@ -656,6 +847,7 @@ class _Map extends CustomPainter {
       final at = points[i];
       if (!seen(at, 80)) continue;
       if (p.step == 0) {
+        _marks(canvas, at, 14, p.lit, false);
         _glow(canvas, at, 34, colors.yourStar, 0.55);
         paint.color = colors.yourStar;
         canvas.drawCircle(at, 11, paint);
@@ -666,8 +858,13 @@ class _Map extends CustomPainter {
           ? colors.distantStar
           : (p.followed || p.known ? _followed : _near);
       final r = _personRadius(p.bright);
-      if (p.bright > 30) _glow(canvas, at, r * 3, color, p.bright / 200);
-      paint.color = color;
+      final found = lights?.holdsPerson(p) ?? false;
+      final shade = _shade(p.lit, found);
+      _marks(canvas, at, r, p.lit, found);
+      if (p.bright > 30) {
+        _glow(canvas, at, r * 3, color, p.bright / 200 * shade);
+      }
+      paint.color = color.withValues(alpha: shade);
       canvas.drawCircle(at, r, paint);
       final here = p == standing;
       if (here) {
@@ -680,7 +877,7 @@ class _Map extends CustomPainter {
             ..color = colors.yourStar,
         );
       }
-      if (here || p.followed || p.known || (named && !inSky)) {
+      if (here || found || p.followed || p.known || (named && !inSky)) {
         names.add((p, at, r));
       }
     }
@@ -697,8 +894,11 @@ class _Map extends CustomPainter {
         height: own.height + 4,
       ),
     ];
-    int rank(UniversePerson p) =>
-        p == standing ? 0 : (p.followed || p.known ? 1 : 2);
+    int rank(UniversePerson p) => p == standing
+        ? 0
+        : (lights?.holdsPerson(p) ?? false)
+        ? 1
+        : (p.followed || p.known ? 2 : 3);
     names.sort((a, b) => rank(a.$1).compareTo(rank(b.$1)));
     for (final (p, at, r) in names) {
       final here = p == standing;
@@ -739,7 +939,9 @@ class _Map extends CustomPainter {
   bool shouldRepaint(_Map old) =>
       old.snapshot != snapshot ||
       old.colors != colors ||
-      old.standing != standing;
+      old.standing != standing ||
+      old.layer != layer ||
+      old.lights != lights;
 }
 
 /// The owner's star: a button over where the map draws it, with her name
@@ -1049,5 +1251,150 @@ class _FoundPeople extends StatelessWidget {
     final first = named.take(3).toList();
     final more = count - first.length;
     return more > 0 ? '${first.join(', ')} and $more more' : first.join(', ');
+  }
+}
+
+/// The layers the map can light up (ADR 0035 §1), one at a time.
+class _LayerPicker extends StatelessWidget {
+  const _LayerPicker({required this.layer, required this.onPick});
+
+  final UniverseLayer? layer;
+  final void Function(UniverseLayer? layer) onPick;
+
+  /// How a lit layer is named on the map.
+  static String chip(UniverseLayer layer) => switch (layer) {
+    UniverseLayer.posts => 'Posts, last 90 days',
+    UniverseLayer.video => 'Video, last 90 days',
+    UniverseLayer.shared => 'Reshares, last 90 days',
+  };
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    Widget option(
+      UniverseLayer? value,
+      IconData icon,
+      String title,
+      String detail,
+    ) {
+      final on = value == layer;
+      return ListTile(
+        leading: Icon(icon),
+        title: Text(title),
+        subtitle: Text(detail),
+        trailing: on ? const Icon(Icons.check) : null,
+        selected: on,
+        onTap: () => onPick(value),
+      );
+    }
+
+    return ListView(
+      shrinkWrap: true,
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(Space.m, 0, Space.m, Space.s),
+          child: Text('What lights up', style: theme.textTheme.titleMedium),
+        ),
+        option(
+          null,
+          Icons.people_outline,
+          'People',
+          'Everyone your node knows, and the public lines between them',
+        ),
+        option(
+          UniverseLayer.posts,
+          Icons.article_outlined,
+          'Posts',
+          'Where public posts from the last 90 days are',
+        ),
+        option(
+          UniverseLayer.video,
+          Icons.movie_outlined,
+          'Video',
+          'Where public video from the last 90 days is',
+        ),
+        option(
+          UniverseLayer.shared,
+          Icons.repeat,
+          'Shared',
+          'Where reshares from the last 90 days are spreading',
+        ),
+        const ListTile(
+          enabled: false,
+          leading: Icon(Icons.dns_outlined),
+          title: Text('Network'),
+          subtitle: Text('Machines and what they hold for people. Not yet.'),
+        ),
+        const SizedBox(height: Space.m),
+      ],
+    );
+  }
+}
+
+/// A search shown on the map: what it found, a way back to it, and its
+/// list (ADR 0035 §3).
+class _Results extends StatelessWidget {
+  const _Results({
+    required this.lights,
+    required this.onFly,
+    required this.onList,
+    required this.onClose,
+  });
+
+  final SearchLights lights;
+  final VoidCallback onFly, onList, onClose;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    String count(int n, String one, String many) =>
+        n == 1 ? '1 $one' : '$n $many';
+    final found = [
+      if (lights.people > 0) count(lights.people, 'person', 'people'),
+      if (lights.posts > 0) count(lights.posts, 'post', 'posts'),
+    ].join(' and ');
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.only(bottom: Space.xs),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.search),
+              title: Text(
+                lights.words,
+                style: theme.textTheme.titleSmall,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+              subtitle: Text(
+                found.isEmpty ? 'Nothing found' : '$found, lit up',
+              ),
+              trailing: IconButton(
+                tooltip: 'Clear the search',
+                icon: const Icon(Icons.close),
+                onPressed: onClose,
+              ),
+            ),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.end,
+              children: [
+                TextButton.icon(
+                  onPressed: onFly,
+                  icon: const Icon(Icons.flight_takeoff),
+                  label: const Text('Fly there'),
+                ),
+                TextButton.icon(
+                  onPressed: onList,
+                  icon: const Icon(Icons.list),
+                  label: const Text('List'),
+                ),
+                const SizedBox(width: Space.s),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
   }
 }

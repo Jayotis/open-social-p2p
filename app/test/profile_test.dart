@@ -129,6 +129,7 @@ Profile withFollowed(Profile p) => Profile(
 );
 
 Post post(String text, {List<Media> media = const []}) => Post(
+  regions: const [],
   id: 'id-$text',
   author: 'Jimmy',
   authorIdentity: 'id-Jimmy',
@@ -194,7 +195,12 @@ void main() {
       ProfilePage(posts: [post('A new hull')], next: null),
     ];
     node.people = [
-      const FoundPerson(identity: 'id-Jimmy', name: 'Jimmy', followed: false),
+      const FoundPerson(
+        regions: [],
+        identity: 'id-Jimmy',
+        name: 'Jimmy',
+        followed: false,
+      ),
     ];
     await tester.pumpWidget(MaterialApp(home: FoundPeopleScreen(node: node)));
     await tester.pumpAndSettle();

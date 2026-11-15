@@ -2,17 +2,26 @@ import 'package:flutter/material.dart';
 
 import '../format.dart';
 import '../node.dart';
+import '../search_lights.dart';
 import '../src/rust/api/osp.dart';
 import '../widgets/person_tile.dart';
 import '../widgets/post_card.dart';
 
 /// Looks through the posts and profiles your node holds: from those you
 /// follow, and from the directories it reads (ADR 0015). It's only that node's
-/// copy: nothing leaves it.
+/// copy: nothing leaves it. The results can be shown on the map, which
+/// lights the regions holding them (ADR 0035 §3), and the map back here.
 class SearchScreen extends StatefulWidget {
-  const SearchScreen({super.key, required this.node});
+  const SearchScreen({super.key, required this.node, this.words, this.onMap});
 
   final HomeNode node;
+
+  /// Searched for at once, as when coming back from the map.
+  final String? words;
+
+  /// Shows the Universe, once the results are lit up there. None where
+  /// the map can't be reached from.
+  final VoidCallback? onMap;
 
   @override
   State<SearchScreen> createState() => _SearchScreenState();
@@ -28,6 +37,19 @@ class _SearchScreenState extends State<SearchScreen> {
   /// What the latest search was for, unless it failed.
   String? _searched;
 
+  /// The latest search's results, once they came.
+  Found? _results;
+
+  @override
+  void initState() {
+    super.initState();
+    final words = widget.words;
+    if (words != null && words.trim().isNotEmpty) {
+      _words.text = words;
+      _search();
+    }
+  }
+
   @override
   void dispose() {
     _words.dispose();
@@ -42,7 +64,9 @@ class _SearchScreenState extends State<SearchScreen> {
     // FutureBuilder listens from the next frame, and shows an error that came
     // before it, so that isn't an unhandled one.
     found.then<void>(
-      (_) {},
+      (f) {
+        if (mounted && identical(found, _found)) setState(() => _results = f);
+      },
       onError: (Object _) {
         if (identical(found, _found)) _searched = null;
       },
@@ -50,6 +74,7 @@ class _SearchScreenState extends State<SearchScreen> {
     setState(() {
       _found = found;
       _searched = words;
+      _results = null;
     });
   }
 
@@ -69,14 +94,25 @@ class _SearchScreenState extends State<SearchScreen> {
     _box.requestFocus();
   }
 
+  /// Lights the results up on the map and goes there.
+  void _showOnMap(Found found) {
+    widget.node.showSearch(SearchLights(_searched ?? _words.text, found));
+    widget.onMap!();
+  }
+
   @override
   Widget build(BuildContext context) {
+    final results = _results;
+    final mappable =
+        widget.onMap != null &&
+        results != null &&
+        (results.people.isNotEmpty || results.posts.isNotEmpty);
     return Scaffold(
       appBar: AppBar(
         title: TextField(
           controller: _words,
           focusNode: _box,
-          autofocus: true,
+          autofocus: widget.words == null,
           textInputAction: TextInputAction.search,
           decoration: const InputDecoration(
             hintText: 'Search your node',
@@ -90,6 +126,12 @@ class _SearchScreenState extends State<SearchScreen> {
             onPressed: _pressed,
             icon: const Icon(Icons.search),
           ),
+          if (mappable)
+            IconButton(
+              tooltip: 'Show on the map',
+              onPressed: () => _showOnMap(results),
+              icon: const Icon(Icons.map_outlined),
+            ),
         ],
       ),
       body: _found == null

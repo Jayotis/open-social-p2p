@@ -2633,6 +2633,7 @@ fn wire__crate__api__osp__OspApp_universe_impl(
                 flutter_rust_bridge::for_generated::RustAutoOpaqueInner<OspApp>,
             >>::sse_decode(&mut deserializer);
             let api_region = <Option<String>>::sse_decode(&mut deserializer);
+            let api_lit = <Option<crate::api::osp::UniverseLayer>>::sse_decode(&mut deserializer);
             let api_since = <Option<String>>::sse_decode(&mut deserializer);
             deserializer.end();
             move |context| async move {
@@ -2658,6 +2659,7 @@ fn wire__crate__api__osp__OspApp_universe_impl(
                         let output_ok = crate::api::osp::OspApp::universe(
                             &*api_that_guard,
                             api_region,
+                            api_lit,
                             api_since,
                         )
                         .await?;
@@ -3023,6 +3025,7 @@ impl SseDecode for crate::api::osp::FoundPerson {
         let mut var_followed = <bool>::sse_decode(deserializer);
         let mut var_foundThrough = <Option<String>>::sse_decode(deserializer);
         let mut var_newest = <Option<String>>::sse_decode(deserializer);
+        let mut var_regions = <Vec<String>>::sse_decode(deserializer);
         return crate::api::osp::FoundPerson {
             identity: var_identity,
             name: var_name,
@@ -3030,6 +3033,7 @@ impl SseDecode for crate::api::osp::FoundPerson {
             followed: var_followed,
             found_through: var_foundThrough,
             newest: var_newest,
+            regions: var_regions,
         };
     }
 }
@@ -3446,6 +3450,17 @@ impl SseDecode for Option<u8> {
     }
 }
 
+impl SseDecode for Option<crate::api::osp::UniverseLayer> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        if (<bool>::sse_decode(deserializer)) {
+            return Some(<crate::api::osp::UniverseLayer>::sse_decode(deserializer));
+        } else {
+            return None;
+        }
+    }
+}
+
 impl SseDecode for Option<crate::api::osp::UniverseSnapshot> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -3484,6 +3499,7 @@ impl SseDecode for crate::api::osp::Post {
         let mut var_foundThrough = <Option<String>>::sse_decode(deserializer);
         let mut var_deletable = <Option<String>>::sse_decode(deserializer);
         let mut var_resharers = <Option<u32>>::sse_decode(deserializer);
+        let mut var_regions = <Vec<String>>::sse_decode(deserializer);
         return crate::api::osp::Post {
             id: var_id,
             author: var_author,
@@ -3496,6 +3512,7 @@ impl SseDecode for crate::api::osp::Post {
             found_through: var_foundThrough,
             deletable: var_deletable,
             resharers: var_resharers,
+            regions: var_regions,
         };
     }
 }
@@ -3663,6 +3680,7 @@ impl SseDecode for crate::api::osp::SkyCell {
         let mut var_y = <u32>::sse_decode(deserializer);
         let mut var_people = <u32>::sse_decode(deserializer);
         let mut var_creators = <u32>::sse_decode(deserializer);
+        let mut var_lit = <u32>::sse_decode(deserializer);
         let mut var_atX = <f32>::sse_decode(deserializer);
         let mut var_atY = <f32>::sse_decode(deserializer);
         return crate::api::osp::SkyCell {
@@ -3671,6 +3689,7 @@ impl SseDecode for crate::api::osp::SkyCell {
             y: var_y,
             people: var_people,
             creators: var_creators,
+            lit: var_lit,
             at_x: var_atX,
             at_y: var_atY,
         };
@@ -3765,6 +3784,7 @@ impl SseDecode for crate::api::osp::UniverseGroup {
         let mut var_from = <Option<u64>>::sse_decode(deserializer);
         let mut var_people = <u32>::sse_decode(deserializer);
         let mut var_bright = <u8>::sse_decode(deserializer);
+        let mut var_lit = <u32>::sse_decode(deserializer);
         let mut var_x = <f32>::sse_decode(deserializer);
         let mut var_y = <f32>::sse_decode(deserializer);
         return crate::api::osp::UniverseGroup {
@@ -3773,8 +3793,22 @@ impl SseDecode for crate::api::osp::UniverseGroup {
             from: var_from,
             people: var_people,
             bright: var_bright,
+            lit: var_lit,
             x: var_x,
             y: var_y,
+        };
+    }
+}
+
+impl SseDecode for crate::api::osp::UniverseLayer {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut inner = <i32>::sse_decode(deserializer);
+        return match inner {
+            0 => crate::api::osp::UniverseLayer::Posts,
+            1 => crate::api::osp::UniverseLayer::Video,
+            2 => crate::api::osp::UniverseLayer::Shared,
+            _ => unreachable!("Invalid variant for UniverseLayer: {}", inner),
         };
     }
 }
@@ -3846,6 +3880,7 @@ impl SseDecode for crate::api::osp::UniversePerson {
         let mut var_y = <f32>::sse_decode(deserializer);
         let mut var_group = <Option<u64>>::sse_decode(deserializer);
         let mut var_bright = <u8>::sse_decode(deserializer);
+        let mut var_lit = <u32>::sse_decode(deserializer);
         return crate::api::osp::UniversePerson {
             identity: var_identity,
             name: var_name,
@@ -3862,6 +3897,7 @@ impl SseDecode for crate::api::osp::UniversePerson {
             y: var_y,
             group: var_group,
             bright: var_bright,
+            lit: var_lit,
         };
     }
 }
@@ -4087,6 +4123,7 @@ impl flutter_rust_bridge::IntoDart for crate::api::osp::FoundPerson {
             self.followed.into_into_dart().into_dart(),
             self.found_through.into_into_dart().into_dart(),
             self.newest.into_into_dart().into_dart(),
+            self.regions.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
@@ -4242,6 +4279,7 @@ impl flutter_rust_bridge::IntoDart for crate::api::osp::Post {
             self.found_through.into_into_dart().into_dart(),
             self.deletable.into_into_dart().into_dart(),
             self.resharers.into_into_dart().into_dart(),
+            self.regions.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
@@ -4429,6 +4467,7 @@ impl flutter_rust_bridge::IntoDart for crate::api::osp::SkyCell {
             self.y.into_into_dart().into_dart(),
             self.people.into_into_dart().into_dart(),
             self.creators.into_into_dart().into_dart(),
+            self.lit.into_into_dart().into_dart(),
             self.at_x.into_into_dart().into_dart(),
             self.at_y.into_into_dart().into_dart(),
         ]
@@ -4509,6 +4548,7 @@ impl flutter_rust_bridge::IntoDart for crate::api::osp::UniverseGroup {
             self.from.into_into_dart().into_dart(),
             self.people.into_into_dart().into_dart(),
             self.bright.into_into_dart().into_dart(),
+            self.lit.into_into_dart().into_dart(),
             self.x.into_into_dart().into_dart(),
             self.y.into_into_dart().into_dart(),
         ]
@@ -4523,6 +4563,28 @@ impl flutter_rust_bridge::IntoIntoDart<crate::api::osp::UniverseGroup>
     for crate::api::osp::UniverseGroup
 {
     fn into_into_dart(self) -> crate::api::osp::UniverseGroup {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::osp::UniverseLayer {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        match self {
+            Self::Posts => 0.into_dart(),
+            Self::Video => 1.into_dart(),
+            Self::Shared => 2.into_dart(),
+            _ => unreachable!(),
+        }
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::osp::UniverseLayer
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::osp::UniverseLayer>
+    for crate::api::osp::UniverseLayer
+{
+    fn into_into_dart(self) -> crate::api::osp::UniverseLayer {
         self
     }
 }
@@ -4613,6 +4675,7 @@ impl flutter_rust_bridge::IntoDart for crate::api::osp::UniversePerson {
             self.y.into_into_dart().into_dart(),
             self.group.into_into_dart().into_dart(),
             self.bright.into_into_dart().into_dart(),
+            self.lit.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
@@ -4792,6 +4855,7 @@ impl SseEncode for crate::api::osp::FoundPerson {
         <bool>::sse_encode(self.followed, serializer);
         <Option<String>>::sse_encode(self.found_through, serializer);
         <Option<String>>::sse_encode(self.newest, serializer);
+        <Vec<String>>::sse_encode(self.regions, serializer);
     }
 }
 
@@ -5136,6 +5200,16 @@ impl SseEncode for Option<u8> {
     }
 }
 
+impl SseEncode for Option<crate::api::osp::UniverseLayer> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <bool>::sse_encode(self.is_some(), serializer);
+        if let Some(value) = self {
+            <crate::api::osp::UniverseLayer>::sse_encode(value, serializer);
+        }
+    }
+}
+
 impl SseEncode for Option<crate::api::osp::UniverseSnapshot> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
@@ -5170,6 +5244,7 @@ impl SseEncode for crate::api::osp::Post {
         <Option<String>>::sse_encode(self.found_through, serializer);
         <Option<String>>::sse_encode(self.deletable, serializer);
         <Option<u32>>::sse_encode(self.resharers, serializer);
+        <Vec<String>>::sse_encode(self.regions, serializer);
     }
 }
 
@@ -5284,6 +5359,7 @@ impl SseEncode for crate::api::osp::SkyCell {
         <u32>::sse_encode(self.y, serializer);
         <u32>::sse_encode(self.people, serializer);
         <u32>::sse_encode(self.creators, serializer);
+        <u32>::sse_encode(self.lit, serializer);
         <f32>::sse_encode(self.at_x, serializer);
         <f32>::sse_encode(self.at_y, serializer);
     }
@@ -5356,8 +5432,26 @@ impl SseEncode for crate::api::osp::UniverseGroup {
         <Option<u64>>::sse_encode(self.from, serializer);
         <u32>::sse_encode(self.people, serializer);
         <u8>::sse_encode(self.bright, serializer);
+        <u32>::sse_encode(self.lit, serializer);
         <f32>::sse_encode(self.x, serializer);
         <f32>::sse_encode(self.y, serializer);
+    }
+}
+
+impl SseEncode for crate::api::osp::UniverseLayer {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(
+            match self {
+                crate::api::osp::UniverseLayer::Posts => 0,
+                crate::api::osp::UniverseLayer::Video => 1,
+                crate::api::osp::UniverseLayer::Shared => 2,
+                _ => {
+                    unimplemented!("");
+                }
+            },
+            serializer,
+        );
     }
 }
 
@@ -5419,6 +5513,7 @@ impl SseEncode for crate::api::osp::UniversePerson {
         <f32>::sse_encode(self.y, serializer);
         <Option<u64>>::sse_encode(self.group, serializer);
         <u8>::sse_encode(self.bright, serializer);
+        <u32>::sse_encode(self.lit, serializer);
     }
 }
 

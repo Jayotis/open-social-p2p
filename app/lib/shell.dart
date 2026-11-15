@@ -72,7 +72,16 @@ class _AppShellState extends State<AppShell> {
           if (_place != Place.you)
             IconButton(
               tooltip: 'Search',
-              onPressed: () => _open(SearchScreen(node: node)),
+              onPressed: () => _open(
+                SearchScreen(
+                  node: node,
+                  // The results lit up on the map (ADR 0035 §3).
+                  onMap: () {
+                    Navigator.of(context).pop();
+                    _go(Place.universe);
+                  },
+                ),
+              ),
               icon: const Icon(Icons.search),
             ),
           IconButton(

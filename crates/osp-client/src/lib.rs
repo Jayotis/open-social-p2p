@@ -33,7 +33,7 @@ use osp_proto::{
         ProfileItemKind, Upload, UploadId,
     },
     types::ProfileLink,
-    universe::{Level, Snapshot},
+    universe::{Layer, Level, Snapshot},
 };
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
@@ -453,18 +453,31 @@ impl Client {
     /// What the Universe may show (ADR 0033): the part of the world
     /// `region` opens (ADR 0034 §6; none for the top), as one snapshot.
     /// With `since` the version of the one the device holds, `None` means
-    /// it's still the node's. A new top is saved for the next start, so the
-    /// Universe shows at once.
+    /// it's still the node's. `lit` is a layer that lights up (ADR 0035
+    /// §1: `Posts`, `Video`, `Shared`), or none for people alone. A new
+    /// top without one is saved for the next start, so the Universe shows
+    /// at once.
     pub async fn universe(
         &self,
         region: Option<String>,
+        lit: Option<Layer>,
         since: Option<String>,
     ) -> Result<Option<Snapshot>> {
-        let top = region.as_deref().is_none_or(str::is_empty);
+        let top = region.as_deref().is_none_or(str::is_empty) && lit.is_none();
         let req = ClientRequest::Universe {
             level: Level::default(),
             region,
-            layers: vec![],
+            // Asking for one names it, with People and the rest, as
+            // asking for none gets.
+            layers: match lit {
+                Some(layer) => {
+                    ensure!(layer.lights(), "{layer:?} isn't a layer that lights up");
+                    let mut all = osp_proto::universe::ALL_LAYERS.to_vec();
+                    all.push(layer);
+                    all
+                }
+                None => vec![],
+            },
             since,
         };
         let snapshot = match self.request(&req).await? {
