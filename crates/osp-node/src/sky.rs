@@ -48,6 +48,24 @@ pub fn place(kind: &str, key: &impl Hash) -> Place {
     )
 }
 
+/// Where a point of the unit square is drawn: on the ring around the placed
+/// world (`SKY_INNER` to `SKY_OUTER`), `u` going round and `v` outwards.
+/// Equal areas stay equal, so an even spread stays even, and a cell's
+/// centre lands among its people.
+pub fn ring([u, v]: [f64; 2]) -> [f32; 2] {
+    use osp_proto::universe::{SKY_INNER, SKY_OUTER};
+    let (inner, outer) = (SKY_INNER as f64, SKY_OUTER as f64);
+    let r = (inner * inner + v * (outer * outer - inner * inner)).sqrt();
+    let angle = std::f64::consts::TAU * u;
+    [(r * angle.cos()) as f32, (r * angle.sin()) as f32]
+}
+
+/// A place across the unit square.
+pub fn unit((x, y): Place) -> [f64; 2] {
+    let scale = 1.0 / (1u64 << 32) as f64;
+    [x as f64 * scale, y as f64 * scale]
+}
+
 /// One of the 4ⁿ squares at level `n`, numbered across (`x`) and down
 /// (`y`) from 0.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -66,6 +84,7 @@ impl Cell {
     };
 
     /// The cell at `level` holding `place`.
+    #[cfg(test)]
     pub fn of(place: Place, level: u8) -> Cell {
         let shift = DEEPEST - level;
         let cut = |v: u32| v.checked_shr(shift as u32).unwrap_or(0);
@@ -76,6 +95,7 @@ impl Cell {
         }
     }
 
+    #[cfg(test)]
     pub fn contains(&self, place: Place) -> bool {
         Cell::of(place, self.level) == *self
     }

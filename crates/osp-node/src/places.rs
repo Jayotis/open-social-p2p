@@ -30,6 +30,8 @@
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
+
 use crate::cluster::{Child, Graph, Tree};
 
 /// A place on the map, in the units above.
@@ -51,14 +53,14 @@ pub struct Places<K> {
     next: u64,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 struct KeptGroup {
     parent: Option<u64>,
     people: u32,
     at: Point,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 struct KeptPerson {
     group: u64,
     at: Point,
@@ -88,6 +90,38 @@ impl<K> Default for Places<K> {
             people: HashMap::new(),
             next: 1,
         }
+    }
+}
+
+/// `Places` as the node saves it, so IDs and places outlast a restart.
+#[derive(Serialize, Deserialize)]
+struct Saved<K> {
+    groups: Vec<(u64, KeptGroup)>,
+    people: Vec<(K, KeptPerson)>,
+    next: u64,
+}
+
+impl<K: Hash + Eq + Clone + Ord + Serialize + DeserializeOwned> Places<K> {
+    /// As JSON, in a fixed order.
+    pub fn to_json(&self) -> serde_json::Result<Vec<u8>> {
+        let mut groups: Vec<_> = self.groups.iter().map(|(k, g)| (*k, *g)).collect();
+        groups.sort_unstable_by_key(|(k, _)| *k);
+        let mut people: Vec<_> = self.people.iter().map(|(k, p)| (k.clone(), *p)).collect();
+        people.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+        serde_json::to_vec(&Saved {
+            groups,
+            people,
+            next: self.next,
+        })
+    }
+
+    pub fn from_json(json: &[u8]) -> serde_json::Result<Self> {
+        let saved: Saved<K> = serde_json::from_slice(json)?;
+        Ok(Places {
+            groups: saved.groups.into_iter().collect(),
+            people: saved.people.into_iter().collect(),
+            next: saved.next.max(1),
+        })
     }
 }
 
@@ -699,7 +733,6 @@ mod tests {
         /// Each person's friend group, by key.
         group: HashMap<u64, usize>,
         lines: Vec<(u64, u64, f64)>,
-        size: usize,
         regions_of: usize,
     }
 
@@ -709,7 +742,6 @@ mod tests {
                 keys: Vec::new(),
                 group: HashMap::new(),
                 lines: Vec::new(),
-                size,
                 regions_of,
             };
             let groups = people.div_ceil(size);
@@ -850,6 +882,22 @@ mod tests {
         assert_eq!(a.group_at, c.group_at);
         assert_eq!(a.person_at, c.person_at);
         assert!(c.from.iter().all(Option::is_none) && c.merged.is_empty());
+    }
+
+    /// Saved and read back, as across a restart, they place the world as
+    /// they would have.
+    #[test]
+    fn saved_places_place_the_same() {
+        let mut rng = Rng(9);
+        let world = World::new(2_000, 20, 10, &mut rng);
+        let mut kept = Places::default();
+        place(&mut kept, &world, world.keys[5]);
+        let json = kept.to_json().unwrap();
+        let mut read: Places<u64> = Places::from_json(&json).unwrap();
+        assert_eq!(read.to_json().unwrap(), json);
+        let a = place(&mut kept, &world, world.keys[5]).1;
+        let b = place(&mut read, &world, world.keys[5]).1;
+        assert_eq!(a, b);
     }
 
     #[test]

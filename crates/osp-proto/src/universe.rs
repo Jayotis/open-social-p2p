@@ -20,6 +20,67 @@ pub const MAX_SNAPSHOT_BYTES: usize = 128 * 1024;
 /// A line fades over this many days, as vouches do (ADR 0029).
 pub const LINE_DAYS: u64 = 90;
 
+/// The public sky (ADR 0034 §6) is a ring around the placed world, in the
+/// same units as its places (a person is about one unit across): from this
+/// far from the centre...
+pub const SKY_INNER: f32 = 64.0;
+/// ...to this far. It never moves, so its people keep their places
+/// however the placed world grows.
+pub const SKY_OUTER: f32 = 1024.0;
+
+/// What a snapshot opens (ADR 0034 §2, §6): a request's `region`, as text.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Region {
+    /// No region: the whole world around the owner, and the public sky.
+    #[default]
+    Top,
+    /// A group of the tree, by its lasting ID: `g:42`.
+    Group(u64),
+    /// Standing at a person: `p:` and their key.
+    Person(PublicKey),
+    /// A cell of the public sky: `sky:level/x/y`, one of the 4^level
+    /// squares the sky's places are cut into, numbered across and down.
+    Sky { level: u8, x: u32, y: u32 },
+}
+
+/// The deepest sky cell: a place's full precision.
+pub const SKY_DEEPEST: u8 = 32;
+
+impl Region {
+    /// The region `text` names, or none if it names nothing. No text, or
+    /// empty text, is the top.
+    pub fn parse(text: Option<&str>) -> Option<Region> {
+        let text = match text {
+            None | Some("") => return Some(Region::Top),
+            Some(t) => t,
+        };
+        if let Some(id) = text.strip_prefix("g:") {
+            return id.parse().ok().map(Region::Group);
+        }
+        if let Some(key) = text.strip_prefix("p:") {
+            return key.parse().ok().map(Region::Person);
+        }
+        let mut parts = text.strip_prefix("sky:")?.split('/');
+        let level: u8 = parts.next()?.parse().ok()?;
+        let x: u32 = parts.next()?.parse().ok()?;
+        let y: u32 = parts.next()?.parse().ok()?;
+        let side = 1u64 << level.min(SKY_DEEPEST);
+        let fits = level <= SKY_DEEPEST && (x as u64) < side && (y as u64) < side;
+        (parts.next().is_none() && fits).then_some(Region::Sky { level, x, y })
+    }
+}
+
+impl std::fmt::Display for Region {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Region::Top => Ok(()),
+            Region::Group(id) => write!(f, "g:{id}"),
+            Region::Person(key) => write!(f, "p:{key}"),
+            Region::Sky { level, x, y } => write!(f, "sky:{level}/{x}/{y}"),
+        }
+    }
+}
+
 /// How close the camera is (ADR 0034's zoom bands).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -53,10 +114,24 @@ pub struct Snapshot {
     /// Changes whenever anything in the snapshot does. A request whose
     /// `since` is this gets `UniverseUnchanged`.
     pub version: String,
-    /// The band this snapshot is for. Until the tree (ADR 0034) exists,
-    /// always `Local`: the whole world the node knows, within the limits.
+    /// The band of what's shown: `Universe` at the top while it shows
+    /// groups, `Cluster` inside a group that shows groups, `Local` when
+    /// it shows only people, `Close` standing at someone.
     pub level: Level,
-    /// The owner first, then the nearest and most active.
+    /// What this snapshot opens, as a request's `region` names it: empty
+    /// for the top. A group that's gone since the device asked for it is
+    /// answered by the group most of its people went to, named here.
+    #[serde(default)]
+    pub region: String,
+    /// The regions above it, the top (empty) first, so a device zooming out
+    /// asks for each in turn and stays where it is (ADR 0034 §6).
+    #[serde(default)]
+    pub path: Vec<String>,
+    /// The groups shown closed, each one light (ADR 0034 §2).
+    #[serde(default)]
+    pub groups: Vec<GroupPoint>,
+    /// The owner first, then the one stood at, then the nearest and most
+    /// active.
     pub people: Vec<PersonPoint>,
     /// Public acts between people in `people`, newest first.
     pub lines: Vec<Line>,
@@ -64,6 +139,41 @@ pub struct Snapshot {
     pub more_people: u64,
     pub machines: Vec<MachinePoint>,
     pub network: Option<NetworkTotals>,
+    /// The public sky's cells shown, each many people drawn as one light.
+    /// Its people shown one by one are in `people`.
+    #[serde(default)]
+    pub sky: Vec<SkyCell>,
+}
+
+/// A group of the tree, shown as one light (ADR 0034 §2). Its people are
+/// grouped only by the public lines between them.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GroupPoint {
+    /// Lasting while more than half its people stay in it (ADR 0034 §4).
+    pub id: u64,
+    pub parent: Option<u64>,
+    /// For a group new since the last grouping: the group most of its
+    /// people came from, so a device can draw the split.
+    pub from: Option<u64>,
+    /// Everyone in it, at any depth.
+    pub people: u32,
+    /// 0 to 100 (ADR 0034 §5).
+    pub bright: u8,
+    pub at: [f32; 2],
+}
+
+/// Many people of the public sky, drawn as one light. Only for drawing at
+/// scale: it isn't a group, and its people aren't related (ADR 0034 §6).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SkyCell {
+    pub level: u8,
+    pub x: u32,
+    pub y: u32,
+    pub people: u32,
+    /// Those of them with public posts lately.
+    pub creators: u32,
+    /// Its centre, in the placed world's units.
+    pub at: [f32; 2],
 }
 
 /// One person (ADR 0033's "People").
@@ -89,6 +199,16 @@ pub struct PersonPoint {
     pub reshares: u64,
     /// The day of their newest post or reshare here (`YYYY-MM-DD`, UTC).
     pub last_post: Option<String>,
+    /// Where they are: placed by their lines, or in the public sky at a
+    /// place hashed from their key. The owner is at the centre.
+    #[serde(default)]
+    pub at: [f32; 2],
+    /// The group they're directly in; none in the sky.
+    #[serde(default)]
+    pub group: Option<u64>,
+    /// 0 to 100 (ADR 0034 §5).
+    #[serde(default)]
+    pub bright: u8,
 }
 
 /// A public, signed act between two people, each named by their place in
@@ -168,6 +288,15 @@ pub struct NetworkTotals {
 pub const ALLOWLIST: &[&str] = &[
     "version",
     "level",
+    "region",
+    "path",
+    "groups",
+    "groups[].id",
+    "groups[].parent",
+    "groups[].from",
+    "groups[].people",
+    "groups[].bright",
+    "groups[].at",
     "people",
     "people[].actor",
     "people[].name",
@@ -180,6 +309,9 @@ pub const ALLOWLIST: &[&str] = &[
     "people[].media",
     "people[].reshares",
     "people[].last_post",
+    "people[].at",
+    "people[].group",
+    "people[].bright",
     "lines",
     "lines[].kind",
     "lines[].from",
@@ -196,6 +328,13 @@ pub const ALLOWLIST: &[&str] = &[
     "network.posts_hosted",
     "network.bytes_served",
     "network.people_found",
+    "sky",
+    "sky[].level",
+    "sky[].x",
+    "sky[].y",
+    "sky[].people",
+    "sky[].creators",
+    "sky[].at",
 ];
 
 /// Every field path in a JSON value, as [`ALLOWLIST`] writes them.
@@ -239,6 +378,16 @@ mod tests {
         Snapshot {
             version: "v".into(),
             level: Level::Local,
+            region: "g:1".into(),
+            path: vec![String::new()],
+            groups: vec![GroupPoint {
+                id: 1,
+                parent: Some(2),
+                from: Some(3),
+                people: 2,
+                bright: 10,
+                at: [1.0, 2.0],
+            }],
             people: vec![PersonPoint {
                 actor: key(1),
                 name: "Kim".into(),
@@ -251,6 +400,9 @@ mod tests {
                 media: 1,
                 reshares: 1,
                 last_post: Some("2026-11-14".into()),
+                at: [0.0, 0.0],
+                group: Some(1),
+                bright: 5,
             }],
             lines: vec![Line {
                 kind: LineKind::Reshared,
@@ -271,6 +423,47 @@ mod tests {
                 bytes_served: 1,
                 people_found: 1,
             }),
+            sky: vec![SkyCell {
+                level: 1,
+                x: 0,
+                y: 1,
+                people: 9,
+                creators: 2,
+                at: [100.0, -100.0],
+            }],
+        }
+    }
+
+    #[test]
+    fn regions_are_read_back_as_written() {
+        for region in [
+            Region::Top,
+            Region::Group(42),
+            Region::Person(key(3)),
+            Region::Sky {
+                level: 3,
+                x: 7,
+                y: 0,
+            },
+            Region::Sky {
+                level: SKY_DEEPEST,
+                x: u32::MAX,
+                y: u32::MAX,
+            },
+        ] {
+            assert_eq!(Region::parse(Some(&region.to_string())), Some(region));
+        }
+        assert_eq!(Region::parse(None), Some(Region::Top));
+        for bad in [
+            "g:",
+            "g:x",
+            "p:nope",
+            "sky:1/2/0",
+            "sky:33/0/0",
+            "sky:1/0",
+            "x",
+        ] {
+            assert_eq!(Region::parse(Some(bad)), None, "{bad}");
         }
     }
 

@@ -8,7 +8,6 @@
 mod admission;
 pub mod backup;
 mod client;
-#[allow(dead_code)] // used by the Universe's snapshot in P4's next parts
 mod cluster;
 pub mod config;
 mod control;
@@ -25,7 +24,6 @@ mod meet;
 mod network;
 mod node;
 mod peers;
-#[allow(dead_code)] // used by the Universe's snapshot in P4's next parts
 mod places;
 mod profiles;
 mod relays;
@@ -33,7 +31,6 @@ mod replies;
 mod replying;
 #[cfg(feature = "sim")]
 pub mod simnet;
-#[allow(dead_code)] // used by the Universe's snapshot in P4's next parts
 mod sky;
 mod social;
 mod store;
@@ -45,6 +42,7 @@ mod universe;
 mod uploads;
 mod viewing;
 mod vouches;
+mod world;
 
 /// This build's version: the release's tag when the release job sets
 /// `OSP_RELEASE` (such as v0.1.0-alpha.3), or else the crate's version.

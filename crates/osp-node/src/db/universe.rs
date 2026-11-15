@@ -121,6 +121,26 @@ impl Db {
         Ok(out)
     }
 
+    /// The Universe's places, as last saved.
+    pub fn universe_places(&self) -> Result<Option<Vec<u8>>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare("SELECT saved FROM universe_places WHERE id = 0")?;
+        let mut rows = stmt.query([])?;
+        Ok(match rows.next()? {
+            Some(row) => Some(row.get(0)?),
+            None => None,
+        })
+    }
+
+    pub fn set_universe_places(&self, saved: &[u8]) -> Result<()> {
+        self.conn().execute(
+            "INSERT INTO universe_places (id, saved) VALUES (0, ?1)
+             ON CONFLICT(id) DO UPDATE SET saved = excluded.saved",
+            params![saved],
+        )?;
+        Ok(())
+    }
+
     /// The directory each person a directory brought came from.
     pub fn found_directories(&self) -> Result<HashMap<PublicKey, EndpointId>> {
         let conn = self.conn();

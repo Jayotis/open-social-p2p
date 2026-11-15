@@ -494,6 +494,13 @@ const MIGRATIONS: &[&str] = &[
         size  INTEGER NOT NULL
     );
     CREATE INDEX icons_by_blob ON icons(blob);",
+    // 33: the Universe's places (ADR 0034 §4): each group's lasting ID and
+    // where each group and person sits, so they outlast a restart. One
+    // row, as JSON. Rebuilt from the public lines if lost.
+    "CREATE TABLE universe_places (
+        id    INTEGER PRIMARY KEY CHECK (id = 0),
+        saved BLOB NOT NULL
+    )",
 ];
 
 /// The search index (ADR 0014): a number for each post, by its object ID, and
@@ -6544,6 +6551,7 @@ mod tests {
                      DROP TABLE credits_given; DROP TABLE told_reshares;
                      DROP TABLE side_vouches; DROP TABLE side_gathered;
                      DROP INDEX objects_by_actor_date; DROP TABLE icons;
+                     DROP TABLE universe_places;
                      PRAGMA user_version = 24;",
                 )
                 .unwrap();
