@@ -3,6 +3,7 @@ import 'dart:math';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 
+import '../format.dart';
 import '../node.dart';
 import '../search_lights.dart';
 import '../src/rust/api/osp.dart';
@@ -79,9 +80,18 @@ abstract final class _Fit {
   /// path (ADR 0034 §6).
   static const up = 0.4;
 
+  /// A map wider and shorter than these (a phone on its side), the card
+  /// keeps to the bottom left, this wide.
+  static const wide = 600.0;
+  static const short = 360.0;
+  static const card = 440.0;
+
   /// What the controls above and the card below cover, in pixels.
   static const clearTop = 64.0;
   static const clearBottom = 190.0;
+
+  /// On a wide screen the card sits low in the corner, and covers less.
+  static const clearBottomWide = 100.0;
 
   /// Where the public sky starts and ends (`osp_proto::universe`).
   static const skyInner = 64.0;
@@ -160,9 +170,13 @@ class _UniverseTabState extends State<UniverseTab>
     final size = _camera.size;
     return Size(
       size.width,
-      max(size.height - _Fit.clearTop - _Fit.clearBottom, size.height / 3),
+      max(size.height - _Fit.clearTop - _clearBottom, size.height / 3),
     );
   }
+
+  bool get _wide => _sideways(_camera.size);
+
+  double get _clearBottom => _wide ? _Fit.clearBottomWide : _Fit.clearBottom;
 
   /// Where the camera's centre goes for [middle] to be in the clear room.
   Offset _lifted(Offset middle, double scale) {
@@ -256,12 +270,13 @@ class _UniverseTabState extends State<UniverseTab>
     _node.openUniverse(region);
   }
 
-  /// Zooms out one step along the path, the map where it is.
-  void _up({bool zoom = false}) {
+  /// Goes up one step along the path. A pinch leaves the map where it is
+  /// (ADR 0034 §6); a button frames everything in the region above, as one
+  /// press should show more than the step back.
+  void _up({bool frame = false}) {
     final path = (_node.universe ?? _shown)?.path ?? const [];
     if (path.isEmpty) return;
-    if (zoom) _flyTo(_camera.centre, _camera.scale / 2.5);
-    _stay = true;
+    _stay = !frame;
     _framed = null;
     _node.openUniverse(path.last);
   }
@@ -461,21 +476,26 @@ class _UniverseTabState extends State<UniverseTab>
                       _Control(
                         tooltip: 'Zoom out',
                         icon: Icons.zoom_out,
-                        onPressed: () => _up(zoom: true),
+                        onPressed: () => _up(frame: true),
                       ),
                   ],
                 ),
               ),
               Positioned(
                 left: Space.m,
-                right: Space.m,
-                bottom: 96,
+                // On a wide screen (a phone on its side) it keeps to the
+                // left, clear of the buttons on the right.
+                right: _sideways(box.biggest) ? null : Space.m,
+                width: _sideways(box.biggest) ? _Fit.card : null,
+                // Narrow, it stays above the Post button; wide, that's
+                // on the right, so the card goes down to the corner.
+                bottom: _sideways(box.biggest) ? Space.s : 96,
                 child: switch ((standing, lights)) {
                   (final p?, _) => _StandingAt(
                     person: p,
                     snapshot: s!,
                     node: node,
-                    onClose: () => _up(zoom: true),
+                    onClose: () => _up(frame: true),
                   ),
                   (null, final l?) => _Results(
                     lights: l,
@@ -510,6 +530,9 @@ class _UniverseTabState extends State<UniverseTab>
         '${groups > 0 ? ' and $groups groups' : ''} shown.$lit$found';
   }
 }
+
+/// Whether the map is wide and short, as on a phone on its side.
+bool _sideways(Size size) => size.width > _Fit.wide && size.height < _Fit.short;
 
 /// The owner's name, as shown under her star.
 String _ownName(HomeNode node) {
@@ -840,7 +863,10 @@ class _Map extends CustomPainter {
     }
 
     // People, one by one. The owner is her node's star.
-    final named = s.people.length <= 40 || camera.scale >= 60;
+    // With few people, each is drawn larger and named, the sky's too, so
+    // a newcomer's handful stands out.
+    final few = s.people.length <= 40;
+    final named = few || camera.scale >= 60;
     final names = <(UniversePerson, Offset, double)>[];
     for (var i = 0; i < s.people.length; i++) {
       final p = s.people[i];
@@ -857,7 +883,7 @@ class _Map extends CustomPainter {
       final color = inSky
           ? colors.distantStar
           : (p.followed || p.known ? _followed : _near);
-      final r = _personRadius(p.bright);
+      final r = _personRadius(p.bright) * (few ? 1.8 : 1);
       final found = lights?.holdsPerson(p) ?? false;
       final shade = _shade(p.lit, found);
       _marks(canvas, at, r, p.lit, found);
@@ -877,7 +903,11 @@ class _Map extends CustomPainter {
             ..color = colors.yourStar,
         );
       }
-      if (here || found || p.followed || p.known || (named && !inSky)) {
+      if (here ||
+          found ||
+          p.followed ||
+          p.known ||
+          (named && (few || !inSky))) {
         names.add((p, at, r));
       }
     }
@@ -1163,7 +1193,7 @@ class _StandingAt extends StatelessWidget {
       if (p.followed) 'You follow them',
       if (p.known) 'Someone you know',
       if (!p.followed && !p.known && p.foundThrough != null)
-        'Found through ${p.foundThrough}',
+        listedBy(p.foundThrough!),
       if (posts > 0) posts == 1 ? '1 post here' : '$posts posts here',
       if (lines > 0)
         lines == 1 ? '1 public line shown' : '$lines public lines shown',

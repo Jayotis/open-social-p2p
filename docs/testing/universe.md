@@ -90,3 +90,30 @@ It has no directory and no machines: on real nodes both need machine names, and 
 **Smoothness.** The app draws with Flutter, so Android's own frame counts (`dumpsys gfxinfo`) see nothing. Frame times come from the compositor instead: `adb shell dumpsys SurfaceFlinger --latency '<the app's SurfaceView (BLAST) layer>'`, cleared with `--latency-clear` before the gesture.
 
 **Result (2026-11-14, Pixel 3 XL, app build 9):** Rae's Universe opened at Local with 21 people and 14 lines, no groups, every name readable, the two friend groups apart and the reshare between them drawn. 14 lines, not 17: three reshares are between people Rae doesn't follow, so her node never gets them. A 1.5 s pan drew 88 frames, every one at the screen's 16.7 ms, none missed. Standing at someone framed them with their lines brighter, and stepping back went up one step with the map unmoved. On a lab node with 13 people and 10 machines, the machines' list read in plain words.
+
+## A newcomer exploring
+
+ADR 0035's gate: on a fresh node with no follows, against the lab's world, the maintainer reaches people and posts by browsing alone, without typing a search. Every person and post the node holds is reachable from the map or the field's list.
+
+**The node.** A new node with Tor on, reading the lab's two directories, following no one, and a phone paired with it (Pixel 3 XL, app build 10, then 12).
+
+**Result (2026-11-15):**
+
+| | |
+| --- | --- |
+| First directory read | 7 min 44 s after start. Both directories' first tries timed out over Tor before one answered. The clean install of 2026-11-14 took 50 s. |
+| People held | 5, all shown as stars in the public sky (no lines, so no groups), none left out |
+| Posts held | 10: one person's own 5, and the 5 she reshared, by someone no directory lists |
+| Reached by browsing | every person, from the sky or the list of who the node found; her 5 posts from her profile's Posts, the other 5 from its Reshares |
+
+So the gate's reach is met: nothing the node holds needed a search. The 5 posts by an unlisted author are reachable only through the resharer's Reshares tab, as that author has no star of their own.
+
+**What the first look showed, and what changed:**
+- The stars were too small and unnamed for a handful of people. With 40 or fewer, they're now drawn larger and all named.
+- "Found through" followed by a machine's name meant nothing to a newcomer. It now says "Asked to be found, listed by" that machine.
+- Closing the standing card stepped back only a little, so only the one stood at stayed in view. It now frames the whole region above. Pinching up still leaves the map where it is (ADR 0034 §6), which made pinching out feel like it did nothing.
+- On a phone on its side, the card covered the Layers button and the owner's star. It now keeps to the bottom left.
+
+**Still open:**
+- The first view frames the whole sky ring, so a few people sit close round the owner's star and their names don't fit until one zooms in. A newcomer might not know the map zooms at all.
+- Nothing explains why the machines shown have no names, or how a node comes to know people.
