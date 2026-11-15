@@ -2466,6 +2466,7 @@ mod tests {
                 hosting: true,
             }],
             resharers: None,
+            regions: vec![],
         };
         let shown = item_text(&item);
         let bad: Vec<_> = shown

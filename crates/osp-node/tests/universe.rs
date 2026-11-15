@@ -134,6 +134,43 @@ async fn requests_sent(node: &Node) -> f64 {
     }
 }
 
+/// Searches `node`, and checks every result says where it is on the map,
+/// from the top down, and that opening its deepest region shows its author
+/// (ADR 0035 §3). Returns each result's author and regions.
+async fn search_on_map(node: &Node, words: &str) -> Vec<(String, Vec<String>)> {
+    let req = ClientRequest::Search {
+        words: words.into(),
+        limit: 20,
+    };
+    let ClientResponse::Found { people, posts } = call(node, req).await else {
+        panic!("no results")
+    };
+    let mut found: Vec<(osp_proto::PublicKey, Vec<String>)> =
+        people.into_iter().map(|p| (p.actor, p.regions)).collect();
+    found.extend(posts.into_iter().map(|p| (p.actor, p.regions)));
+    assert!(!found.is_empty(), "nothing found for {words}");
+    let mut out = Vec::new();
+    for (actor, regions) in found {
+        assert_eq!(regions.first().map(String::as_str), Some(""), "{regions:?}");
+        let req = ClientRequest::Universe {
+            level: Level::Universe,
+            region: regions.last().cloned(),
+            layers: vec![Layer::People],
+            since: None,
+        };
+        let ClientResponse::Universe { snapshot } = call(node, req).await else {
+            panic!("no snapshot of {regions:?}")
+        };
+        let shown = snapshot.people.iter().find(|p| p.actor == actor);
+        let name = shown
+            .unwrap_or_else(|| panic!("{actor} not in {regions:?}"))
+            .name
+            .clone();
+        out.push((name, regions));
+    }
+    out
+}
+
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
@@ -253,6 +290,19 @@ async fn the_universe_shows_steps_and_public_lines_and_nothing_else() {
             "{up}: {resp:?}"
         );
     }
+    // Search says where each result is, and flying there finds it: Alice's
+    // post and Jimmy are in the group the three of them make.
+    let before_search = requests_sent(&kim).await;
+    for (words, author) in [("birch", "Alice"), ("Jimmy", "Jimmy")] {
+        let found = search_on_map(&kim, words).await;
+        let (_, regions) = found.iter().find(|(name, _)| name == author).unwrap();
+        assert!(
+            regions.len() >= 2 && regions[1].starts_with("g:"),
+            "{regions:?}"
+        );
+    }
+    assert!(requests_sent(&kim).await <= before_search);
+
     for bad in ["g:x", "sky:1/2/2"] {
         let resp = kim.handle(at(bad.into())).await;
         assert!(matches!(resp, ClientResponse::Error { .. }), "{resp:?}");

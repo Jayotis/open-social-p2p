@@ -154,7 +154,7 @@ impl World {
     }
 
     /// The groups `key` is in, the top first.
-    fn chain_of(&self, key: &PublicKey) -> Vec<u32> {
+    pub fn chain_of(&self, key: &PublicKey) -> Vec<u32> {
         let leaf = self
             .index
             .get(key)

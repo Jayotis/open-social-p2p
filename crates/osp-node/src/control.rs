@@ -871,6 +871,18 @@ impl Core {
                 posts.push(self.with_found(item)?);
             }
         }
+        // Each result says where it is on the map (ADR 0035 §3).
+        let actors = people
+            .iter()
+            .map(|p| p.actor)
+            .chain(posts.iter().map(|p| p.actor));
+        let regions = self.regions_of(actors)?;
+        for p in &mut people {
+            p.regions = regions[&p.actor].clone();
+        }
+        for p in &mut posts {
+            p.regions = regions[&p.actor].clone();
+        }
         Ok(ClientResponse::Found { people, posts })
     }
 
@@ -903,6 +915,7 @@ impl Core {
             name: person.name,
             summary: person.summary,
             newest,
+            regions: Vec::new(),
         })
     }
 
@@ -972,6 +985,7 @@ impl Core {
             deletable,
             found_reshares: Vec::new(),
             resharers,
+            regions: Vec::new(),
         }))
     }
 

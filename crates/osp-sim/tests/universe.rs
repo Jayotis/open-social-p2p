@@ -262,6 +262,44 @@ async fn the_universe_holds_no_address_and_opening_it_sends_nothing() {
         "{:?}",
         fred_point.at
     );
+    // Searching for him says he's in the sky, at one cell, and opening it
+    // shows him (ADR 0035 §3).
+    let req = ClientRequest::Search {
+        words: "Fred".into(),
+        limit: 20,
+    };
+    let ClientResponse::Found { people, posts } = call(&kim, req).await else {
+        panic!("no results")
+    };
+    let fred_id = fred_point.actor;
+    let regions: Vec<&Vec<String>> = people
+        .iter()
+        .filter(|p| p.actor == fred_id)
+        .map(|p| &p.regions)
+        .chain(
+            posts
+                .iter()
+                .filter(|p| p.actor == fred_id)
+                .map(|p| &p.regions),
+        )
+        .collect();
+    assert_eq!(regions.len(), 2, "Fred and his table: {people:?} {posts:?}");
+    for r in regions {
+        assert!(
+            r.len() == 2 && r[0].is_empty() && r[1].starts_with("sky:32/"),
+            "{r:?}"
+        );
+        let req = ClientRequest::Universe {
+            level: Level::Close,
+            region: Some(r[1].clone()),
+            layers: vec![Layer::People],
+            since: None,
+        };
+        let ClientResponse::Universe { snapshot: cell } = call(&kim, req).await else {
+            panic!("no snapshot of {r:?}")
+        };
+        assert!(cell.people.iter().any(|p| p.actor == fred_id), "{r:?}");
+    }
     assert!(snapshot.lines.len() >= 2, "{:?}", snapshot.lines);
     assert!(!snapshot.machines.is_empty(), "Kim's machine knows none");
     assert!(text.len() <= MAX_SNAPSHOT_BYTES);
