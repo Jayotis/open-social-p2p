@@ -39,7 +39,7 @@ Each result says the region it's in, so the phone knows where to look. Kim can s
 
 ### 4. A newcomer's first look
 
-On a fresh node, the first directory read (50 s on the clean-install test) brings the people a directory lists and their latest posts. Few of them have lines yet, so most appear as the unplaced background field ([ADR 0034](0034-a-universe-in-levels.md)). Tapping the field opens them as a list, "People your node found", newest posts first, so a newcomer can browse them before any geography forms. Zooming out shows this field as the public sky, with the machines worth meeting ([ADR 0034](0034-a-universe-in-levels.md) §6). With a layer on (Posts, Video), the stars in the field that have such posts brighten, without moving. If the node has found no one yet, the map says so plainly ("Your node is looking for people"), and offers an invite code to paste instead.
+On a fresh node, the first directory read (50 s on the clean-install test) brings the people a directory lists and their latest posts. Few of them have lines yet, so most appear as the unplaced background field ([ADR 0034](0034-a-universe-in-levels.md)). Tapping the field opens them as a list, "People your node found", newest posts first, so a newcomer can browse them before any geography forms. Zooming out shows this field as the public sky, drawn as cells of light at far zoom, with the machines worth meeting ([ADR 0034](0034-a-universe-in-levels.md) §6). With a layer on (Posts, Video), the stars in the field that have such posts brighten, without moving. If the node has found no one yet, the map says so plainly ("Your node is looking for people"), and offers an invite code to paste instead.
 
 ## Options considered
 
