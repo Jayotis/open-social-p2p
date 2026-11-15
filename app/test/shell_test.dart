@@ -542,6 +542,94 @@ void main() {
     expect((back - home).distance, lessThan(1), reason: 'framed as before');
   });
 
+  testWidgets('a newcomer with only sky people sees them, not the whole sky', (
+    tester,
+  ) async {
+    final top = world(['Kim', 'Sam']);
+    UniversePerson inSky(UniversePerson p, double x) => UniversePerson(
+      lit: 0,
+      identity: p.identity,
+      name: p.name,
+      step: null,
+      followed: false,
+      known: false,
+      posts: 0,
+      media: 0,
+      reshares: 0,
+      x: x,
+      y: 0,
+      group: null,
+      bright: 0,
+    );
+    app.snapshot = UniverseSnapshot(
+      version: 'sky-only',
+      level: UniverseLevel.universe,
+      region: '',
+      path: const [],
+      groups: const [],
+      people: [
+        top.people[0],
+        inSky(top.people[1], 80),
+        inSky(top.people[2], 160),
+      ],
+      lines: const [],
+      morePeople: 0,
+      machines: const [],
+      sky: const [],
+    );
+    app.regions['p:id-Sam'] = world(['Sam'], region: 'p:id-Sam', path: ['']);
+    await start(tester, Place.universe);
+    // The farthest of them is at the edge of the framing.
+    await tester.tapAt(drawnAt(tester, 1, 1));
+    await tester.pumpAndSettle();
+    expect(node.universeRegion, 'p:id-Sam');
+  });
+
+  /// Opens the Universe with the zoom hint due, stopping while it plays.
+  Future<void> startHinting(WidgetTester tester) async {
+    node.zoomHintDue = true;
+    app.snapshot = world(['Kim']);
+    await start(tester, Place.home);
+    // The map is there behind Home, as the app keeps the last one.
+    await node.loadUniverse();
+    await tester.pumpAndSettle();
+    expect(node.universe, isNotNull);
+    // Not played out unseen behind Home.
+    expect(node.zoomHintDue, isTrue);
+    await tester.tap(find.widgetWithText(NavigationDestination, 'Universe'));
+    for (var i = 0; i < 5; i++) {
+      await tester.pump(const Duration(milliseconds: 100));
+    }
+    expect(find.text('Pinch to zoom'), findsOne);
+  }
+
+  testWidgets('the map shows once that it zooms', (tester) async {
+    await startHinting(tester);
+    // Clear of her star, and the name under it.
+    final star = tester.getRect(find.byTooltip('Your node'));
+    final hint = tester.getRect(find.text('Pinch to zoom'));
+    expect(hint.top, greaterThan(star.bottom + 30));
+    // It lets a tap through to the map meanwhile.
+    expect(find.byTooltip('My star').hitTestable(), findsOne);
+    await tester.pumpAndSettle();
+    expect(find.text('Pinch to zoom'), findsNothing);
+    expect(node.zoomHintDue, isFalse);
+  });
+
+  testWidgets('a pinch ends the zoom hint early', (tester) async {
+    await startHinting(tester);
+    final mid = tester.getCenter(find.byKey(const Key('universe-map')));
+    final a = await tester.startGesture(mid - const Offset(20, 0), pointer: 1);
+    final b = await tester.startGesture(mid + const Offset(20, 0), pointer: 2);
+    await a.moveBy(const Offset(-30, 0));
+    await b.moveBy(const Offset(30, 0));
+    await tester.pump();
+    expect(find.text('Pinch to zoom'), findsNothing);
+    expect(node.zoomHintDue, isFalse);
+    await a.up();
+    await b.up();
+  });
+
   testWidgets('on its side, the card leaves the buttons clear', (tester) async {
     await tester.binding.setSurfaceSize(const Size(846, 387));
     addTearDown(() => tester.binding.setSurfaceSize(null));

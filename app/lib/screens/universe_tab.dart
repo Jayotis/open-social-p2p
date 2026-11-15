@@ -320,7 +320,15 @@ class _UniverseTabState extends State<UniverseTab>
     }
   }
 
+  /// The pinch hint is done: shown to the end, or the map already pinched.
+  void _hinted() {
+    if (!_node.zoomHintDue) return;
+    _node.zoomHintDone();
+    if (mounted) setState(() {});
+  }
+
   void _scaleStart(ScaleStartDetails d) {
+    if (d.pointerCount > 1) _hinted();
     _fly.stop();
     _lastFocal = d.localFocalPoint;
     _lastFactor = 1;
@@ -354,6 +362,7 @@ class _UniverseTabState extends State<UniverseTab>
 
   void _wheel(PointerSignalEvent e) {
     if (e is! PointerScrollEvent) return;
+    _hinted();
     _fly.stop();
     final before = _camera.toWorld(e.localPosition);
     final scale = (_camera.scale * pow(0.998, e.scrollDelta.dy)).clamp(
@@ -423,6 +432,19 @@ class _UniverseTabState extends State<UniverseTab>
                   ),
                 ),
               ),
+              // Once, with someone on the map: that it zooms. Only while
+              // the Universe is the tab shown, as the others keep running.
+              if (node.zoomHintDue &&
+                  node.watchingUniverse &&
+                  s != null &&
+                  (s.people.length > 1 || s.groups.isNotEmpty))
+                Positioned(
+                  left: 0,
+                  right: 0,
+                  top: _Fit.clearTop,
+                  height: _clear.height,
+                  child: _PinchHint(colors: colors, onDone: _hinted),
+                ),
               _YourStar(
                 camera: _camera,
                 node: node,
@@ -531,6 +553,114 @@ class _UniverseTabState extends State<UniverseTab>
   }
 }
 
+/// Two fingertips spreading and closing, twice, over the map: it zooms.
+/// Touches go through to the map.
+class _PinchHint extends StatefulWidget {
+  const _PinchHint({required this.colors, required this.onDone});
+
+  final OspColors colors;
+  final VoidCallback onDone;
+
+  @override
+  State<_PinchHint> createState() => _PinchHintState();
+}
+
+class _PinchHintState extends State<_PinchHint>
+    with SingleTickerProviderStateMixin {
+  /// Each spread and close.
+  static const _once = Duration(milliseconds: 1400);
+  static const _times = 2;
+
+  late final AnimationController _play = AnimationController(
+    vsync: this,
+    duration: _once * _times,
+  )..forward().whenComplete(() => widget.onDone());
+
+  @override
+  void dispose() {
+    _play.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = widget.colors;
+    return IgnorePointer(
+      child: AnimatedBuilder(
+        animation: _play,
+        builder: (context, _) {
+          final t = _play.value;
+          // In and out gently, at the start and the end.
+          final shown = min(1.0, min(t, 1 - t) * 10);
+          // Out and back within each one.
+          final round = (t * _times) % 1;
+          final spread = Curves.easeInOut.transform(
+            round < 0.5 ? round * 2 : 2 - round * 2,
+          );
+          final apart = 16 + 44 * spread;
+          return Opacity(
+            opacity: shown,
+            // Low on the map, clear of her star and name in the middle.
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.end,
+              children: [
+                SizedBox(
+                  width: 160,
+                  height: 120,
+                  child: CustomPaint(painter: _Fingertips(apart, colors.onSky)),
+                ),
+                DecoratedBox(
+                  decoration: BoxDecoration(
+                    color: colors.skyHaze,
+                    borderRadius: BorderRadius.circular(16),
+                  ),
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: Space.m,
+                      vertical: Space.xs,
+                    ),
+                    child: Text(
+                      'Pinch to zoom',
+                      style: TextStyle(color: colors.onSky),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          );
+        },
+      ),
+    );
+  }
+}
+
+class _Fingertips extends CustomPainter {
+  _Fingertips(this.apart, this.color);
+
+  final double apart;
+  final Color color;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final mid = size.center(Offset.zero);
+    // Along a slant, as a thumb and finger are.
+    final along = Offset(cos(-pi / 4), sin(-pi / 4)) * apart;
+    final fill = Paint()..color = color.withValues(alpha: 0.35);
+    final ring = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2
+      ..color = color.withValues(alpha: 0.8);
+    for (final at in [mid + along, mid - along]) {
+      canvas.drawCircle(at, 14, fill);
+      canvas.drawCircle(at, 14, ring);
+    }
+  }
+
+  @override
+  bool shouldRepaint(_Fingertips old) =>
+      old.apart != apart || old.color != color;
+}
+
 /// Whether the map is wide and short, as on a phone on its side.
 bool _sideways(Size size) => size.width > _Fit.wide && size.height < _Fit.short;
 
@@ -596,9 +726,15 @@ List<Offset> _resultsIn(UniverseSnapshot s, SearchLights lights) => [
     for (final p in points) {
       far = max(far, p.distance);
     }
-    // Nobody placed yet: the whole public sky around her.
-    if (far == 0 && (s.sky.isNotEmpty || s.people.length > 1)) {
-      far = _Fit.skyOuter;
+    // Nobody placed yet: the sky's people and cells shown around her, so
+    // a newcomer's handful fills the screen with room for their names.
+    if (far == 0) {
+      for (final p in s.people) {
+        far = max(far, Offset(p.x, p.y).distance);
+      }
+      for (final c in s.sky) {
+        far = max(far, Offset(c.atX, c.atY).distance);
+      }
     }
     return (Offset.zero, far > 0 ? room / far : _Fit.near);
   }
