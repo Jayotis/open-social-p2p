@@ -33,6 +33,8 @@ mod replies;
 mod replying;
 #[cfg(feature = "sim")]
 pub mod simnet;
+#[allow(dead_code)] // used by the Universe's snapshot in P4's next parts
+mod sky;
 mod social;
 mod store;
 mod sync;
