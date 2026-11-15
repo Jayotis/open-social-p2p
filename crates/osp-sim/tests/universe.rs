@@ -308,6 +308,9 @@ async fn the_universe_holds_no_address_and_opening_it_sends_nothing() {
                 vec![Layer::People],
                 vec![Layer::Machines],
                 vec![Layer::Network],
+                vec![Layer::Posts],
+                vec![Layer::Video],
+                vec![Layer::Shared],
             ] {
                 let req = universe_request(level, layers, since.clone());
                 if let ClientResponse::Universe { snapshot } = call(&kim, req).await {

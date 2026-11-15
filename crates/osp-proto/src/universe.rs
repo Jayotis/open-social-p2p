@@ -103,10 +103,32 @@ pub enum Layer {
     Machines,
     /// This node's own totals.
     Network,
+    /// Lights up where recent public posts are (ADR 0035 §1): each
+    /// person's, group's and sky cell's `lit` counts them. With `People`.
+    Posts,
+    /// Lights up where recent public video is: posts with a video.
+    Video,
+    /// Lights up where reshares are spreading: recent reshares.
+    Shared,
 }
 
-/// Every layer, for a request that names none.
+impl Layer {
+    /// Whether it lights up the people layer, rather than adding to it.
+    pub fn lights(self) -> bool {
+        matches!(self, Layer::Posts | Layer::Video | Layer::Shared)
+    }
+}
+
+/// Every layer, for a request that names none. A layer that lights up
+/// (`Posts`, `Video`, `Shared`) is asked for by name, one at a time.
 pub const ALL_LAYERS: [Layer; 3] = [Layer::People, Layer::Machines, Layer::Network];
+
+/// What a lit layer counts: items from this many days back.
+pub const LIT_DAYS: u64 = 90;
+
+fn is_zero(n: &u32) -> bool {
+    *n == 0
+}
 
 /// The node's answer to `Universe`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -160,6 +182,10 @@ pub struct GroupPoint {
     /// 0 to 100 (ADR 0034 §5).
     pub bright: u8,
     pub at: [f32; 2],
+    /// With a lit layer asked for: its people's recent items of that kind
+    /// held here, at any depth. Left out when none.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub lit: u32,
 }
 
 /// Many people of the public sky, drawn as one light. Only for drawing at
@@ -174,6 +200,9 @@ pub struct SkyCell {
     pub creators: u32,
     /// Its centre, in the placed world's units.
     pub at: [f32; 2],
+    /// As a group's `lit`.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub lit: u32,
 }
 
 /// One person (ADR 0033's "People").
@@ -209,6 +238,10 @@ pub struct PersonPoint {
     /// 0 to 100 (ADR 0034 §5).
     #[serde(default)]
     pub bright: u8,
+    /// As a group's `lit`: their own recent items of the layer's kind. It
+    /// never moves them.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub lit: u32,
 }
 
 /// A public, signed act between two people, each named by their place in
@@ -297,6 +330,7 @@ pub const ALLOWLIST: &[&str] = &[
     "groups[].people",
     "groups[].bright",
     "groups[].at",
+    "groups[].lit",
     "people",
     "people[].actor",
     "people[].name",
@@ -312,6 +346,7 @@ pub const ALLOWLIST: &[&str] = &[
     "people[].at",
     "people[].group",
     "people[].bright",
+    "people[].lit",
     "lines",
     "lines[].kind",
     "lines[].from",
@@ -335,6 +370,7 @@ pub const ALLOWLIST: &[&str] = &[
     "sky[].people",
     "sky[].creators",
     "sky[].at",
+    "sky[].lit",
 ];
 
 /// Every field path in a JSON value, as [`ALLOWLIST`] writes them.
@@ -387,6 +423,7 @@ mod tests {
                 people: 2,
                 bright: 10,
                 at: [1.0, 2.0],
+                lit: 4,
             }],
             people: vec![PersonPoint {
                 actor: key(1),
@@ -403,6 +440,7 @@ mod tests {
                 at: [0.0, 0.0],
                 group: Some(1),
                 bright: 5,
+                lit: 1,
             }],
             lines: vec![Line {
                 kind: LineKind::Reshared,
@@ -430,6 +468,7 @@ mod tests {
                 people: 9,
                 creators: 2,
                 at: [100.0, -100.0],
+                lit: 3,
             }],
         }
     }

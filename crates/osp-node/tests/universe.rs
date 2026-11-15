@@ -7,7 +7,10 @@
 //!
 //! All nodes run in this process on loopback with relays and DNS lookup off.
 
-use std::{collections::BTreeSet, path::Path};
+use std::{
+    collections::BTreeSet,
+    path::{Path, PathBuf},
+};
 
 use osp_node::{Config, Node};
 use osp_proto::{
@@ -33,6 +36,55 @@ async fn post(node: &Node, text: &str) -> ObjectId {
     let req = ClientRequest::Post {
         content: text.into(),
         attachments: vec![],
+        uploads: vec![],
+        upload: None,
+    };
+    match call(node, req).await {
+        ClientResponse::Posted { id } => id,
+        other => panic!("unexpected {other:?}"),
+    }
+}
+
+/// Makes a photo or a two-second clip with ffmpeg.
+async fn make_media(dir: &Path, video: bool) -> PathBuf {
+    let mut cmd = tokio::process::Command::new("ffmpeg");
+    cmd.args([
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-y",
+        "-f",
+        "lavfi",
+        "-i",
+    ]);
+    let out = match video {
+        true => {
+            cmd.arg("testsrc=duration=2:size=640x360:rate=30").args([
+                "-c:v",
+                "libx264",
+                "-preset",
+                "ultrafast",
+            ]);
+            dir.join("clip.mp4")
+        }
+        false => {
+            cmd.arg("testsrc=size=320x200").args(["-frames:v", "1"]);
+            dir.join("photo.png")
+        }
+    };
+    let status = cmd
+        .arg(&out)
+        .status()
+        .await
+        .expect("ffmpeg must be installed");
+    assert!(status.success());
+    out
+}
+
+async fn post_media(node: &Node, text: &str, file: PathBuf) -> ObjectId {
+    let req = ClientRequest::Post {
+        content: text.into(),
+        attachments: vec![file],
         uploads: vec![],
         upload: None,
     };
@@ -206,6 +258,75 @@ async fn the_universe_shows_steps_and_public_lines_and_nothing_else() {
         assert!(matches!(resp, ClientResponse::Error { .. }), "{resp:?}");
     }
     assert!(requests_sent(&kim).await <= before);
+
+    for node in [kim, jimmy, alice] {
+        node.shutdown().await.unwrap();
+    }
+}
+
+/// ADR 0035 §1: each layer that lights up counts what the node holds. Jimmy
+/// posts words, a photo and a clip, and reshares Alice. Kim's Posts layer
+/// lights Jimmy by his three posts, Video by his one clip, Shared by his
+/// one reshare, and nobody moves.
+#[tokio::test(flavor = "multi_thread")]
+async fn each_layer_lights_what_the_node_holds() {
+    let dir = tempfile::tempdir().unwrap();
+    let kim = start(dir.path(), "Kim").await;
+    let jimmy = start(dir.path(), "Jimmy").await;
+    let alice = start(dir.path(), "Alice").await;
+    follow(&jimmy, &alice).await;
+    let id = post(&alice, "A birch stool").await;
+    call(&jimmy, ClientRequest::Sync).await;
+    call(&jimmy, ClientRequest::Reshare { id, host: false }).await;
+    post(&jimmy, "Words only").await;
+    post_media(&jimmy, "A photo", make_media(dir.path(), false).await).await;
+    post_media(&jimmy, "A clip", make_media(dir.path(), true).await).await;
+    post(&kim, "Kim's own").await;
+    follow(&kim, &jimmy).await;
+    call(&kim, ClientRequest::Sync).await;
+
+    let layer = |layers: Vec<Layer>| ClientRequest::Universe {
+        level: Level::Universe,
+        region: None,
+        layers,
+        since: None,
+    };
+    let snapshot = |resp: ClientResponse| match resp {
+        ClientResponse::Universe { snapshot } => *snapshot,
+        other => panic!("unexpected {other:?}"),
+    };
+    let plain = snapshot(call(&kim, layer(vec![Layer::People])).await);
+    let json = serde_json::to_string(&plain).unwrap();
+    assert!(!json.contains("\"lit\""), "no layer lit, no counts: {json}");
+    let jimmy_point = plain.people.iter().find(|p| p.name == "Jimmy").unwrap();
+    assert_eq!((jimmy_point.posts, jimmy_point.media), (3, 2));
+
+    let before = requests_sent(&kim).await;
+    for (lit_layer, count) in [
+        (
+            Layer::Posts,
+            (|p| p.posts) as fn(&osp_proto::universe::PersonPoint) -> u64,
+        ),
+        (Layer::Shared, |p| p.reshares),
+        (Layer::Video, |p| (p.name == "Jimmy") as u64),
+    ] {
+        // A lit layer brings the people layer with it.
+        let lit = snapshot(call(&kim, layer(vec![lit_layer])).await);
+        assert_eq!(lit.people.len(), plain.people.len(), "{lit_layer:?}");
+        for (p, q) in plain.people.iter().zip(&lit.people) {
+            assert_eq!((p.actor, p.at, p.group), (q.actor, q.at, q.group));
+            // Everything here is from today, so all of it is recent.
+            assert_eq!(q.lit as u64, count(p), "{lit_layer:?} {}", p.name);
+        }
+        let groups: u32 = lit.groups.iter().map(|g| g.lit).sum();
+        let sky: u32 = lit.sky.iter().map(|c| c.lit).sum();
+        assert_eq!(groups + sky, 0, "a world this small has no closed lights");
+    }
+    assert!(requests_sent(&kim).await <= before);
+
+    // One layer lights up at a time.
+    let both = kim.handle(layer(vec![Layer::Posts, Layer::Video])).await;
+    assert!(matches!(both, ClientResponse::Error { .. }), "{both:?}");
 
     for node in [kim, jimmy, alice] {
         node.shutdown().await.unwrap();

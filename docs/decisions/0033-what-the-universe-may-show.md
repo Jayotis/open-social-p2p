@@ -40,7 +40,7 @@ Opening, panning or zooming the map, and anything the node does in the backgroun
 | found through a directory, in words | `found_people` | already shown today | `found_through`. It names the directory's machine, a public role, never the person's own. |
 | public edges: Alice reshared Jimmy, Jimmy credited Carol early | reshares in outboxes, `vouches`, `side_vouches` | public signed acts | `lines`: kind, from and to (each by their place in `people`, which keeps 600 lines small), how many in 90 days, and the newest's day. Each act's signature is checked again, and its signer must be `from`. Also read: reshares that came with directories' lists, and the credits Kim gave, her own acts. `PlaceWithin` answers are kept elsewhere and never read. |
 | posts held, media held, last post (to the day) | `objects` | public; used for brightness | `posts`, `media`, `reshares`, `last_post`, the day only, in UTC, so no time of day hints at a time zone. |
-| place, group, brightness | the tree grouped from the public lines above; the public sky | made from public lines and Kim's own follows; a sky place is a hash of the key | *Review (2026-11-14, P4):* `at`, `group`, `bright`. A placed person's `at` and `group` come only from the lines above and Kim's own follows and known people ([ADR 0034](0034-a-universe-in-levels.md) §1). Anyone else's `at` is a hash of their key, on the sky's ring, so it says nothing about who listed them. `bright` is made from `posts` and `reshares`, already shown. |
+| place, group, brightness | the tree grouped from the public lines above; the public sky | made from public lines and Kim's own follows; a sky place is a hash of the key | *Review (2026-11-14, P4):* `at`, `group`, `bright`. A placed person's `at` and `group` come only from the lines above and Kim's own follows and known people ([ADR 0034](0034-a-universe-in-levels.md) §1). Anyone else's `at` is a hash of their key, on the sky's ring, so it says nothing about who listed them. `bright` is made from `posts` and `reshares`, already shown. *Review (2026-11-15, P5):* `lit`, only with a layer that lights up ([ADR 0035](0035-exploring-the-universe.md) §1): their public posts, posts with a video, or reshares from the last 90 days that the node holds. Counts of what `posts`, `media` and `reshares` already show, narrowed to recent ones. |
 
 **The tree and the sky** ([ADR 0034](0034-a-universe-in-levels.md))
 
@@ -48,7 +48,7 @@ Opening, panning or zooming the map, and anything the node does in the backgroun
 | --- | --- | --- | --- |
 | a group: its ID, parent, size, brightness, place | the tree | made from the people's fields above | `groups`: `id`, `parent`, `from` (the group a new one split from), `people`, `bright`, `at`. A group is named by a number the node chose, never by anyone in it. |
 | what's open, and the way up | the request | the device's own question | `region`, `path`: what the device asked to open, as group IDs, a person's key it already holds, or sky cells. |
-| a sky cell: how many people, how many creators | the public sky | counts of people already shown one by one when zoomed in | `sky`: `level`, `x`, `y`, `people`, `creators`, `at`. A cell is cut from hashed places, so it groups no one. |
+| a sky cell: how many people, how many creators | the public sky | counts of people already shown one by one when zoomed in | `sky`: `level`, `x`, `y`, `people`, `creators`, `at`. A cell is cut from hashed places, so it groups no one. *Review (2026-11-15, P5):* a group's or cell's `lit` is the sum of its people's. |
 
 **Machines**
 
