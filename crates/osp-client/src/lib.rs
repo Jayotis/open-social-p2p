@@ -33,7 +33,7 @@ use osp_proto::{
         ProfileItemKind, Upload, UploadId,
     },
     types::ProfileLink,
-    universe::{Layer, Level, Snapshot},
+    universe::{Event, Layer, Level, Snapshot},
 };
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
@@ -489,6 +489,19 @@ impl Client {
             debug!("couldn't save the Universe: {e:#}");
         }
         Ok(Some(snapshot))
+    }
+
+    /// What the node did or saw lately (ADR 0036 §1), oldest first: its
+    /// events after `since`, the highest `seq` the device holds, or all it
+    /// keeps (the last day) with none.
+    pub async fn universe_events(&self, since: Option<u64>) -> Result<Vec<Event>> {
+        match self
+            .request(&ClientRequest::UniverseEvents { since })
+            .await?
+        {
+            ClientResponse::UniverseEvents { events } => Ok(events),
+            _ => bail!("unexpected reply to UniverseEvents"),
+        }
     }
 
     /// The top of the Universe as last fetched, if any.

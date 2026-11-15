@@ -90,6 +90,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   UnsentPost dco_decode_box_autoadd_unsent_post(dynamic raw);
 
   @protected
+  EventKind dco_decode_event_kind(dynamic raw);
+
+  @protected
   double dco_decode_f_32(dynamic raw);
 
   @protected
@@ -142,6 +145,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   List<TrustEntry> dco_decode_list_trust_entry(dynamic raw);
+
+  @protected
+  List<UniverseEvent> dco_decode_list_universe_event(dynamic raw);
 
   @protected
   List<UniverseGroup> dco_decode_list_universe_group(dynamic raw);
@@ -258,6 +264,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void dco_decode_unit(dynamic raw);
 
   @protected
+  UniverseEvent dco_decode_universe_event(dynamic raw);
+
+  @protected
   UniverseGroup dco_decode_universe_group(dynamic raw);
 
   @protected
@@ -359,6 +368,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   UnsentPost sse_decode_box_autoadd_unsent_post(SseDeserializer deserializer);
 
   @protected
+  EventKind sse_decode_event_kind(SseDeserializer deserializer);
+
+  @protected
   double sse_decode_f_32(SseDeserializer deserializer);
 
   @protected
@@ -413,6 +425,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   List<TrustEntry> sse_decode_list_trust_entry(SseDeserializer deserializer);
+
+  @protected
+  List<UniverseEvent> sse_decode_list_universe_event(
+    SseDeserializer deserializer,
+  );
 
   @protected
   List<UniverseGroup> sse_decode_list_universe_group(
@@ -547,6 +564,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_decode_unit(SseDeserializer deserializer);
 
   @protected
+  UniverseEvent sse_decode_universe_event(SseDeserializer deserializer);
+
+  @protected
   UniverseGroup sse_decode_universe_group(SseDeserializer deserializer);
 
   @protected
@@ -670,6 +690,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_event_kind(EventKind self, SseSerializer serializer);
+
+  @protected
   void sse_encode_f_32(double self, SseSerializer serializer);
 
   @protected
@@ -735,6 +758,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_list_trust_entry(
     List<TrustEntry> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_universe_event(
+    List<UniverseEvent> self,
     SseSerializer serializer,
   );
 
@@ -890,6 +919,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_unit(void self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_universe_event(UniverseEvent self, SseSerializer serializer);
 
   @protected
   void sse_encode_universe_group(UniverseGroup self, SseSerializer serializer);

@@ -7,15 +7,18 @@ import 'package:osp_app/node.dart';
 import 'package:osp_app/screens/activity_screen.dart';
 import 'package:osp_app/screens/advanced_screen.dart';
 import 'package:osp_app/screens/compose_screen.dart';
+import 'package:osp_app/screens/events_screen.dart';
 import 'package:osp_app/screens/found_people_screen.dart';
 import 'package:osp_app/screens/node_summary_screen.dart';
 import 'package:osp_app/screens/people_screen.dart';
 import 'package:osp_app/screens/search_screen.dart';
 import 'package:osp_app/screens/trust_screen.dart';
+import 'package:osp_app/screens/universe_tab.dart';
 import 'package:osp_app/shell.dart';
 import 'package:osp_app/src/rust/api/osp.dart';
 import 'package:osp_app/uploads.dart';
 
+import 'event_fixture.dart';
 import 'plain_words.dart';
 
 /// The Rust side, as far as the app's places go.
@@ -71,6 +74,20 @@ class FakeApp implements OspApp {
         ? (lit == null ? snapshot : litTops[lit] ?? snapshot)
         : regions[region] ?? world(const [], region: region, path: const ['']);
     return since == there.version ? null : there;
+  }
+
+  /// What the node did, oldest first, and each `since` it was asked.
+  List<UniverseEvent> events = [];
+  final eventsAsked = <BigInt?>[];
+
+  @override
+  Future<List<UniverseEvent>> universeEvents({BigInt? since}) async {
+    eventsAsked.add(since);
+    if (unreachable) throw Exception('no contact');
+    return [
+      for (final e in events)
+        if (since == null || e.seq > since) e,
+    ];
   }
 
   /// What a search finds, and each one asked for.
@@ -191,6 +208,7 @@ void main() {
   late HomeNode node;
 
   setUp(() {
+    debugDrawnEvents.clear();
     root = Directory.systemTemp.createTempSync('shell_test');
     app = FakeApp();
     node = HomeNode.forTests(
@@ -807,6 +825,111 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.byType(NodeSummaryScreen), findsOneWidget);
     expect(find.text('able-baker-charlie'), findsNothing);
+  });
+
+  testWidgets('an idle world draws nothing on the map (ADR 0036 §2)', (
+    tester,
+  ) async {
+    app.snapshot = world(['Jimmy', 'Kim']);
+    await start(tester, Place.universe);
+    await node.checkStatus();
+    await tester.pump(const Duration(seconds: 10));
+    expect(app.eventsAsked, isNotEmpty);
+    expect(debugDrawnEvents, isEmpty);
+    expect(find.byKey(const Key('event-line')), findsNothing);
+    expect(tester.binding.hasScheduledFrame, isFalse, reason: 'still');
+  });
+
+  testWidgets('what the node did is drawn once, in words, and listed', (
+    tester,
+  ) async {
+    app.snapshot = world(['Jimmy', 'Kim']);
+    app.events = [
+      // From this morning: listed, not drawn.
+      anEvent(
+        1,
+        EventKind.found,
+        words: 'amber-fox',
+        people: 3,
+        ago: const Duration(hours: 4),
+      ),
+      anEvent(
+        2,
+        EventKind.served,
+        author: 'id-Jimmy',
+        post: 'p1',
+        bytes: 2 << 20,
+      ),
+    ];
+    await start(tester, Place.universe);
+    expect(debugDrawnEvents.toSet(), {BigInt.two});
+    const served = "Your node sent 2.0 MB of Jimmy's post to another node";
+    expect(find.text(served), findsOne);
+    expectPlainWords(tester);
+
+    // Summed into on the node: the same start, a new seq. Not drawn again.
+    final earlier = app.events.last;
+    app.events = [
+      app.events.first,
+      UniverseEvent(
+        seq: BigInt.from(3),
+        first: earlier.first,
+        last: earlier.last,
+        count: 2,
+        kind: EventKind.served,
+        people: 0,
+        author: 'id-Jimmy',
+        post: 'p1',
+        bytes: BigInt.from(3 << 20),
+        keptByCopy: false,
+        met: false,
+      ),
+    ];
+    await node.checkStatus();
+    await tester.pump(const Duration(seconds: 10));
+    expect(app.eventsAsked.last, BigInt.two, reason: 'since the newest held');
+    expect(debugDrawnEvents.toSet(), {BigInt.two});
+    expect(node.events.today.first.count, 2);
+
+    // A copy keeping Jimmy's post available: drawn, in its own words.
+    app.events = [
+      anEvent(
+        4,
+        EventKind.fetched,
+        author: 'id-Jimmy',
+        host: 'id-Kim',
+        keptByCopy: true,
+        bytes: 1 << 20,
+      ),
+    ];
+    await node.checkStatus();
+    await tester.pump();
+    await tester.pump(const Duration(seconds: 1));
+    expect(find.textContaining('Kept available by a copy'), findsOne);
+    expectPlainWords(tester);
+
+    await tester.tap(find.byKey(const Key('event-line')));
+    await tester.pumpAndSettle();
+    expect(find.byType(EventsScreen), findsOneWidget);
+    expect(
+      find.text('Your node found 3 new people, listed by amber-fox'),
+      findsOne,
+    );
+    expect(find.textContaining('Kept available by a copy'), findsOne);
+    expectPlainWords(tester);
+    await tester.pump(const Duration(seconds: 10));
+    // Each drawn once, only what was sent.
+    expect(debugDrawnEvents.toSet(), {BigInt.two, BigInt.from(4)});
+  });
+
+  testWidgets('your node opens the list of what it did today', (tester) async {
+    await start(tester, Place.universe);
+    await tester.tap(find.byTooltip('Your node'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('What it did today'));
+    await tester.pumpAndSettle();
+    expect(find.text('Nothing yet today'), findsOne);
+    expectPlainWords(tester);
   });
 
   testWidgets('pinching anyhow never loses the map', (tester) async {
