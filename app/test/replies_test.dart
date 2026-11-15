@@ -82,6 +82,9 @@ class FakeApp implements OspApp {
     trustRequests: 0,
     replyRequests: requests.length,
     overTor: false,
+    hostedPosts: 0,
+    servedLatelyBytes: 0,
+    spaceBytes: 0,
   );
 
   @override

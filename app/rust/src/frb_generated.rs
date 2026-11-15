@@ -3343,6 +3343,9 @@ impl SseDecode for crate::api::osp::NodeStatus {
         let mut var_trustRequests = <u32>::sse_decode(deserializer);
         let mut var_replyRequests = <u32>::sse_decode(deserializer);
         let mut var_overTor = <bool>::sse_decode(deserializer);
+        let mut var_hostedPosts = <u32>::sse_decode(deserializer);
+        let mut var_servedLatelyBytes = <i64>::sse_decode(deserializer);
+        let mut var_spaceBytes = <i64>::sse_decode(deserializer);
         return crate::api::osp::NodeStatus {
             name: var_name,
             version: var_version,
@@ -3358,6 +3361,9 @@ impl SseDecode for crate::api::osp::NodeStatus {
             trust_requests: var_trustRequests,
             reply_requests: var_replyRequests,
             over_tor: var_overTor,
+            hosted_posts: var_hostedPosts,
+            served_lately_bytes: var_servedLatelyBytes,
+            space_bytes: var_spaceBytes,
         };
     }
 }
@@ -4252,6 +4258,9 @@ impl flutter_rust_bridge::IntoDart for crate::api::osp::NodeStatus {
             self.trust_requests.into_into_dart().into_dart(),
             self.reply_requests.into_into_dart().into_dart(),
             self.over_tor.into_into_dart().into_dart(),
+            self.hosted_posts.into_into_dart().into_dart(),
+            self.served_lately_bytes.into_into_dart().into_dart(),
+            self.space_bytes.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
@@ -5117,6 +5126,9 @@ impl SseEncode for crate::api::osp::NodeStatus {
         <u32>::sse_encode(self.trust_requests, serializer);
         <u32>::sse_encode(self.reply_requests, serializer);
         <bool>::sse_encode(self.over_tor, serializer);
+        <u32>::sse_encode(self.hosted_posts, serializer);
+        <i64>::sse_encode(self.served_lately_bytes, serializer);
+        <i64>::sse_encode(self.space_bytes, serializer);
     }
 }
 

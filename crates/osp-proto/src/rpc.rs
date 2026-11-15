@@ -638,6 +638,13 @@ pub struct StatusInfo {
     /// Posts this node reshared with hosting, and what it served of them.
     #[serde(default)]
     pub shared: SharedStatus,
+    /// Media bytes this node sent other nodes over the last 30 days
+    /// (ADR 0036 §3): its own posts', copies it keeps for others, all of it.
+    #[serde(default)]
+    pub served_lately_bytes: u64,
+    /// The space OSP uses on the node: the media it holds and its database.
+    #[serde(default)]
+    pub space_bytes: u64,
 }
 
 /// What a node has served of the posts it reshared with hosting (ADR 0025's
