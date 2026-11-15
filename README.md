@@ -113,7 +113,8 @@ Stage 1 uses a native OSP protocol. An **ActivityPub bridge** is planned for a l
 | [Vision and principles](docs/01-vision-and-principles.md) | What OSP is trying to be, and its non-goals |
 | [System architecture](docs/02-system-architecture.md) | Components, data flow and protocol boundaries |
 | [Security, privacy and governance](docs/05-security-privacy-and-governance.md) | Threats, privacy goals and open governance questions |
-| [Development roadmap](docs/06-roadmap.md) | Completed milestones, alpha work and later stages |\n| [Installer and release distribution plan](docs/14-cross-platform-installers-and-release-distribution.md) | Deferred Windows/Linux packaging, release automation and update plan |
+| [Development roadmap](docs/06-roadmap.md) | Completed milestones, alpha work and later stages |
+| [Installer and release distribution plan](docs/14-cross-platform-installers-and-release-distribution.md) | Deferred Windows/Linux packaging, release automation and update plan |
 | [Contributing and open decisions](docs/07-contributing-and-open-decisions.md) | How to help and what still needs decisions |
 | [Architecture decision records](docs/decisions/) | The decisions that define the current system |
 | [Testing records](docs/testing/) | Real-node and simulated experiments, including failures |
