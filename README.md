@@ -1,10 +1,14 @@
 # Open Social P2P
 
-**A home-hosted, peer-to-peer social network: your identity, posts and media live on your own node, while your phone is the everyday interface.**
+**Website:** [osp2p.com](https://osp2p.com) · [Roadmap](docs/06-roadmap.md) · [Architecture decisions](docs/decisions/) · [Testing records](docs/testing/)
 
-> **Alpha testers wanted.** OSP has reached the point where the main unknown is no longer whether the pieces can work in the lab, but how they behave on independent home networks. If you run Linux on x86_64 or arm64 and are willing to try an early system, see [Installing a node](docs/install.md) and the [GitHub releases](https://github.com/Jayotis/open-social-p2p/releases).
+**A free, open-source, home-hosted social network being built as an alternative to Facebook, X, Reddit and YouTube.**
 
-**Status: early alpha.** Prebuilt Linux releases exist, the node has been exercised across real machines and networks, and Android and iPhone clients have been tested against home nodes. This is still experimental software, not a production social network. The current alpha is focused on public content and Linux home nodes.
+Your identity, posts and media live on a node you control, while your phone is the everyday interface. OSP is designed so no single company has to hold every account, own the entire distribution network or control one global engagement feed.
+
+**Status: Product Alpha in development.** The P2P engineering foundation already publishes, discovers, follows, reshares, hosts and serves media, deletes, replies across Tor, and admits some cross-community replies through signed social evidence. The next release turns that machinery into the first OSP product someone who did not build it would want to install and keep running: **Home · Universe · You**, profiles, exploration, visible network activity, likes/activity, sharing and a polished first-run experience.
+
+Per [ADR 0030](docs/decisions/0030-product-alpha-before-testers.md), the draft mechanism alpha stays unpublished and there is no tester release before the Product Alpha hardening gate.
 
 ## What OSP is trying to do
 
@@ -16,6 +20,10 @@ Most social networks put your account, content, social graph, search and deliver
 - Nodes exchange social/control traffic over **Tor onion services**, so a stranger discovering your public profile does not automatically learn your home IP address.
 - Discovery material from directories is brought to the node and **searched locally**. The words you type into search are not sent to a central search service.
 - Followers and people who deliberately reshare with hosting can serve verified copies of media, so a popular creator does not have to upload every copy themselves.
+
+OSP is being built as an alternative to the social space people now split across **Facebook, X, Reddit and YouTube**: profiles and relationships, public conversation, discussion and discovery, photos and video. It is not a feature-for-feature clone of those services today.
+
+The software is **free and open source under AGPL-3.0**. Running a home node still uses the hardware, storage, internet connection and electricity you choose to provide.
 
 OSP is not trying to make every machine anonymous, eliminate every public helper on day one, or pretend the hard parts of abuse, moderation and large-scale transport are already solved. Those trade-offs are documented as architecture decisions rather than hidden behind the app.
 
@@ -36,34 +44,19 @@ The project has moved well beyond the original source-only prototype:
 
 See the [development roadmap](docs/06-roadmap.md), [architecture decisions](docs/decisions/) and [testing records](docs/testing/) for the implementation and the failures that changed the design.
 
-## We need independent alpha testers
+## The next release: Product Alpha
 
-The home lab can prove protocol behaviour, but it cannot tell us how OSP behaves across a handful of unrelated homes, ISPs, routers and usage habits.
+The earlier plan was to hand a mechanism-focused alpha to a few testers and build the social product afterward. [ADR 0030](docs/decisions/0030-product-alpha-before-testers.md) reversed that order: the next public testing round should get something worth exploring, using and showing to someone else.
 
-The next alpha round is looking for a small number of people who can run a node and report what actually happens. Useful testing includes:
+Product Alpha is built around three places:
 
-- installing from a clean Linux machine and leaving the node running;
-- Tor's first-start and reconnect behaviour on a normal home connection;
-- finding people and public posts without exchanging follow codes;
-- opening a found video and seeing which creator or resharer actually serves it;
-- following, posting, resharing and replying between independent nodes;
-- seeing whether sharing-with-hosting is something people would choose without being prompted to do it;
-- reporting confusing setup, resource use, failures and anything that only appears outside the maintainer's lab.
+- **Home** — the feed and everyday social experience.
+- **Universe** — a zoomable view of people, public connections, content and the participating network; it is also the cold-start discovery experience.
+- **You** — your profile and your own node, with protocol details moved under Advanced.
 
-You do **not** need to build Rust from source to participate. The alpha installer uses release binaries.
+Posting and Activity stay reachable throughout the app. Profiles, Universe, visible network activity, connection paths, likes/activity and sharing are built before the public tester release.
 
-## Install the alpha
-
-Current node releases support **Linux x86_64 and arm64 with systemd**. Debian 12, Ubuntu 22.04 and Raspberry Pi OS 12 (64-bit), or newer versions, are the easiest path. A Raspberry Pi 4/5 or another always-on Linux machine is suitable, but a normal desktop is fine for testing.
-
-Start with:
-
-- [Installing a node](docs/install.md) — requirements, installer, updating and removal
-- [Releases](https://github.com/Jayotis/open-social-p2p/releases) — prebuilt Linux packages, installer and checksums
-
-The installer creates the node, configures Tor and the alpha directories, installs the user service and shows the node's recovery words. Run the installer as your normal user, not as root.
-
-**Please treat the alpha as disposable experimental software.** Keep the recovery words if you care about the test identity, expect rough edges, and do not use it for private or sensitive material.
+The existing [installation notes](docs/install.md) and [releases](https://github.com/Jayotis/open-social-p2p/releases) remain useful for development and clean-install checks, but they are **not currently an invitation to join a public alpha**.
 
 ## How the network is split
 
@@ -139,7 +132,7 @@ Code lives primarily in:
 
 ## Building from source
 
-Alpha testers should normally use a release. For development:
+The Product Alpha is not yet released to testers. For development:
 
 ```sh
 cargo build
@@ -151,7 +144,7 @@ See [Stage 1 manual testing](docs/testing/stage1-manual.md) for running multiple
 
 ## Contributing
 
-Right now, **independent testing is at least as valuable as more code**. Bug reports that include the distro, hardware, what you expected, what happened and relevant `osp status` output are especially useful.
+The current priority is Product Alpha and the hardening required before outside recruitment. Code review, focused bug reports, privacy/security findings and work that supports the accepted Product Alpha ADRs are especially useful.
 
 Architectural changes are recorded as ADRs so decisions can be reviewed and later superseded without rewriting project history. See [Contributing and open decisions](docs/07-contributing-and-open-decisions.md).
 
