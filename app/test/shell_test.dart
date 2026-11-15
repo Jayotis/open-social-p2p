@@ -553,7 +553,7 @@ void main() {
         matching: find.byType(Card),
       ),
     );
-    for (final button in ['My star', 'Layers']) {
+    for (final button in ['My star', 'Layers', 'Your node']) {
       final rect = tester.getRect(find.byTooltip(button));
       expect(rect.overlaps(card), isFalse, reason: button);
     }

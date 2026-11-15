@@ -80,13 +80,18 @@ abstract final class _Fit {
   /// path (ADR 0034 §6).
   static const up = 0.4;
 
-  /// Wider than this, the card below keeps to the left, this wide.
+  /// A map wider and shorter than these (a phone on its side), the card
+  /// keeps to the bottom left, this wide.
   static const wide = 600.0;
+  static const short = 360.0;
   static const card = 440.0;
 
   /// What the controls above and the card below cover, in pixels.
   static const clearTop = 64.0;
   static const clearBottom = 190.0;
+
+  /// On a wide screen the card sits low in the corner, and covers less.
+  static const clearBottomWide = 100.0;
 
   /// Where the public sky starts and ends (`osp_proto::universe`).
   static const skyInner = 64.0;
@@ -165,9 +170,13 @@ class _UniverseTabState extends State<UniverseTab>
     final size = _camera.size;
     return Size(
       size.width,
-      max(size.height - _Fit.clearTop - _Fit.clearBottom, size.height / 3),
+      max(size.height - _Fit.clearTop - _clearBottom, size.height / 3),
     );
   }
+
+  bool get _wide => _sideways(_camera.size);
+
+  double get _clearBottom => _wide ? _Fit.clearBottomWide : _Fit.clearBottom;
 
   /// Where the camera's centre goes for [middle] to be in the clear room.
   Offset _lifted(Offset middle, double scale) {
@@ -476,9 +485,11 @@ class _UniverseTabState extends State<UniverseTab>
                 left: Space.m,
                 // On a wide screen (a phone on its side) it keeps to the
                 // left, clear of the buttons on the right.
-                right: box.maxWidth > _Fit.wide ? null : Space.m,
-                width: box.maxWidth > _Fit.wide ? _Fit.card : null,
-                bottom: 96,
+                right: _sideways(box.biggest) ? null : Space.m,
+                width: _sideways(box.biggest) ? _Fit.card : null,
+                // Narrow, it stays above the Post button; wide, that's
+                // on the right, so the card goes down to the corner.
+                bottom: _sideways(box.biggest) ? Space.s : 96,
                 child: switch ((standing, lights)) {
                   (final p?, _) => _StandingAt(
                     person: p,
@@ -519,6 +530,9 @@ class _UniverseTabState extends State<UniverseTab>
         '${groups > 0 ? ' and $groups groups' : ''} shown.$lit$found';
   }
 }
+
+/// Whether the map is wide and short, as on a phone on its side.
+bool _sideways(Size size) => size.width > _Fit.wide && size.height < _Fit.short;
 
 /// The owner's name, as shown under her star.
 String _ownName(HomeNode node) {
