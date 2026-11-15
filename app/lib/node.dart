@@ -153,6 +153,21 @@ class HomeNode extends ChangeNotifier with WidgetsBindingObserver {
   /// (ADR 0031 §3). Not kept: an app stopped halfway skips the rest.
   bool firstRun = false;
 
+  /// Set until the Universe has shown, once, that the map zooms. Kept as a
+  /// file, so it shows on this phone only once.
+  bool zoomHintDue = false;
+  File? _zoomHintShown;
+
+  void zoomHintDone() {
+    if (!zoomHintDue) return;
+    zoomHintDue = false;
+    try {
+      _zoomHintShown?.writeAsStringSync('');
+    } on FileSystemException catch (e) {
+      debugPrint('Zoom hint not kept: $e');
+    }
+  }
+
   Timer? _poll;
   StreamSubscription<List<ConnectivityResult>>? _network;
   final Map<String, Future<String>> _urls = {};
@@ -174,6 +189,8 @@ class HomeNode extends ChangeNotifier with WidgetsBindingObserver {
           "This phone's key couldn't be unlocked, so it got a new one. "
           'Pair it with your node again.';
     }
+    node._zoomHintShown = File('$dir/zoom-hint-shown');
+    node.zoomHintDue = !node._zoomHintShown!.existsSync();
     node.paired = node.app.pairedNode();
     node._showSaved();
     node._hold('', node.app.savedUniverse());
