@@ -417,6 +417,36 @@ pub struct UniverseEvent {
     pub met: bool,
 }
 
+/// The card "Share my Universe" shares (ADR 0039), from the node's own
+/// allowlist: rounded totals, and a drawing that names only the people the
+/// owner ticked.
+pub struct ShareCard {
+    pub people: i64,
+    pub direct: i64,
+    pub paths: i64,
+    pub bytes_served: i64,
+    /// The owner first, at the centre.
+    pub points: Vec<CardPoint>,
+    pub lines: Vec<CardLine>,
+}
+
+/// One point of a card's drawing, in the Universe's units.
+pub struct CardPoint {
+    pub x: f32,
+    pub y: f32,
+    /// 1 for a person, more for a group.
+    pub people: u32,
+    pub you: bool,
+    /// Only for someone the owner ticked.
+    pub name: Option<String>,
+}
+
+/// A line between two points, by their place in `points`.
+pub struct CardLine {
+    pub from: u32,
+    pub to: u32,
+}
+
 /// "How are we connected?" (ADR 0037): the paths the node knows from its
 /// owner to `identity`, nearest first. None means the node hasn't found a
 /// connection, not that there is none.
@@ -798,6 +828,39 @@ impl OspApp {
     pub async fn universe_events(&self, since: Option<u64>) -> Result<Vec<UniverseEvent>> {
         let events = self.client.universe_events(since).await?;
         Ok(events.into_iter().map(universe_event).collect())
+    }
+
+    /// The card "Share my Universe" shares (ADR 0039), naming only the
+    /// people in `named`, whom the owner ticked, and only if it draws them.
+    pub async fn share_card(&self, named: Vec<String>) -> Result<ShareCard> {
+        let named = named
+            .iter()
+            .map(|n| n.parse())
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        let c = self.client.share_card(named).await?;
+        let count = |n: u64| n.min(i64::MAX as u64) as i64;
+        Ok(ShareCard {
+            people: count(c.people),
+            direct: count(c.direct),
+            paths: count(c.paths),
+            bytes_served: count(c.bytes_served),
+            points: c
+                .points
+                .into_iter()
+                .map(|p| CardPoint {
+                    x: p.at[0],
+                    y: p.at[1],
+                    people: p.people,
+                    you: p.you,
+                    name: p.name,
+                })
+                .collect(),
+            lines: c
+                .lines
+                .into_iter()
+                .map(|[from, to]| CardLine { from, to })
+                .collect(),
+        })
     }
 
     /// "How are we connected?" (ADR 0037), for the owner's own tap only:
