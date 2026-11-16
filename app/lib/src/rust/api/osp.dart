@@ -94,7 +94,7 @@ abstract class OspApp implements RustOpaqueInterface {
   /// (`osp unpair`) to revoke its access.
   Future<void> forget();
 
-  /// Drops an opened post and its media now.
+  /// Drops an opened post and its media now: call when the owner leaves it.
   Future<void> forgetOpened({required String postId});
 
   /// Hides a published reply to one of the owner's posts, or shows it again.
@@ -141,10 +141,6 @@ abstract class OspApp implements RustOpaqueInterface {
   /// `code` is the whole `osp:post/...` code.
   Future<Post> openPost({required String code});
 
-  /// Recently opened (ADR 0039 §4): the posts opened from shared codes
-  /// and kept for a while, the most lately opened first.
-  Future<List<Post>> openedPosts();
-
   Future<NodeInfo> pair({required String ticket, required String deviceName});
 
   NodeInfo? pairedNode();
@@ -185,10 +181,6 @@ abstract class OspApp implements RustOpaqueInterface {
   /// newest post first, and their posts, newest first. `region` is `g:`
   /// or `sky:`. Nothing leaves the node.
   Future<Found> regionItems({required String region, required int limit});
-
-  /// Opens a post from Recently opened: one the node keeps as opened,
-  /// whose 7 days start over.
-  Future<Post> reopenPost({required String postId});
 
   /// Replies to `post_id` as the owner (ADR 0028). The node keeps it and
   /// sends it to the post's creator, trying again for 30 days. A reshare's
@@ -1024,8 +1016,7 @@ class Post {
   final bool liked;
 
   /// Whether it's an opened post (ADR 0039 §4): opened from an OSP code,
-  /// its author not followed, kept for 7 days from when it was last
-  /// opened, liked or replied to.
+  /// its author not followed, and kept only while the owner looks at it.
   final bool opened;
 
   /// Search only: where its author is on the map, as for a person.

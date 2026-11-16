@@ -1,13 +1,14 @@
 //! Opened posts (ADR 0039 §4): Jimmy sends Kim a code for Alice's post,
 //! and Kim doesn't follow Alice. Kim's node fetches the post and Alice's
-//! profile from a throwaway key and keeps them as an opened post: shown,
-//! with its media, but in no list; and nothing of it goes from Kim's own
-//! endpoints. Remove drops it at once, Alice's delete is honoured when Kim
-//! opens it again, and following Alice makes it an ordinary post.
+//! profile from a throwaway key and keeps them as an opened post while she
+//! looks: shown, with its media, but in no list, and not to be liked or
+//! replied to; nothing of it goes from Kim's own endpoints. Leaving drops
+//! it at once, a code for a post Alice deleted says so, and following Alice
+//! or resharing it makes it an ordinary post.
 //!
 //! These run on the simulated network, which has no Tor.
 
-use std::{collections::HashSet, path::Path, time::Duration};
+use std::{collections::HashSet, path::Path};
 
 use iroh::{EndpointAddr, EndpointId};
 use osp_node::{
@@ -101,7 +102,7 @@ async fn code_ticket(alice: &Node) -> FollowTicket {
 async fn open(kim: &Node, id: ObjectId, ticket: &FollowTicket) -> FeedItem {
     let req = ClientRequest::OpenPost {
         id,
-        ticket: Some(ticket.to_string()),
+        ticket: ticket.to_string(),
     };
     let ClientResponse::Item { item } = call(kim, req).await else {
         panic!("not an item")
@@ -135,26 +136,6 @@ async fn feed_ids(kim: &Node) -> Vec<ObjectId> {
         ClientResponse::Feed { items } => items.iter().map(|i| i.id).collect(),
         other => panic!("unexpected {other:?}"),
     }
-}
-
-/// Recently opened, by ID.
-async fn recently_opened(kim: &Node) -> Vec<ObjectId> {
-    match call(kim, ClientRequest::OpenedPosts).await {
-        ClientResponse::Feed { items } => {
-            assert!(items.iter().all(|i| i.opened));
-            items.iter().map(|i| i.id).collect()
-        }
-        other => panic!("unexpected {other:?}"),
-    }
-}
-
-/// Opens a post from Recently opened: no code.
-async fn reopen(kim: &Node, id: ObjectId) -> FeedItem {
-    let req = ClientRequest::OpenPost { id, ticket: None };
-    let ClientResponse::Item { item } = call(kim, req).await else {
-        panic!("not an item")
-    };
-    item
 }
 
 /// Kim's public, media and direct endpoints.
@@ -200,19 +181,24 @@ async fn an_opened_post_shows_with_its_media_from_a_throwaway_key_and_in_no_list
     assert_eq!(search(&kim, "Alice").await, (0, 0));
     assert!(!feed_ids(&kim).await.contains(&id));
 
-    // Opening it again shows it as opened still.
+    // Opening it again while it's here shows it as opened still.
     assert!(open(&kim, id, &ticket).await.opened);
-    // Recently opened lists it, and opens it with no code.
-    assert_eq!(recently_opened(&kim).await, [id]);
-    assert!(reopen(&kim, id).await.opened);
+    // Liking or replying needs a follow: it's gone when Kim leaves.
+    let like = ClientRequest::Like {
+        post: id,
+        liked: true,
+    };
+    assert!(refused(&kim, like).await.contains("follow its author"));
+    let reply = ClientRequest::Reply {
+        post: id,
+        content: "Nice".into(),
+    };
+    assert!(refused(&kim, reply).await.contains("follow its author"));
 
-    // Remove: the post and its media go now, and Alice's profile with them.
+    // Kim leaves it: the post and its media go now, and Alice's profile
+    // with them.
     call(&kim, ClientRequest::ForgetOpened { id }).await;
-    assert!(recently_opened(&kim).await.is_empty());
     assert!(show(&kim, id).await.is_err());
-    // Without a code, a post the node no longer holds doesn't open.
-    let req = ClientRequest::OpenPost { id, ticket: None };
-    assert!(refused(&kim, req).await.contains("isn't on your node"));
     assert_eq!(kim.blob_class(&photo).unwrap(), None);
     let for_alice = ClientRequest::InviteFor {
         actor: alice.identity(),
@@ -238,18 +224,13 @@ async fn alices_delete_takes_an_opened_post_away_when_kim_opens_it_again() {
     let ticket = code_ticket(&alice).await;
     assert!(open(&kim, id, &ticket).await.opened);
 
+    // Kim leaves it, and Alice deletes it.
+    call(&kim, ClientRequest::ForgetOpened { id }).await;
     call(&alice, ClientRequest::Delete { id }).await;
-    // Opening it again shows what's held, then asks Alice's node again.
-    open(&kim, id, &ticket).await;
-    let started = std::time::Instant::now();
-    while show(&kim, id).await.is_ok() {
-        assert!(started.elapsed() < Duration::from_secs(30), "never went");
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-    // And it stays gone: a code for it now says so.
+    // Opening the code again asks Alice's node afresh, which says so.
     let req = ClientRequest::OpenPost {
         id,
-        ticket: Some(ticket.to_string()),
+        ticket: ticket.to_string(),
     };
     let message = refused(&kim, req).await;
     assert!(message.contains("deleted"), "{message}");
@@ -277,7 +258,6 @@ async fn following_alice_makes_an_opened_post_an_ordinary_one() {
     let item = show(&kim, id).await.unwrap();
     assert!(!item.opened);
     assert_eq!(item.actor_name.as_deref(), Some("Alice"));
-    assert!(recently_opened(&kim).await.is_empty());
     assert!(people(&kim).await.contains(&alice.identity()));
     assert_eq!(search(&kim, "good").await.1, 1);
     // Nothing left to remove as opened.
@@ -310,7 +290,6 @@ async fn resharing_an_opened_post_makes_it_an_ordinary_one() {
     assert_eq!(item.actor_name.as_deref(), Some("Alice"));
     assert!(show(&kim, reshare).await.is_ok());
     assert!(kim.blob_class(&photo).unwrap().is_some());
-    assert!(recently_opened(&kim).await.is_empty());
     assert!(people(&kim).await.contains(&alice.identity()));
     let message = refused(&kim, ClientRequest::ForgetOpened { id }).await;
     assert!(message.contains("isn't an opened post"), "{message}");

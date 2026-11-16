@@ -183,8 +183,7 @@ pub struct Post {
     /// Whether the owner likes it.
     pub liked: bool,
     /// Whether it's an opened post (ADR 0039 §4): opened from an OSP code,
-    /// its author not followed, kept for 7 days from when it was last
-    /// opened, liked or replied to.
+    /// its author not followed, and kept only while the owner looks at it.
     pub opened: bool,
     /// Search only: where its author is on the map, as for a person.
     pub regions: Vec<String>,
@@ -1180,7 +1179,7 @@ impl OspApp {
         };
         let req = ClientRequest::OpenPost {
             id,
-            ticket: Some(by.to_string()),
+            ticket: by.to_string(),
         };
         let ClientResponse::Item { item } = self.client.request(&req).await? else {
             bail!("unexpected reply to OpenPost");
@@ -1188,29 +1187,7 @@ impl OspApp {
         Ok(post(item))
     }
 
-    /// Opens a post from Recently opened: one the node keeps as opened,
-    /// whose 7 days start over.
-    pub async fn reopen_post(&self, post_id: String) -> Result<Post> {
-        let req = ClientRequest::OpenPost {
-            id: post_id.parse()?,
-            ticket: None,
-        };
-        let ClientResponse::Item { item } = self.client.request(&req).await? else {
-            bail!("unexpected reply to OpenPost");
-        };
-        Ok(post(item))
-    }
-
-    /// Recently opened (ADR 0039 §4): the posts opened from shared codes
-    /// and kept for a while, the most lately opened first.
-    pub async fn opened_posts(&self) -> Result<Vec<Post>> {
-        match self.client.request(&ClientRequest::OpenedPosts).await? {
-            ClientResponse::Feed { items } => Ok(items.into_iter().map(post).collect()),
-            _ => bail!("unexpected reply to OpenedPosts"),
-        }
-    }
-
-    /// Drops an opened post and its media now.
+    /// Drops an opened post and its media now: call when the owner leaves it.
     pub async fn forget_opened(&self, post_id: String) -> Result<()> {
         let id = post_id.parse()?;
         self.client

@@ -8,7 +8,6 @@ import 'advanced_screen.dart';
 import 'node_summary_screen.dart';
 import 'people_screen.dart';
 import 'profile_screen.dart';
-import 'recently_opened_screen.dart';
 import 'trust_screen.dart';
 
 /// You (ADR 0031 §1): your profile and posts (ADR 0032), the people you
@@ -100,12 +99,6 @@ class YouTab extends StatelessWidget {
             'Your invite code, and following someone with theirs',
           ),
           onTap: () => open(PeopleScreen(node: node)),
-        ),
-        ListTile(
-          leading: const Icon(Icons.history),
-          title: const Text('Recently opened'),
-          subtitle: const Text('Posts you opened from shared codes'),
-          onTap: () => open(RecentlyOpenedScreen(node: node)),
         ),
         ListTile(
           leading: const Icon(Icons.handshake_outlined),

@@ -46,15 +46,11 @@ In the alpha, the app takes an OSP code pasted anywhere it takes an invite code,
 
 There is no web page for a profile or post: OSP has no server to put one on.
 
-**Opened posts** (maintainer, 2026-11-16). Jimmy sends Kim a code for Alice's post, and Kim doesn't follow Alice. Kim's node fetches the post and enough of Alice's profile to show it (her name and picture), the way it opens a found post: from a throwaway key, never from Kim's own identity ([ADR 0024](0024-watching-found-posts-without-your-identity.md)), so Alice's node can't tell it was Kim. The post opens labelled "Opened from a shared OSP post", and is kept as an **opened post**:
+**Opened posts** (maintainer, 2026-11-16). Jimmy sends Kim a code for Alice's post, and Kim doesn't follow Alice. Kim's node fetches the post and enough of Alice's profile to show it (her name and picture), the way it opens a found post: from a throwaway key, never from Kim's own identity ([ADR 0024](0024-watching-found-posts-without-your-identity.md)), so Alice's node can't tell it was Kim. The post opens labelled "Opened from a shared OSP post", and is an **opened post**:
 
-- **For 7 days**, marked in its own table. The post and Alice's profile are kept where posts and profiles always are, as a found post's are, so liking, replying and media work as for any post; every list leaves opened posts out, with a test for each (maintainer, 2026-11-16). Opening it again, liking it or replying starts the 7 days over. A count cap and a byte cap drop the oldest first.
-- **Not part of Kim's network.** It isn't in the Universe, in People found, or in the feed. Opening it never makes Kim's node a host of it or a source for anyone's reputation.
-- **Follow** is the normal follow of Alice. **Reshare** follows the normal rules, and Kim's node hosts it only if she opts in, as for any reshare.
-- **If Alice deletes it,** Kim's copy goes too, as for any post.
-
-- **Recently opened** (maintainer, 2026-11-16), under You, is a private local list of transient opened posts, newest first: the way back, so Kim can look again, reply later, follow Alice or reshare it. Opening one uses the normal post, thread and profile screens, and starts its 7 days over. While a post exists only because Kim opened a shared `osp:post/...` code, it is left out of every discovery, feed and search list. If it later becomes ordinary through a follow, a reshare or normal receipt, normal behaviour takes over. It isn't Activity, which is what happens around Kim, and isn't called History: it's a small cache that empties itself.
-- **Remove** deletes the post and its media only where nothing else on Kim's node needs them. If something does (a reshare of it held here, say), the post just stops being opened.
+- **Shown once.** Kim's node keeps it only while she looks at it, and drops it and its media when she leaves; within an hour anyway, if the app can't say she left. To see it again she opens the code again, which asks Alice's node afresh, so a post Alice deleted says so. There's no list of opened posts (maintainer, 2026-11-16: a Recently opened list was built and dropped in favour of this).
+- **Not part of Kim's network.** While it's there, it's kept where posts and profiles always are, as a found post's are, so its media works as for any post, but every list leaves it out (the Universe, People found, search, the feed), with a test for each. Opening it never makes Kim's node a host of it or a source for anyone's reputation.
+- **No liking or replying**: they'd outlive a post that's gone. **Follow** is the normal follow of Alice, and from then on the post is an ordinary one, kept, liked and replied to as any; so is a post Kim reshares or receives the usual way.
 
 This replaces 3a's "Follow its author?" question for a post code.
 
