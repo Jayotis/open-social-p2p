@@ -177,7 +177,7 @@ impl Core {
     }
 
     /// Checks that `profile` is `actor`'s, is dated sensibly and lists `remote`.
-    fn check_replier(
+    pub(crate) fn check_replier(
         &self,
         remote: EndpointId,
         actor: PublicKey,
@@ -342,6 +342,8 @@ impl Core {
             policy: self.reply_policy(post)?,
             replies,
             more: false,
+            likes: self.db.like_count(post)?,
+            liked: false,
         })
     }
 

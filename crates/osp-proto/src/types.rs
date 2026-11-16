@@ -91,6 +91,8 @@ pub enum Payload {
     Delete(Delete),
     ForwardDelete(ForwardDelete),
     FoundEarly(FoundEarly),
+    Like(Like),
+    Undo(Undo),
 }
 
 impl Payload {
@@ -104,6 +106,8 @@ impl Payload {
             Payload::Delete(d) => d.actor,
             Payload::ForwardDelete(f) => f.actor,
             Payload::FoundEarly(f) => f.actor,
+            Payload::Like(l) => l.actor,
+            Payload::Undo(u) => u.actor,
         }
     }
 
@@ -117,6 +121,8 @@ impl Payload {
             Payload::Delete(_) => "Delete",
             Payload::ForwardDelete(_) => "ForwardDelete",
             Payload::FoundEarly(_) => "FoundEarly",
+            Payload::Like(_) => "Like",
+            Payload::Undo(_) => "Undo",
         }
     }
 
@@ -129,6 +135,8 @@ impl Payload {
             Payload::Delete(d) => &d.published,
             Payload::ForwardDelete(f) => &f.published,
             Payload::FoundEarly(f) => &f.published,
+            Payload::Like(l) => &l.published,
+            Payload::Undo(u) => &u.published,
         }
     }
 
@@ -192,7 +200,9 @@ impl Payload {
             | Payload::Key(_)
             | Payload::Delete(_)
             | Payload::ForwardDelete(_)
-            | Payload::FoundEarly(_) => {}
+            | Payload::FoundEarly(_)
+            | Payload::Like(_)
+            | Payload::Undo(_) => {}
         }
         Ok(())
     }
@@ -497,6 +507,28 @@ pub struct Key {
 pub struct Delete {
     pub actor: PublicKey,
     /// The post or reshare, by its ID.
+    pub object: ObjectId,
+    pub published: String,
+}
+
+/// Its signer likes a post (ADR 0038), as AS2's `Like`. It goes only to the
+/// post's creator's node, which counts it; it's never published, and counts
+/// toward no standing, vouch, hosting or feed order. A newer `Like` of the
+/// same post by the same person replaces an older one.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Like {
+    pub actor: PublicKey,
+    /// The post, by its ID.
+    pub object: ObjectId,
+    pub published: String,
+}
+
+/// Its signer takes back their `Like` (ADR 0038), as AS2's `Undo`. Sent the
+/// way the `Like` was.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Undo {
+    pub actor: PublicKey,
+    /// The `Like`, by its ID.
     pub object: ObjectId,
     pub published: String,
 }

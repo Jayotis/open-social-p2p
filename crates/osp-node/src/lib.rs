@@ -20,6 +20,7 @@ mod health;
 mod home;
 mod hosting;
 mod keys;
+mod likes;
 mod machine;
 pub mod media;
 mod meet;

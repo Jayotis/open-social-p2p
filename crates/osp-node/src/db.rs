@@ -23,11 +23,13 @@ use tracing::info;
 
 use crate::{events, meet, peers, trust};
 
+mod likes;
 mod profiles;
 mod replies;
 mod sent_replies;
 mod universe;
 mod vouches;
+pub(crate) use likes::{HeldLike, SentLike};
 pub(crate) use replies::{Choice, Held, ReceivedReply, ReplyRow};
 pub(crate) use sent_replies::SentReply;
 pub(crate) use vouches::{GivenCredit, NewVouch, SideVouch, VouchKind, VouchTables};
@@ -526,6 +528,43 @@ const MIGRATIONS: &[&str] = &[
     // of their side found them (ADR 0037, `connected::Path` as JSON), so
     // "How are we connected?" shows what let the reply in.
     "ALTER TABLE received_replies ADD COLUMN paths TEXT",
+    // 37: likes (ADR 0038). On the creator's node, each person's newest like
+    // of each of its owner's posts: its ID, the node that sent it, the signed
+    // like and the profile that came with it, its date (never later than
+    // its arrival), and when it arrived. On the liker's node, one row per
+    // post the owner liked or took a like back from: the post's creator and
+    // the node to send to when no newer profile names one, the like the
+    // creator's node may hold, the signed `Like` or `Undo` to send and its
+    // ID, whether it's a like, tries so far, when to try next (none once
+    // answered), when this sending began (tries stop 7 days after), and what
+    // the creator's node said if it refused.
+    "CREATE TABLE likes (
+        post         TEXT NOT NULL,
+        actor        TEXT NOT NULL,
+        id           TEXT NOT NULL,
+        node         TEXT NOT NULL,
+        signed       TEXT NOT NULL,
+        profile      TEXT NOT NULL,
+        published_ms INTEGER NOT NULL,
+        received_ms  INTEGER NOT NULL,
+        PRIMARY KEY (post, actor)
+    );
+    CREATE INDEX likes_by_id ON likes(id);
+    CREATE INDEX likes_by_post_date ON likes(post, published_ms);
+    CREATE TABLE sent_likes (
+        post         TEXT PRIMARY KEY,
+        creator      TEXT NOT NULL,
+        creator_node TEXT NOT NULL,
+        like_id      TEXT NOT NULL,
+        signed       TEXT NOT NULL,
+        sent_id      TEXT NOT NULL,
+        liked        INTEGER NOT NULL,
+        tries        INTEGER NOT NULL DEFAULT 0,
+        next_try_ms  INTEGER,
+        since_ms     INTEGER NOT NULL,
+        error        TEXT
+    );
+    CREATE INDEX sent_likes_next_try ON sent_likes(next_try_ms);",
 ];
 
 /// How many days of `served_days` are kept: the summary's 30, and today.
@@ -888,6 +927,12 @@ impl Db {
         received: i64,
         held_until: Option<i64>,
     ) -> Result<bool> {
+        // Kept apart, never among objects: an outbox or a feed never holds
+        // one (ADR 0038).
+        ensure!(
+            !matches!(payload, Payload::Like(_) | Payload::Undo(_)),
+            "a like isn't kept among objects"
+        );
         let conn = self.conn();
         let tx = conn.unchecked_transaction()?;
         let is_new = insert_object(&tx, obj, payload, received, held_until)?;
@@ -6789,6 +6834,7 @@ mod tests {
                      DROP INDEX objects_by_actor_date; DROP TABLE icons;
                      DROP TABLE universe_places; DROP TABLE served_days;
                      DROP TABLE events; ALTER TABLE declared_sizes DROP COLUMN post;
+                     DROP TABLE likes; DROP TABLE sent_likes;
                      PRAGMA user_version = 24;",
                 )
                 .unwrap();

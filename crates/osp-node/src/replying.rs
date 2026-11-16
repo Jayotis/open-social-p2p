@@ -52,7 +52,7 @@ const TRIES_AT_ONCE: usize = 8;
 const LOOK_EVERY: Duration = Duration::from_secs(60);
 
 /// How long to wait after the `tries`th try failed.
-fn retry_after(tries: u32) -> Duration {
+pub(crate) fn retry_after(tries: u32) -> Duration {
     RETRY_AFTER
         .get(tries.saturating_sub(1) as usize)
         .copied()
@@ -143,7 +143,7 @@ impl Core {
 
     /// The node to send a reply to `creator` to: the first their newest
     /// profile held lists, or the one followed.
-    fn creator_node(&self, creator: &PublicKey) -> Option<EndpointId> {
+    pub(crate) fn creator_node(&self, creator: &PublicKey) -> Option<EndpointId> {
         if let Some(node) = self.nodes_of(creator).first() {
             return Some(*node);
         }
@@ -406,7 +406,8 @@ impl Drop for Trying<'_> {
     }
 }
 
-/// Tries replies again as they fall due, for as long as the node runs.
+/// Tries replies and likes again as they fall due, for as long as the node
+/// runs.
 pub(crate) async fn send_loop(core: Arc<Core>) {
     loop {
         if let Some(tor) = &core.tor {
@@ -415,9 +416,17 @@ pub(crate) async fn send_loop(core: Arc<Core>) {
         if let Err(e) = core.send_waiting_replies(false).await {
             warn!("sending waiting replies failed: {e:#}");
         }
-        let wait = match core.db.next_sent_reply_try() {
-            Ok(Some(next)) => Duration::from_millis((next - now_ms()).max(1000) as u64),
-            _ => LOOK_EVERY,
+        // Likes go the same way (ADR 0038).
+        if let Err(e) = core.send_waiting_likes(false).await {
+            warn!("sending waiting likes failed: {e:#}");
+        }
+        let next = [core.db.next_sent_reply_try(), core.db.next_sent_like_try()]
+            .into_iter()
+            .filter_map(|n| n.ok().flatten())
+            .min();
+        let wait = match next {
+            Some(next) => Duration::from_millis((next - now_ms()).max(1000) as u64),
+            None => LOOK_EVERY,
         };
         tokio::time::sleep(wait.min(LOOK_EVERY)).await;
     }

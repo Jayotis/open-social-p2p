@@ -135,6 +135,22 @@ pub enum SocialRequest {
         credit: SignedObject,
         profile: SignedObject,
     },
+    /// "My owner likes one of your posts" (ADR 0038). `like` is a signed
+    /// `Like` of a post in this node's outbox; `profile` is the liker's
+    /// signed profile, which must list the sending node. Answered with
+    /// [`SocialResponse::Ok`], or past a limit an `Error` saying the node is
+    /// busy, to be sent again later. Sending it again changes nothing.
+    Like {
+        like: SignedObject,
+        profile: SignedObject,
+    },
+    /// "My owner takes back their like" (ADR 0038): their signed `Undo`
+    /// naming the `Like`, and their profile as with `Like`. Answered with
+    /// [`SocialResponse::Ok`], whether the like was held or not.
+    Unlike {
+        undo: SignedObject,
+        profile: SignedObject,
+    },
     /// "Who vouched for your owner?" (ADR 0029). Asked by anyone, about
     /// public acts. Answered with [`SocialResponse::Vouches`].
     WhoVouched,
@@ -359,6 +375,9 @@ pub enum RepliesResponse {
         policy: ReplyPolicy,
         replies: Vec<ThreadReply>,
         more: bool,
+        /// How many people like the post (ADR 0038), not who.
+        #[serde(default)]
+        likes: u64,
     },
     /// The post was deleted: the creator's signed `Delete` (ADR 0019).
     Deleted {

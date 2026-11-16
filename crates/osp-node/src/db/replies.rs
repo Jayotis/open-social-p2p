@@ -466,7 +466,7 @@ impl Db {
     }
 }
 
-/// Everything about replies to `post`, which its owner deleted: the thread is
+/// Everything about replies to `post`, and its likes, which its owner deleted: the thread is
 /// closed, and readers get the owner's `Delete` (ADR 0028).
 pub(super) fn forget_replies_to(conn: &Connection, post: &str) -> Result<()> {
     conn.execute(
@@ -475,6 +475,8 @@ pub(super) fn forget_replies_to(conn: &Connection, post: &str) -> Result<()> {
     )?;
     conn.execute("DELETE FROM reply_deletes WHERE post = ?1", params![post])?;
     conn.execute("DELETE FROM reply_policies WHERE post = ?1", params![post])?;
+    // Its likes too (ADR 0038).
+    conn.execute("DELETE FROM likes WHERE post = ?1", params![post])?;
     Ok(())
 }
 

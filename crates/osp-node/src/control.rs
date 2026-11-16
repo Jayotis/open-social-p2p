@@ -175,7 +175,10 @@ impl Core {
             ClientRequest::Sync if !local && self.messages_over_tor() => {
                 self.sync_now.notify_one();
                 let core = self.clone();
-                tokio::spawn(async move { core.send_waiting_replies(true).await });
+                tokio::spawn(async move {
+                    let _ = core.send_waiting_replies(true).await;
+                    let _ = core.send_waiting_likes(true).await;
+                });
                 ClientResponse::Synced { new_objects: 0 }
             }
             // A phone doesn't wait for prefetching: it can read media as soon as it's needed.
@@ -183,6 +186,10 @@ impl Core {
                 // Replies still waiting are tried at once (ADR 0028).
                 if let Err(e) = self.send_waiting_replies(true).await {
                     warn!("sending waiting replies failed: {e:#}");
+                }
+                // And likes (ADR 0038).
+                if let Err(e) = self.send_waiting_likes(true).await {
+                    warn!("sending waiting likes failed: {e:#}");
                 }
                 ClientResponse::Synced {
                     new_objects: self.sync_all(local).await?,
@@ -296,6 +303,13 @@ impl Core {
                     .await?,
             },
             ClientRequest::Thread { post, after } => self.read_thread(&post, after).await?,
+            ClientRequest::Like { post, liked } => {
+                self.like(&post, liked)?;
+                ClientResponse::Ok
+            }
+            ClientRequest::Likes { post } => ClientResponse::Likes {
+                likes: self.who_likes(&post)?,
+            },
             ClientRequest::SentReplies => ClientResponse::SentReplies {
                 replies: self.sent_reply_list()?,
             },
@@ -1058,6 +1072,7 @@ impl Core {
                 bail!("{id} is a delete, not a post")
             }
             Payload::FoundEarly(_) => bail!("{id} is a found-early credit, not a post"),
+            Payload::Like(_) | Payload::Undo(_) => bail!("{id} is a like, not a post"),
         }
     }
 
