@@ -1,6 +1,8 @@
-# Application and Desktop Companion Requirements
+# Application and Home Node Requirements
 
-**Status:** Product requirements draft, not a UI or implementation specification. The connection model below follows [ADR 0001](decisions/0001-home-node-architecture.md) and [ADR 0006](decisions/0006-desktop-first-always-on-node.md). The phone app's structure for the Product Alpha (Home, the Universe and You) is decided in ADRs [0030](decisions/0030-product-alpha-before-testers.md) to [0039](decisions/0039-sharing-your-universe.md).
+**Status:** Product requirements draft, not a UI or implementation specification. The connection model below follows [ADR 0001](decisions/0001-home-node-architecture.md) and [ADR 0006](decisions/0006-desktop-first-always-on-node.md). The phone app's structure for the Product Alpha (Home, the Universe and You) is decided in ADRs [0030](decisions/0030-product-alpha-before-testers.md) onward.
+
+**The app is OSP's user interface. The home node is the person's persistent participant in the network.** The app captures what the person wants and presents results; the node performs, verifies, stores, ranks and distributes the durable work. Future features use [doc 15](15-feature-responsibility-model.md).
 
 ## Connection model
 
@@ -36,7 +38,7 @@
 - A 'where this media comes from' transparency view without exposing sensitive home network details.
 - Graceful placeholders for temporarily unavailable media.
 
-## Home node (desktop companion) application
+## Home node application
 
 Target platforms: Linux first (the maintainer's test platform), then Windows and macOS. Implemented in Rust ([ADR 0002](decisions/0002-rust-and-iroh.md)); packaging is to be decided.
 
@@ -67,8 +69,21 @@ Target platforms: Linux first (the maintainer's test platform), then Windows and
 
 - Resume transfers, recover after restarts, validate data and detect corrupt storage.
 - Maintain accurate availability status while offline.
+- Continue appropriate discovery, indexing, queueing and synchronization while the phone is off.
 - Provide user-friendly diagnostics and logs with minimized sensitive metadata.
 - Support energy-efficient operation and resource constraints.
+
+### Local policy and assisted moderation
+
+- Apply the owner's blocks, mutes and content preferences before presentation/ranking.
+- Support bounded deterministic filters and, later, optional local moderation assistants without requiring AI.
+- Keep assistants behind a node policy/signing boundary; they do not receive unrestricted signing keys.
+- Community moderator assistance may prioritize or suggest actions. The first community prototype allows only reversible hides/restores and 24-hour mutes; any later permanent-ban or shared-governance system would need its own signed rules.
+- See [doc 19](19-node-assisted-moderation.md).
+
+## Capability profiles
+
+Home, Library and Studio are resource/capability profiles of the same node software, not separate social roles. Additional CPU, storage or bandwidth may enable more discovery, hosting, transcoding or local AI work but never grants ranking/governance authority. See [doc 18](18-node-capability-profiles.md).
 
 ## Accessibility and safety
 
