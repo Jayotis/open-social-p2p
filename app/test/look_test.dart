@@ -357,6 +357,14 @@ void main() {
         home: home,
       ),
     );
+    // The icon in the top bar loads outside the test's clock: wait for it,
+    // or the first picture drawn shows a gap where it goes.
+    await tester.runAsync(
+      () => precacheImage(
+        const AssetImage('assets/brand/mark.png'),
+        tester.element(find.byType(Scaffold).first),
+      ),
+    );
     await tester.pumpAndSettle();
   }
 

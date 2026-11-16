@@ -4,7 +4,7 @@
 
 ## Context
 
-After P8 the Universe looked like its own thing, but every other screen was stock Material 3, generated from a seed colour that came out purple. Post actions wrapped onto two lines, "Delete" sat beside Like and Reshare as a full-width text button, and light mode had nothing of the sky in it. P9's gate is that screenshots of Home, the Universe and a profile are recognisably OSP without the logo.
+After P8 the Universe looked like its own thing, but every other screen was stock Material 3, generated from a seed colour that came out purple. Post actions wrapped onto two lines, "Delete" sat beside Like and Reshare as a full-width text button, and light mode had nothing of the sky in it. P9's gate is that screenshots of Home, the Universe and a profile are recognisably OSP. (It first said "without the logo"; the maintainer dropped that on 2026-11-16, choosing the app's icon on every screen, §7.)
 
 ## Decision
 
@@ -36,12 +36,17 @@ The Universe flies (`Motion.long`) and crossfades when what it draws changes (`M
 
 For screen readers, each star, group and sky cell on screen is a button in words ("Kim. You follow them. 1 step from you"), and the map has Zoom in and Zoom out actions, since a pinch can't be made. Names drawn on the map grow with the phone's text size up to 1.5 times, past which they would cover the stars they name; everything else grows with it fully, and `look_test` draws Home, the Universe and a profile at twice the size. Names keep off their own star's lines where they can, and have a rim of the night so a line passing under them doesn't cross them out.
 
+### 7. The app's icon in the top bar, lit as the node is
+
+The app's icon, cut to its blue tile, sits beside search and the bell on Home, the Universe and You. It is in full colour while the node runs, fades in and out while the phone reaches it (holding still under reduced motion), and is grey when the node can't be reached. Its tooltip and spoken label say the state in words. Tapping it opens the node's summary, one tap from anywhere. The banner above Home stays for a problem that needs words. So every screenshot carries the brand, and the node's state is always in sight.
+
 ## Steps
 
 1. The tokens, Inter, the Universe's night in both themes, and the pictures.
 2. Posts: the card, avatars, media and the action row.
 3. Profiles, You and Activity, and empty, loading and offline states.
 4. The Universe's transitions, and accessibility: screen readers, large text, reduced motion.
+5. The app's icon in the top bar as the node's status (§7).
 
 ## Consequences
 

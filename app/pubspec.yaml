@@ -74,8 +74,10 @@ flutter:
 
   # Inter, subset to Latin (fonts/OFL.txt). Other scripts fall back to the
   # phone's own fonts.
+  # The app's icon, cut to its tile, for the top bar (assets/brand/).
   assets:
     - fonts/OFL.txt
+    - assets/brand/mark.png
   fonts:
     - family: Inter
       fonts:
