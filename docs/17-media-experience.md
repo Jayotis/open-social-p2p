@@ -8,7 +8,7 @@ See [doc 15](15-feature-responsibility-model.md) and the open-feed requirements 
 
 ## Product shape
 
-A future **Media** destination opens directly into a full-screen media viewer.
+A future **Media** experience opens into a full-screen media viewer. **This document does not decide that Media gets its own navigation tab.** [ADR 0031](decisions/0031-app-shell-home-universe-you.md) still defines Home · Universe · You; Media may become a mode of Home or a later shell change.
 
 Initial experience:
 
@@ -16,7 +16,7 @@ Initial experience:
 - swipe to the next item;
 - creator/profile, caption and community/context where applicable;
 - Like, Reply, Share and Follow;
-- Following and Discover modes;
+- Following/New first; Discover later;
 - clear "Why am I seeing this?" explanation;
 - controls for topics, languages, mutes and recommendation sources;
 - graceful unavailable/buffering states.
@@ -64,11 +64,11 @@ Playback continues through the existing app-local media proxy/Rust client path r
 
 The node creates the Media experience:
 
-- build candidate sets from follows, public discovery, communities and Hunters;
+- build initial candidate sets from follows and eligible video posts; later add public discovery, communities and Hunters;
 - apply blocks, moderation exclusions, topic/language controls and the selected feed mode;
-- rank locally with a published algorithm/version;
-- diversify creators/topics so one source does not dominate endlessly;
-- explain the main reason each candidate was selected;
+- keep the first queue chronological/simple;
+- later rank/diversify only after the required ranking decision is made;
+- explain the main reason each later recommendation was selected;
 - prepare thumbnails/metadata;
 - opportunistically prefetch media or initial ranges within explicit bandwidth/storage limits;
 - retrieve from verified replicas before overloading the creator where the existing swarm supports it;
@@ -93,6 +93,12 @@ A new network protocol is needed only for facts independent nodes must exchange.
 A vertical viewer itself is **not** a protocol reason.
 
 Network health and hosting performance are never organic ranking authority. A fast node or large replica count may improve availability but does not make a video more worthy of recommendation.
+
+## Ranking constraint
+
+[ADR 0038 §2](decisions/0038-likes-and-activity.md#2-what-a-like-is-not) says Likes do not affect the order of any feed, and changing that needs its own ADR. Therefore the first Media viewer must not quietly use Likes, watch time or replies as recommendation weights.
+
+**Following/New can be built first. Discover is blocked on a later ranking ADR and manipulation tests.**
 
 ## Queue construction
 
@@ -186,7 +192,9 @@ Do not optimize a hidden global objective that requires uploading everyone's det
 - fallback/retry under creator/peer outage;
 - cache limits and diagnostics.
 
-### MDA3 — Discover
+### MDA3 — Discover, after a ranking ADR
+
+Only after real Media use and a separate ranking decision:
 
 - transparent local recommendation pipeline;
 - topic/language controls;
@@ -199,7 +207,7 @@ Do not optimize a hidden global objective that requires uploading everyone's det
 - phone capture/edit polish;
 - background/resumable node upload;
 - creator profiles/channels where needed;
-- performance tests on Home and Creator node profiles.
+- performance tests on Home and Studio node profiles.
 
 ### MDA5 — Abuse and scale
 
