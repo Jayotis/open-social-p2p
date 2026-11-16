@@ -37,6 +37,7 @@ use clap::{Parser, Subcommand};
 use osp_node::{Config, Home, Node, RelayChoice, plain};
 use osp_proto::{
     EarlierKeys, EndpointId, ObjectId, PublicKey,
+    connected::{self, Connection, How, SideFrom},
     framing::{read_frame, write_frame},
     machine::MAX_LISTED_POSTS,
     rpc::{
@@ -306,6 +307,13 @@ enum Command {
         /// Gather your side now, in the background, rather than at its daily time
         #[arg(long)]
         gather: bool,
+    },
+    /// How are we connected? The paths your node knows from you to someone
+    /// (ADR 0037). If they haven't replied to you, their node is asked once
+    /// who vouched for them, from a throwaway key.
+    Connected {
+        /// Their name or the start of their identity
+        who: String,
     },
     /// Forget a paired phone, by its name or the start of its ID
     Unpair { device: String },
@@ -631,6 +639,9 @@ async fn main() -> Result<()> {
         Command::Devices => ClientRequest::Devices,
         Command::Peers => ClientRequest::Peers,
         Command::Vouches { gather } => ClientRequest::Vouches { gather },
+        Command::Connected { who } => ClientRequest::HowConnected {
+            actor: find_person(&home, Some(&who)).await?,
+        },
         Command::Post { text, attach } => ClientRequest::Post {
             content: text,
             // The daemon has its own working directory, so send absolute paths.
@@ -1421,6 +1432,53 @@ async fn find_followed(home: &Path, who: &str) -> Result<PublicKey> {
     only_one(who, actors, "person you follow", "osp following")
 }
 
+/// The paths of "How are we connected?", each in words, nearest first.
+fn print_connection(c: &Connection) {
+    let name = |who: &PublicKey| {
+        c.people
+            .iter()
+            .find(|p| p.actor == *who)
+            .and_then(|p| p.name.clone())
+            .unwrap_or_else(|| format!("someone ({})", who.fmt_short()))
+    };
+    let from = match c.side {
+        SideFrom::Replied => "from when they replied to you".to_string(),
+        SideFrom::Asked { vouches: 1 } => "their node named 1 person who vouched for them".into(),
+        SideFrom::Asked { vouches } => {
+            format!("their node named {vouches} people who vouched for them")
+        }
+        SideFrom::NoAnswer => "their node didn't answer".into(),
+        SideFrom::NotAsked => "their node wasn't asked".into(),
+    };
+    println!("How you're connected to {} ({from}):", name(&c.actor));
+    if c.paths.is_empty() {
+        println!("Your node hasn't found a connection.");
+    }
+    for (i, path) in c.paths.iter().enumerate() {
+        println!("{}. {}", i + 1, path_words(path, &name));
+    }
+}
+
+/// One path as sentences: "You follow Alice. Alice reshared Carol."
+fn path_words(path: &connected::Path, name: &dyn Fn(&PublicKey) -> String) -> String {
+    let mut words = Vec::new();
+    let mut at: Option<PublicKey> = None;
+    for hop in &path.hops {
+        let to = name(&hop.to);
+        let by = at.map(|a| name(&a)).unwrap_or_else(|| "You".into());
+        words.push(match hop.how {
+            How::Follows => format!("You follow {to}."),
+            How::Knows => format!("You know {to}."),
+            How::Reshared => format!("{by} reshared {to}."),
+            How::CreditedEarly => format!("{by} credited {to} with finding their post early."),
+            How::Gap { steps: 1 } => format!("{by}'s node places {to} 1 step from {by}."),
+            How::Gap { steps } => format!("{by}'s node places {to} within {steps} steps of {by}."),
+        });
+        at = Some(hop.to);
+    }
+    words.join(" ")
+}
+
 /// Someone this node holds a profile of, by name or the start of their
 /// identity, or with no one named, the owner.
 async fn find_person(home: &Path, who: Option<&str>) -> Result<PublicKey> {
@@ -1912,6 +1970,7 @@ fn print(resp: ClientResponse, json: bool) -> Result<()> {
             gathered_secs_ago,
             gathering,
         } => print_vouches(&vouchers, &side, gathered_secs_ago, gathering),
+        ClientResponse::Connected { connection } => print_connection(&connection),
         ClientResponse::Trust { requests, trusted } => {
             print_trust_requests(&requests);
             println!();
@@ -2482,6 +2541,42 @@ mod tests {
     use osp_proto::rpc::ResharedBy;
 
     use super::*;
+
+    #[test]
+    fn a_path_reads_as_sentences() {
+        let keys: Vec<PublicKey> = (0..4)
+            .map(|_| osp_proto::SecretKey::generate().public())
+            .collect();
+        let names = ["Alice", "Carol", "Dana", "Jimmy"];
+        let name = |who: &PublicKey| {
+            let i = keys.iter().position(|k| k == who).unwrap();
+            names[i].to_string()
+        };
+        let hop = |i: usize, how| connected::Hop { to: keys[i], how };
+        let path = connected::Path {
+            hops: vec![
+                hop(0, How::Follows),
+                hop(1, How::Reshared),
+                hop(3, How::CreditedEarly),
+            ],
+        };
+        assert_eq!(
+            path_words(&path, &name),
+            "You follow Alice. Alice reshared Carol. \
+             Carol credited Jimmy with finding their post early."
+        );
+        let gap = connected::Path {
+            hops: vec![
+                hop(2, How::Knows),
+                hop(1, How::Gap { steps: 2 }),
+                hop(3, How::Reshared),
+            ],
+        };
+        assert_eq!(
+            path_words(&gap, &name),
+            "You know Dana. Dana's node places Carol within 2 steps of Dana. Carol reshared Jimmy."
+        );
+    }
 
     #[test]
     fn init_takes_directories_as_machine_and_node_pairs() {

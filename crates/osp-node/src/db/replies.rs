@@ -437,6 +437,21 @@ impl Db {
         Ok(())
     }
 
+    /// The paths the newest meeting with `replier`'s side found, as JSON,
+    /// from any of their replies.
+    pub fn replier_paths(&self, replier: &PublicKey) -> Result<Option<String>> {
+        Ok(self
+            .conn()
+            .query_row(
+                "SELECT paths FROM received_replies
+                 WHERE actor = ?1 AND paths IS NOT NULL
+                 ORDER BY received_ms DESC LIMIT 1",
+                params![replier.to_string()],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?)
+    }
+
     /// What the meeting for the reply `id` found, as JSON, if there was one.
     pub fn found(&self, id: &ObjectId) -> Result<Option<String>> {
         Ok(self

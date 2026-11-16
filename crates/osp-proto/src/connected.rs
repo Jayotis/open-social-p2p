@@ -77,6 +77,49 @@ impl How {
     }
 }
 
+/// The answer to "How are we connected?": the paths to `actor`, nearest
+/// first, and who's named on them. No paths means the node hasn't found a
+/// connection, not that there is none.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Connection {
+    pub actor: PublicKey,
+    pub paths: Vec<Path>,
+    /// Everyone a path names, each once.
+    pub people: Vec<Named>,
+    /// Where the paths through `actor`'s side came from.
+    pub side: SideFrom,
+}
+
+/// Someone a path names.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Named {
+    pub actor: PublicKey,
+    /// From their profile, if the node has one, or the one their vouch
+    /// came with.
+    pub name: Option<String>,
+    /// Where they are on the Universe's map, as search gives it (ADR 0035
+    /// §3); none for someone the node doesn't hold.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub regions: Vec<String>,
+}
+
+/// Where the paths through someone's side came from (ADR 0037 §2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "from", rename_all = "snake_case")]
+pub enum SideFrom {
+    /// The side their node showed when they replied: the paths that let
+    /// the reply in, or would have.
+    Replied,
+    /// Their node was asked who vouched for them, and named `vouches`
+    /// people.
+    Asked { vouches: u32 },
+    /// Their node was asked and didn't answer.
+    NoAnswer,
+    /// Their node wasn't asked: the owner's own node, or one asked too often
+    /// this hour, or none known. Only the owner's own world counts.
+    NotAsked,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

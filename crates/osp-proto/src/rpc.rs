@@ -14,6 +14,7 @@ use iroh_base::{EndpointId, PublicKey};
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    connected::Connection,
     object::ObjectId,
     social::ReplyPolicy,
     types::{Attachment, BlobHash, Person, ProfileLink},
@@ -342,6 +343,13 @@ pub enum ClientRequest {
         #[serde(default)]
         since: Option<u64>,
     },
+    /// "How are we connected?" (ADR 0037), asked by the owner's tap and
+    /// nothing else: the paths the node knows from its owner to `actor`.
+    /// The ones kept from their reply if they replied; otherwise the node
+    /// may ask `actor`'s node `WhoVouched` once, from a throwaway key.
+    HowConnected {
+        actor: PublicKey,
+    },
 }
 
 /// Most items in one page of `ProfileItems`.
@@ -562,6 +570,10 @@ pub enum ClientResponse {
     /// The answer to `UniverseEvents`.
     UniverseEvents {
         events: Vec<Event>,
+    },
+    /// The answer to `HowConnected`.
+    Connected {
+        connection: Connection,
     },
     Error {
         message: String,

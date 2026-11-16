@@ -99,6 +99,23 @@ impl TorSide {
         Ok((transport, endpoint))
     }
 
+    /// An endpoint on this Tor with `key` that only dials: no onion service,
+    /// so nobody can reach it, but the node it reaches answers on the same
+    /// stream. For a throwaway key (ADR 0037).
+    pub async fn dial_only(&self, key: SecretKey, max_streams: u32) -> Result<Endpoint> {
+        let transport = TorTransport::dial_only(&self.tor, key.clone());
+        let quic = osp_tor::quic_config()
+            .max_concurrent_bidi_streams(max_streams.into())
+            .max_concurrent_uni_streams(0u32.into())
+            .build();
+        Endpoint::builder(transport.preset())
+            .transport_config(quic)
+            .secret_key(key)
+            .bind()
+            .await
+            .context("starting a dial-only endpoint on Tor")
+    }
+
     /// Fails, and says why, unless Tor is ready to carry messages.
     pub fn check_ready(&self) -> Result<()> {
         let phase = self.tor.state().borrow().phase.clone();

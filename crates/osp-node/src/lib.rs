@@ -10,6 +10,7 @@ pub mod backup;
 mod client;
 mod cluster;
 pub mod config;
+mod connected;
 mod control;
 mod db;
 mod directory;

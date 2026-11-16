@@ -8,6 +8,7 @@
 //! lookup off.
 
 use std::{
+    collections::HashSet,
     net::SocketAddr,
     path::Path,
     time::{Duration, Instant},
@@ -21,6 +22,7 @@ use iroh::{
 use osp_node::{Config, Node};
 use osp_proto::{
     Announce, FoundEarly, Note, ObjectId, Payload, Person, PublicKey, SOCIAL_ALPN, SignedObject,
+    connected::{self, Hop, How, SideFrom},
     framing::{read_frame, write_frame},
     rpc::{ClientRequest, ClientResponse, ReplyInfo, SentStatus},
     social::{PlacedAt, ReplyState, SocialRequest, SocialResponse},
@@ -864,6 +866,41 @@ async fn a_reply_is_let_in_where_the_sides_meet_through_the_circle() {
     };
     assert_eq!(reply.status, SentStatus::Published, "{reply:?}");
     assert!(requests(&kim).await.is_empty());
+
+    // How is Kim connected to Jimmy? The paths that let his reply in, kept
+    // from it (ADR 0037): through Alice and Bob, whom she follows, and
+    // through what Alice's node said of Dan, a gap. Nobody is asked.
+    let asked_before = jimmy.who_vouched_askers().len();
+    let ask = ClientRequest::HowConnected {
+        actor: jimmy.identity(),
+    };
+    let ClientResponse::Connected { connection } = call(&kim, ask).await else {
+        panic!("no connection")
+    };
+    assert_eq!(connection.side, SideFrom::Replied);
+    let hop = |to: &Node, how| Hop {
+        to: to.identity(),
+        how,
+    };
+    let got: HashSet<connected::Path> = connection.paths.iter().cloned().collect();
+    let want = HashSet::from([
+        connected::Path {
+            hops: vec![hop(&alice, How::Follows), hop(&jimmy, How::Reshared)],
+        },
+        connected::Path {
+            hops: vec![hop(&bob, How::Follows), hop(&jimmy, How::Reshared)],
+        },
+        connected::Path {
+            hops: vec![
+                hop(&alice, How::Follows),
+                hop(&dan, How::Gap { steps: 1 }),
+                hop(&jimmy, How::Reshared),
+            ],
+        },
+    ]);
+    assert_eq!(got, want);
+    assert_eq!(jimmy.who_vouched_askers().len(), asked_before);
+    assert_eq!(kim.throwaways_made(), 0);
 
     for node in [kim, alice, bob, dan, jimmy] {
         node.shutdown().await.unwrap();
