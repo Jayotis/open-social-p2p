@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 
 import '../format.dart';
 import '../node.dart';
+import '../osp_codes.dart';
 import '../src/rust/api/osp.dart';
 import '../theme.dart';
 import '../widgets/person_avatar.dart';
@@ -233,6 +234,20 @@ class _ProfileScreenState extends State<ProfileScreen> {
       // Light status-bar icons on the night, on a light phone too.
       systemOverlayStyle: SystemUiOverlayStyle.light,
       title: Text(profile.own ? 'You' : shownName(profile.name)),
+      actions: [
+        // An OSP code for them, with words for those without OSP
+        // (ADR 0039 §4).
+        IconButton(
+          tooltip: profile.own ? 'Share your profile' : 'Share this profile',
+          onPressed: () => shareProfile(
+            context,
+            widget.node,
+            identity: profile.identity,
+            name: shownName(profile.name),
+          ),
+          icon: const Icon(Icons.share),
+        ),
+      ],
       flexibleSpace: FlexibleSpaceBar(
         collapseMode: CollapseMode.pin,
         background: Stack(

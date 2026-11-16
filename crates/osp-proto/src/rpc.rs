@@ -35,6 +35,12 @@ pub enum ClientRequest {
     Status,
     /// A follow ticket for this node's identity.
     Invite,
+    /// A follow ticket for someone, for an OSP code (ADR 0039 §4): the
+    /// owner's as `Invite` gives it, or another's naming the first node of
+    /// the profile this node holds of them. Answered with `Ticket`.
+    InviteFor {
+        actor: PublicKey,
+    },
     Follow {
         ticket: String,
     },

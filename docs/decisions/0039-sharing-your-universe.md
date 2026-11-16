@@ -42,7 +42,7 @@ A profile or post is shared as a copyable **OSP code**, as text, with a line of 
 - **A post:** `osp:post/<post ID>?by=<invite code>`, with its first lines. Kim's node opens the post from its author, or as a found post if Kim doesn't follow them.
 - **OSP itself:** the install link. Until there's a project site, that's the install guide on the repository's host.
 
-In the alpha, the app takes an OSP code pasted anywhere it takes an invite code, and offers to open one found on the clipboard. The app also registers `osp:` as a link scheme, so tapping a code where links work opens it, but nothing depends on that. Web links that open the app (Android App Links, iOS universal links) need a domain the project controls, and come later.
+In the alpha, the app takes an OSP code pasted anywhere it takes an invite code, a whole shared message included, and offers to open one found on the clipboard. It reads the clipboard only when Invite and follow opens, where codes are expected: Android tells the user each time an app reads it (maintainer, 2026-11-16). The app also registers `osp:` as a link scheme, so tapping a code where links work opens it, but nothing depends on that. Web links that open the app (Android App Links, iOS universal links) need a domain the project controls, and come later.
 
 There is no web page for a profile or post: OSP has no server to put one on.
 

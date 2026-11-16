@@ -84,5 +84,18 @@
 		<string>UIInterfaceOrientationLandscapeLeft</string>
 		<string>UIInterfaceOrientationLandscapeRight</string>
 	</array>
+	<key>FlutterDeepLinkingEnabled</key>
+	<false/>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>OSP codes</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>osp</string>
+			</array>
+		</dict>
+	</array>
 </dict>
 </plist>

@@ -21,7 +21,7 @@ use osp_client::{
             ReplyStatus, SentReplyInfo, SentStatus, TrustInfo,
         },
         social::ReplyPolicy,
-        universe, BlobHash, MediaKind, ObjectId, ProfileLink,
+        universe, BlobHash, FollowTicket, MediaKind, ObjectId, OspCode, ProfileLink,
     },
     Client, ClientOptions, NoContact, Pairing, ProfilePicture,
 };
@@ -1358,6 +1358,31 @@ impl OspApp {
         }
     }
 
+    /// An OSP code for someone (ADR 0039 §4): the owner, or anyone whose
+    /// profile the node holds.
+    pub async fn code_for_person(&self, identity: String) -> Result<String> {
+        Ok(OspCode::Person(self.invite_for(&identity).await?).to_string())
+    }
+
+    /// An OSP code for a post, with its author's invite code in it.
+    pub async fn code_for_post(&self, post_id: String, author: String) -> Result<String> {
+        let id: ObjectId = post_id.parse()?;
+        let by = self.invite_for(&author).await?;
+        Ok(OspCode::Post { id, by }.to_string())
+    }
+
+    async fn invite_for(&self, identity: &str) -> Result<FollowTicket> {
+        let actor = identity.parse()?;
+        match self
+            .client
+            .request(&ClientRequest::InviteFor { actor })
+            .await?
+        {
+            ClientResponse::Ticket { ticket } => ticket.parse(),
+            _ => bail!("unexpected reply to InviteFor"),
+        }
+    }
+
     /// Asks the node to sync everyone it follows now. Returns how many new
     /// objects arrived.
     pub async fn sync(&self) -> Result<u32> {
@@ -1720,6 +1745,45 @@ pub fn is_pairing_ticket(text: String) -> bool {
 #[frb(sync)]
 pub fn is_follow_ticket(text: String) -> bool {
     text.trim().to_ascii_uppercase().starts_with("OSP1")
+}
+
+/// What an OSP code shares (ADR 0039 §4): a person, or a post and its
+/// author.
+pub struct SharedCode {
+    /// The code, written out in full.
+    pub code: String,
+    /// The invite code inside it: the person's, or the post author's.
+    pub invite: String,
+    /// The person, or the post's author.
+    pub actor: String,
+    /// The post's ID, for a post code.
+    pub post: Option<String>,
+}
+
+/// Reads an OSP code, such as one pasted where an invite code goes. A
+/// malformed one fails with a message to show as it is.
+#[frb(sync)]
+pub fn read_osp_code(text: String) -> Result<SharedCode> {
+    Ok(shared_code(text.parse::<OspCode>()?))
+}
+
+/// The first OSP code in `text`, as on the clipboard, if any.
+#[frb(sync)]
+pub fn find_osp_code(text: String) -> Option<SharedCode> {
+    OspCode::find_in(&text).map(shared_code)
+}
+
+fn shared_code(code: OspCode) -> SharedCode {
+    let ticket = code.ticket();
+    SharedCode {
+        code: code.to_string(),
+        invite: ticket.to_string(),
+        actor: ticket.actor.to_string(),
+        post: match &code {
+            OspCode::Post { id, .. } => Some(id.to_string()),
+            OspCode::Person(_) => None,
+        },
+    }
 }
 
 fn universe(s: universe::Snapshot) -> UniverseSnapshot {
