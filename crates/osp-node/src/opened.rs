@@ -5,13 +5,13 @@
 //! the code names for the post and Alice's profile, from a throwaway key
 //! (over Tor, or relay-only without it, as `connected` asks), so Alice's
 //! node can't tell it was Kim. It keeps them as an opened post
-//! (`db::opened`): out of every list, for 7 days from when Kim last opened,
-//! liked or replied to it, within `MAX_OPENED` and `MAX_OPENED_BYTES`. Its
-//! media comes as a found post's does (ADR 0024), never from Kim's identity,
-//! and is never served to anyone but her devices.
+//! (`db::opened`), out of every list, only while Kim looks at it: the app
+//! drops it when she leaves, and the node after `db::OPENED_FOR_MS` if the
+//! app couldn't. Its media comes as a found post's does (ADR 0024), never
+//! from Kim's identity, and is never served to anyone but her devices.
 //!
-//! Opening it again asks Alice's node again, after answering, so a post she
-//! deleted goes (ADR 0019).
+//! Each time she opens the code it's asked for afresh, so a post Alice
+//! deleted is answered with its `Delete` (ADR 0019).
 
 use std::{sync::Arc, time::Duration};
 
@@ -44,8 +44,8 @@ pub(crate) const MAX_OPENED_BYTES: u64 = 500 * 1024 * 1024;
 /// on and on.
 pub(crate) const MAX_OPENS_PER_HOUR: u32 = 30;
 
-/// How often opened posts past their 7 days are dropped.
-const SWEEP_EVERY: Duration = Duration::from_secs(60 * 60);
+/// How often opened posts past their time are dropped.
+const SWEEP_EVERY: Duration = Duration::from_secs(10 * 60);
 
 /// What the author's node said of a post.
 enum Fetched {
@@ -56,35 +56,15 @@ enum Fetched {
 }
 
 impl Core {
-    /// Opens `id` from an OSP code naming `ticket`, or from Recently opened
-    /// with none (`ClientRequest::OpenPost`).
+    /// Opens `id` from an OSP code naming `ticket` (`ClientRequest::OpenPost`).
     pub(crate) async fn open_post(
         self: &Arc<Self>,
         id: &ObjectId,
-        ticket: Option<&FollowTicket>,
+        ticket: &FollowTicket,
     ) -> Result<FeedItem> {
-        if let Some(obj) = self.db.get_object(id)? {
-            if self.db.touch_opened(id, now_ms())?
-                && let Ok(Payload::Note(note)) = obj.verify()
-            {
-                // Asked again, after answering, so a post its author
-                // deleted goes (ADR 0019).
-                let node = match ticket {
-                    Some(t) => Some(t.node.id),
-                    None => self.nodes_of(&note.actor).first().copied(),
-                };
-                if let Some(node) = node {
-                    let (core, id) = (self.clone(), *id);
-                    tokio::spawn(async move {
-                        if let Err(e) = core.fetch_opened(&id, note.actor, node).await {
-                            debug!(post = %id.fmt_short(), "asking again for an opened post: {e:#}");
-                        }
-                    });
-                }
-            }
+        if self.db.get_object(id)?.is_some() {
             return self.show(id).await;
         }
-        let ticket = ticket.context("that post isn't on your node any more")?;
         ensure!(
             ticket.actor != self.signer.identity(),
             "that post of yours isn't on your node any more"
@@ -102,18 +82,6 @@ impl Core {
         self.show(id).await
     }
 
-    /// Recently opened (`ClientRequest::OpenedPosts`): the opened posts, the
-    /// most lately opened first.
-    pub(crate) async fn opened_posts(&self) -> Result<Vec<FeedItem>> {
-        let mut items = Vec::new();
-        for id in self.db.opened_posts()? {
-            if let Ok(item) = self.show(&id).await {
-                items.push(item);
-            }
-        }
-        Ok(items)
-    }
-
     /// Drops an opened post and its media now (`ClientRequest::ForgetOpened`).
     pub(crate) async fn forget_opened(&self, id: &ObjectId) -> Result<()> {
         let gone = self
@@ -124,7 +92,7 @@ impl Core {
         Ok(())
     }
 
-    /// Drops the opened posts past their 7 days, then the least lately
+    /// Drops the opened posts past their time, then the least lately
     /// opened beyond the caps.
     pub(crate) async fn trim_opened(&self) -> Result<usize> {
         let ids = self
@@ -231,7 +199,7 @@ impl Core {
     }
 }
 
-/// Drops opened posts past their 7 days, every `SWEEP_EVERY`.
+/// Drops opened posts past their time, every `SWEEP_EVERY`.
 pub(crate) async fn sweep_loop(core: Arc<Core>) {
     loop {
         tokio::time::sleep(SWEEP_EVERY).await;

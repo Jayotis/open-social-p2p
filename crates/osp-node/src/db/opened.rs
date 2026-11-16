@@ -1,10 +1,10 @@
 //! Opened posts (ADR 0039 §4). Jimmy sends Kim a code for Alice's post, and
 //! Kim doesn't follow Alice. Kim's node fetches the post and Alice's profile
-//! and keeps them where posts and profiles always are, as a found post's
-//! are, so liking, replying and media work as for any post. This marks it:
-//! for 7 days from when Kim last opened it, liked it or replied, within a
-//! count and a byte cap. No list shows an opened post, nor someone whose
-//! profile is held only because of one (`opened_people`).
+//! and keeps them, while Kim looks at it only, where posts and profiles
+//! always are, as a found post's are, so its media comes as for any post.
+//! This marks it, until when it's kept at most, within a count and a byte
+//! cap. No list shows an opened post, nor someone whose profile is held
+//! only because of one (`opened_people`).
 //!
 //! An opened post becomes an ordinary one, and its author someone held as
 //! usual, as soon as it has another reason to be here: Kim follows Alice,
@@ -20,9 +20,9 @@ use super::{
     remove_from_search, upsert_profile,
 };
 
-/// How long an opened post is kept after it was last opened, liked or
-/// replied to.
-pub(crate) const OPENED_FOR_MS: i64 = 7 * 24 * 60 * 60 * 1000;
+/// Longest an opened post is kept. The app drops it when Kim leaves it;
+/// this is for when it can't, as when the app is closed meanwhile.
+pub(crate) const OPENED_FOR_MS: i64 = 60 * 60 * 1000;
 
 /// SQL that is true of an `objects` row that isn't an opened post.
 pub(super) const NOT_OPENED: &str = "id NOT IN (SELECT id FROM opened_posts)";
@@ -38,7 +38,7 @@ pub(crate) enum Kept {
 
 impl Db {
     /// Keeps `post`, `note`'s signed form, as opened until `now` plus
-    /// `OPENED_FOR_MS`, and `profile` if it's newer than the one held. Its
+    /// `OPENED_FOR_MS` at most, and `profile` if it's newer than the one held. Its
     /// files are to be fetched as a found post's are (ADR 0024).
     pub(crate) fn keep_opened(
         &self,
@@ -116,27 +116,6 @@ impl Db {
             .optional()?)
     }
 
-    /// Starts `id`'s 7 days over, if it's an opened post: Kim opened it
-    /// again, liked it or replied. Returns whether it is one.
-    pub(crate) fn touch_opened(&self, id: &ObjectId, now: i64) -> Result<bool> {
-        Ok(self.conn().execute(
-            "UPDATE opened_posts SET until_ms = ?2 WHERE id = ?1",
-            params![id.to_string(), now + OPENED_FOR_MS],
-        )? > 0)
-    }
-
-    /// The opened posts, the most lately opened, liked or replied to first.
-    pub(crate) fn opened_posts(&self) -> Result<Vec<ObjectId>> {
-        let conn = self.conn();
-        let mut stmt = conn.prepare("SELECT id FROM opened_posts ORDER BY until_ms DESC")?;
-        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
-        let mut ids = Vec::new();
-        for row in rows {
-            ids.push(row?.parse()?);
-        }
-        Ok(ids)
-    }
-
     /// Drops the opened post `id` and what came only with it: its files
     /// that nothing else here names, and its author's profile if it was
     /// held only for opened posts. Returns the files to let go of, or None
@@ -149,7 +128,7 @@ impl Db {
         Ok(gone)
     }
 
-    /// The opened posts to drop at `now`: those past their 7 days, then the
+    /// The opened posts to drop at `now`: those past their time, then the
     /// least lately opened until at most `max_posts` and `max_bytes` are left.
     pub(crate) fn opened_to_drop(
         &self,

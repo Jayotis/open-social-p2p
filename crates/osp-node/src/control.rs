@@ -135,14 +135,10 @@ impl Core {
             ClientRequest::Show { id } => ClientResponse::Item {
                 item: self.show(&id).await?,
             },
-            ClientRequest::OpenPost { id, ticket } => {
-                let ticket: Option<FollowTicket> = ticket.map(|t| t.parse()).transpose()?;
-                ClientResponse::Item {
-                    item: self.open_post(&id, ticket.as_ref()).await?,
-                }
-            }
-            ClientRequest::OpenedPosts => ClientResponse::Feed {
-                items: self.opened_posts().await?,
+            ClientRequest::OpenPost { id, ticket } => ClientResponse::Item {
+                item: self
+                    .open_post(&id, &ticket.parse::<FollowTicket>()?)
+                    .await?,
             },
             ClientRequest::ForgetOpened { id } => {
                 self.forget_opened(&id).await?;
@@ -312,8 +308,10 @@ impl Core {
                 ClientResponse::Ok
             }
             ClientRequest::Reply { post, content } => {
-                // Replying to an opened post keeps it 7 days more.
-                self.db.touch_opened(&post, now_ms())?;
+                ensure!(
+                    self.db.opened_until(&post)?.is_none(),
+                    "follow its author to reply to a post opened from a shared code"
+                );
                 ClientResponse::ReplySent {
                     reply: self
                         .reply(&post, content, crate::replying::reply_wait(local))
@@ -322,8 +320,10 @@ impl Core {
             }
             ClientRequest::Thread { post, after } => self.read_thread(&post, after).await?,
             ClientRequest::Like { post, liked } => {
-                // So does liking it.
-                self.db.touch_opened(&post, now_ms())?;
+                ensure!(
+                    self.db.opened_until(&post)?.is_none(),
+                    "follow its author to like a post opened from a shared code"
+                );
                 self.like(&post, liked)?;
                 ClientResponse::Ok
             }

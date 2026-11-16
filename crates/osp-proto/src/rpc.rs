@@ -82,17 +82,13 @@ pub enum ClientRequest {
     },
     /// Opens a post from an OSP code (ADR 0039 §4): as this node holds it,
     /// or, if it doesn't, fetched from the node `ticket` names, from a
-    /// throwaway key, and kept as an opened post for 7 days. Opening one
-    /// again starts its 7 days over. Without `ticket`, as from Recently
-    /// opened, only a post the node holds opens. Answered with `Item`.
+    /// throwaway key, and kept as an opened post while the owner looks at
+    /// it: the device sends `ForgetOpened` when they leave it, and the node
+    /// drops it within an hour anyway. Answered with `Item`.
     OpenPost {
         id: ObjectId,
-        #[serde(default)]
-        ticket: Option<String>,
+        ticket: String,
     },
-    /// Recently opened (ADR 0039 §4): the opened posts, the most lately
-    /// opened first. Answered with `Feed`.
-    OpenedPosts,
     /// Drops an opened post and its media now. Answered with `Ok`.
     ForgetOpened {
         id: ObjectId,
@@ -1320,7 +1316,7 @@ pub struct FeedItem {
     #[serde(default)]
     pub liked: bool,
     /// Whether it's an opened post (ADR 0039 §4): opened from an OSP code,
-    /// its author not followed, and kept for a while only.
+    /// its author not followed, and kept only while the owner looks at it.
     #[serde(default)]
     pub opened: bool,
     /// Search only (ADR 0035 §3): where its author is on the Universe's map,

@@ -4,7 +4,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:osp_app/node.dart';
 import 'package:osp_app/osp_codes.dart';
-import 'package:osp_app/screens/recently_opened_screen.dart';
 import 'package:osp_app/src/rust/api/osp.dart';
 import 'package:osp_app/uploads.dart';
 import 'package:osp_app/widgets/post_card.dart';
@@ -24,19 +23,6 @@ class FakeApp implements OspApp {
   final codesFor = <(String, String?)>[];
   final openedCodes = <String>[];
   final forgotten = <String>[];
-  final reopened = <String>[];
-
-  /// Recently opened, as the node lists it.
-  late List<Post> opened = [post('From Ann', opened: true)];
-
-  @override
-  Future<List<Post>> openedPosts() async => List.of(opened);
-
-  @override
-  Future<Post> reopenPost({required String postId}) async {
-    reopened.add(postId);
-    return opened.firstWhere((p) => p.id == postId);
-  }
 
   @override
   Future<String> codeForPerson({required String identity}) async {
@@ -71,10 +57,8 @@ class FakeApp implements OspApp {
   }
 
   @override
-  Future<void> forgetOpened({required String postId}) async {
-    forgotten.add(postId);
-    opened.removeWhere((p) => p.id == postId);
-  }
+  Future<void> forgetOpened({required String postId}) async =>
+      forgotten.add(postId);
 
   @override
   Future<void> followPerson({required String identity}) async =>
@@ -219,8 +203,8 @@ void main() {
     }
 
     testWidgets(
-      "a post not on the node opens from its author's node, labelled, with "
-      'follow and remove',
+      "a post not on the node opens from its author's node, labelled, is "
+      'gone when Kim leaves it, and stays once she follows',
       (tester) async {
         const code = SharedCode(
           code: postCode,
@@ -233,53 +217,27 @@ void main() {
         expect(find.text('From Ann'), findsOneWidget);
         expect(find.text('Opened from a shared OSP post'), findsOneWidget);
         expectPlainWords(tester);
-        // No question first: opening it isn't following.
+        // Shown once: no liking or replying, and no question first.
+        expect(find.byTooltip('Send reply'), findsNothing);
+        expect(find.byIcon(Icons.favorite_border), findsNothing);
         expect(app.followed, isEmpty);
 
+        // Leaving drops it from the node.
+        await tester.pageBack();
+        await tester.pumpAndSettle();
+        expect(app.forgotten, ['id-post']);
+
+        // Opened again and followed: it's an ordinary post, and stays.
+        await tester.tap(find.text('open'));
+        await tester.pumpAndSettle();
         await tester.tap(find.text('Follow Ann'));
         await tester.pumpAndSettle();
         expect(app.followedPeople, ['id-Ann']);
-        // Followed: it's an ordinary post now.
         expect(find.text('Opened from a shared OSP post'), findsNothing);
-
+        expect(find.byTooltip('Send reply'), findsOneWidget);
         await tester.pageBack();
         await tester.pumpAndSettle();
-        await tester.tap(find.text('open'));
-        await tester.pumpAndSettle();
-        await tester.tap(find.text('Remove'));
-        await tester.pumpAndSettle();
         expect(app.forgotten, ['id-post']);
-        // After "Following Ann." has had its turn.
-        await tester.pump(const Duration(seconds: 5));
-        await tester.pumpAndSettle();
-        expect(find.text('Removed from your node.'), findsOneWidget);
-        expect(find.text('From Ann'), findsNothing);
-      },
-    );
-
-    testWidgets(
-      'Recently opened lists opened posts, opens one again, and removes one',
-      (tester) async {
-        await tester.pumpWidget(
-          MaterialApp(home: RecentlyOpenedScreen(node: node)),
-        );
-        await tester.pumpAndSettle();
-        expect(find.text('Ann'), findsOneWidget);
-        expect(find.text('From Ann'), findsOneWidget);
-        expectPlainWords(tester);
-
-        await tester.tap(find.text('Ann'));
-        await tester.pumpAndSettle();
-        expect(app.reopened, ['id-post']);
-        expect(find.text('Opened from a shared OSP post'), findsOneWidget);
-        await tester.pageBack();
-        await tester.pumpAndSettle();
-
-        await tester.tap(find.byTooltip('Remove'));
-        await tester.pumpAndSettle();
-        expect(app.forgotten, ['id-post']);
-        expect(find.text('From Ann'), findsNothing);
-        expect(find.text('Nothing opened lately.'), findsOneWidget);
       },
     );
 

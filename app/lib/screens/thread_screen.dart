@@ -47,7 +47,8 @@ class _ThreadScreenState extends State<ThreadScreen> {
 
   bool get _own => widget.post.authorIdentity == _node.paired?.identity;
 
-  /// An opened post (ADR 0039 §4), until Kim follows its author.
+  /// An opened post (ADR 0039 §4), shown once, until Kim follows its
+  /// author.
   late bool _opened = widget.post.opened;
 
   /// Follows the author of an opened post: it's kept as any follow's then.
@@ -71,25 +72,6 @@ class _ThreadScreenState extends State<ThreadScreen> {
     }
   }
 
-  /// Drops an opened post and its media from the node now.
-  Future<void> _removeOpened() async {
-    final navigator = Navigator.of(context);
-    final messenger = ScaffoldMessenger.of(context);
-    setState(() => _busy = true);
-    try {
-      await _app.forgetOpened(postId: widget.post.id);
-      navigator.pop();
-      messenger.showSnackBar(
-        const SnackBar(content: Text('Removed from your node.')),
-      );
-    } catch (e) {
-      messenger.showSnackBar(
-        SnackBar(content: Text("Couldn't remove it: ${describeError(e)}")),
-      );
-      if (mounted) setState(() => _busy = false);
-    }
-  }
-
   String? get _me => _node.paired?.identity;
 
   @override
@@ -104,6 +86,10 @@ class _ThreadScreenState extends State<ThreadScreen> {
   void dispose() {
     _node.removeListener(_changed);
     _text.dispose();
+    // An opened post is shown once: it goes from the node as Kim leaves.
+    if (_opened) {
+      unawaited(_app.forgetOpened(postId: widget.post.id).catchError((_) {}));
+    }
     super.dispose();
   }
 
@@ -289,23 +275,23 @@ class _ThreadScreenState extends State<ThreadScreen> {
                       author: widget.post.author,
                       enabled: online && !_busy,
                       onFollow: _followAuthor,
-                      onRemove: _removeOpened,
                     ),
                   ],
-                  _LikesRow(
-                    node: _node,
-                    post: widget.post,
-                    own: _own,
-                    likes: _likes,
-                    liked: _liked,
-                    // The count is the creator's node's; the owner's own
-                    // choice shows at once.
-                    onChanged: (liked) => setState(() {
-                      if (liked != _liked) _likes += liked ? 1 : -1;
-                      if (_likes < 0) _likes = 0;
-                      _liked = liked;
-                    }),
-                  ),
+                  if (!_opened)
+                    _LikesRow(
+                      node: _node,
+                      post: widget.post,
+                      own: _own,
+                      likes: _likes,
+                      liked: _liked,
+                      // The count is the creator's node's; the owner's own
+                      // choice shows at once.
+                      onChanged: (liked) => setState(() {
+                        if (liked != _liked) _likes += liked ? 1 : -1;
+                        if (_likes < 0) _likes = 0;
+                        _liked = liked;
+                      }),
+                    ),
                   if (_policy case final policy?) ...[
                     const SizedBox(height: 16),
                     _PolicyPicker(
@@ -365,7 +351,7 @@ class _ThreadScreenState extends State<ThreadScreen> {
               ),
             ),
           ),
-          if (_policy != 'off')
+          if (_policy != 'off' && !_opened)
             SafeArea(
               top: false,
               child: Padding(
@@ -735,20 +721,18 @@ Future<bool> confirmBlock(BuildContext context, String name) async {
   return go == true;
 }
 
-/// Says a post was opened from a shared code and is kept for a while only,
-/// with following its author or removing it (ADR 0039 §4).
+/// Says a post was opened from a shared code and isn't kept, with following
+/// its author (ADR 0039 §4).
 class _OpenedNote extends StatelessWidget {
   const _OpenedNote({
     required this.author,
     required this.enabled,
     required this.onFollow,
-    required this.onRemove,
   });
 
   final String author;
   final bool enabled;
   final VoidCallback onFollow;
-  final VoidCallback onRemove;
 
   @override
   Widget build(BuildContext context) {
@@ -765,18 +749,14 @@ class _OpenedNote extends StatelessWidget {
               style: theme.textTheme.titleSmall,
             ),
             const SizedBox(height: 4),
-            const Text(
-              "You don't follow its author, so it isn't in your feed or "
-              'your Universe. Your node keeps it for 7 days after you last '
-              'open, like or reply to it.',
+            Text(
+              "You don't follow ${shownName(author)}, so your node doesn't "
+              "keep it: it's gone when you leave. Follow them to like it, "
+              'reply, and get their posts.',
             ),
             Wrap(
               alignment: WrapAlignment.end,
               children: [
-                TextButton(
-                  onPressed: enabled ? onRemove : null,
-                  child: const Text('Remove'),
-                ),
                 TextButton(
                   onPressed: enabled ? onFollow : null,
                   child: Text('Follow ${shownName(author)}'),

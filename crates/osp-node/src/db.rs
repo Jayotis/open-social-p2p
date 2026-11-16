@@ -6948,7 +6948,7 @@ mod tests {
     }
 
     #[test]
-    fn opened_posts_go_after_7_days_then_the_least_lately_opened_beyond_the_caps() {
+    fn opened_posts_go_after_their_time_then_the_least_lately_opened_beyond_the_caps() {
         let dir = tempfile::tempdir().unwrap();
         let db = Db::open(&dir.path().join("t.db")).unwrap();
         let (a, b, c) = (
@@ -6980,16 +6980,8 @@ mod tests {
             db.opened_to_drop(3_000, 10, one as u64 + 10).unwrap(),
             [second, first]
         );
-        // Opening the first again starts its 7 days over.
-        assert!(db.touch_opened(&first, 4_000).unwrap());
-        assert_eq!(db.opened_to_drop(4_000, 2, all).unwrap(), [second]);
-        assert_eq!(
-            db.opened_until(&first).unwrap(),
-            Some(4_000 + opened::OPENED_FOR_MS)
-        );
-        // An ordinary post isn't touched.
+        // An ordinary post isn't an opened one.
         let ordinary = store_note(&db, &a, "ordinary", EARLIER);
-        assert!(!db.touch_opened(&ordinary, 4_000).unwrap());
         assert_eq!(db.opened_until(&ordinary).unwrap(), None);
     }
 
