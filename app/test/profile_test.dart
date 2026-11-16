@@ -80,6 +80,21 @@ class FakeApp implements OspApp {
   @override
   Future<NodeStatus> status() => Future.error(Exception('not in tests'));
 
+  /// Each "How are we connected?" asked (ADR 0037).
+  final connectedAsked = <String>[];
+
+  @override
+  Future<Connection> howConnected({required String identity}) async {
+    connectedAsked.add(identity);
+    return Connection(
+      identity: identity,
+      paths: const [],
+      people: const [],
+      side: SideFrom.notAsked,
+      vouches: 0,
+    );
+  }
+
   @override
   dynamic noSuchMethod(Invocation invocation) =>
       throw UnimplementedError('${invocation.memberName}');
@@ -232,6 +247,28 @@ void main() {
     await tester.tap(find.widgetWithText(FilledButton, 'Yes, I know Jimmy'));
     await tester.pumpAndSettle();
     expect(app.trusted, ['id-Jimmy']);
+  });
+
+  testWidgets('opening a profile asks nobody; its button asks, for the map', (
+    tester,
+  ) async {
+    app.profiles['id-Jimmy'] = profileOf('Jimmy', posts: 0);
+    await openProfile(tester, 'Jimmy');
+    expect(app.connectedAsked, isEmpty, reason: 'ADR 0037 §2');
+    await tester.tap(find.text('How are we connected?'));
+    await tester.pumpAndSettle();
+    expect(app.connectedAsked, ['id-Jimmy']);
+    expect(node.connection?.identity, 'id-Jimmy');
+    expect(node.takeMapWanted(), isTrue, reason: 'shown on the map');
+    expect(node.takeMapWanted(), isFalse, reason: 'taken once');
+  });
+
+  testWidgets('your own profile has no question of how you are connected', (
+    tester,
+  ) async {
+    app.profiles['id-Me'] = profileOf('Me', own: true);
+    await openProfile(tester, 'Me');
+    expect(find.text('How are we connected?'), findsNothing);
   });
 
   testWidgets('lists a page at a time, and media as a grid', (tester) async {

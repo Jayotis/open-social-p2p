@@ -40,7 +40,7 @@ flutter_rust_bridge::frb_generated_boilerplate!(
     default_rust_auto_opaque = RustAutoOpaqueMoi,
 );
 pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_VERSION: &str = "2.13.0";
-pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = 1370682281;
+pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = -1909667179;
 
 // Section: executor
 
@@ -848,6 +848,64 @@ fn wire__crate__api__osp__OspApp_hide_reply_impl(
                             api_hidden,
                         )
                         .await?;
+                        std::result::Result::Ok(output_ok)
+                    })()
+                    .await,
+                )
+            }
+        },
+    )
+}
+fn wire__crate__api__osp__OspApp_how_connected_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_async::<flutter_rust_bridge::for_generated::SseCodec, _, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "OspApp_how_connected",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_that = <RustOpaqueMoi<
+                flutter_rust_bridge::for_generated::RustAutoOpaqueInner<OspApp>,
+            >>::sse_decode(&mut deserializer);
+            let api_identity = <String>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| async move {
+                transform_result_sse::<_, flutter_rust_bridge::for_generated::anyhow::Error>(
+                    (move || async move {
+                        let mut api_that_guard = None;
+                        let decode_indices_ =
+                            flutter_rust_bridge::for_generated::lockable_compute_decode_order(
+                                vec![flutter_rust_bridge::for_generated::LockableOrderInfo::new(
+                                    &api_that, 0, false,
+                                )],
+                            );
+                        for i in decode_indices_ {
+                            match i {
+                                0 => {
+                                    api_that_guard =
+                                        Some(api_that.lockable_decode_async_ref().await)
+                                }
+                                _ => unreachable!(),
+                            }
+                        }
+                        let api_that_guard = api_that_guard.unwrap();
+                        let output_ok =
+                            crate::api::osp::OspApp::how_connected(&*api_that_guard, api_identity)
+                                .await?;
                         std::result::Result::Ok(output_ok)
                     })()
                     .await,
@@ -3041,6 +3099,46 @@ impl SseDecode for bool {
     }
 }
 
+impl SseDecode for crate::api::osp::ConnectedPerson {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_identity = <String>::sse_decode(deserializer);
+        let mut var_name = <Option<String>>::sse_decode(deserializer);
+        let mut var_regions = <Vec<String>>::sse_decode(deserializer);
+        return crate::api::osp::ConnectedPerson {
+            identity: var_identity,
+            name: var_name,
+            regions: var_regions,
+        };
+    }
+}
+
+impl SseDecode for crate::api::osp::Connection {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_identity = <String>::sse_decode(deserializer);
+        let mut var_paths = <Vec<crate::api::osp::ConnectionPath>>::sse_decode(deserializer);
+        let mut var_people = <Vec<crate::api::osp::ConnectedPerson>>::sse_decode(deserializer);
+        let mut var_side = <crate::api::osp::SideFrom>::sse_decode(deserializer);
+        let mut var_vouches = <u32>::sse_decode(deserializer);
+        return crate::api::osp::Connection {
+            identity: var_identity,
+            paths: var_paths,
+            people: var_people,
+            side: var_side,
+            vouches: var_vouches,
+        };
+    }
+}
+
+impl SseDecode for crate::api::osp::ConnectionPath {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_hops = <Vec<crate::api::osp::PathHop>>::sse_decode(deserializer);
+        return crate::api::osp::ConnectionPath { hops: var_hops };
+    }
+}
+
 impl SseDecode for crate::api::osp::EventKind {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -3111,6 +3209,21 @@ impl SseDecode for crate::api::osp::FoundPerson {
     }
 }
 
+impl SseDecode for crate::api::osp::HopKind {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut inner = <i32>::sse_decode(deserializer);
+        return match inner {
+            0 => crate::api::osp::HopKind::Follows,
+            1 => crate::api::osp::HopKind::Knows,
+            2 => crate::api::osp::HopKind::Reshared,
+            3 => crate::api::osp::HopKind::CreditedEarly,
+            4 => crate::api::osp::HopKind::Gap,
+            _ => unreachable!("Invalid variant for HopKind: {}", inner),
+        };
+    }
+}
+
 impl SseDecode for i32 {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -3149,6 +3262,30 @@ impl SseDecode for Vec<String> {
     }
 }
 
+impl SseDecode for Vec<crate::api::osp::ConnectedPerson> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut len_ = <i32>::sse_decode(deserializer);
+        let mut ans_ = Vec::with_capacity(len_ as usize);
+        for idx_ in 0..len_ {
+            ans_.push(<crate::api::osp::ConnectedPerson>::sse_decode(deserializer));
+        }
+        return ans_;
+    }
+}
+
+impl SseDecode for Vec<crate::api::osp::ConnectionPath> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut len_ = <i32>::sse_decode(deserializer);
+        let mut ans_ = Vec::with_capacity(len_ as usize);
+        for idx_ in 0..len_ {
+            ans_.push(<crate::api::osp::ConnectionPath>::sse_decode(deserializer));
+        }
+        return ans_;
+    }
+}
+
 impl SseDecode for Vec<crate::api::osp::Followed> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -3180,6 +3317,18 @@ impl SseDecode for Vec<crate::api::osp::Media> {
         let mut ans_ = Vec::with_capacity(len_ as usize);
         for idx_ in 0..len_ {
             ans_.push(<crate::api::osp::Media>::sse_decode(deserializer));
+        }
+        return ans_;
+    }
+}
+
+impl SseDecode for Vec<crate::api::osp::PathHop> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut len_ = <i32>::sse_decode(deserializer);
+        let mut ans_ = Vec::with_capacity(len_ as usize);
+        for idx_ in 0..len_ {
+            ans_.push(<crate::api::osp::PathHop>::sse_decode(deserializer));
         }
         return ans_;
     }
@@ -3576,6 +3725,20 @@ impl SseDecode for Option<crate::api::osp::UnsentPost> {
     }
 }
 
+impl SseDecode for crate::api::osp::PathHop {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_identity = <String>::sse_decode(deserializer);
+        let mut var_how = <crate::api::osp::HopKind>::sse_decode(deserializer);
+        let mut var_steps = <u8>::sse_decode(deserializer);
+        return crate::api::osp::PathHop {
+            identity: var_identity,
+            how: var_how,
+            steps: var_steps,
+        };
+    }
+}
+
 impl SseDecode for crate::api::osp::Post {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -3759,6 +3922,20 @@ impl SseDecode for crate::api::osp::SentReply {
             status: var_status,
             error: var_error,
             next_try_secs: var_nextTrySecs,
+        };
+    }
+}
+
+impl SseDecode for crate::api::osp::SideFrom {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut inner = <i32>::sse_decode(deserializer);
+        return match inner {
+            0 => crate::api::osp::SideFrom::Replied,
+            1 => crate::api::osp::SideFrom::Asked,
+            2 => crate::api::osp::SideFrom::NoAnswer,
+            3 => crate::api::osp::SideFrom::NotAsked,
+            _ => unreachable!("Invalid variant for SideFrom: {}", inner),
         };
     }
 }
@@ -4116,38 +4293,39 @@ fn pde_ffi_dispatcher_primary_impl(
         12 => wire__crate__api__osp__OspApp_following_impl(port, ptr, rust_vec_len, data_len),
         13 => wire__crate__api__osp__OspApp_forget_impl(port, ptr, rust_vec_len, data_len),
         14 => wire__crate__api__osp__OspApp_hide_reply_impl(port, ptr, rust_vec_len, data_len),
-        15 => wire__crate__api__osp__OspApp_invite_impl(port, ptr, rust_vec_len, data_len),
-        17 => wire__crate__api__osp__OspApp_media_url_impl(port, ptr, rust_vec_len, data_len),
-        18 => wire__crate__api__osp__OspApp_network_changed_impl(port, ptr, rust_vec_len, data_len),
-        19 => wire__crate__api__osp__OspApp_open_impl(port, ptr, rust_vec_len, data_len),
-        20 => wire__crate__api__osp__OspApp_pair_impl(port, ptr, rust_vec_len, data_len),
-        23 => wire__crate__api__osp__OspApp_people_impl(port, ptr, rust_vec_len, data_len),
-        24 => wire__crate__api__osp__OspApp_post_impl(port, ptr, rust_vec_len, data_len),
-        25 => wire__crate__api__osp__OspApp_profile_impl(port, ptr, rust_vec_len, data_len),
-        26 => wire__crate__api__osp__OspApp_profile_items_impl(port, ptr, rust_vec_len, data_len),
-        28 => wire__crate__api__osp__OspApp_region_items_impl(port, ptr, rust_vec_len, data_len),
-        29 => wire__crate__api__osp__OspApp_reply_impl(port, ptr, rust_vec_len, data_len),
-        30 => wire__crate__api__osp__OspApp_reply_requests_impl(port, ptr, rust_vec_len, data_len),
-        31 => wire__crate__api__osp__OspApp_reshare_impl(port, ptr, rust_vec_len, data_len),
-        32 => wire__crate__api__osp__OspApp_resumed_impl(port, ptr, rust_vec_len, data_len),
-        35 => wire__crate__api__osp__OspApp_search_impl(port, ptr, rust_vec_len, data_len),
-        36 => wire__crate__api__osp__OspApp_sent_replies_impl(port, ptr, rust_vec_len, data_len),
-        37 => wire__crate__api__osp__OspApp_set_profile_impl(port, ptr, rust_vec_len, data_len),
-        38 => wire__crate__api__osp__OspApp_set_replier_impl(port, ptr, rust_vec_len, data_len),
-        39 => {
+        15 => wire__crate__api__osp__OspApp_how_connected_impl(port, ptr, rust_vec_len, data_len),
+        16 => wire__crate__api__osp__OspApp_invite_impl(port, ptr, rust_vec_len, data_len),
+        18 => wire__crate__api__osp__OspApp_media_url_impl(port, ptr, rust_vec_len, data_len),
+        19 => wire__crate__api__osp__OspApp_network_changed_impl(port, ptr, rust_vec_len, data_len),
+        20 => wire__crate__api__osp__OspApp_open_impl(port, ptr, rust_vec_len, data_len),
+        21 => wire__crate__api__osp__OspApp_pair_impl(port, ptr, rust_vec_len, data_len),
+        24 => wire__crate__api__osp__OspApp_people_impl(port, ptr, rust_vec_len, data_len),
+        25 => wire__crate__api__osp__OspApp_post_impl(port, ptr, rust_vec_len, data_len),
+        26 => wire__crate__api__osp__OspApp_profile_impl(port, ptr, rust_vec_len, data_len),
+        27 => wire__crate__api__osp__OspApp_profile_items_impl(port, ptr, rust_vec_len, data_len),
+        29 => wire__crate__api__osp__OspApp_region_items_impl(port, ptr, rust_vec_len, data_len),
+        30 => wire__crate__api__osp__OspApp_reply_impl(port, ptr, rust_vec_len, data_len),
+        31 => wire__crate__api__osp__OspApp_reply_requests_impl(port, ptr, rust_vec_len, data_len),
+        32 => wire__crate__api__osp__OspApp_reshare_impl(port, ptr, rust_vec_len, data_len),
+        33 => wire__crate__api__osp__OspApp_resumed_impl(port, ptr, rust_vec_len, data_len),
+        36 => wire__crate__api__osp__OspApp_search_impl(port, ptr, rust_vec_len, data_len),
+        37 => wire__crate__api__osp__OspApp_sent_replies_impl(port, ptr, rust_vec_len, data_len),
+        38 => wire__crate__api__osp__OspApp_set_profile_impl(port, ptr, rust_vec_len, data_len),
+        39 => wire__crate__api__osp__OspApp_set_replier_impl(port, ptr, rust_vec_len, data_len),
+        40 => {
             wire__crate__api__osp__OspApp_set_reply_policy_impl(port, ptr, rust_vec_len, data_len)
         }
-        40 => wire__crate__api__osp__OspApp_status_impl(port, ptr, rust_vec_len, data_len),
-        41 => wire__crate__api__osp__OspApp_sync_impl(port, ptr, rust_vec_len, data_len),
-        42 => wire__crate__api__osp__OspApp_thread_impl(port, ptr, rust_vec_len, data_len),
-        43 => wire__crate__api__osp__OspApp_trust_impl(port, ptr, rust_vec_len, data_len),
-        44 => wire__crate__api__osp__OspApp_trust_list_impl(port, ptr, rust_vec_len, data_len),
-        45 => wire__crate__api__osp__OspApp_unfollow_impl(port, ptr, rust_vec_len, data_len),
-        46 => wire__crate__api__osp__OspApp_universe_impl(port, ptr, rust_vec_len, data_len),
-        47 => wire__crate__api__osp__OspApp_universe_events_impl(port, ptr, rust_vec_len, data_len),
-        48 => wire__crate__api__osp__OspApp_untrust_impl(port, ptr, rust_vec_len, data_len),
-        49 => wire__crate__api__osp__OspApp_wait_for_media_impl(port, ptr, rust_vec_len, data_len),
-        50 => wire__crate__api__osp__init_app_impl(port, ptr, rust_vec_len, data_len),
+        41 => wire__crate__api__osp__OspApp_status_impl(port, ptr, rust_vec_len, data_len),
+        42 => wire__crate__api__osp__OspApp_sync_impl(port, ptr, rust_vec_len, data_len),
+        43 => wire__crate__api__osp__OspApp_thread_impl(port, ptr, rust_vec_len, data_len),
+        44 => wire__crate__api__osp__OspApp_trust_impl(port, ptr, rust_vec_len, data_len),
+        45 => wire__crate__api__osp__OspApp_trust_list_impl(port, ptr, rust_vec_len, data_len),
+        46 => wire__crate__api__osp__OspApp_unfollow_impl(port, ptr, rust_vec_len, data_len),
+        47 => wire__crate__api__osp__OspApp_universe_impl(port, ptr, rust_vec_len, data_len),
+        48 => wire__crate__api__osp__OspApp_universe_events_impl(port, ptr, rust_vec_len, data_len),
+        49 => wire__crate__api__osp__OspApp_untrust_impl(port, ptr, rust_vec_len, data_len),
+        50 => wire__crate__api__osp__OspApp_wait_for_media_impl(port, ptr, rust_vec_len, data_len),
+        51 => wire__crate__api__osp__init_app_impl(port, ptr, rust_vec_len, data_len),
         _ => unreachable!(),
     }
 }
@@ -4161,15 +4339,15 @@ fn pde_ffi_dispatcher_sync_impl(
     // Codec=Pde (Serialization + dispatch), see doc to use other codecs
     match func_id {
         6 => wire__crate__api__osp__OspApp_device_id_impl(ptr, rust_vec_len, data_len),
-        16 => wire__crate__api__osp__OspApp_log_file_impl(ptr, rust_vec_len, data_len),
-        21 => wire__crate__api__osp__OspApp_paired_node_impl(ptr, rust_vec_len, data_len),
-        22 => wire__crate__api__osp__OspApp_pending_post_impl(ptr, rust_vec_len, data_len),
-        27 => wire__crate__api__osp__OspApp_recent_log_impl(ptr, rust_vec_len, data_len),
-        33 => wire__crate__api__osp__OspApp_saved_feed_impl(ptr, rust_vec_len, data_len),
-        34 => wire__crate__api__osp__OspApp_saved_universe_impl(ptr, rust_vec_len, data_len),
-        51 => wire__crate__api__osp__is_follow_ticket_impl(ptr, rust_vec_len, data_len),
-        52 => wire__crate__api__osp__is_pairing_ticket_impl(ptr, rust_vec_len, data_len),
-        53 => wire__crate__api__osp__new_device_key_impl(ptr, rust_vec_len, data_len),
+        17 => wire__crate__api__osp__OspApp_log_file_impl(ptr, rust_vec_len, data_len),
+        22 => wire__crate__api__osp__OspApp_paired_node_impl(ptr, rust_vec_len, data_len),
+        23 => wire__crate__api__osp__OspApp_pending_post_impl(ptr, rust_vec_len, data_len),
+        28 => wire__crate__api__osp__OspApp_recent_log_impl(ptr, rust_vec_len, data_len),
+        34 => wire__crate__api__osp__OspApp_saved_feed_impl(ptr, rust_vec_len, data_len),
+        35 => wire__crate__api__osp__OspApp_saved_universe_impl(ptr, rust_vec_len, data_len),
+        52 => wire__crate__api__osp__is_follow_ticket_impl(ptr, rust_vec_len, data_len),
+        53 => wire__crate__api__osp__is_pairing_ticket_impl(ptr, rust_vec_len, data_len),
+        54 => wire__crate__api__osp__new_device_key_impl(ptr, rust_vec_len, data_len),
         _ => unreachable!(),
     }
 }
@@ -4207,6 +4385,66 @@ impl flutter_rust_bridge::IntoIntoDart<crate::api::osp::ActivityBand>
     for crate::api::osp::ActivityBand
 {
     fn into_into_dart(self) -> crate::api::osp::ActivityBand {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::osp::ConnectedPerson {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.identity.into_into_dart().into_dart(),
+            self.name.into_into_dart().into_dart(),
+            self.regions.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::osp::ConnectedPerson
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::osp::ConnectedPerson>
+    for crate::api::osp::ConnectedPerson
+{
+    fn into_into_dart(self) -> crate::api::osp::ConnectedPerson {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::osp::Connection {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.identity.into_into_dart().into_dart(),
+            self.paths.into_into_dart().into_dart(),
+            self.people.into_into_dart().into_dart(),
+            self.side.into_into_dart().into_dart(),
+            self.vouches.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive for crate::api::osp::Connection {}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::osp::Connection>
+    for crate::api::osp::Connection
+{
+    fn into_into_dart(self) -> crate::api::osp::Connection {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::osp::ConnectionPath {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [self.hops.into_into_dart().into_dart()].into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::osp::ConnectionPath
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::osp::ConnectionPath>
+    for crate::api::osp::ConnectionPath
+{
+    fn into_into_dart(self) -> crate::api::osp::ConnectionPath {
         self
     }
 }
@@ -4282,6 +4520,25 @@ impl flutter_rust_bridge::IntoIntoDart<crate::api::osp::FoundPerson>
     for crate::api::osp::FoundPerson
 {
     fn into_into_dart(self) -> crate::api::osp::FoundPerson {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::osp::HopKind {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        match self {
+            Self::Follows => 0.into_dart(),
+            Self::Knows => 1.into_dart(),
+            Self::Reshared => 2.into_dart(),
+            Self::CreditedEarly => 3.into_dart(),
+            Self::Gap => 4.into_dart(),
+            _ => unreachable!(),
+        }
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive for crate::api::osp::HopKind {}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::osp::HopKind> for crate::api::osp::HopKind {
+    fn into_into_dart(self) -> crate::api::osp::HopKind {
         self
     }
 }
@@ -4413,6 +4670,23 @@ impl flutter_rust_bridge::IntoIntoDart<crate::api::osp::NodeStatus>
     for crate::api::osp::NodeStatus
 {
     fn into_into_dart(self) -> crate::api::osp::NodeStatus {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::osp::PathHop {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.identity.into_into_dart().into_dart(),
+            self.how.into_into_dart().into_dart(),
+            self.steps.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive for crate::api::osp::PathHop {}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::osp::PathHop> for crate::api::osp::PathHop {
+    fn into_into_dart(self) -> crate::api::osp::PathHop {
         self
     }
 }
@@ -4607,6 +4881,24 @@ impl flutter_rust_bridge::IntoDart for crate::api::osp::SentReply {
 impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive for crate::api::osp::SentReply {}
 impl flutter_rust_bridge::IntoIntoDart<crate::api::osp::SentReply> for crate::api::osp::SentReply {
     fn into_into_dart(self) -> crate::api::osp::SentReply {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::osp::SideFrom {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        match self {
+            Self::Replied => 0.into_dart(),
+            Self::Asked => 1.into_dart(),
+            Self::NoAnswer => 2.into_dart(),
+            Self::NotAsked => 3.into_dart(),
+            _ => unreachable!(),
+        }
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive for crate::api::osp::SideFrom {}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::osp::SideFrom> for crate::api::osp::SideFrom {
+    fn into_into_dart(self) -> crate::api::osp::SideFrom {
         self
     }
 }
@@ -5008,6 +5300,33 @@ impl SseEncode for bool {
     }
 }
 
+impl SseEncode for crate::api::osp::ConnectedPerson {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <String>::sse_encode(self.identity, serializer);
+        <Option<String>>::sse_encode(self.name, serializer);
+        <Vec<String>>::sse_encode(self.regions, serializer);
+    }
+}
+
+impl SseEncode for crate::api::osp::Connection {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <String>::sse_encode(self.identity, serializer);
+        <Vec<crate::api::osp::ConnectionPath>>::sse_encode(self.paths, serializer);
+        <Vec<crate::api::osp::ConnectedPerson>>::sse_encode(self.people, serializer);
+        <crate::api::osp::SideFrom>::sse_encode(self.side, serializer);
+        <u32>::sse_encode(self.vouches, serializer);
+    }
+}
+
+impl SseEncode for crate::api::osp::ConnectionPath {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <Vec<crate::api::osp::PathHop>>::sse_encode(self.hops, serializer);
+    }
+}
+
 impl SseEncode for crate::api::osp::EventKind {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
@@ -5064,6 +5383,25 @@ impl SseEncode for crate::api::osp::FoundPerson {
     }
 }
 
+impl SseEncode for crate::api::osp::HopKind {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(
+            match self {
+                crate::api::osp::HopKind::Follows => 0,
+                crate::api::osp::HopKind::Knows => 1,
+                crate::api::osp::HopKind::Reshared => 2,
+                crate::api::osp::HopKind::CreditedEarly => 3,
+                crate::api::osp::HopKind::Gap => 4,
+                _ => {
+                    unimplemented!("");
+                }
+            },
+            serializer,
+        );
+    }
+}
+
 impl SseEncode for i32 {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
@@ -5104,6 +5442,26 @@ impl SseEncode for Vec<String> {
     }
 }
 
+impl SseEncode for Vec<crate::api::osp::ConnectedPerson> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(self.len() as _, serializer);
+        for item in self {
+            <crate::api::osp::ConnectedPerson>::sse_encode(item, serializer);
+        }
+    }
+}
+
+impl SseEncode for Vec<crate::api::osp::ConnectionPath> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(self.len() as _, serializer);
+        for item in self {
+            <crate::api::osp::ConnectionPath>::sse_encode(item, serializer);
+        }
+    }
+}
+
 impl SseEncode for Vec<crate::api::osp::Followed> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
@@ -5130,6 +5488,16 @@ impl SseEncode for Vec<crate::api::osp::Media> {
         <i32>::sse_encode(self.len() as _, serializer);
         for item in self {
             <crate::api::osp::Media>::sse_encode(item, serializer);
+        }
+    }
+}
+
+impl SseEncode for Vec<crate::api::osp::PathHop> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(self.len() as _, serializer);
+        for item in self {
+            <crate::api::osp::PathHop>::sse_encode(item, serializer);
         }
     }
 }
@@ -5448,6 +5816,15 @@ impl SseEncode for Option<crate::api::osp::UnsentPost> {
     }
 }
 
+impl SseEncode for crate::api::osp::PathHop {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <String>::sse_encode(self.identity, serializer);
+        <crate::api::osp::HopKind>::sse_encode(self.how, serializer);
+        <u8>::sse_encode(self.steps, serializer);
+    }
+}
+
 impl SseEncode for crate::api::osp::Post {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
@@ -5566,6 +5943,24 @@ impl SseEncode for crate::api::osp::SentReply {
         <String>::sse_encode(self.status, serializer);
         <Option<String>>::sse_encode(self.error, serializer);
         <Option<i64>>::sse_encode(self.next_try_secs, serializer);
+    }
+}
+
+impl SseEncode for crate::api::osp::SideFrom {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(
+            match self {
+                crate::api::osp::SideFrom::Replied => 0,
+                crate::api::osp::SideFrom::Asked => 1,
+                crate::api::osp::SideFrom::NoAnswer => 2,
+                crate::api::osp::SideFrom::NotAsked => 3,
+                _ => {
+                    unimplemented!("");
+                }
+            },
+            serializer,
+        );
     }
 }
 

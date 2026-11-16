@@ -54,6 +54,12 @@ class _AppShellState extends State<AppShell> {
         },
       );
     }
+    // A screen asked for the map, as asking how you're connected does.
+    if (node.takeMapWanted() && _place != Place.universe) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _go(Place.universe);
+      });
+    }
     final online = node.reachability == Reachability.online;
     final waiting =
         (node.status?.trustRequests ?? 0) + (node.status?.replyRequests ?? 0);

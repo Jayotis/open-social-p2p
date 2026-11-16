@@ -14,6 +14,7 @@ use flutter_rust_bridge::frb;
 use osp_client::{
     device_key_from_hex,
     osp_proto::{
+        connected,
         rpc::{
             ClientRequest, ClientResponse, FeedItem, ProfileInfo, ProfileItemKind, Reached,
             ReplierChoice, ReplyAnswer, ReplyInfo, ReplyStatus, SentReplyInfo, SentStatus,
@@ -345,6 +346,68 @@ pub struct UniverseEvent {
     pub met: bool,
 }
 
+/// "How are we connected?" (ADR 0037): the paths the node knows from its
+/// owner to `identity`, nearest first. None means the node hasn't found a
+/// connection, not that there is none.
+pub struct Connection {
+    pub identity: String,
+    pub paths: Vec<ConnectionPath>,
+    /// Everyone a path names, `identity` first.
+    pub people: Vec<ConnectedPerson>,
+    pub side: SideFrom,
+    /// `asked`: how many people their node named who vouched for them.
+    pub vouches: u32,
+}
+
+/// One path, nearest hop first: the first from the owner.
+pub struct ConnectionPath {
+    pub hops: Vec<PathHop>,
+}
+
+/// One hop, from whoever the hop before reached, to `identity`.
+pub struct PathHop {
+    pub identity: String,
+    pub how: HopKind,
+    /// `gap`: how many steps it covers; 1 for the rest.
+    pub steps: u8,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum HopKind {
+    /// Known: the owner follows them.
+    Follows,
+    /// Known: the owner knows them.
+    Knows,
+    /// Signed: the one before reshared them.
+    Reshared,
+    /// Signed: the one before credited them with finding a post early.
+    CreditedEarly,
+    /// A gap: the node of the one before placed them within `steps` of its
+    /// owner. Nobody inside is named.
+    Gap,
+}
+
+pub struct ConnectedPerson {
+    pub identity: String,
+    pub name: Option<String>,
+    /// Where they are on the map, as search gives it; none if the node
+    /// doesn't hold them.
+    pub regions: Vec<String>,
+}
+
+/// Where the paths through someone's side came from.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum SideFrom {
+    /// From when they replied to the owner.
+    Replied,
+    /// Their node was asked who vouched for them.
+    Asked,
+    /// Their node was asked and didn't answer.
+    NoAnswer,
+    /// Their node wasn't asked.
+    NotAsked,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum EventKind {
     Found,
@@ -662,6 +725,40 @@ impl OspApp {
     pub async fn universe_events(&self, since: Option<u64>) -> Result<Vec<UniverseEvent>> {
         let events = self.client.universe_events(since).await?;
         Ok(events.into_iter().map(universe_event).collect())
+    }
+
+    /// "How are we connected?" (ADR 0037), for the owner's own tap only:
+    /// the node may ask `identity`'s node once who vouched for them, from a
+    /// throwaway key, and can take most of a minute.
+    pub async fn how_connected(&self, identity: String) -> Result<Connection> {
+        let c = self.client.how_connected(identity.parse()?).await?;
+        let (side, vouches) = match c.side {
+            connected::SideFrom::Replied => (SideFrom::Replied, 0),
+            connected::SideFrom::Asked { vouches } => (SideFrom::Asked, vouches),
+            connected::SideFrom::NoAnswer => (SideFrom::NoAnswer, 0),
+            connected::SideFrom::NotAsked => (SideFrom::NotAsked, 0),
+        };
+        Ok(Connection {
+            identity: c.actor.to_string(),
+            paths: c
+                .paths
+                .into_iter()
+                .map(|p| ConnectionPath {
+                    hops: p.hops.into_iter().map(path_hop).collect(),
+                })
+                .collect(),
+            people: c
+                .people
+                .into_iter()
+                .map(|p| ConnectedPerson {
+                    identity: p.actor.to_string(),
+                    name: p.name,
+                    regions: p.regions,
+                })
+                .collect(),
+            side,
+            vouches,
+        })
     }
 
     /// The last top snapshot fetched, to show before the node answers.
@@ -1414,6 +1511,22 @@ fn universe(s: universe::Snapshot) -> UniverseSnapshot {
                 at_y: c.at[1],
             })
             .collect(),
+    }
+}
+
+fn path_hop(h: connected::Hop) -> PathHop {
+    use connected::How;
+    let (how, steps) = match h.how {
+        How::Follows => (HopKind::Follows, 1),
+        How::Knows => (HopKind::Knows, 1),
+        How::Reshared => (HopKind::Reshared, 1),
+        How::CreditedEarly => (HopKind::CreditedEarly, 1),
+        How::Gap { steps } => (HopKind::Gap, steps),
+    };
+    PathHop {
+        identity: h.to.to_string(),
+        how,
+        steps,
     }
 }
 

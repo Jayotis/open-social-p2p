@@ -274,6 +274,15 @@ class _ProfileScreenState extends State<ProfileScreen> {
             ),
           const SizedBox(height: Space.s),
           _actions(profile),
+          if (!profile.own)
+            Align(
+              alignment: Alignment.centerLeft,
+              child: TextButton.icon(
+                onPressed: () => _howConnected(profile),
+                icon: const Icon(Icons.route),
+                label: const Text('How are we connected?'),
+              ),
+            ),
           if (!profile.own && !profile.followed)
             Padding(
               padding: const EdgeInsets.only(top: Space.s),
@@ -291,6 +300,14 @@ class _ProfileScreenState extends State<ProfileScreen> {
         ],
       ),
     );
+  }
+
+  /// Asks how the owner is connected to them (ADR 0037), and shows the
+  /// paths on the map. Only this tap asks; opening the profile never does.
+  void _howConnected(Profile profile) {
+    _node.mapWanted = true;
+    _node.askConnection(widget.identity, profile.name);
+    Navigator.of(context).popUntil((route) => route.isFirst);
   }
 
   Widget _actions(Profile profile) {

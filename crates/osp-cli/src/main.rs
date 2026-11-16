@@ -1471,8 +1471,8 @@ fn path_words(path: &connected::Path, name: &dyn Fn(&PublicKey) -> String) -> St
             How::Knows => format!("You know {to}."),
             How::Reshared => format!("{by} reshared {to}."),
             How::CreditedEarly => format!("{by} credited {to} with finding their post early."),
-            How::Gap { steps: 1 } => format!("{by}'s node places {to} 1 step from {by}."),
-            How::Gap { steps } => format!("{by}'s node places {to} within {steps} steps of {by}."),
+            How::Gap { steps: 1 } => format!("{by}'s node says {to} is 1 step from {by}."),
+            How::Gap { steps } => format!("{by}'s node says {to} is within {steps} steps of {by}."),
         });
         at = Some(hop.to);
     }
@@ -2574,7 +2574,7 @@ mod tests {
         };
         assert_eq!(
             path_words(&gap, &name),
-            "You know Dana. Dana's node places Carol within 2 steps of Dana. Carol reshared Jimmy."
+            "You know Dana. Dana's node says Carol is within 2 steps of Dana. Carol reshared Jimmy."
         );
     }
 
