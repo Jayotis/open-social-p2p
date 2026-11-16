@@ -16,9 +16,9 @@ use osp_client::{
     osp_proto::{
         connected,
         rpc::{
-            ClientRequest, ClientResponse, FeedItem, ProfileInfo, ProfileItemKind, Reached,
-            ReplierChoice, ReplyAnswer, ReplyInfo, ReplyStatus, SentReplyInfo, SentStatus,
-            TrustInfo,
+            ActivityEntry, ActivityPerson, ActivityWhat, ClientRequest, ClientResponse, FeedItem,
+            LikeInfo, ProfileInfo, ProfileItemKind, Reached, ReplierChoice, ReplyAnswer, ReplyInfo,
+            ReplyStatus, SentReplyInfo, SentStatus, TrustInfo,
         },
         social::ReplyPolicy,
         universe, BlobHash, MediaKind, ObjectId, ProfileLink,
@@ -75,6 +75,8 @@ pub struct NodeStatus {
     pub trust_requests: u32,
     /// Replies to the owner's posts waiting for an answer (ADR 0028).
     pub reply_requests: u32,
+    /// Activity entries the owner hasn't read (ADR 0038).
+    pub activity_unread: u32,
     /// Messages between nodes go through Tor, so they take seconds, and a
     /// first contact up to a few minutes.
     pub over_tor: bool,
@@ -175,8 +177,70 @@ pub struct Post {
     /// For one of the owner's own posts, how many people's nodes said they
     /// reshared it (ADR 0029). `None` for anyone else's.
     pub resharers: Option<u32>,
+    /// For one of the owner's own posts, how many people like it (ADR
+    /// 0038). `None` for anyone else's.
+    pub likes: Option<u32>,
+    /// Whether the owner likes it.
+    pub liked: bool,
     /// Search only: where its author is on the map, as for a person.
     pub regions: Vec<String>,
+}
+
+/// Someone who likes one of the owner's posts (ADR 0038).
+pub struct Liker {
+    pub identity: String,
+    /// From the profile that came with the like. Not checked.
+    pub name: String,
+    /// When they liked it (RFC 3339).
+    pub published: String,
+}
+
+/// Someone named in an Activity entry.
+pub struct ActivityName {
+    pub identity: String,
+    /// Their name as they gave it; may be empty.
+    pub name: String,
+}
+
+/// One entry in the owner's Activity (ADR 0038 §3). The app says it in
+/// words; each opens what it's about.
+pub struct ActivityItem {
+    /// For `activity_read`.
+    pub key: String,
+    /// Its place: higher for a later change.
+    pub seq: i64,
+    /// When it last changed, in Unix milliseconds.
+    pub at_ms: i64,
+    pub read: bool,
+    /// `reply`, `liked`, `reshared`, `followed`, `knows_you` or
+    /// `reply_published`.
+    pub kind: String,
+    /// The post it's about, for all but `followed` and `knows_you`.
+    pub post: Option<String>,
+    /// The start of the owner's post's text (`reply`, `liked`, `reshared`).
+    pub post_text: String,
+    /// The reply, for `reply` and `reply_published`.
+    pub reply: Option<String>,
+    /// Who: the replier, the latest likers or resharers, the follower if
+    /// their node is known for sure (else none), the person who says they
+    /// know the owner, or the creator whose thread has the owner's reply.
+    pub people: Vec<ActivityName>,
+    /// How many like or reshared it; 1 for the rest.
+    pub count: u32,
+    /// The reply's text, or the note sent with "says they know you".
+    pub text: String,
+    /// A reply waiting for the owner to let it in.
+    pub waiting: bool,
+    /// The node, for `followed` and `knows_you`.
+    pub node: Option<String>,
+}
+
+/// A page of Activity, and how many entries are unread in all.
+pub struct ActivityPage {
+    pub entries: Vec<ActivityItem>,
+    pub unread: u32,
+    /// Another page follows: ask before the last entry's `seq`.
+    pub more: bool,
 }
 
 /// A reply to a post (ADR 0028).
@@ -206,6 +270,10 @@ pub struct Thread {
     pub replies: Vec<Reply>,
     /// Another page follows: ask after the last reply's `seq`.
     pub more: bool,
+    /// How many people like the post, as its creator's node says (ADR 0038).
+    pub likes: u32,
+    /// Whether the owner likes it, as their node has it.
+    pub liked: bool,
 }
 
 /// One of the owner's replies to someone else's post, and where it stands.
@@ -652,6 +720,7 @@ impl OspApp {
             rtt_ms: conn.and_then(|c| c.rtt_ms).map(|r| r as u32),
             trust_requests: s.trust_requests as u32,
             reply_requests: s.reply_requests as u32,
+            activity_unread: s.activity_unread.min(u32::MAX as u64) as u32,
             over_tor: s.tor.is_some(),
             tor_starting: s.tor.as_ref().is_some_and(|t| !t.dialled),
             hosted_posts: s.shared.posts as u32,
@@ -1003,7 +1072,8 @@ impl OspApp {
             policy,
             replies,
             more,
-            ..
+            likes,
+            liked,
         } = self
             .client
             .request(&ClientRequest::Thread {
@@ -1018,7 +1088,78 @@ impl OspApp {
             policy: policy.as_str().to_string(),
             replies: replies.into_iter().map(reply_info).collect(),
             more,
+            likes: likes.min(u32::MAX as u64) as u32,
+            liked,
         })
+    }
+
+    /// One post, or the post a reshare shares, as the node has it.
+    pub async fn show_post(&self, id: String) -> Result<Post> {
+        let id = id.parse()?;
+        let ClientResponse::Item { item } =
+            self.client.request(&ClientRequest::Show { id }).await?
+        else {
+            bail!("unexpected reply to Show");
+        };
+        Ok(post(item))
+    }
+
+    /// Likes someone's post, or with `liked` false takes the like back
+    /// (ADR 0038). The node keeps trying their node for 7 days; this returns
+    /// once it's kept. A reshare's ID likes the post it shares.
+    pub async fn like(&self, post_id: String, liked: bool) -> Result<()> {
+        let post = post_id.parse()?;
+        self.client
+            .request(&ClientRequest::Like { post, liked })
+            .await?;
+        Ok(())
+    }
+
+    /// Who likes one of the owner's posts, newest first.
+    pub async fn likes(&self, post_id: String) -> Result<Vec<Liker>> {
+        let post = post_id.parse()?;
+        let ClientResponse::Likes { likes } =
+            self.client.request(&ClientRequest::Likes { post }).await?
+        else {
+            bail!("unexpected reply to Likes");
+        };
+        Ok(likes.into_iter().map(liker).collect())
+    }
+
+    /// A page of the owner's Activity, the latest change first: before the
+    /// entry `before` (its `seq`), or from the top.
+    pub async fn activity(&self, before: Option<i64>, limit: u32) -> Result<ActivityPage> {
+        let ClientResponse::Activity {
+            entries,
+            unread,
+            more,
+        } = self
+            .client
+            .request(&ClientRequest::Activity {
+                before: before.map(|b| b.max(0) as u64),
+                limit: Some(limit),
+            })
+            .await?
+        else {
+            bail!("unexpected reply to Activity");
+        };
+        Ok(ActivityPage {
+            entries: entries.into_iter().map(activity_item).collect(),
+            unread: unread.min(u32::MAX as u64) as u32,
+            more,
+        })
+    }
+
+    /// Marks Activity entries read on the node, so every device agrees: those
+    /// named, and every one up to `through` (a `seq`).
+    pub async fn activity_read(&self, keys: Vec<String>, through: Option<i64>) -> Result<()> {
+        self.client
+            .request(&ClientRequest::ActivityRead {
+                keys,
+                through: through.map(|t| t.max(0) as u64),
+            })
+            .await?;
+        Ok(())
     }
 
     /// The owner's replies to others' posts, newest first.
@@ -1346,6 +1487,108 @@ fn sent_reply(r: SentReplyInfo) -> SentReply {
     }
 }
 
+fn liker(l: LikeInfo) -> Liker {
+    Liker {
+        identity: l.actor.to_string(),
+        name: l.name,
+        published: l.published,
+    }
+}
+
+fn activity_item(e: ActivityEntry) -> ActivityItem {
+    let named = |p: ActivityPerson| ActivityName {
+        identity: p.actor.to_string(),
+        name: p.name,
+    };
+    let count = |n: u64| n.min(u32::MAX as u64) as u32;
+    let mut item = ActivityItem {
+        key: e.key,
+        seq: e.seq.min(i64::MAX as u64) as i64,
+        at_ms: e.at_ms,
+        read: e.read,
+        kind: String::new(),
+        post: None,
+        post_text: String::new(),
+        reply: None,
+        people: Vec::new(),
+        count: 1,
+        text: String::new(),
+        waiting: false,
+        node: None,
+    };
+    match e.what {
+        ActivityWhat::Reply {
+            post,
+            post_text,
+            reply,
+            actor,
+            name,
+            content,
+            waiting,
+        } => {
+            item.kind = "reply".into();
+            item.post = Some(post.to_string());
+            item.post_text = post_text;
+            item.reply = Some(reply.to_string());
+            item.people = vec![named(ActivityPerson { actor, name })];
+            item.text = content;
+            item.waiting = waiting;
+        }
+        ActivityWhat::Liked {
+            post,
+            post_text,
+            people,
+            count: n,
+        } => {
+            item.kind = "liked".into();
+            item.post = Some(post.to_string());
+            item.post_text = post_text;
+            item.people = people.into_iter().map(named).collect();
+            item.count = count(n);
+        }
+        ActivityWhat::Reshared {
+            post,
+            post_text,
+            people,
+            count: n,
+        } => {
+            item.kind = "reshared".into();
+            item.post = Some(post.to_string());
+            item.post_text = post_text;
+            item.people = people.into_iter().map(named).collect();
+            item.count = count(n);
+        }
+        ActivityWhat::Followed { node, person } => {
+            item.kind = "followed".into();
+            item.node = Some(node.to_string());
+            item.people = person.into_iter().map(named).collect();
+        }
+        ActivityWhat::KnowsYou { node, person, note } => {
+            item.kind = "knows_you".into();
+            item.node = Some(node.to_string());
+            item.people = vec![named(person)];
+            item.text = note;
+        }
+        ActivityWhat::ReplyPublished {
+            post,
+            reply,
+            creator,
+            creator_name,
+            content,
+        } => {
+            item.kind = "reply_published".into();
+            item.post = Some(post.to_string());
+            item.reply = Some(reply.to_string());
+            item.people = vec![ActivityName {
+                identity: creator.to_string(),
+                name: creator_name.unwrap_or_default(),
+            }];
+            item.text = content;
+        }
+    }
+    item
+}
+
 fn node_info(p: Pairing) -> NodeInfo {
     NodeInfo {
         name: p.name,
@@ -1391,6 +1634,8 @@ fn post(item: FeedItem) -> Post {
         found_through: item.found_through,
         deletable: item.deletable.map(|id| id.to_string()),
         resharers: item.resharers,
+        likes: item.likes.map(|n| n.min(u32::MAX as u64) as u32),
+        liked: item.liked,
         regions: item.regions,
     }
 }

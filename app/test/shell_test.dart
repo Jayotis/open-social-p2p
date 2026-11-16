@@ -139,6 +139,27 @@ class FakeApp implements OspApp {
   Future<void> followPerson({required String identity}) async =>
       followed.add(identity);
 
+  /// The node's Activity, and each `through` it was marked read with.
+  List<ActivityItem> activityEntries = [];
+  final readThrough = <int?>[];
+
+  @override
+  Future<ActivityPage> activity({int? before, required int limit}) async =>
+      ActivityPage(
+        entries: activityEntries,
+        unread: activityEntries.where((e) => !e.read).length,
+        more: false,
+      );
+
+  @override
+  Future<void> activityRead({required List<String> keys, int? through}) async {
+    readThrough.add(through);
+    activityEntries = [
+      for (final e in activityEntries)
+        e.seq <= (through ?? -1) ? entry(e, read: true) : e,
+    ];
+  }
+
   @override
   String deviceId() => 'device-0123456789';
 
@@ -150,9 +171,50 @@ class FakeApp implements OspApp {
       throw UnimplementedError('${invocation.memberName}');
 }
 
+/// An Activity entry of [kind] about [names], with [seq].
+ActivityItem activityItem(
+  String kind,
+  List<String> names, {
+  int seq = 1,
+  int count = 1,
+  bool read = false,
+  bool waiting = false,
+  String text = '',
+}) => ActivityItem(
+  key: '$kind:$seq',
+  seq: seq,
+  atMs: DateTime.now().millisecondsSinceEpoch,
+  read: read,
+  kind: kind,
+  post: 'post-$seq',
+  postText: 'A walk by the river',
+  people: [for (final n in names) ActivityName(identity: 'id-$n', name: n)],
+  count: count,
+  text: text,
+  waiting: waiting,
+  node: 'node-$seq',
+);
+
+ActivityItem entry(ActivityItem e, {required bool read}) => ActivityItem(
+  key: e.key,
+  seq: e.seq,
+  atMs: e.atMs,
+  read: read,
+  kind: e.kind,
+  post: e.post,
+  postText: e.postText,
+  reply: e.reply,
+  people: e.people,
+  count: e.count,
+  text: e.text,
+  waiting: e.waiting,
+  node: e.node,
+);
+
 NodeStatus nodeStatus({
   int trustRequests = 0,
   int replyRequests = 0,
+  int activityUnread = 0,
   int hostedPosts = 0,
   int servedLatelyBytes = 0,
   bool torStarting = false,
@@ -169,6 +231,7 @@ NodeStatus nodeStatus({
   rttMs: 80,
   trustRequests: trustRequests,
   replyRequests: replyRequests,
+  activityUnread: activityUnread,
   overTor: false,
   torStarting: torStarting,
   hostedPosts: hostedPosts,
@@ -388,18 +451,40 @@ void main() {
   testWidgets('the Activity bell counts what waits, and opens it', (
     tester,
   ) async {
-    node.status = nodeStatus(trustRequests: 1, replyRequests: 2);
+    app.activityEntries = [
+      activityItem('knows_you', ['Jimmy'], seq: 3, text: 'from the gym'),
+      activityItem('liked', ['Alice', 'Jimmy'], seq: 2, count: 5),
+      activityItem('followed', [], seq: 1, read: true),
+    ];
+    node.status = nodeStatus(trustRequests: 1, activityUnread: 2);
     app.status_ = node.status!;
     await start(tester, Place.home);
-    expect(find.text('3'), findsOne);
+    expect(find.text('2'), findsOne);
+
+    // Read on one phone, it's read for every phone: the node keeps it.
+    app.status_ = nodeStatus(trustRequests: 1);
     await tester.tap(find.byTooltip('Activity'));
     await tester.pumpAndSettle();
-    expect(find.text('Replies waiting for you'), findsOne);
     expect(find.text('People who say they know you'), findsOne);
-    await tester.tap(find.text('People who say they know you'));
+    expect(find.text('Jimmy says they know you'), findsOne);
+    expect(find.textContaining('from the gym'), findsOne);
+    expect(
+      find.text(
+        'Alice, Jimmy and 3 others liked your post “A walk by the river”',
+      ),
+      findsOne,
+    );
+    expect(find.text('Someone new follows you'), findsOne);
+    expect(app.readThrough, [3]);
+    expect(app.activityEntries.every((e) => e.read), isTrue);
+    expectPlainWords(tester);
+
+    await tester.tap(find.text('Jimmy says they know you'));
     await tester.pumpAndSettle();
     expect(find.byType(TrustScreen), findsOneWidget);
-    expectPlainWords(tester);
+    await tester.pageBack();
+    await tester.pumpAndSettle();
+    expect(find.text('2'), findsNothing);
   });
 
   testWidgets('You leads to invites and people you know', (tester) async {
@@ -1189,6 +1274,7 @@ void main() {
           text: 'Cello at noon',
           media: [],
           resharerHosts: false,
+          liked: false,
         ),
       ],
     );

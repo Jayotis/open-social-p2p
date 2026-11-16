@@ -7,6 +7,7 @@ import '../screens/player_screen.dart';
 import '../screens/profile_screen.dart';
 import '../screens/thread_screen.dart';
 import '../src/rust/api/osp.dart';
+import 'like_button.dart';
 
 /// One post in the feed: author, text, photos and videos, and reshare.
 class PostCard extends StatelessWidget {
@@ -188,6 +189,7 @@ class PostCard extends StatelessWidget {
           Wrap(
             alignment: WrapAlignment.end,
             children: [
+              LikeButton(node: node, post: post),
               if (post.deletable != null)
                 TextButton.icon(
                   onPressed: node.reachability == Reachability.online

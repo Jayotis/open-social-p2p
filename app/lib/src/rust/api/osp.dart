@@ -6,7 +6,7 @@
 import '../frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `found_person`, `node_info`, `path_hop`, `post`, `profile_of`, `progress`, `reply_info`, `report_to`, `run_post`, `sent_reply`, `trust_entry`, `universe_event`, `universe`
+// These functions are ignored because they are not marked as `pub`: `activity_item`, `found_person`, `liker`, `node_info`, `path_hop`, `post`, `profile_of`, `progress`, `reply_info`, `report_to`, `run_post`, `sent_reply`, `trust_entry`, `universe_event`, `universe`
 // These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`
 
 /// A new device key, as 64 hex digits, for the app to keep in the phone's
@@ -23,6 +23,17 @@ bool isFollowTicket({required String text}) =>
 
 // Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<OspApp>>
 abstract class OspApp implements RustOpaqueInterface {
+  /// A page of the owner's Activity, the latest change first: before the
+  /// entry `before` (its `seq`), or from the top.
+  Future<ActivityPage> activity({PlatformInt64? before, required int limit});
+
+  /// Marks Activity entries read on the node, so every device agrees: those
+  /// named, and every one up to `through` (a `seq`).
+  Future<void> activityRead({
+    required List<String> keys,
+    PlatformInt64? through,
+  });
+
   /// Answers a waiting reply: `publish`, `publish_and_allow`, `decline` or
   /// `block`. The replier isn't told which.
   Future<void> answerReply({required String reply, required String answer});
@@ -78,6 +89,14 @@ abstract class OspApp implements RustOpaqueInterface {
 
   /// The node owner's follow ticket, to show as a QR code.
   Future<String> invite();
+
+  /// Likes someone's post, or with `liked` false takes the like back
+  /// (ADR 0038). The node keeps trying their node for 7 days; this returns
+  /// once it's kept. A reshare's ID likes the post it shares.
+  Future<void> like({required String postId, required bool liked});
+
+  /// Who likes one of the owner's posts, newest first.
+  Future<List<Liker>> likes({required String postId});
 
   /// The app's log file, to share.
   String logFile();
@@ -186,6 +205,9 @@ abstract class OspApp implements RustOpaqueInterface {
   /// `network`.
   Future<void> setReplyPolicy({required String postId, required String policy});
 
+  /// One post, or the post a reshare shares, as the node has it.
+  Future<Post> showPost({required String id});
+
   Future<NodeStatus> status();
 
   /// Asks the node to sync everyone it follows now. Returns how many new
@@ -236,6 +258,149 @@ abstract class OspApp implements RustOpaqueInterface {
 
 /// Recent machine-protocol interaction with the node, in bands.
 enum ActivityBand { none, some, aLot }
+
+/// One entry in the owner's Activity (ADR 0038 §3). The app says it in
+/// words; each opens what it's about.
+class ActivityItem {
+  /// For `activity_read`.
+  final String key;
+
+  /// Its place: higher for a later change.
+  final PlatformInt64 seq;
+
+  /// When it last changed, in Unix milliseconds.
+  final PlatformInt64 atMs;
+  final bool read;
+
+  /// `reply`, `liked`, `reshared`, `followed`, `knows_you` or
+  /// `reply_published`.
+  final String kind;
+
+  /// The post it's about, for all but `followed` and `knows_you`.
+  final String? post;
+
+  /// The start of the owner's post's text (`reply`, `liked`, `reshared`).
+  final String postText;
+
+  /// The reply, for `reply` and `reply_published`.
+  final String? reply;
+
+  /// Who: the replier, the latest likers or resharers, the follower if
+  /// their node is known for sure (else none), the person who says they
+  /// know the owner, or the creator whose thread has the owner's reply.
+  final List<ActivityName> people;
+
+  /// How many like or reshared it; 1 for the rest.
+  final int count;
+
+  /// The reply's text, or the note sent with "says they know you".
+  final String text;
+
+  /// A reply waiting for the owner to let it in.
+  final bool waiting;
+
+  /// The node, for `followed` and `knows_you`.
+  final String? node;
+
+  const ActivityItem({
+    required this.key,
+    required this.seq,
+    required this.atMs,
+    required this.read,
+    required this.kind,
+    this.post,
+    required this.postText,
+    this.reply,
+    required this.people,
+    required this.count,
+    required this.text,
+    required this.waiting,
+    this.node,
+  });
+
+  @override
+  int get hashCode =>
+      key.hashCode ^
+      seq.hashCode ^
+      atMs.hashCode ^
+      read.hashCode ^
+      kind.hashCode ^
+      post.hashCode ^
+      postText.hashCode ^
+      reply.hashCode ^
+      people.hashCode ^
+      count.hashCode ^
+      text.hashCode ^
+      waiting.hashCode ^
+      node.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is ActivityItem &&
+          runtimeType == other.runtimeType &&
+          key == other.key &&
+          seq == other.seq &&
+          atMs == other.atMs &&
+          read == other.read &&
+          kind == other.kind &&
+          post == other.post &&
+          postText == other.postText &&
+          reply == other.reply &&
+          people == other.people &&
+          count == other.count &&
+          text == other.text &&
+          waiting == other.waiting &&
+          node == other.node;
+}
+
+/// Someone named in an Activity entry.
+class ActivityName {
+  final String identity;
+
+  /// Their name as they gave it; may be empty.
+  final String name;
+
+  const ActivityName({required this.identity, required this.name});
+
+  @override
+  int get hashCode => identity.hashCode ^ name.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is ActivityName &&
+          runtimeType == other.runtimeType &&
+          identity == other.identity &&
+          name == other.name;
+}
+
+/// A page of Activity, and how many entries are unread in all.
+class ActivityPage {
+  final List<ActivityItem> entries;
+  final int unread;
+
+  /// Another page follows: ask before the last entry's `seq`.
+  final bool more;
+
+  const ActivityPage({
+    required this.entries,
+    required this.unread,
+    required this.more,
+  });
+
+  @override
+  int get hashCode => entries.hashCode ^ unread.hashCode ^ more.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is ActivityPage &&
+          runtimeType == other.runtimeType &&
+          entries == other.entries &&
+          unread == other.unread &&
+          more == other.more;
+}
 
 class ConnectedPerson {
   final String identity;
@@ -443,6 +608,35 @@ enum HopKind {
   gap,
 }
 
+/// Someone who likes one of the owner's posts (ADR 0038).
+class Liker {
+  final String identity;
+
+  /// From the profile that came with the like. Not checked.
+  final String name;
+
+  /// When they liked it (RFC 3339).
+  final String published;
+
+  const Liker({
+    required this.identity,
+    required this.name,
+    required this.published,
+  });
+
+  @override
+  int get hashCode => identity.hashCode ^ name.hashCode ^ published.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is Liker &&
+          runtimeType == other.runtimeType &&
+          identity == other.identity &&
+          name == other.name &&
+          published == other.published;
+}
+
 enum LineKind {
   /// `from` reshared one of `to`'s posts.
   reshared,
@@ -584,6 +778,9 @@ class NodeStatus {
   /// Replies to the owner's posts waiting for an answer (ADR 0028).
   final int replyRequests;
 
+  /// Activity entries the owner hasn't read (ADR 0038).
+  final int activityUnread;
+
   /// Messages between nodes go through Tor, so they take seconds, and a
   /// first contact up to a few minutes.
   final bool overTor;
@@ -615,6 +812,7 @@ class NodeStatus {
     this.rttMs,
     required this.trustRequests,
     required this.replyRequests,
+    required this.activityUnread,
     required this.overTor,
     required this.torStarting,
     required this.hostedPosts,
@@ -637,6 +835,7 @@ class NodeStatus {
       rttMs.hashCode ^
       trustRequests.hashCode ^
       replyRequests.hashCode ^
+      activityUnread.hashCode ^
       overTor.hashCode ^
       torStarting.hashCode ^
       hostedPosts.hashCode ^
@@ -661,6 +860,7 @@ class NodeStatus {
           rttMs == other.rttMs &&
           trustRequests == other.trustRequests &&
           replyRequests == other.replyRequests &&
+          activityUnread == other.activityUnread &&
           overTor == other.overTor &&
           torStarting == other.torStarting &&
           hostedPosts == other.hostedPosts &&
@@ -725,6 +925,13 @@ class Post {
   /// reshared it (ADR 0029). `None` for anyone else's.
   final int? resharers;
 
+  /// For one of the owner's own posts, how many people like it (ADR
+  /// 0038). `None` for anyone else's.
+  final int? likes;
+
+  /// Whether the owner likes it.
+  final bool liked;
+
   /// Search only: where its author is on the map, as for a person.
   final List<String> regions;
 
@@ -740,6 +947,8 @@ class Post {
     this.foundThrough,
     this.deletable,
     this.resharers,
+    this.likes,
+    required this.liked,
     required this.regions,
   });
 
@@ -756,6 +965,8 @@ class Post {
       foundThrough.hashCode ^
       deletable.hashCode ^
       resharers.hashCode ^
+      likes.hashCode ^
+      liked.hashCode ^
       regions.hashCode;
 
   @override
@@ -774,6 +985,8 @@ class Post {
           foundThrough == other.foundThrough &&
           deletable == other.deletable &&
           resharers == other.resharers &&
+          likes == other.likes &&
+          liked == other.liked &&
           regions == other.regions;
 }
 
@@ -1188,14 +1401,27 @@ class Thread {
   /// Another page follows: ask after the last reply's `seq`.
   final bool more;
 
+  /// How many people like the post, as its creator's node says (ADR 0038).
+  final int likes;
+
+  /// Whether the owner likes it, as their node has it.
+  final bool liked;
+
   const Thread({
     required this.policy,
     required this.replies,
     required this.more,
+    required this.likes,
+    required this.liked,
   });
 
   @override
-  int get hashCode => policy.hashCode ^ replies.hashCode ^ more.hashCode;
+  int get hashCode =>
+      policy.hashCode ^
+      replies.hashCode ^
+      more.hashCode ^
+      likes.hashCode ^
+      liked.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -1204,7 +1430,9 @@ class Thread {
           runtimeType == other.runtimeType &&
           policy == other.policy &&
           replies == other.replies &&
-          more == other.more;
+          more == other.more &&
+          likes == other.likes &&
+          liked == other.liked;
 }
 
 /// A request to be a trusted follower, or someone trusted (ADR 0013).

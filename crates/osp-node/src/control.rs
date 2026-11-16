@@ -484,6 +484,7 @@ impl Core {
             upload_measured_mbps,
             trust_requests: self.db.trust_request_count(now_ms())?,
             reply_requests: self.db.reply_request_count(now_ms())?,
+            activity_unread: self.unread_activity()?,
             tor: self.tor.as_ref().map(|tor| tor.status()),
             endpoints: self.endpoints.as_ref().map(|own| Box::new(own.status())),
             machine: self.machine.is_some(),
@@ -1041,6 +1042,11 @@ impl Core {
             true => Some(self.db.vouches_for(VouchKind::Reshare, &id)? as u32),
             false => None,
         };
+        let likes = match note.actor == me {
+            true => Some(self.db.like_count(&id)?),
+            false => None,
+        };
+        let liked = self.db.sent_like(&id)?.is_some_and(|l| l.liked);
         Ok(Some(FeedItem {
             id,
             actor: note.actor,
@@ -1053,6 +1059,8 @@ impl Core {
             deletable,
             found_reshares: Vec::new(),
             resharers,
+            likes,
+            liked,
             regions: Vec::new(),
         }))
     }

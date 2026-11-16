@@ -5,6 +5,8 @@ import 'package:flutter/material.dart';
 import '../format.dart';
 import '../node.dart';
 import '../src/rust/api/osp.dart';
+import '../widgets/like_button.dart';
+import 'likers_screen.dart';
 import 'trust_screen.dart' show shownName;
 
 /// The most a reply may be (ADR 0028), in bytes of UTF-8.
@@ -32,6 +34,8 @@ class _ThreadScreenState extends State<ThreadScreen> {
   List<Reply> _replies = [];
   List<SentReply> _sent = [];
   bool _more = false;
+  int _likes = 0;
+  bool? _liked;
   bool _loading = true;
   bool _busy = false;
   String? _error;
@@ -85,6 +89,8 @@ class _ThreadScreenState extends State<ThreadScreen> {
         _policy = _own ? thread.policy : null;
         _replies = thread.replies;
         _more = thread.more;
+        _likes = thread.likes;
+        _liked = thread.liked;
         _sent = sent;
         _error = null;
       });
@@ -229,6 +235,20 @@ class _ThreadScreenState extends State<ThreadScreen> {
                 padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
                 children: [
                   _PostSummary(post: widget.post),
+                  _LikesRow(
+                    node: _node,
+                    post: widget.post,
+                    own: _own,
+                    likes: _likes,
+                    liked: _liked,
+                    // The count is the creator's node's; the owner's own
+                    // choice shows at once.
+                    onChanged: (liked) => setState(() {
+                      if (liked != _liked) _likes += liked ? 1 : -1;
+                      if (_likes < 0) _likes = 0;
+                      _liked = liked;
+                    }),
+                  ),
                   if (_policy case final policy?) ...[
                     const SizedBox(height: 16),
                     _PolicyPicker(
@@ -363,6 +383,60 @@ class _PostSummary extends StatelessWidget {
             style: theme.textTheme.bodySmall,
           ),
         const Divider(height: 24),
+      ],
+    );
+  }
+}
+
+/// How many like the post, and Like for someone else's; on the owner's own,
+/// who likes it.
+class _LikesRow extends StatelessWidget {
+  const _LikesRow({
+    required this.node,
+    required this.post,
+    required this.own,
+    required this.likes,
+    required this.liked,
+    required this.onChanged,
+  });
+
+  final HomeNode node;
+  final Post post;
+  final bool own;
+  final int likes;
+  final bool? liked;
+  final void Function(bool liked) onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final count = Text(
+      likes == 0 ? 'No likes yet' : likesLine(likes),
+      style: Theme.of(context).textTheme.bodyMedium,
+    );
+    return Row(
+      children: [
+        if (own)
+          TextButton.icon(
+            onPressed: likes == 0
+                ? null
+                : () => Navigator.of(context).push(
+                    MaterialPageRoute(
+                      builder: (_) => LikersScreen(node: node, post: post),
+                    ),
+                  ),
+            icon: const Icon(Icons.favorite_border),
+            label: Text(likes == 0 ? 'No likes yet' : likesLine(likes)),
+          )
+        else ...[
+          count,
+          const Spacer(),
+          LikeButton(
+            node: node,
+            post: post,
+            liked: liked,
+            onChanged: onChanged,
+          ),
+        ],
       ],
     );
   }

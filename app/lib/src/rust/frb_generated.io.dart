@@ -55,6 +55,15 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   ActivityBand dco_decode_activity_band(dynamic raw);
 
   @protected
+  ActivityItem dco_decode_activity_item(dynamic raw);
+
+  @protected
+  ActivityName dco_decode_activity_name(dynamic raw);
+
+  @protected
+  ActivityPage dco_decode_activity_page(dynamic raw);
+
+  @protected
   bool dco_decode_bool(dynamic raw);
 
   @protected
@@ -121,10 +130,19 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   PlatformInt64 dco_decode_i_64(dynamic raw);
 
   @protected
+  Liker dco_decode_liker(dynamic raw);
+
+  @protected
   LineKind dco_decode_line_kind(dynamic raw);
 
   @protected
   List<String> dco_decode_list_String(dynamic raw);
+
+  @protected
+  List<ActivityItem> dco_decode_list_activity_item(dynamic raw);
+
+  @protected
+  List<ActivityName> dco_decode_list_activity_name(dynamic raw);
 
   @protected
   List<ConnectedPerson> dco_decode_list_connected_person(dynamic raw);
@@ -137,6 +155,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   List<FoundPerson> dco_decode_list_found_person(dynamic raw);
+
+  @protected
+  List<Liker> dco_decode_list_liker(dynamic raw);
 
   @protected
   List<Media> dco_decode_list_media(dynamic raw);
@@ -354,6 +375,15 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   ActivityBand sse_decode_activity_band(SseDeserializer deserializer);
 
   @protected
+  ActivityItem sse_decode_activity_item(SseDeserializer deserializer);
+
+  @protected
+  ActivityName sse_decode_activity_name(SseDeserializer deserializer);
+
+  @protected
+  ActivityPage sse_decode_activity_page(SseDeserializer deserializer);
+
+  @protected
   bool sse_decode_bool(SseDeserializer deserializer);
 
   @protected
@@ -426,10 +456,23 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   PlatformInt64 sse_decode_i_64(SseDeserializer deserializer);
 
   @protected
+  Liker sse_decode_liker(SseDeserializer deserializer);
+
+  @protected
   LineKind sse_decode_line_kind(SseDeserializer deserializer);
 
   @protected
   List<String> sse_decode_list_String(SseDeserializer deserializer);
+
+  @protected
+  List<ActivityItem> sse_decode_list_activity_item(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  List<ActivityName> sse_decode_list_activity_name(
+    SseDeserializer deserializer,
+  );
 
   @protected
   List<ConnectedPerson> sse_decode_list_connected_person(
@@ -446,6 +489,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   List<FoundPerson> sse_decode_list_found_person(SseDeserializer deserializer);
+
+  @protected
+  List<Liker> sse_decode_list_liker(SseDeserializer deserializer);
 
   @protected
   List<Media> sse_decode_list_media(SseDeserializer deserializer);
@@ -692,6 +738,15 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_encode_activity_band(ActivityBand self, SseSerializer serializer);
 
   @protected
+  void sse_encode_activity_item(ActivityItem self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_activity_name(ActivityName self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_activity_page(ActivityPage self, SseSerializer serializer);
+
+  @protected
   void sse_encode_bool(bool self, SseSerializer serializer);
 
   @protected
@@ -785,10 +840,25 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_encode_i_64(PlatformInt64 self, SseSerializer serializer);
 
   @protected
+  void sse_encode_liker(Liker self, SseSerializer serializer);
+
+  @protected
   void sse_encode_line_kind(LineKind self, SseSerializer serializer);
 
   @protected
   void sse_encode_list_String(List<String> self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_list_activity_item(
+    List<ActivityItem> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_activity_name(
+    List<ActivityName> self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_list_connected_person(
@@ -810,6 +880,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
     List<FoundPerson> self,
     SseSerializer serializer,
   );
+
+  @protected
+  void sse_encode_list_liker(List<Liker> self, SseSerializer serializer);
 
   @protected
   void sse_encode_list_media(List<Media> self, SseSerializer serializer);
