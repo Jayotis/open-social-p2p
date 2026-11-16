@@ -153,6 +153,7 @@ Post post(String text, {List<Media> media = const []}) => Post(
   media: media,
   resharerHosts: false,
   liked: false,
+  opened: false,
 );
 
 const photo = Media(

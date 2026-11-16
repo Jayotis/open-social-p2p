@@ -94,6 +94,9 @@ abstract class OspApp implements RustOpaqueInterface {
   /// (`osp unpair`) to revoke its access.
   Future<void> forget();
 
+  /// Drops an opened post and its media now.
+  Future<void> forgetOpened({required String postId});
+
   /// Hides a published reply to one of the owner's posts, or shows it again.
   /// Nothing is deleted.
   Future<void> hideReply({required String reply, required bool hidden});
@@ -132,6 +135,11 @@ abstract class OspApp implements RustOpaqueInterface {
     dir: dir,
     deviceKey: deviceKey,
   );
+
+  /// Opens a post from an OSP code (ADR 0039 §4): as the node holds it,
+  /// or fetched from its author's node and kept as an opened post.
+  /// `code` is the whole `osp:post/...` code.
+  Future<Post> openPost({required String code});
 
   Future<NodeInfo> pair({required String ticket, required String deviceName});
 
@@ -1007,6 +1015,11 @@ class Post {
   /// Whether the owner likes it.
   final bool liked;
 
+  /// Whether it's an opened post (ADR 0039 §4): opened from an OSP code,
+  /// its author not followed, kept for 7 days from when it was last
+  /// opened, liked or replied to.
+  final bool opened;
+
   /// Search only: where its author is on the map, as for a person.
   final List<String> regions;
 
@@ -1024,6 +1037,7 @@ class Post {
     this.resharers,
     this.likes,
     required this.liked,
+    required this.opened,
     required this.regions,
   });
 
@@ -1042,6 +1056,7 @@ class Post {
       resharers.hashCode ^
       likes.hashCode ^
       liked.hashCode ^
+      opened.hashCode ^
       regions.hashCode;
 
   @override
@@ -1062,6 +1077,7 @@ class Post {
           resharers == other.resharers &&
           likes == other.likes &&
           liked == other.liked &&
+          opened == other.opened &&
           regions == other.regions;
 }
 

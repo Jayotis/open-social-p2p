@@ -282,6 +282,8 @@ pub(crate) struct Core {
     pub like_senders: PerHour,
     /// Throwaway keys made to ask someone's node who vouched for them.
     pub throwaways_made: std::sync::atomic::AtomicUsize,
+    /// Shared posts this node fetched to open, this hour (ADR 0039 §4).
+    pub opened_asks: PerHour,
     /// Wakes the telling of credits given and reshares made (ADR 0029).
     pub tell_vouches_now: Notify,
     /// How often each host was named in `WhoHosts` (ADR 0025).
@@ -642,6 +644,7 @@ impl Node {
             connected_asks: PerHour::default(),
             like_senders: PerHour::default(),
             throwaways_made: Default::default(),
+            opened_asks: PerHour::default(),
             tell_vouches_now: Notify::new(),
             named_hosts: NamedHosts::default(),
             heard: Heard::default(),
@@ -755,6 +758,7 @@ impl Node {
         let replies = tokio::spawn(replying::send_loop(core.clone()));
         let vouches = tokio::spawn(vouches::vouches_loop(core.clone()));
         let side = tokio::spawn(vouches::gather_loop(core.clone()));
+        let opened = tokio::spawn(crate::opened::sweep_loop(core.clone()));
         let mut tasks = vec![
             serving_rules,
             sync_loop,
@@ -767,6 +771,7 @@ impl Node {
             replies,
             vouches,
             side,
+            opened,
         ];
         tasks.extend(directory_tasks);
         if core.config.network.relay != RelayChoice::Disabled {

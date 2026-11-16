@@ -2851,6 +2851,7 @@ mod tests {
             deletable: None,
             likes: None,
             liked: false,
+            opened: false,
             found_reshares: vec![ResharedBy {
                 actor,
                 name: Some(format!("Jimmy{escape}")),

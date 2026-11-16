@@ -130,6 +130,7 @@ Post post(
   resharerHosts: false,
   likes: likes,
   liked: liked,
+  opened: false,
   resharers: resharers,
   deletable: mine ? 'post-$who-${text.length}' : null,
 );

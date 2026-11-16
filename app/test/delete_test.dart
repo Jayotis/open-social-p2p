@@ -64,6 +64,7 @@ Post post(
   resharedBy: resharedBy,
   resharerHosts: false,
   liked: false,
+  opened: false,
   deletable: deletable,
   resharers: resharers,
 );

@@ -156,6 +156,7 @@ Post post(
   resharerHosts: false,
   likes: likes,
   liked: liked,
+  opened: false,
 );
 
 ActivityItem item(

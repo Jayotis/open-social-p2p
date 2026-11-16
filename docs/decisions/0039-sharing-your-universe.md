@@ -39,12 +39,21 @@ The card is shown full size before it goes anywhere, with the people she named l
 A profile or post is shared as a copyable **OSP code**, as text, with a line of plain words in front for people who don't have OSP:
 
 - **A profile:** `osp:person/<invite code>`, today's follow code with a prefix, with the person's name.
-- **A post:** `osp:post/<post ID>?by=<invite code>`, with its first lines. Kim's node opens the post from its author, or as a found post if Kim doesn't follow them.
+- **A post:** `osp:post/<post ID>?by=<invite code>`, with its first lines. Kim's node opens the post from its author, or as an opened post (below) if Kim doesn't follow them.
 - **OSP itself:** the install link. Until there's a project site, that's the install guide on the repository's host.
 
 In the alpha, the app takes an OSP code pasted anywhere it takes an invite code, a whole shared message included, and offers to open one found on the clipboard. It reads the clipboard only when Invite and follow opens, where codes are expected: Android tells the user each time an app reads it (maintainer, 2026-11-16). The app also registers `osp:` as a link scheme, so tapping a code where links work opens it, but nothing depends on that. Web links that open the app (Android App Links, iOS universal links) need a domain the project controls, and come later.
 
 There is no web page for a profile or post: OSP has no server to put one on.
+
+**Opened posts** (maintainer, 2026-11-16). Jimmy sends Kim a code for Alice's post, and Kim doesn't follow Alice. Kim's node fetches the post and enough of Alice's profile to show it (her name and picture), the way it opens a found post: from a throwaway key, never from Kim's own identity ([ADR 0024](0024-watching-found-posts-without-your-identity.md)), so Alice's node can't tell it was Kim. The post opens labelled "Opened from a shared OSP post", and is kept as an **opened post**:
+
+- **For 7 days**, marked in its own table. The post and Alice's profile are kept where posts and profiles always are, as a found post's are, so liking, replying and media work as for any post; every list leaves opened posts out, with a test for each (maintainer, 2026-11-16). Opening it again, liking it or replying starts the 7 days over. A count cap and a byte cap drop the oldest first.
+- **Not part of Kim's network.** It isn't in the Universe, in People found, or in the feed. Opening it never makes Kim's node a host of it or a source for anyone's reputation.
+- **Follow** is the normal follow of Alice. **Reshare** follows the normal rules, and Kim's node hosts it only if she opts in, as for any reshare.
+- **Remove** drops the post and its media at once. If Alice deletes it, Kim's copy goes too, as for any post.
+
+This replaces 3a's "Follow its author?" question for a post code.
 
 ## Options considered
 

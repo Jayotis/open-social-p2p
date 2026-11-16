@@ -182,6 +182,10 @@ pub struct Post {
     pub likes: Option<u32>,
     /// Whether the owner likes it.
     pub liked: bool,
+    /// Whether it's an opened post (ADR 0039 §4): opened from an OSP code,
+    /// its author not followed, kept for 7 days from when it was last
+    /// opened, liked or replied to.
+    pub opened: bool,
     /// Search only: where its author is on the map, as for a person.
     pub regions: Vec<String>,
 }
@@ -1167,6 +1171,32 @@ impl OspApp {
         Ok(post(item))
     }
 
+    /// Opens a post from an OSP code (ADR 0039 §4): as the node holds it,
+    /// or fetched from its author's node and kept as an opened post.
+    /// `code` is the whole `osp:post/...` code.
+    pub async fn open_post(&self, code: String) -> Result<Post> {
+        let OspCode::Post { id, by } = code.trim().parse()? else {
+            bail!("that's not a code for a post");
+        };
+        let req = ClientRequest::OpenPost {
+            id,
+            ticket: by.to_string(),
+        };
+        let ClientResponse::Item { item } = self.client.request(&req).await? else {
+            bail!("unexpected reply to OpenPost");
+        };
+        Ok(post(item))
+    }
+
+    /// Drops an opened post and its media now.
+    pub async fn forget_opened(&self, post_id: String) -> Result<()> {
+        let id = post_id.parse()?;
+        self.client
+            .request(&ClientRequest::ForgetOpened { id })
+            .await?;
+        Ok(())
+    }
+
     /// Likes someone's post, or with `liked` false takes the like back
     /// (ADR 0038). The node keeps trying their node for 7 days; this returns
     /// once it's kept. A reshare's ID likes the post it shares.
@@ -1724,6 +1754,7 @@ fn post(item: FeedItem) -> Post {
         resharers: item.resharers,
         likes: item.likes.map(|n| n.min(u32::MAX as u64) as u32),
         liked: item.liked,
+        opened: item.opened,
         regions: item.regions,
     }
 }

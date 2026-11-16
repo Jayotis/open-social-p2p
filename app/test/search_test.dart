@@ -49,6 +49,7 @@ Post post(String text, {String? foundThrough}) => Post(
   media: const [],
   resharerHosts: false,
   liked: false,
+  opened: false,
   foundThrough: foundThrough,
 );
 

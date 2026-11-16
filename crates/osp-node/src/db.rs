@@ -23,8 +23,11 @@ use tracing::info;
 
 use crate::{events, meet, peers, trust};
 
+use opened::NOT_OPENED;
+
 mod activity;
 mod likes;
+mod opened;
 mod profiles;
 mod replies;
 mod sent_replies;
@@ -577,6 +580,24 @@ const MIGRATIONS: &[&str] = &[
         last_ms  INTEGER NOT NULL,
         read     INTEGER NOT NULL
     );",
+    // 39: opened posts (ADR 0039 §4, `db::opened`): a post the owner opened
+    // from an OSP code, its author not followed. The post is in `objects`
+    // and its media in `found_blobs`, as a found post's are; this marks it,
+    // until when it's kept, and its size with its media. `opened_people`
+    // are those whose profile is held only because of an opened post: no
+    // list shows them.
+    "CREATE TABLE opened_posts (
+        id        TEXT PRIMARY KEY,
+        actor     TEXT NOT NULL,
+        opened_ms INTEGER NOT NULL,
+        until_ms  INTEGER NOT NULL,
+        bytes     INTEGER NOT NULL
+    );
+    CREATE INDEX opened_posts_by_actor ON opened_posts(actor);
+    CREATE INDEX opened_posts_by_until ON opened_posts(until_ms);
+    CREATE TABLE opened_people (
+        actor TEXT PRIMARY KEY
+    );",
 ];
 
 /// How many days of `served_days` are kept: the summary's 30, and today.
@@ -1014,6 +1035,7 @@ impl Db {
         let sql = format!(
             "SELECT signed FROM objects
              WHERE kind IN ('Note', 'Announce') AND actor IN ({placeholders}) AND feed_ms <= {now}
+               AND {NOT_OPENED}
              ORDER BY feed_ms DESC LIMIT {limit}"
         );
         let conn = self.conn();
@@ -1134,6 +1156,7 @@ impl Db {
                 tx.execute("DELETE FROM outbox WHERE id = ?1", params![id])?;
                 tx.execute("DELETE FROM found_posts WHERE id = ?1", params![id])?;
                 tx.execute("DELETE FROM found_blobs WHERE post = ?1", params![id])?;
+                tx.execute("DELETE FROM opened_posts WHERE id = ?1", params![id])?;
                 tx.execute("DELETE FROM refetch WHERE id = ?1", params![id])?;
                 remove_from_search(&tx, id)?;
                 replies::forget_replies_to(&tx, id)?;
@@ -1159,6 +1182,7 @@ impl Db {
                 }
                 deleted.files.push(blob);
             }
+            opened::settle_opened_person(&tx, &d.actor.to_string())?;
         }
         tx.commit()?;
         Ok(Some(deleted))
@@ -1744,6 +1768,7 @@ impl Db {
             tx.execute("DELETE FROM objects WHERE id = ?1", params![id])?;
             tx.execute("DELETE FROM found_posts WHERE id = ?1", params![id])?;
             tx.execute("DELETE FROM found_blobs WHERE post = ?1", params![id])?;
+            tx.execute("DELETE FROM opened_posts WHERE id = ?1", params![id])?;
             remove_from_search(&tx, id)?;
             if refetch {
                 tx.execute(
@@ -2431,6 +2456,7 @@ impl Db {
         for id in &ids {
             found_post_is_kept(&tx, id)?;
         }
+        opened::opened_author_is_followed(&tx, actor)?;
         tx.execute(
             "DELETE FROM found_people WHERE actor = ?1",
             params![actor.to_string()],
@@ -2845,14 +2871,15 @@ impl Db {
     /// name.
     pub fn people(&self, me: &PublicKey, limit: u32) -> Result<Vec<(SignedObject, Option<u64>)>> {
         let conn = self.conn();
-        let mut stmt = conn.prepare(
+        let mut stmt = conn.prepare(&format!(
             "SELECT profiles.signed,
-                    (SELECT MAX(published_ms) FROM objects
-                     WHERE objects.actor = profiles.actor
-                       AND objects.kind IN ('Note', 'Announce')) AS newest
-             FROM profiles WHERE profiles.actor != ?1
-             ORDER BY newest IS NULL, newest DESC, profiles.name LIMIT ?2",
-        )?;
+                        (SELECT MAX(published_ms) FROM objects
+                         WHERE objects.actor = profiles.actor
+                           AND objects.kind IN ('Note', 'Announce') AND {NOT_OPENED}) AS newest
+                 FROM profiles WHERE profiles.actor != ?1
+                   AND profiles.actor NOT IN (SELECT actor FROM opened_people)
+                 ORDER BY newest IS NULL, newest DESC, profiles.name LIMIT ?2"
+        ))?;
         let rows = stmt.query_map(params![me.to_string(), limit], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, Option<i64>>(1)?))
         })?;
@@ -2867,8 +2894,10 @@ impl Db {
     /// When `actor`'s newest post or reshare here was published.
     pub fn newest_ms(&self, actor: &PublicKey) -> Result<Option<u64>> {
         let newest: Option<i64> = self.conn().query_row(
-            "SELECT MAX(published_ms) FROM objects
-             WHERE actor = ?1 AND kind IN ('Note', 'Announce')",
+            &format!(
+                "SELECT MAX(published_ms) FROM objects
+                 WHERE actor = ?1 AND kind IN ('Note', 'Announce') AND {NOT_OPENED}"
+            ),
             params![actor.to_string()],
             |row| row.get(0),
         )?;
@@ -4192,6 +4221,9 @@ fn profile_is_newer(conn: &Connection, person: &Person) -> Result<bool> {
 
 fn upsert_profile(conn: &Connection, person: &Person, obj: &SignedObject) -> Result<()> {
     let actor = person.actor.to_string();
+    // Held for another reason now, not only for an opened post. Opening
+    // one marks them again after this.
+    opened::opened_person_is_kept(conn, &actor)?;
     let signed = serde_json::to_string(obj)?;
     let stored: Option<String> = conn
         .query_row(
@@ -4314,6 +4346,7 @@ fn backfill_refs(conn: &Connection) -> Result<()> {
 /// media it includes: with no node to fetch it from, there's no use saying so
 /// before, and these come and go.
 fn found_post_is_kept(conn: &Connection, id: &str) -> Result<()> {
+    opened::opened_post_is_kept(conn, id)?;
     let n = conn.execute("DELETE FROM found_posts WHERE id = ?1", params![id])?;
     conn.execute("DELETE FROM found_blobs WHERE post = ?1", params![id])?;
     if n > 0 {
@@ -4453,6 +4486,8 @@ fn drop_found_person(conn: &Connection, actor: &PublicKey) -> Result<()> {
     if n > 0 {
         profiles::forget_icon(conn, &actor_text)?;
         remove_from_search(conn, &actor_text)?;
+    } else {
+        opened::profile_only_for_opened(conn, &actor_text)?;
     }
     forget_key_if_unused(conn, actor)
 }
@@ -4722,8 +4757,10 @@ fn build_search_index(conn: &Connection) -> Result<()> {
     let mut indexed = 0;
     {
         let mut stmt = tx.prepare(
-            "SELECT signed, published_ms FROM objects WHERE kind = 'Note'
-             UNION ALL SELECT signed, NULL FROM profiles",
+            "SELECT signed, published_ms FROM objects
+             WHERE kind = 'Note' AND id NOT IN (SELECT id FROM opened_posts)
+             UNION ALL SELECT signed, NULL FROM profiles
+             WHERE actor NOT IN (SELECT actor FROM opened_people)",
         )?;
         let rows = stmt.query_map([], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, Option<i64>>(1)?))
@@ -6877,6 +6914,7 @@ mod tests {
                      DROP TABLE universe_places; DROP TABLE served_days;
                      DROP TABLE events; ALTER TABLE declared_sizes DROP COLUMN post;
                      DROP TABLE likes; DROP TABLE sent_likes; DROP TABLE activity;
+                     DROP TABLE opened_posts; DROP TABLE opened_people;
                      PRAGMA user_version = 24;",
                 )
                 .unwrap();
@@ -6892,5 +6930,125 @@ mod tests {
             )
             .unwrap();
         assert_eq!(undated, 0);
+    }
+
+    // ---- opened posts (ADR 0039 §4) ----
+
+    fn keep_opened_note(db: &Db, key: &SecretKey, text: &str, now: i64) -> ObjectId {
+        let (obj, payload) = signed_note(key, text, EARLIER);
+        let Payload::Note(note) = payload else {
+            unreachable!()
+        };
+        let (person, profile) = signed_person(key, &format!("{text} author"), None);
+        let kept = db
+            .keep_opened(&obj, &note, Some((&person, &profile)), now)
+            .unwrap();
+        assert_eq!(kept, opened::Kept::Opened);
+        obj.id()
+    }
+
+    #[test]
+    fn opened_posts_go_after_7_days_then_the_least_lately_opened_beyond_the_caps() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(&dir.path().join("t.db")).unwrap();
+        let (a, b, c) = (
+            SecretKey::generate(),
+            SecretKey::generate(),
+            SecretKey::generate(),
+        );
+        let first = keep_opened_note(&db, &a, "first", 1_000);
+        let second = keep_opened_note(&db, &b, "second", 2_000);
+        let third = keep_opened_note(&db, &c, "third", 3_000);
+        let all = u64::MAX;
+        assert!(db.opened_to_drop(3_000, 10, all).unwrap().is_empty());
+        assert_eq!(db.opened_to_drop(3_000, 2, all).unwrap(), [first]);
+        assert_eq!(
+            db.opened_to_drop(1_000 + opened::OPENED_FOR_MS, 10, all)
+                .unwrap(),
+            [first]
+        );
+        // A byte cap that holds one post keeps the latest opened.
+        let one: i64 = db
+            .conn()
+            .query_row(
+                "SELECT bytes FROM opened_posts WHERE id = ?1",
+                params![third.to_string()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            db.opened_to_drop(3_000, 10, one as u64 + 10).unwrap(),
+            [second, first]
+        );
+        // Opening the first again starts its 7 days over.
+        assert!(db.touch_opened(&first, 4_000).unwrap());
+        assert_eq!(db.opened_to_drop(4_000, 2, all).unwrap(), [second]);
+        assert_eq!(
+            db.opened_until(&first).unwrap(),
+            Some(4_000 + opened::OPENED_FOR_MS)
+        );
+        // An ordinary post isn't touched.
+        let ordinary = store_note(&db, &a, "ordinary", EARLIER);
+        assert!(!db.touch_opened(&ordinary, 4_000).unwrap());
+        assert_eq!(db.opened_until(&ordinary).unwrap(), None);
+    }
+
+    #[test]
+    fn an_opened_post_and_its_author_are_in_no_list_until_kept_for_another_reason() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.db");
+        let db = Db::open(&path).unwrap();
+        let me = SecretKey::generate().public();
+        let alice = SecretKey::generate();
+        let id = keep_opened_note(&db, &alice, "hazelnut", now_ms());
+        let author = alice.public();
+        let in_lists = |db: &Db| {
+            (
+                db.people(&me, 50).unwrap().len(),
+                db.held_people(&me).unwrap().len(),
+                db.search_posts("hazelnut", 10).unwrap().len(),
+                db.search_profiles("hazelnut", 10).unwrap().len(),
+                db.feed(&[author], 10).unwrap().len(),
+                db.newest_ms(&author).unwrap().is_some(),
+            )
+        };
+        assert_eq!(in_lists(&db), (0, 0, 0, 0, 0, false));
+        // Nor when the search index is built again.
+        db.conn()
+            .execute_batch("DROP TABLE search_text; DROP TABLE search_items;")
+            .unwrap();
+        drop(db);
+        let db = Db::open(&path).unwrap();
+        assert_eq!(in_lists(&db), (0, 0, 0, 0, 0, false));
+
+        // It arrives another way, as from a follow's outbox: it's ordinary.
+        let (obj, payload) = signed_note(&alice, "hazelnut", EARLIER);
+        assert!(!db.insert_object(&obj, &payload).unwrap());
+        assert_eq!(db.opened_until(&id).unwrap(), None);
+        assert_eq!(in_lists(&db), (1, 1, 1, 1, 1, true));
+        assert_eq!(db.drop_opened(&id).unwrap(), None);
+    }
+
+    #[test]
+    fn dropping_an_opened_post_keeps_a_profile_held_for_another_reason() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(&dir.path().join("t.db")).unwrap();
+        let me = SecretKey::generate().public();
+        let (alice, jimmy) = (SecretKey::generate(), SecretKey::generate());
+
+        // Jimmy's profile was held before: it stays, and is listed throughout.
+        let (person, profile) = signed_person(&jimmy, "Jimmy", None);
+        db.upsert_profile(&person, &profile).unwrap();
+        let his = keep_opened_note(&db, &jimmy, "pecan", now_ms());
+        assert_eq!(db.people(&me, 50).unwrap().len(), 1);
+        assert_eq!(db.drop_opened(&his).unwrap(), Some(vec![]));
+        assert_eq!(db.people(&me, 50).unwrap().len(), 1);
+
+        // Alice's came only with her opened post: it goes with it.
+        let hers = keep_opened_note(&db, &alice, "almond", now_ms());
+        assert!(db.profile(&alice.public()).unwrap().is_some());
+        db.drop_opened(&hers).unwrap();
+        assert!(db.profile(&alice.public()).unwrap().is_none());
+        assert!(db.get_object(&hers).unwrap().is_none());
     }
 }
