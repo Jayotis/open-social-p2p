@@ -52,6 +52,10 @@ const POST_REPLY_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 /// How long to wait for a blob the node may first have to fetch, and for
 /// `Fetch` and `Sync`, which can also wait on other nodes.
 const BLOB_REPLY_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+/// How long to wait for "How are we connected?": the node may first wait
+/// for its Tor, which can take minutes after a start to reach anyone
+/// (`osp-node`'s `connected.rs`), and then dial over a new circuit.
+const CONNECTED_REPLY_TIMEOUT: Duration = Duration::from_secs(180);
 /// Waits between tries to reach the home node again during a post. The
 /// last one repeats.
 const POST_RETRY_WAITS: [Duration; 5] = [
@@ -422,6 +426,7 @@ impl Client {
             ClientRequest::Fetch { .. } | ClientRequest::Sync | ClientRequest::Thread { .. } => {
                 BLOB_REPLY_TIMEOUT
             }
+            ClientRequest::HowConnected { .. } => CONNECTED_REPLY_TIMEOUT,
             _ => REPLY_TIMEOUT,
         };
         let (mut send, mut recv) = self.send_request(req).await?;

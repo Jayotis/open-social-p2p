@@ -41,13 +41,14 @@ use crate::{
 /// Taps a node lets ask someone's node, an hour. Past it, the paths are the
 /// owner's own world's and those kept from replies.
 pub(crate) const MAX_ASKS_PER_HOUR: u32 = 10;
-/// How long a tap waits for the other node, waiting for Tor included: a
-/// first connection over Tor can take most of a minute, and the owner's
-/// device waits a minute for any answer (`osp-client`'s `REPLY_TIMEOUT`),
-/// so the node answers first.
-const ASK_TIMEOUT: Duration = Duration::from_secs(50);
-/// The least of it left to dial in, however long Tor takes to work.
-const DIAL_AT_LEAST: Duration = Duration::from_secs(20);
+/// How long a tap waits for the other node, waiting for Tor included.
+/// After a start, Tor took 80 s to reach anyone in the lab, and the first
+/// ask after that 49 s. The owner's device waits 3 minutes for this answer
+/// (`osp-client`'s `CONNECTED_REPLY_TIMEOUT`), so the node answers first.
+const ASK_TIMEOUT: Duration = Duration::from_secs(150);
+/// The least of it left to dial in, however long Tor takes to work: a dial
+/// over a new circuit took 5 to 50 s.
+const DIAL_AT_LEAST: Duration = Duration::from_secs(60);
 
 impl Core {
     /// The paths this node knows from its owner to `actor`, nearest first.
