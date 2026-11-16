@@ -68,7 +68,9 @@ impl Core {
         req: ClientRequest,
         origin: Origin,
     ) -> ClientResponse {
-        match self.client_request(req, origin).await {
+        // Boxed: with every request's arm its state is large, and kept on
+        // the stack it overflowed a test thread's 2 MB in debug builds.
+        match Box::pin(self.client_request(req, origin)).await {
             Ok(resp) => resp,
             Err(e) => ClientResponse::Error {
                 message: error_text(&e),
