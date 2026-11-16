@@ -63,6 +63,7 @@ Post post(
   media: const [],
   resharedBy: resharedBy,
   resharerHosts: false,
+  liked: false,
   deletable: deletable,
   resharers: resharers,
 );

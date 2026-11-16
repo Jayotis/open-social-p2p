@@ -61,8 +61,7 @@ class _AppShellState extends State<AppShell> {
       });
     }
     final online = node.reachability == Reachability.online;
-    final waiting =
-        (node.status?.trustRequests ?? 0) + (node.status?.replyRequests ?? 0);
+    final waiting = node.status?.activityUnread ?? 0;
     final onSky = _place == Place.universe;
     final sky = OspColors.of(context);
     return Scaffold(

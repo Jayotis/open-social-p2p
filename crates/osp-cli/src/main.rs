@@ -2813,6 +2813,8 @@ mod tests {
             }),
             found_through: Some("oak-ash-elm".into()),
             deletable: None,
+            likes: None,
+            liked: false,
             found_reshares: vec![ResharedBy {
                 actor,
                 name: Some(format!("Jimmy{escape}")),

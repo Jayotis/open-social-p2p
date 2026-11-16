@@ -2,15 +2,26 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:osp_app/activity_words.dart';
 import 'package:osp_app/node.dart';
+import 'package:osp_app/screens/activity_screen.dart';
+import 'package:osp_app/screens/likers_screen.dart';
 import 'package:osp_app/screens/reply_requests_screen.dart';
 import 'package:osp_app/screens/thread_screen.dart';
 import 'package:osp_app/src/rust/api/osp.dart';
 import 'package:osp_app/uploads.dart';
+import 'package:osp_app/widgets/like_button.dart';
+import 'package:osp_app/widgets/post_card.dart';
 
 /// The Rust side, as far as replies go (ADR 0028).
 class FakeApp implements OspApp {
-  Thread kept = const Thread(policy: 'network', replies: [], more: false);
+  Thread kept = const Thread(
+    policy: 'network',
+    replies: [],
+    more: false,
+    likes: 0,
+    liked: false,
+  );
   List<SentReply> sent = [];
   List<Reply> requests = [];
   final replied = <(String, String)>[];
@@ -43,8 +54,43 @@ class FakeApp implements OspApp {
     required String policy,
   }) async {
     policies.add((postId, policy));
-    kept = Thread(policy: policy, replies: kept.replies, more: false);
+    kept = Thread(
+      policy: policy,
+      replies: kept.replies,
+      more: false,
+      likes: kept.likes,
+      liked: kept.liked,
+    );
   }
+
+  /// Each like or take-back sent, and who likes the owner's posts.
+  final likesSent = <(String, bool)>[];
+  bool likeFails = false;
+  List<Liker> likers = [];
+
+  @override
+  Future<void> like({required String postId, required bool liked}) async {
+    if (likeFails) throw Exception('no contact');
+    likesSent.add((postId, liked));
+  }
+
+  @override
+  Future<List<Liker>> likes({required String postId}) async => likers;
+
+  /// The Activity, and the posts it opens.
+  List<ActivityItem> activityEntries = [];
+  final posts = <String, Post>{};
+
+  @override
+  Future<ActivityPage> activity({int? before, required int limit}) async =>
+      ActivityPage(entries: activityEntries, unread: 0, more: false);
+
+  @override
+  Future<void> activityRead({required List<String> keys, int? through}) async {}
+
+  @override
+  Future<Post> showPost({required String id}) async =>
+      posts[id] ?? (throw Exception('not here'));
 
   @override
   Future<void> hideReply({required String reply, required bool hidden}) async {
@@ -81,6 +127,7 @@ class FakeApp implements OspApp {
     path: 'direct',
     trustRequests: 0,
     replyRequests: requests.length,
+    activityUnread: 0,
     overTor: false,
     torStarting: false,
     hostedPosts: 0,
@@ -93,7 +140,12 @@ class FakeApp implements OspApp {
       throw UnimplementedError('${invocation.memberName}');
 }
 
-Post post(String author, {String text = 'A walk by the river'}) => Post(
+Post post(
+  String author, {
+  String text = 'A walk by the river',
+  int? likes,
+  bool liked = false,
+}) => Post(
   regions: const [],
   id: 'post-$author',
   author: author,
@@ -102,6 +154,28 @@ Post post(String author, {String text = 'A walk by the river'}) => Post(
   text: text,
   media: const [],
   resharerHosts: false,
+  likes: likes,
+  liked: liked,
+);
+
+ActivityItem item(
+  String kind,
+  List<String> names, {
+  int count = 1,
+  bool waiting = false,
+  String? post,
+}) => ActivityItem(
+  key: '$kind:1',
+  seq: 1,
+  atMs: 0,
+  read: false,
+  kind: kind,
+  post: post,
+  postText: 'A walk by the river\nand more',
+  people: [for (final n in names) ActivityName(identity: 'id-$n', name: n)],
+  count: count,
+  text: '',
+  waiting: waiting,
 );
 
 Reply reply(String name, String text, {String state = 'published'}) => Reply(
@@ -172,6 +246,8 @@ void main() {
         reply('Jimmy', 'Buy my stuff', state: 'hidden'),
       ],
       more: false,
+      likes: 0,
+      liked: false,
     );
     await open(tester, ThreadScreen(node: node, post: post('Kim')));
 
@@ -203,7 +279,13 @@ void main() {
   });
 
   testWidgets('turning replies off hides the reply box', (tester) async {
-    app.kept = const Thread(policy: 'off', replies: [], more: false);
+    app.kept = const Thread(
+      policy: 'off',
+      replies: [],
+      more: false,
+      likes: 0,
+      liked: false,
+    );
     await open(tester, ThreadScreen(node: node, post: post('Kim')));
     expect(find.text('No replies yet.'), findsOne);
     expect(find.byType(TextField), findsNothing);
@@ -216,6 +298,8 @@ void main() {
       policy: 'network',
       replies: [reply('Alice', 'Lovely spot')],
       more: false,
+      likes: 0,
+      liked: false,
     );
     app.sent = [
       sentReply('Earlier try', 'sending', nextTrySecs: 300),
@@ -277,5 +361,134 @@ void main() {
     await tester.pumpAndSettle();
     expect(app.answers.last, ('reply-Sam', 'block'));
     expect(find.text('No replies waiting.'), findsOne);
+  });
+
+  testWidgets("a like on someone's post shows at once and goes to the node", (
+    tester,
+  ) async {
+    await open(
+      tester,
+      Scaffold(
+        body: PostCard(node: node, post: post('Ann')),
+      ),
+    );
+    await tester.tap(find.text('Like'));
+    await tester.pumpAndSettle();
+    expect(find.text('Liked'), findsOne);
+    expect(app.likesSent, [('post-Ann', true)]);
+    await tester.tap(find.text('Liked'));
+    await tester.pumpAndSettle();
+    expect(app.likesSent.last, ('post-Ann', false));
+
+    // Kept nowhere: it goes back, and says why.
+    app.likeFails = true;
+    await tester.tap(find.text('Like'));
+    await tester.pumpAndSettle();
+    expect(find.text('Like'), findsOne);
+    expect(find.textContaining("Couldn't like it"), findsOne);
+  });
+
+  testWidgets('on her own post, Kim sees how many like it, and who', (
+    tester,
+  ) async {
+    app.likers = const [
+      Liker(
+        identity: 'id-Alice',
+        name: 'Alice',
+        published: '2026-01-02T00:00:00Z',
+      ),
+      Liker(identity: 'id-Jimmy', name: '', published: '2026-01-01T00:00:00Z'),
+    ];
+    await open(
+      tester,
+      Scaffold(
+        body: PostCard(node: node, post: post('Kim', likes: 2)),
+      ),
+    );
+    expect(find.text('Like'), findsNothing);
+    await tester.tap(find.text('2 likes'));
+    await tester.pumpAndSettle();
+    expect(find.byType(LikersScreen), findsOneWidget);
+    expect(find.text('Alice'), findsOne);
+    expect(find.text('Someone'), findsOne);
+  });
+
+  testWidgets("a thread says how many like it, and the owner's like counts", (
+    tester,
+  ) async {
+    app.kept = const Thread(
+      policy: 'network',
+      replies: [],
+      more: false,
+      likes: 3,
+      liked: false,
+    );
+    await open(tester, ThreadScreen(node: node, post: post('Ann')));
+    expect(find.text('3 likes'), findsOne);
+    await tester.tap(find.widgetWithText(LikeButton, 'Like'));
+    await tester.pumpAndSettle();
+    expect(find.text('4 likes'), findsOne);
+    expect(app.likesSent, [('post-Ann', true)]);
+  });
+
+  testWidgets('an Activity entry opens its post', (tester) async {
+    app.activityEntries = [
+      item('liked', ['Alice'], post: 'post-Kim'),
+    ];
+    app.posts['post-Kim'] = post('Kim', likes: 1);
+    late BuildContext context;
+    await open(
+      tester,
+      Builder(
+        builder: (c) {
+          context = c;
+          return ActivityScreen(
+            node: node,
+            open: (screen) => Navigator.of(
+              context,
+            ).push(MaterialPageRoute(builder: (_) => screen)),
+          );
+        },
+      ),
+    );
+    await tester.tap(find.textContaining('Alice liked your post'));
+    await tester.pumpAndSettle();
+    expect(find.byType(ThreadScreen), findsOneWidget);
+  });
+
+  test('Activity says it as a social app would', () {
+    String line(ActivityItem e) => activityLine(e);
+    expect(
+      line(item('liked', ['Alice'])),
+      'Alice liked your post “A walk by the river”',
+    );
+    expect(
+      line(item('liked', ['Alice', 'Jimmy'], count: 2)),
+      'Alice and Jimmy liked your post “A walk by the river”',
+    );
+    expect(names([], 0), '0 people');
+    final two = [
+      const ActivityName(identity: 'a', name: 'Alice'),
+      const ActivityName(identity: 'j', name: ''),
+    ];
+    expect(names(two, 2), 'Alice and Someone');
+    expect(names(two, 3), 'Alice, Someone and 1 other');
+    expect(names(two, 7), 'Alice, Someone and 5 others');
+    expect(names(two.sublist(0, 1), 4), 'Alice and 3 others');
+    expect(
+      line(item('reply', ['Jimmy'], waiting: true)),
+      "Jimmy's reply to your post “A walk by the river” is waiting for you",
+    );
+    expect(
+      line(item('reshared', ['Ann'], count: 2)),
+      'Ann and 1 other reshared your post “A walk by the river”',
+    );
+    expect(line(item('followed', [])), 'Someone new follows you');
+    expect(line(item('followed', ['Jimmy'])), 'Jimmy follows you');
+    expect(
+      line(item('reply_published', ['Kim'])),
+      "Your reply is in Kim's thread",
+    );
+    expect(line(item('reply_published', [''])), 'Your reply is in the thread');
   });
 }

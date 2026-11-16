@@ -694,6 +694,9 @@ pub struct StatusInfo {
     /// Replies waiting among the requests (ADR 0028).
     #[serde(default)]
     pub reply_requests: usize,
+    /// Activity entries the owner hasn't read (ADR 0038 §3).
+    #[serde(default)]
+    pub activity_unread: u64,
     /// The node's Tor, when it's on (ADR 0014).
     #[serde(default)]
     pub tor: Option<TorStatus>,
@@ -1276,6 +1279,12 @@ pub struct FeedItem {
     /// reshared it (ADR 0029).
     #[serde(default)]
     pub resharers: Option<u32>,
+    /// For one of the owner's own posts, how many people like it (ADR 0038).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub likes: Option<u64>,
+    /// Whether the owner likes it, as their node has it (ADR 0038).
+    #[serde(default)]
+    pub liked: bool,
     /// Search only (ADR 0035 §3): where its author is on the Universe's map,
     /// as `universe::Region` names regions, the top (empty) first, so a
     /// device can light the regions that hold it and fly there. A placed

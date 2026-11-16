@@ -11,8 +11,8 @@ use osp_node::{
 use osp_proto::{
     ObjectId,
     rpc::{
-        ActivityEntry, ActivityWhat, ClientRequest, ClientResponse, ReplyAnswer, SentReplyInfo,
-        SentStatus,
+        ActivityEntry, ActivityWhat, ClientRequest, ClientResponse, FeedItem, ReplyAnswer,
+        SentReplyInfo, SentStatus,
     },
 };
 
@@ -104,6 +104,13 @@ async fn wait_activity(
     panic!("the Activity stayed {:#?}", last.0);
 }
 
+async fn feed_item(node: &Node, id: ObjectId) -> FeedItem {
+    match call(node, ClientRequest::Show { id }).await {
+        ClientResponse::Item { item } => item,
+        other => panic!("unexpected {other:?}"),
+    }
+}
+
 fn liked(entries: &[ActivityEntry]) -> Option<(Vec<&str>, u64)> {
     entries.iter().find_map(|e| match &e.what {
         ActivityWhat::Liked { people, count, .. } => {
@@ -151,6 +158,15 @@ async fn kim_sees_followers_likes_replies_and_reshares_in_one_place() {
         unreachable!()
     };
     assert_eq!(post_text, "Kim's post\nand more");
+    // The feed says so too: how many on Kim's own post, and that Jimmy
+    // likes it on his. And Kim's status counts what she hasn't read.
+    assert_eq!(feed_item(&kim, kims).await.likes, Some(2));
+    let jimmys_view = feed_item(&jimmy, kims).await;
+    assert_eq!((jimmys_view.likes, jimmys_view.liked), (None, true));
+    let ClientResponse::Status(status) = call(&kim, ClientRequest::Status).await else {
+        panic!()
+    };
+    assert_eq!(status.activity_unread, 3);
 
     // Kim's own reply isn't news to her. Jimmy's waits for her.
     reply(&kim, kims, "Kim's own reply").await;
