@@ -10,6 +10,20 @@ OSP needs a Front Page of public communities, with open reading and joining, com
 
 A community is **not** a cluster inferred by the Universe map and is **not** an OSP service account. It is a deliberately created, signed public governance space. OSP itself has no override key, reserved moderator identity, or global suspension mechanism.
 
+### Responsibility split
+
+This record follows [ADR 0001](0001-home-node-architecture.md) and [doc 15](../15-feature-responsibility-model.md):
+
+| Layer | Community responsibility |
+| --- | --- |
+| **App** | Shows Front Page, communities, threads, reports, moderation queues and governance controls; captures the person's intent |
+| **Client API** | Carries intent between the paired app and the owner's node, and returns durable state/progress |
+| **Home node** | Stores subscriptions, fetches indexes, verifies governance, assembles threads/feeds, applies local policy, creates/signs the owner's permitted actions and keeps working while the phone is off |
+| **OSP protocol** | Defines Community IDs, placements, governance/moderation records, nested replies and synchronization between independent nodes |
+| **Other nodes/indexes** | Supply signed records and public content; independently verify them; optionally replicate within local limits |
+
+The app does **not** become a community peer, verify governance itself or contact community indexes directly. A button such as Join, Moderate or Approve expresses intent to the owner's node. The node checks current state and authority, performs the cryptographic/network work, and returns the result.
+
 ## Decision
 
 ### 1. Identity and names
@@ -69,6 +83,8 @@ The community controls **inclusion in its own listings and discussions**, not au
 - Permanent bans require a majority of the full authorized roster, including offline stewards in the denominator. A banned identity may still post elsewhere on OSP. Signed ban lists cannot remove a signed post from unrelated nodes.
 - Identity creation is cheap. Membership and signature verification do not prove one-person-one-account. Rate limits, bounded queues, node-local blocklists and simulation against Sybil attacks are required.
 - Any member may report content; reporting does not itself grant a publishing or deletion right. Make clear to readers when content is hidden by community policy vs their own node's block rules.
+- Nodes may use rules, scripts or machine-learning systems to classify content, prioritize reports and recommend moderation actions under [doc 19](../19-node-assisted-moderation.md). Such automation is **not a steward**, never counts toward quorum and cannot independently authorize permanent bans, governance changes or closure.
+- A community may later authorize bounded automatic execution of routine, reversible moderation actions. Automated actions must identify the steward/policy authority under which they were issued, be rate-limited, auditable and reversible. The node's policy/signing boundary remains in control; an assistant never receives unrestricted signing authority.
 
 ### 6. Availability and stewardship are independent
 
@@ -138,6 +154,8 @@ All records must use OSP's exact signed-byte, certified-key and object-ID conven
 This design adds substantial protocol surface: group governance, verifiable indexes, nested threads, anti-abuse limits, appeals, recovery, revocation and fork detection. Existing OSP replies and directories are reusable foundations but not a finished community system. A detailed protocol ADR must settle signature encoding, governance conflict resolution and canonical catch-up before an implementation PR. No private communities or secret moderation inboxes are in scope.
 
 ## Build order
+
+The product/app/node implementation plan is in [doc 16](../16-front-page-and-communities.md). The cross-feature responsibility model is [doc 15](../15-feature-responsibility-model.md).
 
 1. After ADR 0030's Product Alpha: public community identity, single-steward creation and signed placement references.
 2. Shared steward membership, signed governance epochs, quorum and routine moderation.
