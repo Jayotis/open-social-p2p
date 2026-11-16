@@ -205,6 +205,10 @@ abstract class OspApp implements RustOpaqueInterface {
   /// `network`.
   Future<void> setReplyPolicy({required String postId, required String policy});
 
+  /// The card "Share my Universe" shares (ADR 0039), naming only the
+  /// people in `named`, whom the owner ticked, and only if it draws them.
+  Future<ShareCard> shareCard({required List<String> named});
+
   /// One post, or the post a reshare shares, as the node has it.
   Future<Post> showPost({required String id});
 
@@ -400,6 +404,61 @@ class ActivityPage {
           entries == other.entries &&
           unread == other.unread &&
           more == other.more;
+}
+
+/// A line between two points, by their place in `points`.
+class CardLine {
+  final int from;
+  final int to;
+
+  const CardLine({required this.from, required this.to});
+
+  @override
+  int get hashCode => from.hashCode ^ to.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is CardLine &&
+          runtimeType == other.runtimeType &&
+          from == other.from &&
+          to == other.to;
+}
+
+/// One point of a card's drawing, in the Universe's units.
+class CardPoint {
+  final double x;
+  final double y;
+
+  /// 1 for a person, more for a group.
+  final int people;
+  final bool you;
+
+  /// Only for someone the owner ticked.
+  final String? name;
+
+  const CardPoint({
+    required this.x,
+    required this.y,
+    required this.people,
+    required this.you,
+    this.name,
+  });
+
+  @override
+  int get hashCode =>
+      x.hashCode ^ y.hashCode ^ people.hashCode ^ you.hashCode ^ name.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is CardPoint &&
+          runtimeType == other.runtimeType &&
+          x == other.x &&
+          y == other.y &&
+          people == other.people &&
+          you == other.you &&
+          name == other.name;
 }
 
 class ConnectedPerson {
@@ -1320,6 +1379,50 @@ class SentReply {
           status == other.status &&
           error == other.error &&
           nextTrySecs == other.nextTrySecs;
+}
+
+/// The card "Share my Universe" shares (ADR 0039), from the node's own
+/// allowlist: rounded totals, and a drawing that names only the people the
+/// owner ticked.
+class ShareCard {
+  final PlatformInt64 people;
+  final PlatformInt64 direct;
+  final PlatformInt64 paths;
+  final PlatformInt64 bytesServed;
+
+  /// The owner first, at the centre.
+  final List<CardPoint> points;
+  final List<CardLine> lines;
+
+  const ShareCard({
+    required this.people,
+    required this.direct,
+    required this.paths,
+    required this.bytesServed,
+    required this.points,
+    required this.lines,
+  });
+
+  @override
+  int get hashCode =>
+      people.hashCode ^
+      direct.hashCode ^
+      paths.hashCode ^
+      bytesServed.hashCode ^
+      points.hashCode ^
+      lines.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is ShareCard &&
+          runtimeType == other.runtimeType &&
+          people == other.people &&
+          direct == other.direct &&
+          paths == other.paths &&
+          bytesServed == other.bytesServed &&
+          points == other.points &&
+          lines == other.lines;
 }
 
 /// Where the paths through someone's side came from.

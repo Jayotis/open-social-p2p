@@ -99,6 +99,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   UnsentPost dco_decode_box_autoadd_unsent_post(dynamic raw);
 
   @protected
+  CardLine dco_decode_card_line(dynamic raw);
+
+  @protected
+  CardPoint dco_decode_card_point(dynamic raw);
+
+  @protected
   ConnectedPerson dco_decode_connected_person(dynamic raw);
 
   @protected
@@ -145,6 +151,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   List<ActivityName> dco_decode_list_activity_name(dynamic raw);
+
+  @protected
+  List<CardLine> dco_decode_list_card_line(dynamic raw);
+
+  @protected
+  List<CardPoint> dco_decode_list_card_point(dynamic raw);
 
   @protected
   List<ConnectedPerson> dco_decode_list_connected_person(dynamic raw);
@@ -283,6 +295,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   SentReply dco_decode_sent_reply(dynamic raw);
+
+  @protected
+  ShareCard dco_decode_share_card(dynamic raw);
 
   @protected
   SideFrom dco_decode_side_from(dynamic raw);
@@ -425,6 +440,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   UnsentPost sse_decode_box_autoadd_unsent_post(SseDeserializer deserializer);
 
   @protected
+  CardLine sse_decode_card_line(SseDeserializer deserializer);
+
+  @protected
+  CardPoint sse_decode_card_point(SseDeserializer deserializer);
+
+  @protected
   ConnectedPerson sse_decode_connected_person(SseDeserializer deserializer);
 
   @protected
@@ -475,6 +496,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   List<ActivityName> sse_decode_list_activity_name(
     SseDeserializer deserializer,
   );
+
+  @protected
+  List<CardLine> sse_decode_list_card_line(SseDeserializer deserializer);
+
+  @protected
+  List<CardPoint> sse_decode_list_card_point(SseDeserializer deserializer);
 
   @protected
   List<ConnectedPerson> sse_decode_list_connected_person(
@@ -641,6 +668,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   SentReply sse_decode_sent_reply(SseDeserializer deserializer);
 
   @protected
+  ShareCard sse_decode_share_card(SseDeserializer deserializer);
+
+  @protected
   SideFrom sse_decode_side_from(SseDeserializer deserializer);
 
   @protected
@@ -803,6 +833,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_card_line(CardLine self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_card_point(CardPoint self, SseSerializer serializer);
+
+  @protected
   void sse_encode_connected_person(
     ConnectedPerson self,
     SseSerializer serializer,
@@ -859,6 +895,15 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_list_activity_name(
     List<ActivityName> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_card_line(List<CardLine> self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_list_card_point(
+    List<CardPoint> self,
     SseSerializer serializer,
   );
 
@@ -1062,6 +1107,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_sent_reply(SentReply self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_share_card(ShareCard self, SseSerializer serializer);
 
   @protected
   void sse_encode_side_from(SideFrom self, SseSerializer serializer);

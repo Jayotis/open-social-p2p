@@ -20,6 +20,7 @@ import 'people_screen.dart';
 import 'profile_screen.dart';
 import 'region_sheet.dart';
 import 'search_screen.dart';
+import 'share_universe_screen.dart';
 
 /// The Universe (ADR 0031 §1, ADR 0034): the network as a map, with your
 /// star at the centre. One canvas, panned and zoomed by hand, drawn from
@@ -701,6 +702,12 @@ class _UniverseTabState extends State<UniverseTab>
                       tooltip: 'Layers',
                       icon: Icons.layers_outlined,
                       onPressed: _pickLayer,
+                    ),
+                    _Control(
+                      tooltip: 'Share my Universe',
+                      icon: Icons.ios_share,
+                      onPressed: () =>
+                          widget.open(ShareUniverseScreen(node: node)),
                     ),
                     if ((s?.path ?? const []).isNotEmpty)
                       _Control(

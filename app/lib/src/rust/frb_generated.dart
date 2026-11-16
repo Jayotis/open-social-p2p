@@ -66,7 +66,7 @@ class RustLib extends BaseEntrypoint<RustLibApi, RustLibApiImpl, RustLibWire> {
   String get codegenVersion => '2.13.0';
 
   @override
-  int get rustContentHash => -1077229211;
+  int get rustContentHash => 761184375;
 
   static const kDefaultExternalLibraryLoaderConfig =
       ExternalLibraryLoaderConfig(
@@ -268,6 +268,11 @@ abstract class RustLibApi extends BaseApi {
     required OspApp that,
     required String postId,
     required String policy,
+  });
+
+  Future<ShareCard> crateApiOspOspAppShareCard({
+    required OspApp that,
+    required List<String> named,
   });
 
   Future<Post> crateApiOspOspAppShowPost({
@@ -1924,6 +1929,43 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
+  Future<ShareCard> crateApiOspOspAppShareCard({
+    required OspApp that,
+    required List<String> named,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerOspApp(
+            that,
+            serializer,
+          );
+          sse_encode_list_String(named, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 45,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_share_card,
+          decodeErrorData: sse_decode_AnyhowException,
+        ),
+        constMeta: kCrateApiOspOspAppShareCardConstMeta,
+        argValues: [that, named],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiOspOspAppShareCardConstMeta => const TaskConstMeta(
+    debugName: "OspApp_share_card",
+    argNames: ["that", "named"],
+  );
+
+  @override
   Future<Post> crateApiOspOspAppShowPost({
     required OspApp that,
     required String id,
@@ -1940,7 +1982,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 45,
+            funcId: 46,
             port: port_,
           );
         },
@@ -1973,7 +2015,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 46,
+            funcId: 47,
             port: port_,
           );
         },
@@ -2004,7 +2046,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 47,
+            funcId: 48,
             port: port_,
           );
         },
@@ -2041,7 +2083,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 48,
+            funcId: 49,
             port: port_,
           );
         },
@@ -2078,7 +2120,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 49,
+            funcId: 50,
             port: port_,
           );
         },
@@ -2111,7 +2153,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 50,
+            funcId: 51,
             port: port_,
           );
         },
@@ -2146,7 +2188,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 51,
+            funcId: 52,
             port: port_,
           );
         },
@@ -2187,7 +2229,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 52,
+            funcId: 53,
             port: port_,
           );
         },
@@ -2224,7 +2266,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 53,
+            funcId: 54,
             port: port_,
           );
         },
@@ -2262,7 +2304,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 54,
+            funcId: 55,
             port: port_,
           );
         },
@@ -2299,7 +2341,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 55,
+            funcId: 56,
             port: port_,
           );
         },
@@ -2329,7 +2371,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 56,
+            funcId: 57,
             port: port_,
           );
         },
@@ -2354,7 +2396,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         callFfi: () {
           final serializer = SseSerializer(generalizedFrbRustBinding);
           sse_encode_String(text, serializer);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 57)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 58)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_bool,
@@ -2377,7 +2419,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         callFfi: () {
           final serializer = SseSerializer(generalizedFrbRustBinding);
           sse_encode_String(text, serializer);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 58)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 59)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_bool,
@@ -2399,7 +2441,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       SyncTask(
         callFfi: () {
           final serializer = SseSerializer(generalizedFrbRustBinding);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 59)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 60)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_String,
@@ -2591,6 +2633,30 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  CardLine dco_decode_card_line(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 2)
+      throw Exception('unexpected arr length: expect 2 but see ${arr.length}');
+    return CardLine(from: dco_decode_u_32(arr[0]), to: dco_decode_u_32(arr[1]));
+  }
+
+  @protected
+  CardPoint dco_decode_card_point(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 5)
+      throw Exception('unexpected arr length: expect 5 but see ${arr.length}');
+    return CardPoint(
+      x: dco_decode_f_32(arr[0]),
+      y: dco_decode_f_32(arr[1]),
+      people: dco_decode_u_32(arr[2]),
+      you: dco_decode_bool(arr[3]),
+      name: dco_decode_opt_String(arr[4]),
+    );
+  }
+
+  @protected
   ConnectedPerson dco_decode_connected_person(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
@@ -2734,6 +2800,18 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   List<ActivityName> dco_decode_list_activity_name(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return (raw as List<dynamic>).map(dco_decode_activity_name).toList();
+  }
+
+  @protected
+  List<CardLine> dco_decode_list_card_line(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return (raw as List<dynamic>).map(dco_decode_card_line).toList();
+  }
+
+  @protected
+  List<CardPoint> dco_decode_list_card_point(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return (raw as List<dynamic>).map(dco_decode_card_point).toList();
   }
 
   @protected
@@ -3154,6 +3232,22 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       status: dco_decode_String(arr[5]),
       error: dco_decode_opt_String(arr[6]),
       nextTrySecs: dco_decode_opt_box_autoadd_i_64(arr[7]),
+    );
+  }
+
+  @protected
+  ShareCard dco_decode_share_card(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 6)
+      throw Exception('unexpected arr length: expect 6 but see ${arr.length}');
+    return ShareCard(
+      people: dco_decode_i_64(arr[0]),
+      direct: dco_decode_i_64(arr[1]),
+      paths: dco_decode_i_64(arr[2]),
+      bytesServed: dco_decode_i_64(arr[3]),
+      points: dco_decode_list_card_point(arr[4]),
+      lines: dco_decode_list_card_line(arr[5]),
     );
   }
 
@@ -3606,6 +3700,31 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  CardLine sse_decode_card_line(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_from = sse_decode_u_32(deserializer);
+    var var_to = sse_decode_u_32(deserializer);
+    return CardLine(from: var_from, to: var_to);
+  }
+
+  @protected
+  CardPoint sse_decode_card_point(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_x = sse_decode_f_32(deserializer);
+    var var_y = sse_decode_f_32(deserializer);
+    var var_people = sse_decode_u_32(deserializer);
+    var var_you = sse_decode_bool(deserializer);
+    var var_name = sse_decode_opt_String(deserializer);
+    return CardPoint(
+      x: var_x,
+      y: var_y,
+      people: var_people,
+      you: var_you,
+      name: var_name,
+    );
+  }
+
+  @protected
   ConnectedPerson sse_decode_connected_person(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var var_identity = sse_decode_String(deserializer);
@@ -3772,6 +3891,30 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var ans_ = <ActivityName>[];
     for (var idx_ = 0; idx_ < len_; ++idx_) {
       ans_.add(sse_decode_activity_name(deserializer));
+    }
+    return ans_;
+  }
+
+  @protected
+  List<CardLine> sse_decode_list_card_line(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    var len_ = sse_decode_i_32(deserializer);
+    var ans_ = <CardLine>[];
+    for (var idx_ = 0; idx_ < len_; ++idx_) {
+      ans_.add(sse_decode_card_line(deserializer));
+    }
+    return ans_;
+  }
+
+  @protected
+  List<CardPoint> sse_decode_list_card_point(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    var len_ = sse_decode_i_32(deserializer);
+    var ans_ = <CardPoint>[];
+    for (var idx_ = 0; idx_ < len_; ++idx_) {
+      ans_.add(sse_decode_card_point(deserializer));
     }
     return ans_;
   }
@@ -4433,6 +4576,25 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  ShareCard sse_decode_share_card(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_people = sse_decode_i_64(deserializer);
+    var var_direct = sse_decode_i_64(deserializer);
+    var var_paths = sse_decode_i_64(deserializer);
+    var var_bytesServed = sse_decode_i_64(deserializer);
+    var var_points = sse_decode_list_card_point(deserializer);
+    var var_lines = sse_decode_list_card_line(deserializer);
+    return ShareCard(
+      people: var_people,
+      direct: var_direct,
+      paths: var_paths,
+      bytesServed: var_bytesServed,
+      points: var_points,
+      lines: var_lines,
+    );
+  }
+
+  @protected
   SideFrom sse_decode_side_from(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var inner = sse_decode_i_32(deserializer);
@@ -4932,6 +5094,23 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_card_line(CardLine self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_u_32(self.from, serializer);
+    sse_encode_u_32(self.to, serializer);
+  }
+
+  @protected
+  void sse_encode_card_point(CardPoint self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_f_32(self.x, serializer);
+    sse_encode_f_32(self.y, serializer);
+    sse_encode_u_32(self.people, serializer);
+    sse_encode_bool(self.you, serializer);
+    sse_encode_opt_String(self.name, serializer);
+  }
+
+  @protected
   void sse_encode_connected_person(
     ConnectedPerson self,
     SseSerializer serializer,
@@ -5062,6 +5241,30 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_i_32(self.length, serializer);
     for (final item in self) {
       sse_encode_activity_name(item, serializer);
+    }
+  }
+
+  @protected
+  void sse_encode_list_card_line(
+    List<CardLine> self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.length, serializer);
+    for (final item in self) {
+      sse_encode_card_line(item, serializer);
+    }
+  }
+
+  @protected
+  void sse_encode_list_card_point(
+    List<CardPoint> self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.length, serializer);
+    for (final item in self) {
+      sse_encode_card_point(item, serializer);
     }
   }
 
@@ -5587,6 +5790,17 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_share_card(ShareCard self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_64(self.people, serializer);
+    sse_encode_i_64(self.direct, serializer);
+    sse_encode_i_64(self.paths, serializer);
+    sse_encode_i_64(self.bytesServed, serializer);
+    sse_encode_list_card_point(self.points, serializer);
+    sse_encode_list_card_line(self.lines, serializer);
+  }
+
+  @protected
   void sse_encode_side_from(SideFrom self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_i_32(self.index, serializer);
@@ -6095,6 +6309,11 @@ class OspAppImpl extends RustOpaque implements OspApp {
     postId: postId,
     policy: policy,
   );
+
+  /// The card "Share my Universe" shares (ADR 0039), naming only the
+  /// people in `named`, whom the owner ticked, and only if it draws them.
+  Future<ShareCard> shareCard({required List<String> named}) =>
+      RustLib.instance.api.crateApiOspOspAppShareCard(that: this, named: named);
 
   /// One post, or the post a reshare shares, as the node has it.
   Future<Post> showPost({required String id}) =>
