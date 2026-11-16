@@ -68,11 +68,14 @@ String codePart(String text) {
 
 /// Hands text to the phone's share sheet. Tests replace it.
 @visibleForTesting
-Future<void> Function(String text) shareSheet = (text) =>
-    SharePlus.instance.share(ShareParams(text: text));
+Future<void> Function(String text, String subject) shareSheet =
+    (text, subject) =>
+        SharePlus.instance.share(ShareParams(text: text, subject: subject));
 
-/// Shares [text] through the phone's share sheet.
-Future<void> shareText(String text) => shareSheet(text);
+/// Shares [text] through the phone's share sheet. [subject] is the email
+/// subject line, where the app the person picks has one.
+Future<void> shareText(String text, {String subject = 'Open Social P2P'}) =>
+    shareSheet(text, subject);
 
 /// Shares a profile: the owner's, or anyone's the node holds.
 Future<void> shareProfile(
@@ -90,6 +93,9 @@ Future<void> shareProfile(
         code: code,
         own: identity == node.paired?.identity,
       ),
+      subject: identity == node.paired?.identity
+          ? 'Follow me on Open Social P2P'
+          : '${name.isEmpty ? 'Someone' : name} on Open Social P2P',
     );
   } catch (e) {
     messenger.showSnackBar(
@@ -108,6 +114,9 @@ Future<void> sharePost(BuildContext context, HomeNode node, Post post) async {
     );
     await shareText(
       postShareText(author: post.author, text: post.text, code: code),
+      subject:
+          'A post by ${post.author.isEmpty ? 'someone' : post.author} '
+          'on Open Social P2P',
     );
   } catch (e) {
     messenger.showSnackBar(

@@ -111,6 +111,7 @@ void main() {
     late FakeApp app;
     late HomeNode node;
     late List<String> shared;
+    late List<String> subjects;
 
     setUp(() {
       root = Directory.systemTemp.createTempSync('codes_test');
@@ -124,7 +125,11 @@ void main() {
       );
       node.reachability = Reachability.online;
       shared = [];
-      shareSheet = (text) async => shared.add(text);
+      subjects = [];
+      shareSheet = (text, subject) async {
+        shared.add(text);
+        subjects.add(subject);
+      };
     });
     tearDown(() => root.deleteSync(recursive: true));
 
@@ -144,6 +149,7 @@ void main() {
       expect(shared, hasLength(1));
       expect(shared.single, startsWith('“Hello there”\nAnn, on Open'));
       expect(shared.single, endsWith(postCode));
+      expect(subjects, ['A post by Ann on Open Social P2P']);
     });
 
     /// Opens [code] from a button, as a paste or a link does.
