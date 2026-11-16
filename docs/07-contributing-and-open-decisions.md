@@ -16,6 +16,8 @@ Useful GitHub issue formats:
 
 Decisions should be recorded openly, with alternatives and reasons, before significant implementation work begins.
 
+For product features, use [doc 15](15-feature-responsibility-model.md) to split the work into **App, Client API, Home node, OSP protocol and Tests**. Do not add a peer-to-peer protocol merely to implement a new screen; add protocol only when independent nodes need a shared verifiable fact/action.
+
 ## Major open decisions
 
 1. ~~Mastodon, Friendica, another ActivityPub engine, or a purpose-built thin social layer?~~ Decided: a native protocol for Stage 1, federation through an ActivityPub bridge in Stage 2 ([ADR 0003](decisions/0003-native-social-protocol-v0.md)). How the bridge works is open.
@@ -27,7 +29,7 @@ Decisions should be recorded openly, with alternatives and reasons, before signi
 7. Which replication and eviction defaults are safe, understandable and useful?
 8. What media is publicly cacheable, and what are the enforcement boundaries for private groups?
 9. How will users without an always-on machine participate? For now they don't: joining means running a node ([ADR 0006](decisions/0006-desktop-first-always-on-node.md)), and hosted nodes would need a new decision record.
-10. How will copyright notices, safety reporting and moderation operate in a replicated network?
+10. How will copyright notices, safety reporting and moderation operate in a replicated network? Personal/node-assisted filtering is planned in [doc 19](19-node-assisted-moderation.md); public community governance is proposed in [ADR 0041](decisions/0041-public-communities-and-stewards.md), but wider safety/copyright processes remain open.
 11. What parts must remain available when the original device and all known replicas are offline?
 12. What minimum central costs remain, and who pays for relay traffic?
 
