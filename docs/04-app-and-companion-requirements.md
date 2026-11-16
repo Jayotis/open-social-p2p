@@ -78,12 +78,12 @@ Target platforms: Linux first (the maintainer's test platform), then Windows and
 - Apply the owner's blocks, mutes and content preferences before presentation/ranking.
 - Support bounded deterministic filters and, later, optional local moderation assistants without requiring AI.
 - Keep assistants behind a node policy/signing boundary; they do not receive unrestricted signing keys.
-- Community steward assistance may prioritize or suggest actions, but permanent bans/governance remain controlled by the relevant signed steward rules.
+- Community moderator assistance may prioritize or suggest actions. The first community prototype allows only reversible hides/restores and 24-hour mutes; any later permanent-ban or shared-governance system would need its own signed rules.
 - See [doc 19](19-node-assisted-moderation.md).
 
 ## Capability profiles
 
-Home, Hunter and Creator are resource/capability profiles of the same node software, not separate social roles. Additional CPU, storage or bandwidth may enable more discovery, hosting, transcoding or local AI work but never grants ranking/governance authority. See [doc 18](18-node-capability-profiles.md).
+Home, Library and Studio are resource/capability profiles of the same node software, not separate social roles. Additional CPU, storage or bandwidth may enable more discovery, hosting, transcoding or local AI work but never grants ranking/governance authority. See [doc 18](18-node-capability-profiles.md).
 
 ## Accessibility and safety
 
