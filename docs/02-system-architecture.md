@@ -4,7 +4,7 @@
 
 ## User-facing products
 
-- **Home node:** the person's persistent agent on the network ([ADR 0001](decisions/0001-home-node-architecture.md)). It runs on their desktop or another always-on machine and does the durable work: identity/signing, publishing, following, synchronization, discovery, local indexing/ranking, moderation policy, media preparation, caching and optional replica hosting. A personal node is required to join and is expected to stay on ([ADR 0006](decisions/0006-desktop-first-always-on-node.md)).
+- **Home node:** the person's persistent agent on the network ([ADR 0001](decisions/0001-home-node-architecture.md)). It runs on their desktop or another always-on machine and does the durable work: identity/signing, publishing, following, synchronization, discovery, local indexing/ranking, moderation policy, media preparation, caching and optional replica hosting. A personal node is required to join and is expected to stay on ([ADR 0006](decisions/0006-desktop-first-always-on-node.md)). Linux is first, then Windows and macOS. The software remains able to run on a server so a hosted-node option can be designed later without changing the social protocol.
 - **Mobile app:** Flutter application targeting Android and iOS. It is the person's primary display/interaction/content-capture interface and a client of its own home node only. It pairs once and reaches that node over one encrypted connection at home or away.
 - **Future clients:** desktop/web interfaces may expose comparable experiences, but they remain clients of the person's node unless a later ADR deliberately changes that boundary.
 
