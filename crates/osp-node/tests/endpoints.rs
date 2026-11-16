@@ -24,7 +24,7 @@ use osp_node::{Config, DirectRule, Node, RelayChoice};
 use osp_proto::{
     BlobHash, BoundEndpoint, CLIENT_ALPN, EndpointBinding, EndpointKind, ObjectId, PairingTicket,
     Payload, SOCIAL_ALPN,
-    framing::{read_frame, write_frame},
+    framing::{UPDATE_YOUR_NODE, read_frame, write_frame},
     rpc::{ClientRequest, ClientResponse},
     social::{SocialRequest, SocialResponse},
 };
@@ -348,6 +348,23 @@ async fn a_phone_pairs_through_a_relay_with_its_tickets_pass_and_then_needs_none
 
     // Paired, it's known by its key, with no pass.
     let conn = phone.connect(addr.clone(), CLIENT_ALPN).await.unwrap();
+    let resp = phone_request(&conn, &ClientRequest::Status).await;
+    assert!(matches!(resp, ClientResponse::Status(_)), "{resp:?}");
+
+    // A newer app's request this node doesn't know is answered in words,
+    // and the connection carries on.
+    let (mut send, mut recv) = conn.open_bi().await.unwrap();
+    let unknown = br#"{"op":"from_the_future"}"#;
+    send.write_all(&(unknown.len() as u32).to_be_bytes())
+        .await
+        .unwrap();
+    send.write_all(unknown).await.unwrap();
+    send.finish().unwrap();
+    let resp: ClientResponse = read_frame(&mut recv).await.unwrap();
+    assert!(
+        matches!(&resp, ClientResponse::Error { message } if message == UPDATE_YOUR_NODE),
+        "{resp:?}"
+    );
     let resp = phone_request(&conn, &ClientRequest::Status).await;
     assert!(matches!(resp, ClientResponse::Status(_)), "{resp:?}");
 

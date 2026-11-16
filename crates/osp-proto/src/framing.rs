@@ -66,6 +66,19 @@ where
     ))
 }
 
+/// Whether a read failed because the frame held well-formed JSON this side
+/// doesn't know: a request op or field added after it was built. The
+/// sender is newer, and this side needs an update.
+pub fn is_unknown_message(e: &anyhow::Error) -> bool {
+    e.chain()
+        .filter_map(|cause| cause.downcast_ref::<serde_json::Error>())
+        .any(serde_json::Error::is_data)
+}
+
+/// What a node answers a request it doesn't know.
+pub const UPDATE_YOUR_NODE: &str =
+    "your node doesn't know this request yet; update your node to use it";
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -110,6 +123,30 @@ mod tests {
         a.write_all(&1025u32.to_be_bytes()).await.unwrap();
         let got: Result<SocialRequest> = read_frame_max(&mut b, 1024).await;
         assert!(got.unwrap_err().to_string().contains("exceeds"));
+    }
+
+    #[tokio::test]
+    async fn an_unknown_op_is_told_apart_from_a_broken_frame() {
+        let (mut a, mut b) = tokio::io::duplex(1024);
+        let unknown = br#"{"op":"from_the_future"}"#;
+        a.write_all(&(unknown.len() as u32).to_be_bytes())
+            .await
+            .unwrap();
+        a.write_all(unknown).await.unwrap();
+        let e = read_frame::<_, SocialRequest>(&mut b).await.unwrap_err();
+        assert!(is_unknown_message(&e), "{e:#}");
+
+        let broken = b"{\"op\":";
+        a.write_all(&(broken.len() as u32).to_be_bytes())
+            .await
+            .unwrap();
+        a.write_all(broken).await.unwrap();
+        let e = read_frame::<_, SocialRequest>(&mut b).await.unwrap_err();
+        assert!(!is_unknown_message(&e), "{e:#}");
+
+        drop(a);
+        let e = read_frame::<_, SocialRequest>(&mut b).await.unwrap_err();
+        assert!(!is_unknown_message(&e), "{e:#}");
     }
 
     #[tokio::test]
