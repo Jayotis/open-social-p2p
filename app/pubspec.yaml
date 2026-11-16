@@ -72,6 +72,19 @@ flutter:
   # the material Icons class.
   uses-material-design: true
 
+  # Inter, subset to Latin (fonts/OFL.txt). Other scripts fall back to the
+  # phone's own fonts.
+  assets:
+    - fonts/OFL.txt
+  fonts:
+    - family: Inter
+      fonts:
+        - asset: fonts/Inter-Regular.otf
+        - asset: fonts/Inter-Medium.otf
+          weight: 500
+        - asset: fonts/Inter-SemiBold.otf
+          weight: 600
+
   # To add assets to your application, add an assets section, like this:
   # assets:
   #   - images/a_dot_burr.jpeg
