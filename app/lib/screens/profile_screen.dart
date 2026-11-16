@@ -188,7 +188,9 @@ class _ProfileScreenState extends State<ProfileScreen> {
     final profile = _profile;
     return Scaffold(
       // Once loaded, the sky band is the bar (see [_sky]).
-      appBar: profile == null ? SkyBar(AppBar(title: Text(_name))) : null,
+      appBar: profile == null
+          ? SkyBar(AppBar(title: Text(_name)), joinsSky: true)
+          : null,
       body: profile == null
           ? Center(
               child: _error == null
@@ -228,6 +230,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
       expandedHeight: 200,
       backgroundColor: colors.sky,
       foregroundColor: colors.onSky,
+      // Light status-bar icons on the night, on a light phone too.
+      systemOverlayStyle: SystemUiOverlayStyle.light,
       title: Text(profile.own ? 'You' : shownName(profile.name)),
       flexibleSpace: FlexibleSpaceBar(
         collapseMode: CollapseMode.pin,
