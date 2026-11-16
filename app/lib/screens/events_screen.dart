@@ -5,6 +5,7 @@ import '../network_events.dart';
 import '../node.dart';
 import '../src/rust/api/osp.dart';
 import '../theme.dart';
+import '../widgets/sky_bar.dart';
 
 /// What the owner's node did or saw in the last day (ADR 0036 §1), newest
 /// first, in plain words. Opened from the line under the map and from the
@@ -31,7 +32,7 @@ class _EventsScreenState extends State<EventsScreen> {
     final node = widget.node;
     final theme = Theme.of(context);
     return Scaffold(
-      appBar: AppBar(title: const Text('Your node today')),
+      appBar: SkyBar(AppBar(title: const Text('Your node today'))),
       body: ListenableBuilder(
         listenable: node,
         builder: (context, _) {

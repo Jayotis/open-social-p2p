@@ -9,8 +9,8 @@ import 'screens/node_summary_screen.dart';
 import 'screens/search_screen.dart';
 import 'screens/universe_tab.dart';
 import 'screens/you_tab.dart';
-import 'theme.dart';
 import 'widgets/node_mark.dart';
+import 'widgets/sky_bar.dart';
 
 /// The app's three places (ADR 0031 §1).
 enum Place { home, universe, you }
@@ -71,56 +71,57 @@ class _AppShellState extends State<AppShell> {
     final online = node.reachability == Reachability.online;
     final waiting = node.status?.activityUnread ?? 0;
     final onSky = _place == Place.universe;
-    final sky = OspColors.of(context);
     // The Universe is night in both themes: its bars, cards and buttons
     // take the dark theme, so a light phone doesn't get a pale frame
     // round the sky.
     final shell = Scaffold(
-      appBar: AppBar(
-        title: Text(switch (_place) {
-          Place.home => 'Home',
-          Place.universe => 'Universe',
-          Place.you => 'You',
-        }),
-        backgroundColor: onSky ? sky.sky : null,
-        foregroundColor: onSky ? sky.onSky : null,
-        actions: [
-          NodeMark(
-            reachability: node.reachability,
-            onTap: () => _open(NodeSummaryScreen(node: node, open: _open)),
-          ),
-          if (_place != Place.you)
-            IconButton(
-              tooltip: 'Search',
-              onPressed: () => _open(
-                SearchScreen(
-                  node: node,
-                  // The results lit up on the map (ADR 0035 §3).
-                  onMap: () {
-                    Navigator.of(context).pop();
-                    _go(Place.universe);
-                  },
+      appBar: SkyBar(
+        // On You, the stars of your own sky, which the bar joins.
+        seed: _place == Place.you ? node.paired?.identity ?? 'sky' : 'sky',
+        AppBar(
+          title: Text(switch (_place) {
+            Place.home => 'Home',
+            Place.universe => 'Universe',
+            Place.you => 'You',
+          }),
+          actions: [
+            NodeMark(
+              reachability: node.reachability,
+              onTap: () => _open(NodeSummaryScreen(node: node, open: _open)),
+            ),
+            if (_place != Place.you)
+              IconButton(
+                tooltip: 'Search',
+                onPressed: () => _open(
+                  SearchScreen(
+                    node: node,
+                    // The results lit up on the map (ADR 0035 §3).
+                    onMap: () {
+                      Navigator.of(context).pop();
+                      _go(Place.universe);
+                    },
+                  ),
                 ),
+                icon: const Icon(Icons.search),
               ),
-              icon: const Icon(Icons.search),
-            ),
-          IconButton(
-            tooltip: 'Activity',
-            onPressed: () => _open(ActivityScreen(node: node, open: _open)),
-            icon: Badge(
-              isLabelVisible: waiting > 0,
-              // Held small with large text: the badge sits on the bell at
-              // the screen's edge.
-              label: Text(
-                '$waiting',
-                textScaler: MediaQuery.textScalerOf(
-                  context,
-                ).clamp(maxScaleFactor: 1.3),
+            IconButton(
+              tooltip: 'Activity',
+              onPressed: () => _open(ActivityScreen(node: node, open: _open)),
+              icon: Badge(
+                isLabelVisible: waiting > 0,
+                // Held small with large text: the badge sits on the bell at
+                // the screen's edge.
+                label: Text(
+                  '$waiting',
+                  textScaler: MediaQuery.textScalerOf(
+                    context,
+                  ).clamp(maxScaleFactor: 1.3),
+                ),
+                child: const Icon(Icons.notifications_outlined),
               ),
-              child: const Icon(Icons.notifications_outlined),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
       body: IndexedStack(
         index: _place.index,
@@ -164,8 +165,6 @@ class _AppShellState extends State<AppShell> {
       ),
     );
     // Always wrapped, so changing place keeps each tab's state.
-    return Theme(data: onSky ? _night : Theme.of(context), child: shell);
+    return Theme(data: onSky ? ospNight : Theme.of(context), child: shell);
   }
 }
-
-final _night = ospTheme(Brightness.dark);

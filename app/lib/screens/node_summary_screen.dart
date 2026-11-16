@@ -5,6 +5,7 @@ import '../node.dart';
 import '../theme.dart';
 import 'advanced_screen.dart';
 import 'events_screen.dart';
+import '../widgets/sky_bar.dart';
 
 /// Your node in plain words (ADR 0031 §1): opened from your star in the
 /// Universe and from You. Everything technical is under Advanced details.
@@ -31,7 +32,7 @@ class _NodeSummaryScreenState extends State<NodeSummaryScreen> {
     final node = widget.node;
     final theme = Theme.of(context);
     return Scaffold(
-      appBar: AppBar(title: const Text('Your node')),
+      appBar: SkyBar(AppBar(title: const Text('Your node'))),
       body: ListenableBuilder(
         listenable: node,
         builder: (context, _) {

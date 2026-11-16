@@ -28,9 +28,15 @@ class YouTab extends StatelessWidget {
     return ListView(
       padding: const EdgeInsets.only(bottom: 88),
       children: [
-        // You on your own strip of sky, your star in starlight.
+        // You on your own strip of sky, your star in starlight, flush
+        // under the bar so the two are one sky.
         Card(
-          margin: const EdgeInsets.fromLTRB(Space.m, Space.s, Space.m, Space.s),
+          margin: const EdgeInsets.only(bottom: Space.s),
+          shape: const RoundedRectangleBorder(
+            borderRadius: BorderRadius.vertical(
+              bottom: Radius.circular(Corner.m),
+            ),
+          ),
           color: sky.sky,
           child: InkWell(
             onTap: identity == null

@@ -5,6 +5,7 @@ import '../node.dart';
 import '../src/rust/api/osp.dart';
 import 'thread_screen.dart' show confirmBlock;
 import 'trust_screen.dart' show shownName;
+import '../widgets/sky_bar.dart';
 
 /// Replies to the owner's posts from people outside their circle, waiting
 /// for an answer (ADR 0028).
@@ -86,15 +87,17 @@ class _ReplyRequestsScreenState extends State<ReplyRequestsScreen> {
     final requests = _requests;
     final online = widget.node.reachability == Reachability.online;
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('Replies waiting'),
-        actions: [
-          IconButton(
-            tooltip: 'Refresh',
-            onPressed: _busy ? null : _load,
-            icon: const Icon(Icons.refresh),
-          ),
-        ],
+      appBar: SkyBar(
+        AppBar(
+          title: const Text('Replies waiting'),
+          actions: [
+            IconButton(
+              tooltip: 'Refresh',
+              onPressed: _busy ? null : _load,
+              icon: const Icon(Icons.refresh),
+            ),
+          ],
+        ),
       ),
       body: RefreshIndicator(
         onRefresh: _load,

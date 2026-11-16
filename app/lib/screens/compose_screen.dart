@@ -8,6 +8,7 @@ import '../background_upload.dart';
 import '../format.dart';
 import '../node.dart';
 import '../src/rust/api/osp.dart';
+import '../widgets/sky_bar.dart';
 
 /// Most photos or videos in one post (the node's limit).
 const _maxAttachments = 4;
@@ -332,17 +333,19 @@ class _ComposeScreenState extends State<ComposeScreen> {
         }
       },
       child: Scaffold(
-        appBar: AppBar(
-          title: Text(widget.unsent == null ? 'New post' : 'Unsent post'),
-          actions: [
-            Padding(
-              padding: const EdgeInsets.only(right: 12),
-              child: FilledButton(
-                onPressed: canPost ? _post : null,
-                child: const Text('Post'),
+        appBar: SkyBar(
+          AppBar(
+            title: Text(widget.unsent == null ? 'New post' : 'Unsent post'),
+            actions: [
+              Padding(
+                padding: const EdgeInsets.only(right: 12),
+                child: FilledButton(
+                  onPressed: canPost ? _post : null,
+                  child: const Text('Post'),
+                ),
               ),
-            ),
-          ],
+            ],
+          ),
         ),
         body: ListView(
           padding: const EdgeInsets.all(16),

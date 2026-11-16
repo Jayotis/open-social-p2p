@@ -4,6 +4,7 @@ import '../node.dart';
 import '../theme.dart';
 import '../widgets/person_tile.dart';
 import 'search_screen.dart';
+import '../widgets/sky_bar.dart';
 
 /// "People your node found" (ADR 0035): everyone your node holds a profile
 /// of, newest post first, to browse without knowing a name. Until the
@@ -28,17 +29,19 @@ class _FoundPeopleScreenState extends State<FoundPeopleScreen> {
   Widget build(BuildContext context) {
     final node = widget.node;
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('People your node found'),
-        actions: [
-          IconButton(
-            tooltip: 'Search',
-            onPressed: () => Navigator.of(
-              context,
-            ).push(MaterialPageRoute(builder: (_) => SearchScreen(node: node))),
-            icon: const Icon(Icons.search),
-          ),
-        ],
+      appBar: SkyBar(
+        AppBar(
+          title: const Text('People your node found'),
+          actions: [
+            IconButton(
+              tooltip: 'Search',
+              onPressed: () => Navigator.of(context).push(
+                MaterialPageRoute(builder: (_) => SearchScreen(node: node)),
+              ),
+              icon: const Icon(Icons.search),
+            ),
+          ],
+        ),
       ),
       body: ListenableBuilder(
         listenable: node,

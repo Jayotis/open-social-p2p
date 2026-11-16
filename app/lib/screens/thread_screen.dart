@@ -8,6 +8,7 @@ import '../src/rust/api/osp.dart';
 import '../widgets/like_button.dart';
 import 'likers_screen.dart';
 import 'trust_screen.dart' show shownName;
+import '../widgets/sky_bar.dart';
 
 /// The most a reply may be (ADR 0028), in bytes of UTF-8.
 const maxReplyBytes = 4000;
@@ -216,15 +217,17 @@ class _ThreadScreenState extends State<ThreadScreen> {
     final bytes = utf8.encode(_text.text.trim()).length;
     final tooLong = bytes > maxReplyBytes;
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('Replies'),
-        actions: [
-          IconButton(
-            tooltip: 'Refresh',
-            onPressed: _loading || _busy ? null : _load,
-            icon: const Icon(Icons.refresh),
-          ),
-        ],
+      appBar: SkyBar(
+        AppBar(
+          title: const Text('Replies'),
+          actions: [
+            IconButton(
+              tooltip: 'Refresh',
+              onPressed: _loading || _busy ? null : _load,
+              icon: const Icon(Icons.refresh),
+            ),
+          ],
+        ),
       ),
       body: Column(
         children: [

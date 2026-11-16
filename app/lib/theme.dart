@@ -8,6 +8,7 @@
 library;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 /// Spacing steps. Paddings and gaps use these, not loose numbers.
 abstract final class Space {
@@ -337,14 +338,17 @@ ThemeData ospTheme(Brightness brightness) {
   return base.copyWith(
     textTheme: text,
     scaffoldBackgroundColor: scheme.surface,
-    appBarTheme: AppBarTheme(
-      backgroundColor: scheme.surface,
-      foregroundColor: scheme.onSurface,
+    // The top bar is the Universe's sky in both themes (see SkyBar), with
+    // light status-bar icons over it.
+    appBarTheme: const AppBarTheme(
+      backgroundColor: Palette.night,
+      foregroundColor: Palette.moon,
       surfaceTintColor: Colors.transparent,
       scrolledUnderElevation: 0,
       centerTitle: false,
+      systemOverlayStyle: SystemUiOverlayStyle.light,
       // No titleTextStyle: Material's default is titleLarge in the bar's
-      // foregroundColor, which a bar on the sky sets.
+      // foregroundColor.
     ),
     cardTheme: CardThemeData(
       color: scheme.surfaceContainerLow,

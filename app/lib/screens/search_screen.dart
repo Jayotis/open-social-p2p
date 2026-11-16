@@ -6,6 +6,7 @@ import '../search_lights.dart';
 import '../src/rust/api/osp.dart';
 import '../widgets/person_tile.dart';
 import '../widgets/post_card.dart';
+import '../widgets/sky_bar.dart';
 
 /// Looks through the posts and profiles your node holds: from those you
 /// follow, and from the directories it reads (ADR 0015). It's only that node's
@@ -108,31 +109,33 @@ class _SearchScreenState extends State<SearchScreen> {
         results != null &&
         (results.people.isNotEmpty || results.posts.isNotEmpty);
     return Scaffold(
-      appBar: AppBar(
-        title: TextField(
-          controller: _words,
-          focusNode: _box,
-          autofocus: widget.words == null,
-          textInputAction: TextInputAction.search,
-          decoration: const InputDecoration(
-            hintText: 'Search your node',
-            border: InputBorder.none,
-          ),
-          onSubmitted: (_) => _search(),
-        ),
-        actions: [
-          IconButton(
-            tooltip: 'Search',
-            onPressed: _pressed,
-            icon: const Icon(Icons.search),
-          ),
-          if (mappable)
-            IconButton(
-              tooltip: 'Show on the map',
-              onPressed: () => _showOnMap(results),
-              icon: const Icon(Icons.map_outlined),
+      appBar: SkyBar(
+        AppBar(
+          title: TextField(
+            controller: _words,
+            focusNode: _box,
+            autofocus: widget.words == null,
+            textInputAction: TextInputAction.search,
+            decoration: const InputDecoration(
+              hintText: 'Search your node',
+              border: InputBorder.none,
             ),
-        ],
+            onSubmitted: (_) => _search(),
+          ),
+          actions: [
+            IconButton(
+              tooltip: 'Search',
+              onPressed: _pressed,
+              icon: const Icon(Icons.search),
+            ),
+            if (mappable)
+              IconButton(
+                tooltip: 'Show on the map',
+                onPressed: () => _showOnMap(results),
+                icon: const Icon(Icons.map_outlined),
+              ),
+          ],
+        ),
       ),
       body: _found == null
           ? const _Message(

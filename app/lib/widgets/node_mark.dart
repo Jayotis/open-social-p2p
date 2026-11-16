@@ -98,11 +98,30 @@ class _NodeMarkState extends State<NodeMark>
         child: image,
       ),
     };
+    // A soft glow behind it, as the Universe's stars have: starlight
+    // while the node runs, fainter while reaching it, none when it can't.
+    final star = OspColors.of(context).yourStar;
+    final glow = switch (r) {
+      Reachability.online => 0.3,
+      Reachability.offline => 0.0,
+      _ => 0.15,
+    };
     return IconButton(
       key: const Key('node-mark'),
       tooltip: words,
       onPressed: widget.onTap,
-      icon: mark,
+      icon: DecoratedBox(
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          gradient: RadialGradient(
+            colors: [
+              star.withValues(alpha: glow),
+              star.withValues(alpha: 0),
+            ],
+          ),
+        ),
+        child: Padding(padding: const EdgeInsets.all(6), child: mark),
+      ),
     );
   }
 }
