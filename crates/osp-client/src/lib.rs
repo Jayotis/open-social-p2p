@@ -511,6 +511,14 @@ impl Client {
 
     /// "How are we connected?" (ADR 0037): the paths the node knows to
     /// `actor`. Only for the owner's own tap: it may ask `actor`'s node once.
+    /// The card "Share my Universe" shares (ADR 0039), naming only `named`.
+    pub async fn share_card(&self, named: Vec<PublicKey>) -> Result<osp_proto::share::ShareCard> {
+        match self.request(&ClientRequest::ShareCard { named }).await? {
+            ClientResponse::ShareCard { card } => Ok(card),
+            _ => bail!("unexpected reply to ShareCard"),
+        }
+    }
+
     pub async fn how_connected(&self, actor: PublicKey) -> Result<connected::Connection> {
         match self.request(&ClientRequest::HowConnected { actor }).await? {
             ClientResponse::Connected { connection } => Ok(connection),

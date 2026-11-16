@@ -386,6 +386,9 @@ impl Core {
             ClientRequest::HowConnected { actor } => ClientResponse::Connected {
                 connection: self.how_connected(actor).await?,
             },
+            ClientRequest::ShareCard { named } => ClientResponse::ShareCard {
+                card: self.share_card(&named)?,
+            },
             ClientRequest::Pair { .. }
             | ClientRequest::ReadBlob { .. }
             | ClientRequest::ResumeUpload { .. }

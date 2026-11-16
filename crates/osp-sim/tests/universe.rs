@@ -26,6 +26,7 @@ use osp_proto::{
     EndpointId, ObjectId,
     connected::{self, Hop, How, SideFrom},
     rpc::{ClientRequest, ClientResponse, ProfileItemKind, StatusInfo},
+    share::{CARD_GRID, ShareCard, two_figures},
     universe::{Layer, Level, MAX_SNAPSHOT_BYTES, SKY_INNER, Snapshot},
 };
 
@@ -140,6 +141,83 @@ async fn universe(node: &Node) -> (Snapshot, String) {
         panic!("no snapshot")
     };
     (*snapshot, text)
+}
+
+async fn share_card(node: &Node, named: Vec<iroh::PublicKey>) -> (ShareCard, String) {
+    let resp = call(node, ClientRequest::ShareCard { named }).await;
+    let text = serde_json::to_string(&resp).unwrap();
+    let ClientResponse::ShareCard { card } = resp else {
+        panic!("no card")
+    };
+    (card, text)
+}
+
+/// Whether `text` holds a date, as 2026-11-16 or 20261116.
+fn holds_a_date(text: &str) -> bool {
+    let b = text.as_bytes();
+    let digits = |from: usize, n: usize| b[from..from + n].iter().all(u8::is_ascii_digit);
+    (0..b.len().saturating_sub(9)).any(|i| {
+        (digits(i, 4) && b[i + 4] == b'-' && digits(i + 5, 2) && b[i + 7] == b'-')
+            || (b[i..i + 2] == *b"20" && digits(i, 8))
+    })
+}
+
+/// "Share my Universe" (ADR 0039's gate), on the world of the test below:
+/// with nobody ticked, the card names nobody; ticked, Jimmy is named, and
+/// Fred, in the public sky, isn't drawn, so isn't. No machine, ID or time;
+/// rounded totals; points on the card's grid. Gives the card as sent, for
+/// the address checks.
+async fn check_share_card(kim: &Node, snapshot: &Snapshot) -> String {
+    let id_of = |name: &str| {
+        snapshot
+            .people
+            .iter()
+            .find(|p| p.name == name)
+            .unwrap()
+            .actor
+    };
+    let (plain, plain_text) = share_card(kim, vec![]).await;
+    let (card, card_text) = share_card(kim, vec![id_of("Jimmy"), id_of("Fred")]).await;
+    for name in ["Kim", "Jimmy", "Alice", "Bob", "Fred", "directory"] {
+        assert!(!plain_text.contains(name), "an unticked card names {name}");
+    }
+    let named: Vec<&str> = card
+        .points
+        .iter()
+        .filter_map(|p| p.name.as_deref())
+        .collect();
+    assert_eq!(named, ["Jimmy"], "{card:?}");
+    for name in ["Kim", "Alice", "Bob", "Fred", "directory"] {
+        assert!(!card_text.contains(name), "the card names {name}");
+    }
+    for m in &snapshot.machines {
+        assert!(!card_text.contains(&m.words), "the card holds {}", m.words);
+    }
+    for p in &snapshot.people {
+        assert!(!card_text.contains(&p.actor.to_string()), "an ID");
+        assert!(!card_text.contains(&hex(p.actor.as_bytes())), "an ID");
+        // Nobody in the sky is drawn where the sky would put them.
+        if p.found_through.is_some() {
+            assert!(card.points.iter().all(|c| c.at != p.at), "{:?}", p.at);
+        }
+    }
+    assert!(!holds_a_date(&card_text), "a time: {card_text}");
+    assert!(card.points[0].you && card.points.iter().filter(|p| p.you).count() == 1);
+    assert_eq!((card.direct, card.paths), (1, 1), "{card:?}");
+    assert!(card.people >= 4, "{card:?}");
+    for n in [card.people, card.direct, card.paths, card.bytes_served] {
+        assert_eq!(n, two_figures(n));
+    }
+    for p in &card.points {
+        for c in p.at {
+            assert_eq!(c % CARD_GRID, 0.0, "{:?}", p.at);
+        }
+    }
+    let drawn = card.points.len() as u32;
+    assert!(card.lines.iter().all(|[a, b]| a < &drawn && b < &drawn));
+    assert_eq!(plain.points.len(), card.points.len());
+
+    card_text
 }
 
 fn hex(bytes: &[u8]) -> String {
@@ -323,6 +401,8 @@ async fn the_universe_holds_no_address_and_opening_it_sends_nothing() {
     assert!(!snapshot.machines.is_empty(), "Kim's machine knows none");
     assert!(text.len() <= MAX_SNAPSHOT_BYTES);
 
+    let card_text = Box::pin(check_share_card(&kim, &snapshot)).await;
+
     // No full endpoint ID, onion address, IP address or relay URL.
     let world = [&directory, &kim, &jimmy, &alice, &bob, &fred];
     for node in world {
@@ -337,6 +417,7 @@ async fn the_universe_holds_no_address_and_opening_it_sends_nothing() {
         forbidden.extend(s.relay);
         for f in forbidden {
             assert!(!text.contains(&f), "the snapshot holds {f}");
+            assert!(!card_text.contains(&f), "the card holds {f}");
         }
     }
 

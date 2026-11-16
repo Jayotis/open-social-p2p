@@ -13,6 +13,9 @@ use iroh::PublicKey;
 use osp_proto::{
     MediaKind, Payload, SignedObject,
     rpc::ClientResponse,
+    share::{
+        CardPoint, MAX_CARD_LINES, MAX_CARD_NAMES, MAX_CARD_POINTS, ShareCard, on_grid, two_figures,
+    },
     universe::{
         ALL_LAYERS, ActivityBand, GroupPoint, LINE_DAYS, LIT_DAYS, Layer, Level, Line, LineKind,
         MAX_LINES, MAX_POINTS, MAX_SNAPSHOT_BYTES, MachinePoint, MachineState, NetworkTotals,
@@ -21,6 +24,7 @@ use osp_proto::{
 };
 
 use crate::{
+    admission::{Side, counted_vouches},
     db::now_ms,
     machine,
     meet::{Seen, SeenState},
@@ -106,6 +110,116 @@ impl Core {
             network,
             sky: shown.sky,
         })
+    }
+
+    /// Answers `ShareCard` (ADR 0039): the card to share outside OSP, from
+    /// its own allowlist. Its drawing is the top of the placed world only:
+    /// the public sky is left out, as its people are placed by their keys,
+    /// so a point there would say who it is. Only people in `named` the
+    /// drawing shows are named, and nothing else on it names anyone.
+    pub(crate) fn share_card(&self, named: &[PublicKey]) -> Result<ShareCard> {
+        let me = self.signer.identity();
+        let now = now_ms();
+        let acts = self.lines(now)?;
+        let everyone = self.everyone(&acts)?;
+        let world = self
+            .atlas
+            .world(&self.db, world_input(&everyone, &acts, &me, now))?;
+
+        // Kim at the centre, then the groups and people the top opens to.
+        let mut points = vec![CardPoint {
+            at: [0.0, 0.0],
+            people: 1,
+            you: true,
+            name: None,
+        }];
+        let mut drawn: HashMap<PublicKey, u32> = HashMap::from([(me, 0)]);
+        if let Some(opened) = world.open(Region::Top, &me, MAX_CARD_POINTS - 1) {
+            for g in &opened.groups {
+                points.push(CardPoint {
+                    at: on_grid(world.placed.group_at[*g as usize]),
+                    people: two_figures(world.tree.groups[*g as usize].people as u64) as u32,
+                    you: false,
+                    name: None,
+                });
+            }
+            let names: HashMap<PublicKey, &str> = everyone
+                .iter()
+                .map(|(p, _)| (p.actor, p.name.as_str()))
+                .collect();
+            let mut naming = named
+                .iter()
+                .filter(|a| **a != me)
+                .take(MAX_CARD_NAMES)
+                .collect::<HashSet<_>>();
+            for p in &opened.people {
+                let key = *world.key(*p);
+                let Some((_, at)) = world.placed(&key) else {
+                    continue;
+                };
+                if key == me || points.len() >= MAX_CARD_POINTS {
+                    continue;
+                }
+                let name = match naming.remove(&key) {
+                    true => names
+                        .get(&key)
+                        .filter(|n| !n.is_empty())
+                        .map(|n| n.to_string()),
+                    false => None,
+                };
+                drawn.insert(key, points.len() as u32);
+                points.push(CardPoint {
+                    at: on_grid(at),
+                    people: 1,
+                    you: false,
+                    name,
+                });
+            }
+        }
+        if let Some((_, at)) = world.placed(&me) {
+            points[0].at = on_grid(at);
+        }
+        let mut pairs = HashSet::new();
+        let lines = acts
+            .iter()
+            .filter_map(|act| {
+                let (a, b) = (*drawn.get(&act.from)?, *drawn.get(&act.to)?);
+                pairs.insert((a.min(b), a.max(b))).then_some([a, b])
+            })
+            .take(MAX_CARD_LINES)
+            .collect();
+
+        let followed: HashSet<PublicKey> = self.db.follows()?.iter().map(|f| f.actor).collect();
+        let known: HashSet<PublicKey> = self.db.trusted()?.iter().map(|t| t.actor).collect();
+        let direct = followed.union(&known).filter(|a| **a != me).count() as u64;
+        let people = everyone.iter().filter(|(p, _)| p.actor != me).count() as u64;
+        let (_, bytes_served) = self.db.shared_served()?;
+        Ok(ShareCard {
+            people: two_figures(people),
+            direct: two_figures(direct),
+            paths: two_figures(self.side_paths()?),
+            bytes_served: two_figures(bytes_served),
+            points,
+            lines,
+        })
+    }
+
+    /// Separate chains from the owner's side into the wider network (ADR
+    /// 0037): from the farthest people on the side as last gathered, to
+    /// the owner, sharing nobody but her. The same count admission makes.
+    fn side_paths(&self) -> Result<u64> {
+        let signed: Vec<SignedObject> = self.db.side()?.into_iter().map(|v| v.signed).collect();
+        let side = Side::new(self.signer.identity(), &counted_vouches(&self.db, &signed)?);
+        let Some(far) = side.steps.values().max().copied() else {
+            return Ok(0);
+        };
+        let farthest: HashSet<PublicKey> = side
+            .steps
+            .iter()
+            .filter(|(_, s)| **s == far)
+            .map(|(p, _)| *p)
+            .collect();
+        Ok(side.separate_chains(&farthest).len() as u64)
     }
 
     /// Everyone the node holds a profile of, the owner first, each with the

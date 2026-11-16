@@ -11,6 +11,7 @@ pub mod framing;
 pub mod machine;
 pub mod object;
 pub mod rpc;
+pub mod share;
 pub mod social;
 pub mod ticket;
 pub mod types;

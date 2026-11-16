@@ -383,6 +383,13 @@ pub enum ClientRequest {
     HowConnected {
         actor: PublicKey,
     },
+    /// "Share my Universe" (ADR 0039): the card to share outside OSP, from
+    /// its own allowlist. Only the people in `named`, whom the owner
+    /// ticked, are named on it, and only if it draws them.
+    ShareCard {
+        #[serde(default)]
+        named: Vec<PublicKey>,
+    },
 }
 
 /// Most items in one page of `ProfileItems`.
@@ -624,6 +631,10 @@ pub enum ClientResponse {
     /// The answer to `HowConnected`.
     Connected {
         connection: Connection,
+    },
+    /// The answer to `ShareCard`.
+    ShareCard {
+        card: crate::share::ShareCard,
     },
     Error {
         message: String,
