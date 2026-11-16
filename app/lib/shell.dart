@@ -70,7 +70,10 @@ class _AppShellState extends State<AppShell> {
     final waiting = node.status?.activityUnread ?? 0;
     final onSky = _place == Place.universe;
     final sky = OspColors.of(context);
-    return Scaffold(
+    // The Universe is night in both themes: its bars, cards and buttons
+    // take the dark theme, so a light phone doesn't get a pale frame
+    // round the sky.
+    final shell = Scaffold(
       appBar: AppBar(
         title: Text(switch (_place) {
           Place.home => 'Home',
@@ -147,5 +150,9 @@ class _AppShellState extends State<AppShell> {
         ],
       ),
     );
+    // Always wrapped, so changing place keeps each tab's state.
+    return Theme(data: onSky ? _night : Theme.of(context), child: shell);
   }
 }
+
+final _night = ospTheme(Brightness.dark);

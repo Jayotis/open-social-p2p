@@ -1055,7 +1055,12 @@ class _Labels {
       return TextPainter(
         text: TextSpan(
           text: text,
-          style: TextStyle(color: color, fontSize: size),
+          style: TextStyle(
+            color: color,
+            fontSize: size,
+            fontFamily: Fonts.family,
+            fontWeight: FontWeight.w500,
+          ),
         ),
         textDirection: TextDirection.ltr,
         maxLines: 1,
@@ -1146,12 +1151,6 @@ class _Map extends CustomPainter {
       );
     }
   }
-
-  static const _reshared = Color(0xFF7F95E8);
-  static const _creditedEarly = Color(0xFFE8C46A);
-  static const _group = Color(0xFF9AAEFF);
-  static const _near = Color(0xFFE6EBFF);
-  static const _followed = Color(0xFFB9CCFF);
 
   /// Faint background stars, the same each time: decoration, not people.
   static final List<(Offset, double, double)> _dust = () {
@@ -1247,7 +1246,9 @@ class _Map extends CustomPainter {
       line
         ..strokeWidth = min(0.8 + _log2(l.count + 1) * 0.6, 3)
         ..color =
-            (l.kind == LineKind.creditedEarly ? _creditedEarly : _reshared)
+            (l.kind == LineKind.creditedEarly
+                    ? colors.creditedEarly
+                    : colors.reshared)
                 .withValues(alpha: touches ? 0.8 : 0.35);
       canvas.drawLine(a, b, line);
     }
@@ -1265,7 +1266,7 @@ class _Map extends CustomPainter {
         canvas,
         at,
         r,
-        _group,
+        colors.group,
         (0.45 + g.bright / 100 * 0.5) * _shade(g.lit, found),
       );
       _count(canvas, at, r, g.people);
@@ -1289,7 +1290,7 @@ class _Map extends CustomPainter {
       final inSky = p.group == null && p.step == null;
       final color = inSky
           ? colors.distantStar
-          : (p.followed || p.known ? _followed : _near);
+          : (p.followed || p.known ? colors.followed : colors.near);
       final r = _personRadius(p.bright) * (few ? 1.8 : 1);
       final found = _foundPerson(p);
       final shade = _shade(p.lit, found);
@@ -1355,8 +1356,6 @@ class _Map extends CustomPainter {
     }
   }
 
-  static const _kept = Color(0xFF6FD6C2);
-
   /// The paths of "How are we connected?" (ADR 0037 §3): the owner's own
   /// follows and the people she knows in one colour, signed reshares and
   /// credits in theirs, and a gap dashed, with nobody inside.
@@ -1368,9 +1367,9 @@ class _Map extends CustomPainter {
         ..strokeWidth = 2.5
         ..strokeCap = StrokeCap.round
         ..color = switch (l.how) {
-          HopKind.follows || HopKind.knows => _followed,
-          HopKind.reshared => _reshared,
-          HopKind.creditedEarly => _creditedEarly,
+          HopKind.follows || HopKind.knows => colors.followed,
+          HopKind.reshared => colors.reshared,
+          HopKind.creditedEarly => colors.creditedEarly,
           HopKind.gap => colors.onSkyQuiet,
         }.withValues(alpha: 0.95);
       if (l.how != HopKind.gap) {
@@ -1423,8 +1422,10 @@ class _Map extends CustomPainter {
           final a = from == null ? far(angle) : camera.toScreen(from);
           final b = to == null ? far(angle) : camera.toScreen(to);
           final color = kept
-              ? _kept
-              : (e.kind == EventKind.served ? colors.yourStar : _reshared);
+              ? colors.kept
+              : (e.kind == EventKind.served
+                    ? colors.yourStar
+                    : colors.reshared);
           canvas.drawLine(
             a,
             b,
@@ -1453,7 +1454,7 @@ class _Map extends CustomPainter {
             Paint()
               ..strokeWidth = 2.5
               ..strokeCap = StrokeCap.round
-              ..color = _reshared.withValues(alpha: 0.9 * fade),
+              ..color = colors.reshared.withValues(alpha: 0.9 * fade),
           );
       }
     }

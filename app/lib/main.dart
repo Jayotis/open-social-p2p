@@ -1,6 +1,8 @@
 import 'dart:io';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:path_provider/path_provider.dart';
 
 import 'device_key.dart';
@@ -15,6 +17,11 @@ import 'uploads.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  LicenseRegistry.addLicense(() async* {
+    yield LicenseEntryWithLineBreaks([
+      'Inter',
+    ], await rootBundle.loadString('fonts/OFL.txt'));
+  });
   await RustLib.init();
   HomeNode? node;
   String? error;
