@@ -277,6 +277,9 @@ pub(crate) struct Core {
     /// The owner's "How are we connected?" taps that asked someone's node
     /// this hour (ADR 0037), all counted under this node's own ID.
     pub connected_asks: PerHour,
+    /// New likes taken this hour (ADR 0038): each node's, and everyone's
+    /// together under this node's own ID.
+    pub like_senders: PerHour,
     /// Throwaway keys made to ask someone's node who vouched for them.
     pub throwaways_made: std::sync::atomic::AtomicUsize,
     /// Wakes the telling of credits given and reshares made (ADR 0029).
@@ -637,6 +640,7 @@ impl Node {
             vouch_questions: PerHour::default(),
             place_questions: PerHour::default(),
             connected_asks: PerHour::default(),
+            like_senders: PerHour::default(),
             throwaways_made: Default::default(),
             tell_vouches_now: Notify::new(),
             named_hosts: NamedHosts::default(),

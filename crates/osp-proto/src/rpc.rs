@@ -211,6 +211,18 @@ pub enum ClientRequest {
         #[serde(default)]
         after: u64,
     },
+    /// Likes `post` as this node's owner (ADR 0038), or with `liked` false
+    /// takes the like back. Sent to the post's creator's node, again and
+    /// again for 7 days until it answers. A reshare's ID likes the post it
+    /// shares. Answered with `Ok` once kept, before it's sent.
+    Like {
+        post: ObjectId,
+        liked: bool,
+    },
+    /// Who likes one of the owner's own posts (ADR 0038), newest first.
+    Likes {
+        post: ObjectId,
+    },
     /// The owner's replies to others' posts, newest first, and where each
     /// stands.
     SentReplies,
@@ -487,6 +499,16 @@ pub enum ClientResponse {
         replies: Vec<ReplyInfo>,
         #[serde(default)]
         more: bool,
+        /// How many people like the post (ADR 0038), as its creator's node
+        /// says, and whether the owner is one of them, as theirs has it.
+        #[serde(default)]
+        likes: u64,
+        #[serde(default)]
+        liked: bool,
+    },
+    /// Who likes one of the owner's posts, newest first.
+    Likes {
+        likes: Vec<LikeInfo>,
     },
     /// A reply was signed and kept, and where it stands.
     ReplySent {
@@ -951,6 +973,16 @@ pub struct ReplyInfo {
     /// Its place in the thread, for reading on `after` it. 0 for a request.
     #[serde(default)]
     pub seq: u64,
+}
+
+/// Someone who likes one of the owner's posts (ADR 0038).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LikeInfo {
+    pub actor: PublicKey,
+    /// Their name, from the profile that came with the like.
+    pub name: String,
+    /// When they liked it, as their like says.
+    pub published: String,
 }
 
 /// One of the owner's replies to someone else's post, as their node has it.

@@ -241,6 +241,13 @@ enum Command {
         /// What you say, at most 4,000 bytes
         text: String,
     },
+    /// Like someone's post. Your node keeps trying their node for 7 days until
+    /// it answers; only they see who likes it
+    Like { post: ObjectId },
+    /// Take back your like of a post
+    Unlike { post: ObjectId },
+    /// List who likes one of your posts, newest first
+    Likes { post: ObjectId },
     /// Show the replies to a post, and who may reply to it. Others' posts are
     /// read without showing who you are, a page at a time
     Replies {
@@ -748,6 +755,9 @@ async fn main() -> Result<()> {
             post,
             content: text,
         },
+        Command::Like { post } => ClientRequest::Like { post, liked: true },
+        Command::Unlike { post } => ClientRequest::Like { post, liked: false },
+        Command::Likes { post } => ClientRequest::Likes { post },
         Command::Replies { post, after } => ClientRequest::Thread { post, after },
         Command::SentReplies => ClientRequest::SentReplies,
         Command::ReplyRequests => ClientRequest::ReplyRequests,
@@ -1734,7 +1744,16 @@ fn print(resp: ClientResponse, json: bool) -> Result<()> {
             policy,
             replies,
             more,
+            likes,
+            liked,
         } => {
+            let you = if liked { ", you among them" } else { "" };
+            match likes {
+                0 if liked => println!("You like it; its creator's node hasn't counted it yet."),
+                0 => {}
+                1 => println!("1 person likes it{you}."),
+                n => println!("{n} people like it{you}."),
+            }
             let who = match policy {
                 ReplyPolicy::Off => "nobody",
                 ReplyPolicy::Circle => "the creator's circle",
@@ -1748,6 +1767,19 @@ fn print(resp: ClientResponse, json: bool) -> Result<()> {
             if more && let Some(last) = replies.last() {
                 println!();
                 println!("More follow: add `--after {}`.", last.seq);
+            }
+        }
+        ClientResponse::Likes { likes } => {
+            if likes.is_empty() {
+                println!("Nobody has liked it yet.");
+            }
+            for like in &likes {
+                let name = if like.name.is_empty() {
+                    "Someone"
+                } else {
+                    &like.name
+                };
+                println!("{name}  {}  {}", like.actor.fmt_short(), like.published);
             }
         }
         ClientResponse::ReplySent { reply } => print_sent_reply(&reply),

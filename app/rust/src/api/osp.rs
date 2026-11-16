@@ -1003,6 +1003,7 @@ impl OspApp {
             policy,
             replies,
             more,
+            ..
         } = self
             .client
             .request(&ClientRequest::Thread {

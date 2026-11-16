@@ -399,6 +399,11 @@ impl Core {
                         debug!(%actor, "skipping a found-early credit in an outbox");
                         continue;
                     }
+                    // Sent only to the post's creator's node (ADR 0038).
+                    Payload::Like(_) | Payload::Undo(_) => {
+                        debug!(%actor, "skipping a like in an outbox");
+                        continue;
+                    }
                     _ => {}
                 }
                 // Deleted by its author, or the post it reshares: an old
@@ -451,7 +456,9 @@ impl Core {
                     | Payload::Key(_)
                     | Payload::Delete(_)
                     | Payload::ForwardDelete(_)
-                    | Payload::FoundEarly(_) => {}
+                    | Payload::FoundEarly(_)
+                    | Payload::Like(_)
+                    | Payload::Undo(_) => {}
                 }
             }
             self.db.set_follow_synced(&follow.actor, cursor)?;

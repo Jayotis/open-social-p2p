@@ -141,6 +141,7 @@ impl Core {
             policy: self.reply_policy(&req.post)?,
             replies,
             more,
+            likes: self.db.like_count(&req.post)?,
         })
     }
 
@@ -190,6 +191,7 @@ impl Core {
                 policy,
                 replies,
                 more,
+                likes,
             } => {
                 ensure!(
                     replies.len() <= MAX_THREAD_PAGE,
@@ -218,6 +220,8 @@ impl Core {
                     policy,
                     replies: infos,
                     more,
+                    likes,
+                    liked: self.likes_post(root)?,
                 })
             }
             RepliesResponse::Deleted { delete } => {

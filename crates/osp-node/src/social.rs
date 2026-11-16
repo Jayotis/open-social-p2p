@@ -506,6 +506,10 @@ impl Core {
                 state: self.deleted_reply(remote, &delete, &profile)?,
                 show_vouches: false,
             },
+            SocialRequest::Like { like, profile } => self.received_like(remote, &like, &profile)?,
+            SocialRequest::Unlike { undo, profile } => {
+                self.received_unlike(remote, &undo, &profile)?
+            }
             SocialRequest::ShowVouches { reply, side } => SocialResponse::Reply {
                 state: self.shown_vouches(remote, &reply, &side).await?,
                 show_vouches: false,
