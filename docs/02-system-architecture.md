@@ -4,9 +4,11 @@
 
 ## User-facing products
 
-- **Home node:** the person's agent on the network ([ADR 0001](decisions/0001-home-node-architecture.md)). It runs on their desktop (Linux first, then Windows and macOS) or another always-on machine and does the heavy work: identity, publishing, following and syncing other people's posts, prefetching media, transcoding, and optional replica hosting. A personal node is required to join and is expected to stay on ([ADR 0006](decisions/0006-desktop-first-always-on-node.md)); the software stays able to run on a server so hosted nodes could be offered later.
-- **Mobile app:** Flutter application targeting Android first, then iOS. It is a client of its own home node only: it pairs once by QR code and then reaches the node over one encrypted connection, at home or away. Feed, profiles, video, posting and account management.
-- **Web client:** Comparable experience in a browser; technology undecided.
+- **Home node:** the person's persistent agent on the network ([ADR 0001](decisions/0001-home-node-architecture.md)). It runs on their desktop or another always-on machine and does the durable work: identity/signing, publishing, following, synchronization, discovery, local indexing/ranking, moderation policy, media preparation, caching and optional replica hosting. A personal node is required to join and is expected to stay on ([ADR 0006](decisions/0006-desktop-first-always-on-node.md)).
+- **Mobile app:** Flutter application targeting Android and iOS. It is the person's primary display/interaction/content-capture interface and a client of its own home node only. It pairs once and reaches that node over one encrypted connection at home or away.
+- **Future clients:** desktop/web interfaces may expose comparable experiences, but they remain clients of the person's node unless a later ADR deliberately changes that boundary.
+
+The development split is formalized in [Feature Responsibility Model](15-feature-responsibility-model.md): **App -> Client API -> Home node -> OSP protocol -> Tests**. Product experiences such as Home, Universe, Media and Front Page are views backed by the same node, not separate networks.
 
 ## Logical subsystems
 
@@ -20,7 +22,7 @@ Manages identity, account onboarding, posts, follow relationships, group members
 
 ### 2. Media ownership layer
 
-The desktop companion maintains a private local library and a separately approved set of publishable assets. It may generate thumbnails or video renditions, track content hashes, enforce quotas, and decide which assets may be shared.
+The home node maintains a private local library and a separately approved set of publishable assets. It may generate thumbnails or video renditions, track content hashes, enforce quotas, and decide which assets may be shared.
 
 A home node must never expose arbitrary filesystem paths or private material simply because it is installed.
 
@@ -54,9 +56,9 @@ Design a documented account-mapping model. Advanced federation settings can be d
 
 **Publish public media:** User picks a photo or video on the phone -> it is uploaded to their home node -> the node transcodes it ([ADR 0005](decisions/0005-media-profile-v1.md)), stores the rendition and publishes a signed post whose attachments carry the BLAKE3 hashes ([ADR 0004](decisions/0004-signed-objects-and-ids.md)) -> followers' nodes sync the post and fetch and verify the media.
 
-**Reshare public media:** User reshares the post socially -> if peer hosting is enabled, their companion downloads and validates eligible content -> it offers a replica subject to quotas and source policy. Likes alone must not implicitly replicate media.
+**Reshare public media:** User reshares the post socially in the app -> their home node performs the signed/network action -> if peer hosting is enabled, the node downloads and validates eligible content and offers a replica subject to quotas and source policy. Likes alone must not implicitly replicate media.
 
-**View media:** Client discovers candidate providers -> prefers healthy, available sources -> verifies chunks before presentation -> optionally helps distribute permitted public chunks according to device and privacy settings.
+**View media:** The app asks its home node for content -> the node discovers/selects candidate providers, retrieves and verifies media, and streams/serves it to the app. The phone does not join the public swarm for ordinary viewing.
 
 **Offline owner:** Other authorized replicas may continue supplying content. If none remain, media is unavailable until a node returns or an optional host/cache is used.
 
@@ -71,6 +73,16 @@ Design a documented account-mapping model. Advanced federation settings can be d
 - Media access controls and audience changes.
 - Storage/relay selection and failure handling.
 - Shared login and service identity mapping.
+
+## Planning documents
+
+Post-Product-Alpha product work is split by responsibility rather than implemented as monolithic screens:
+
+- [doc 15](15-feature-responsibility-model.md): common app/client/node/protocol/test boundary;
+- [doc 16](16-front-page-and-communities.md): Front Page/public community implementation plan;
+- [doc 17](17-media-experience.md): continuous Media/short-form video plan;
+- [doc 18](18-node-capability-profiles.md): Home/Hunter/Creator resource profiles;
+- [doc 19](19-node-assisted-moderation.md): local scripts/AI and steward-assistance boundary.
 
 ## Evaluation
 
