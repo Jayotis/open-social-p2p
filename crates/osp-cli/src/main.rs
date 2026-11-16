@@ -341,6 +341,13 @@ enum Command {
         /// Their name or the start of their identity
         who: String,
     },
+    /// The card "Share my Universe" would share (ADR 0039): rounded totals
+    /// and a drawing that names only the people given here.
+    ShareCard {
+        /// Someone to name on it, by name or the start of their identity
+        #[arg(long = "name")]
+        names: Vec<String>,
+    },
     /// Forget a paired phone, by its name or the start of its ID
     Unpair { device: String },
     /// Run the node in the background, starting at boot (systemd user service)
@@ -668,6 +675,13 @@ async fn main() -> Result<()> {
         Command::Connected { who } => ClientRequest::HowConnected {
             actor: find_person(&home, Some(&who)).await?,
         },
+        Command::ShareCard { names } => {
+            let mut named = Vec::new();
+            for who in &names {
+                named.push(find_person(&home, Some(who)).await?);
+            }
+            ClientRequest::ShareCard { named }
+        }
         Command::Post { text, attach } => ClientRequest::Post {
             content: text,
             // The daemon has its own working directory, so send absolute paths.
@@ -2050,6 +2064,28 @@ fn print(resp: ClientResponse, json: bool) -> Result<()> {
             gathering,
         } => print_vouches(&vouchers, &side, gathered_secs_ago, gathering),
         ClientResponse::Connected { connection } => print_connection(&connection),
+        ClientResponse::ShareCard { card } => {
+            println!(
+                "{} people discovered, {} direct connections",
+                card.people, card.direct
+            );
+            println!("{} separate paths into the wider network", card.paths);
+            println!("{} served peer to peer", size(card.bytes_served));
+            let named: Vec<&str> = card
+                .points
+                .iter()
+                .filter_map(|p| p.name.as_deref())
+                .collect();
+            println!(
+                "Draws {} points and {} lines; names {}.",
+                card.points.len(),
+                card.lines.len(),
+                match named.is_empty() {
+                    true => "nobody".to_string(),
+                    false => named.join(", "),
+                }
+            );
+        }
         ClientResponse::Trust { requests, trusted } => {
             print_trust_requests(&requests);
             println!();
