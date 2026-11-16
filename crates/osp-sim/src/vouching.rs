@@ -39,6 +39,7 @@ use osp_node::{
 };
 use osp_proto::{
     Announce, Note, ObjectId, Payload, Person, PublicKey, SOCIAL_ALPN, SecretKey, SignedObject,
+    connected::How,
     framing::{read_frame, write_frame},
     rpc::{ClientRequest, ClientResponse, SentStatus},
     social::{MAX_SIDE_VOUCHES, ReplyState, SocialRequest, SocialResponse},
@@ -509,6 +510,12 @@ pub struct MeetingRecord {
     /// For each distance from the creator, 0 to 6: separate meeting points
     /// within it, and the people in the creator's circle they come through.
     pub within: [(usize, usize); 7],
+    /// The paths kept for "How are we connected?" (ADR 0037), and the gaps
+    /// on them.
+    pub paths: usize,
+    pub gaps: usize,
+    /// Whether they agree with the meeting and with the plan (`check_paths`).
+    pub paths_agree: bool,
 }
 
 impl MeetingRecord {
@@ -548,8 +555,16 @@ pub const TABLES: [Table; 7] = [
     Table(2, 3, 4),
 ];
 
-impl From<Meeting> for MeetingRecord {
-    fn from(m: Meeting) -> Self {
+impl MeetingRecord {
+    /// A creator's meeting, its paths checked against the plan.
+    fn of(m: &Meeting, plan: &Plan, ids: &HashMap<PublicKey, usize>, creator: usize) -> Self {
+        let paths_agree = match check_paths(m, plan, ids, creator) {
+            Ok(()) => true,
+            Err(e) => {
+                tracing::warn!(creator, "a meeting's paths don't agree: {e:#}");
+                false
+            }
+        };
         Self {
             side: m.side,
             asked: m.asked,
@@ -560,8 +575,73 @@ impl From<Meeting> for MeetingRecord {
             through: m.through,
             let_in: m.let_in,
             within: m.within,
+            paths: m.paths.len(),
+            gaps: m
+                .paths
+                .iter()
+                .flat_map(|p| &p.hops)
+                .filter(|h| matches!(h.how, How::Gap { .. }))
+                .count(),
+            paths_agree,
         }
     }
+}
+
+/// ADR 0037's gate, for one meeting on `creator`'s node: a path for each
+/// meeting point counted, each ending at the replier (that their chains are
+/// separate is `admission`'s own test); each starts with someone the creator follows,
+/// each gap is an answer a circle node gave, and each signed line is a
+/// vouch the side carried or a reshare the creator's node holds, and
+/// happened by the plan wherever the plan knows both people.
+fn check_paths(
+    m: &Meeting,
+    plan: &Plan,
+    ids: &HashMap<PublicKey, usize>,
+    creator: usize,
+) -> Result<()> {
+    ensure!(
+        m.paths.len() == m.points,
+        "{} paths for {} meeting points",
+        m.paths.len(),
+        m.points
+    );
+    for path in &m.paths {
+        ensure!(path.end() == Some(m.replier), "a path ends elsewhere");
+        let first = path.hops.first().context("an empty path")?;
+        ensure!(first.how == How::Follows, "starts with {:?}", first.how);
+        let root = ids.get(&first.to).context("starts with someone unknown")?;
+        ensure!(
+            plan.follows[creator].contains(root),
+            "starts with someone not followed"
+        );
+        let mut at = first.to;
+        for (i, hop) in path.hops.iter().enumerate().skip(1) {
+            match hop.how {
+                How::Gap { steps } => {
+                    ensure!(i == 1, "a gap past the creator's side");
+                    ensure!(
+                        m.answers.contains(&(at, hop.to, steps)),
+                        "a gap no circle node gave"
+                    );
+                }
+                How::Reshared | How::CreditedEarly => {
+                    let carried = m.vouches.contains(&(at, hop.to, hop.how));
+                    let held = i == 1 && hop.how == How::Reshared;
+                    ensure!(carried || held, "a line neither carried nor held");
+                    if let (Some(&a), Some(&b)) = (ids.get(&at), ids.get(&hop.to)) {
+                        let happened = match hop.how {
+                            How::Reshared => plan.reshares[a].contains(&b),
+                            _ => plan.reshares[b].contains(&a),
+                        };
+                        ensure!(happened, "a line the plan never made: {a} to {b}");
+                    }
+                }
+                How::Follows | How::Knows => bail!("a known line past the first"),
+            }
+            at = hop.to;
+        }
+    }
+    Ok(())
 }
 
 /// One replier's gathering of their side.
@@ -866,7 +946,9 @@ pub async fn run(s: &VouchScenario) -> Result<VouchReport> {
                 planned_distance: r.distance,
                 status: format!("{status:?}"),
                 published: status == SentStatus::Published,
-                meeting: meetings.get(&(r.replier, r.creator)).map(|m| (*m).into()),
+                meeting: meetings
+                    .get(&(r.replier, r.creator))
+                    .map(|m| MeetingRecord::of(m, &plan, &w.ids, r.creator)),
             }
         })
         .collect();
@@ -886,7 +968,7 @@ pub async fn run(s: &VouchScenario) -> Result<VouchReport> {
             planned_distance: (c == plan.creators[0]).then_some(5),
             status: format!("{state:?}"),
             published: state == Some(ReplyState::Published),
-            meeting: meeting.map(Into::into),
+            meeting: meeting.map(|m| MeetingRecord::of(&m, &plan, &w.ids, c)),
         });
     }
 
@@ -1473,5 +1555,11 @@ mod tests {
         );
         assert!(report.max_gather_asked() <= 80);
         assert!(report.max_asked() <= MAX_QUESTIONS);
+        // ADR 0037's gate: every meeting's paths agree with what it counted
+        // and with the plan, and every reply let in has them.
+        let met: Vec<MeetingRecord> = report.outcomes.iter().filter_map(|o| o.meeting).collect();
+        assert!(met.iter().all(|m| m.paths_agree), "{met:#?}");
+        assert!(met.iter().any(|m| m.let_in && m.paths > 0));
+        assert!(met.iter().any(|m| m.gaps > 0), "{met:#?}");
     }
 }

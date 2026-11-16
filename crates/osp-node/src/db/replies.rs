@@ -428,11 +428,11 @@ impl Db {
     }
 
     /// Keeps what the meeting of a replier's side with the owner's world
-    /// found, as JSON.
-    pub fn set_found(&self, id: &ObjectId, found: &str) -> Result<()> {
+    /// found, and the paths it found, both as JSON.
+    pub fn set_found(&self, id: &ObjectId, found: &str, paths: &str) -> Result<()> {
         self.conn().execute(
-            "UPDATE received_replies SET found = ?2 WHERE id = ?1",
-            params![id.to_string(), found],
+            "UPDATE received_replies SET found = ?2, paths = ?3 WHERE id = ?1",
+            params![id.to_string(), found, paths],
         )?;
         Ok(())
     }
@@ -620,7 +620,7 @@ mod tests {
             assert!(db.take_side(&r.id).unwrap());
             r.id
         });
-        db.set_found(&met, "{}").unwrap();
+        db.set_found(&met, "{}", "[]").unwrap();
         assert!(!db.take_side(&stopped).unwrap());
 
         // The node starts again: only the meeting that never ended is undone.
