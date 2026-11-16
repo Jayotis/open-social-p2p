@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 
+import 'format.dart';
 import 'node.dart';
+import 'osp_codes.dart';
 import 'screens/activity_screen.dart';
 import 'screens/compose_screen.dart';
 import 'screens/first_run_screen.dart';
@@ -9,6 +11,7 @@ import 'screens/node_summary_screen.dart';
 import 'screens/search_screen.dart';
 import 'screens/universe_tab.dart';
 import 'screens/you_tab.dart';
+import 'src/rust/api/osp.dart';
 import 'widgets/node_mark.dart';
 import 'widgets/sky_bar.dart';
 
@@ -36,6 +39,20 @@ class _AppShellState extends State<AppShell> {
         .then((_) => _node.checkUnsent());
   }
 
+  /// Opens an OSP code from a link, or says what's wrong with it.
+  Future<void> _openCode(String text) async {
+    final SharedCode code;
+    try {
+      code = findOspCode(text: text) ?? readOspCode(text: text);
+    } catch (e) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(describeError(e))));
+      return;
+    }
+    await openOspCode(context, _node, code);
+  }
+
   void _go(Place place) {
     _node.watchingUniverse = place == Place.universe;
     if (place == Place.universe) _node.loadUniverse();
@@ -60,6 +77,12 @@ class _AppShellState extends State<AppShell> {
     if (node.takeMapWanted() && _place != Place.universe) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted) _go(Place.universe);
+      });
+    }
+    // An `osp:` link brought a code.
+    if (node.takeCodeWanted() case final text?) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _openCode(text);
       });
     }
     // A notification asked for Activity.

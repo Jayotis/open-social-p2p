@@ -1,5 +1,6 @@
 import 'dart:io';
 
+import 'package:app_links/app_links.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -45,6 +46,14 @@ Future<void> main() async {
     node = await HomeNode.open(dir.path, key, uploads);
   } catch (e) {
     error = describeError(e);
+  }
+  // An `osp:` link tapped elsewhere, the one that started the app among
+  // them (ADR 0039 §4). The shell opens it once the phone is paired.
+  if (node case final node?) {
+    AppLinks().uriLinkStream.listen(
+      (uri) => node.openCode(uri.toString()),
+      onError: (Object _) {},
+    );
   }
   runApp(PhoneApp(node: node, startupError: error));
 }

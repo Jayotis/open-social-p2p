@@ -134,7 +134,26 @@ void main() {
     tester,
   ) async {
     await open(tester);
-    expect(find.byTooltip('More'), findsNWidgets(2));
+    // Every post can be shared; only yours deleted.
+    expect(find.byTooltip('More'), findsNWidgets(3));
+    Future<void> menuOf(String text) async {
+      final card = find.ancestor(
+        of: find.text(text),
+        matching: find.byType(PostCard),
+      );
+      await tester.tap(
+        find.descendant(of: card, matching: find.byTooltip('More')),
+      );
+      await tester.pumpAndSettle();
+    }
+
+    await menuOf('theirs');
+    expect(find.text('Share'), findsOneWidget);
+    expect(find.text('Delete'), findsNothing);
+    await tester.tapAt(Offset.zero);
+    await tester.pumpAndSettle();
+    await menuOf('mine');
+    expect(find.text('Delete'), findsOneWidget);
   });
 
   testWidgets('your own post says how many reshared it', (tester) async {

@@ -44,6 +44,17 @@
                 <action android:name="android.intent.action.MAIN"/>
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
+            <!-- app_links reads links; Flutter's own deep linking would
+                 push them as routes. -->
+            <meta-data android:name="flutter_deeplinking_enabled" android:value="false"/>
+            <!-- osp:person/... and osp:post/... codes open the app
+                 (ADR 0039 §4). -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+                <category android:name="android.intent.category.BROWSABLE"/>
+                <data android:scheme="osp"/>
+            </intent-filter>
         </activity>
         <service
             android:name=".UploadService"

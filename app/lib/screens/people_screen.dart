@@ -4,14 +4,17 @@ import 'package:qr_flutter/qr_flutter.dart';
 
 import '../format.dart';
 import '../node.dart';
+import '../osp_codes.dart';
 import '../src/rust/api/osp.dart';
 import 'scan_screen.dart';
 import 'trust_screen.dart';
 import '../widgets/sky_bar.dart';
 
 /// Following works by exchanging invite codes (follow codes in ADR 0003):
-/// show yours, or scan someone else's. People you follow can be marked as
-/// people you know, or asked to say they know you (ADR 0013).
+/// show yours, or scan someone else's. An OSP code (ADR 0039 §4) works
+/// wherever an invite code does, and one copied is offered when the screen
+/// opens. People you follow can be marked as people you know, or asked to
+/// say they know you (ADR 0013).
 class PeopleScreen extends StatefulWidget {
   const PeopleScreen({super.key, required this.node});
 
@@ -25,6 +28,43 @@ class _PeopleScreenState extends State<PeopleScreen> {
   late final Future<String> _invite = widget.node.app.invite();
   late Future<List<Followed>> _following = widget.node.app.following();
   bool _busy = false;
+
+  /// An OSP code found on the clipboard as the screen opened.
+  SharedCode? _copied;
+
+  @override
+  void initState() {
+    super.initState();
+    _checkClipboard();
+  }
+
+  /// Reads the clipboard once, here where codes are expected: Android says
+  /// so each time an app reads it, so the app reads it nowhere else.
+  Future<void> _checkClipboard() async {
+    if (!await Clipboard.hasStrings()) return;
+    final text = (await Clipboard.getData(Clipboard.kTextPlain))?.text;
+    if (text == null || !mounted) return;
+    final code = findOspCode(text: text);
+    if (code == null || code.actor == widget.node.paired?.identity) return;
+    setState(() => _copied = code);
+  }
+
+  Future<void> _open(SharedCode code) async {
+    setState(() {
+      _copied = null;
+      _busy = true;
+    });
+    try {
+      await openOspCode(context, widget.node, code);
+    } finally {
+      if (mounted) {
+        setState(() {
+          _busy = false;
+          _following = widget.node.app.following();
+        });
+      }
+    }
+  }
 
   /// Runs [action], then says [done], or why it failed.
   Future<void> _do(Future<void> Function() action, String done) async {
@@ -73,14 +113,27 @@ class _PeopleScreenState extends State<PeopleScreen> {
   }
 
   Future<void> _follow(String? ticket) async {
-    if (ticket == null || ticket.isEmpty) return;
+    if (ticket == null || ticket.trim().isEmpty) return;
     final messenger = ScaffoldMessenger.of(context);
     if (!isFollowTicket(text: ticket)) {
-      messenger.showSnackBar(
-        const SnackBar(
-          content: Text("That isn't an invite code. It starts with OSP1."),
-        ),
-      );
+      // A whole shared message may be pasted, words and all.
+      final SharedCode code;
+      try {
+        code = findOspCode(text: ticket) ?? readOspCode(text: codePart(ticket));
+      } catch (e) {
+        messenger.showSnackBar(
+          SnackBar(
+            content: Text(
+              ticket.toLowerCase().contains('osp:')
+                  ? describeError(e)
+                  : "That isn't an invite code or an OSP code. Invite codes "
+                        'start with OSP1, OSP codes with osp:.',
+            ),
+          ),
+        );
+        return;
+      }
+      await _open(code);
       return;
     }
     setState(() => _busy = true);
@@ -118,8 +171,9 @@ class _PeopleScreenState extends State<PeopleScreen> {
         builder: (_) => ScanScreen(
           title: 'Scan an invite code',
           hint: "Point the camera at someone's invite code.",
-          accept: (text) => isFollowTicket(text: text),
-          wrongCode: "That's not an invite code.",
+          accept: (text) =>
+              isFollowTicket(text: text) || findOspCode(text: text) != null,
+          wrongCode: "That's not an invite code or an OSP code.",
         ),
       ),
     );
@@ -134,6 +188,33 @@ class _PeopleScreenState extends State<PeopleScreen> {
       body: ListView(
         padding: const EdgeInsets.all(24),
         children: [
+          if (_copied case final copied?) ...[
+            Card(
+              margin: EdgeInsets.zero,
+              child: ListTile(
+                leading: const Icon(Icons.content_paste),
+                title: Text(
+                  copied.post == null
+                      ? 'You copied an OSP code for someone.'
+                      : 'You copied an OSP code for a post.',
+                ),
+                subtitle: Row(
+                  mainAxisAlignment: MainAxisAlignment.end,
+                  children: [
+                    TextButton(
+                      onPressed: () => setState(() => _copied = null),
+                      child: const Text('Not now'),
+                    ),
+                    FilledButton(
+                      onPressed: _busy ? null : () => _open(copied),
+                      child: const Text('Open it'),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            const SizedBox(height: 24),
+          ],
           Text('Your invite code', style: theme.textTheme.titleMedium),
           const SizedBox(height: 8),
           const Text('Anyone who scans this can follow your public posts.'),
@@ -154,11 +235,27 @@ class _PeopleScreenState extends State<PeopleScreen> {
                       backgroundColor: Colors.white,
                     ),
                   ),
-                  TextButton.icon(
-                    onPressed: () =>
-                        Clipboard.setData(ClipboardData(text: ticket.data!)),
-                    icon: const Icon(Icons.copy),
-                    label: const Text('Copy as text'),
+                  Wrap(
+                    alignment: WrapAlignment.center,
+                    children: [
+                      TextButton.icon(
+                        onPressed: () => Clipboard.setData(
+                          ClipboardData(text: ticket.data!),
+                        ),
+                        icon: const Icon(Icons.copy),
+                        label: const Text('Copy as text'),
+                      ),
+                      TextButton.icon(
+                        onPressed: () => shareProfile(
+                          context,
+                          widget.node,
+                          identity: widget.node.paired?.identity ?? '',
+                          name: '',
+                        ),
+                        icon: const Icon(Icons.share),
+                        label: const Text('Share'),
+                      ),
+                    ],
                   ),
                 ],
               );
@@ -167,7 +264,10 @@ class _PeopleScreenState extends State<PeopleScreen> {
           const Divider(height: 48),
           Text('Follow someone', style: theme.textTheme.titleMedium),
           const SizedBox(height: 8),
-          const Text('Scan their invite code, or paste it.'),
+          const Text(
+            'Scan their invite code, or paste it. An OSP code someone shared '
+            'works here too.',
+          ),
           const SizedBox(height: 16),
           FilledButton.icon(
             onPressed: _busy ? null : _scan,
@@ -179,9 +279,15 @@ class _PeopleScreenState extends State<PeopleScreen> {
             onPressed: _busy
                 ? null
                 : () async => _follow(
-                    await askForCode(context, 'Paste an invite code'),
+                    await askForCode(context, 'Paste an invite or OSP code'),
                   ),
-            child: const Text('Paste an invite code'),
+            child: const Text('Paste a code'),
+          ),
+          const SizedBox(height: 8),
+          TextButton.icon(
+            onPressed: () => shareText(aboutOspText()),
+            icon: const Icon(Icons.campaign_outlined),
+            label: const Text('Tell someone about OSP'),
           ),
           if (_busy)
             const Padding(

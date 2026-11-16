@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../format.dart';
 import '../node.dart';
+import '../osp_codes.dart';
 import '../screens/image_screen.dart';
 import '../screens/player_screen.dart';
 import '../screens/profile_screen.dart';
@@ -195,14 +196,24 @@ class PostCard extends StatelessWidget {
                     ),
                   ),
                 ),
-                if (post.deletable != null)
-                  PopupMenuButton<String>(
-                    tooltip: 'More',
-                    icon: Icon(Icons.more_horiz, color: quiet?.color),
-                    enabled: online,
-                    onSelected: (_) => _delete(context),
-                    itemBuilder: (_) => const [
-                      PopupMenuItem(
+                PopupMenuButton<String>(
+                  tooltip: 'More',
+                  icon: Icon(Icons.more_horiz, color: quiet?.color),
+                  enabled: online,
+                  onSelected: (choice) => choice == 'delete'
+                      ? _delete(context)
+                      : sharePost(context, node, post),
+                  itemBuilder: (_) => [
+                    const PopupMenuItem(
+                      value: 'share',
+                      child: ListTile(
+                        leading: Icon(Icons.share),
+                        title: Text('Share'),
+                        contentPadding: EdgeInsets.zero,
+                      ),
+                    ),
+                    if (post.deletable != null)
+                      const PopupMenuItem(
                         value: 'delete',
                         child: ListTile(
                           leading: Icon(Icons.delete_outline),
@@ -210,10 +221,8 @@ class PostCard extends StatelessWidget {
                           contentPadding: EdgeInsets.zero,
                         ),
                       ),
-                    ],
-                  )
-                else
-                  const SizedBox(height: 48),
+                  ],
+                ),
               ],
             ),
           ),

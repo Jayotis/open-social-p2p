@@ -120,6 +120,10 @@ class HomeNode extends ChangeNotifier with WidgetsBindingObserver {
   /// Set when a notification asks for Activity.
   bool activityWanted = false;
 
+  /// An OSP code an `osp:` link brought (ADR 0039 §4), until the shell
+  /// opens it.
+  String? codeWanted;
+
   /// Whether the phone asked to show notifications, once.
   File? _askedToNotify;
 
@@ -561,6 +565,19 @@ class HomeNode extends ChangeNotifier with WidgetsBindingObserver {
   bool takeActivityWanted() {
     final wanted = activityWanted;
     activityWanted = false;
+    return wanted;
+  }
+
+  /// Opens an OSP code, as tapping an `osp:` link does.
+  void openCode(String code) {
+    codeWanted = code;
+    notifyListeners();
+  }
+
+  /// Takes a link's OSP code to open.
+  String? takeCodeWanted() {
+    final wanted = codeWanted;
+    codeWanted = null;
     return wanted;
   }
 

@@ -6,7 +6,7 @@
 import '../frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `activity_item`, `found_person`, `liker`, `node_info`, `path_hop`, `post`, `profile_of`, `progress`, `reply_info`, `report_to`, `run_post`, `sent_reply`, `trust_entry`, `universe_event`, `universe`
+// These functions are ignored because they are not marked as `pub`: `activity_item`, `found_person`, `invite_for`, `liker`, `node_info`, `path_hop`, `post`, `profile_of`, `progress`, `reply_info`, `report_to`, `run_post`, `sent_reply`, `shared_code`, `trust_entry`, `universe_event`, `universe`
 // These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`
 
 /// A new device key, as 64 hex digits, for the app to keep in the phone's
@@ -20,6 +20,15 @@ bool isPairingTicket({required String text}) =>
 /// Whether text looks like a follow ticket.
 bool isFollowTicket({required String text}) =>
     RustLib.instance.api.crateApiOspIsFollowTicket(text: text);
+
+/// Reads an OSP code, such as one pasted where an invite code goes. A
+/// malformed one fails with a message to show as it is.
+SharedCode readOspCode({required String text}) =>
+    RustLib.instance.api.crateApiOspReadOspCode(text: text);
+
+/// The first OSP code in `text`, as on the clipboard, if any.
+SharedCode? findOspCode({required String text}) =>
+    RustLib.instance.api.crateApiOspFindOspCode(text: text);
 
 // Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<OspApp>>
 abstract class OspApp implements RustOpaqueInterface {
@@ -44,6 +53,13 @@ abstract class OspApp implements RustOpaqueInterface {
   /// Asks someone the node follows to trust the owner, with a note saying
   /// who they are. Their node never says whether it did.
   Future<void> askTrust({required String identity, required String note});
+
+  /// An OSP code for someone (ADR 0039 §4): the owner, or anyone whose
+  /// profile the node holds.
+  Future<String> codeForPerson({required String identity});
+
+  /// An OSP code for a post, with its author's invite code in it.
+  Future<String> codeForPost({required String postId, required String author});
 
   /// Carries on sending the pending post where it stopped.
   Stream<PostProgress> continuePost();
@@ -1423,6 +1439,43 @@ class ShareCard {
           bytesServed == other.bytesServed &&
           points == other.points &&
           lines == other.lines;
+}
+
+/// What an OSP code shares (ADR 0039 §4): a person, or a post and its
+/// author.
+class SharedCode {
+  /// The code, written out in full.
+  final String code;
+
+  /// The invite code inside it: the person's, or the post author's.
+  final String invite;
+
+  /// The person, or the post's author.
+  final String actor;
+
+  /// The post's ID, for a post code.
+  final String? post;
+
+  const SharedCode({
+    required this.code,
+    required this.invite,
+    required this.actor,
+    this.post,
+  });
+
+  @override
+  int get hashCode =>
+      code.hashCode ^ invite.hashCode ^ actor.hashCode ^ post.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is SharedCode &&
+          runtimeType == other.runtimeType &&
+          code == other.code &&
+          invite == other.invite &&
+          actor == other.actor &&
+          post == other.post;
 }
 
 /// Where the paths through someone's side came from.

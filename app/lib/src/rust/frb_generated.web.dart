@@ -81,6 +81,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   SavedFeed dco_decode_box_autoadd_saved_feed(dynamic raw);
 
   @protected
+  SharedCode dco_decode_box_autoadd_shared_code(dynamic raw);
+
+  @protected
   int dco_decode_box_autoadd_u_32(dynamic raw);
 
   @protected
@@ -249,6 +252,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   SavedFeed? dco_decode_opt_box_autoadd_saved_feed(dynamic raw);
 
   @protected
+  SharedCode? dco_decode_opt_box_autoadd_shared_code(dynamic raw);
+
+  @protected
   int? dco_decode_opt_box_autoadd_u_32(dynamic raw);
 
   @protected
@@ -298,6 +304,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   ShareCard dco_decode_share_card(dynamic raw);
+
+  @protected
+  SharedCode dco_decode_shared_code(dynamic raw);
 
   @protected
   SideFrom dco_decode_side_from(dynamic raw);
@@ -416,6 +425,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   SavedFeed sse_decode_box_autoadd_saved_feed(SseDeserializer deserializer);
+
+  @protected
+  SharedCode sse_decode_box_autoadd_shared_code(SseDeserializer deserializer);
 
   @protected
   int sse_decode_box_autoadd_u_32(SseDeserializer deserializer);
@@ -614,6 +626,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  SharedCode? sse_decode_opt_box_autoadd_shared_code(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   int? sse_decode_opt_box_autoadd_u_32(SseDeserializer deserializer);
 
   @protected
@@ -669,6 +686,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   ShareCard sse_decode_share_card(SseDeserializer deserializer);
+
+  @protected
+  SharedCode sse_decode_shared_code(SseDeserializer deserializer);
 
   @protected
   SideFrom sse_decode_side_from(SseDeserializer deserializer);
@@ -802,6 +822,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_box_autoadd_saved_feed(
     SavedFeed self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_shared_code(
+    SharedCode self,
     SseSerializer serializer,
   );
 
@@ -1049,6 +1075,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_opt_box_autoadd_shared_code(
+    SharedCode? self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_opt_box_autoadd_u_32(int? self, SseSerializer serializer);
 
   @protected
@@ -1110,6 +1142,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_share_card(ShareCard self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_shared_code(SharedCode self, SseSerializer serializer);
 
   @protected
   void sse_encode_side_from(SideFrom self, SseSerializer serializer);
