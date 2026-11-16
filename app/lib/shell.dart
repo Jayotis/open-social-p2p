@@ -78,6 +78,8 @@ class _AppShellState extends State<AppShell> {
       appBar: SkyBar(
         // On You, the stars of your own sky, which the bar joins.
         seed: _place == Place.you ? node.paired?.identity ?? 'sky' : 'sky',
+        joinsSky: _place != Place.home,
+        light: Theme.of(context).brightness == Brightness.light,
         AppBar(
           title: Text(switch (_place) {
             Place.home => 'Home',

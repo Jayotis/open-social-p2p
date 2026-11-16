@@ -338,15 +338,17 @@ ThemeData ospTheme(Brightness brightness) {
   return base.copyWith(
     textTheme: text,
     scaffoldBackgroundColor: scheme.surface,
-    // The top bar is the Universe's sky in both themes (see SkyBar), with
-    // light status-bar icons over it.
-    appBarTheme: const AppBarTheme(
-      backgroundColor: Palette.night,
-      foregroundColor: Palette.moon,
+    // The top bar: the Universe's sky in dark, the pale ground in light
+    // except where it meets a sky (see SkyBar).
+    appBarTheme: AppBarTheme(
+      backgroundColor: dark ? Palette.night : scheme.surface,
+      foregroundColor: scheme.onSurface,
       surfaceTintColor: Colors.transparent,
       scrolledUnderElevation: 0,
       centerTitle: false,
-      systemOverlayStyle: SystemUiOverlayStyle.light,
+      systemOverlayStyle: dark
+          ? SystemUiOverlayStyle.light
+          : SystemUiOverlayStyle.dark,
       // No titleTextStyle: Material's default is titleLarge in the bar's
       // foregroundColor.
     ),
