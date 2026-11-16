@@ -38,6 +38,11 @@ fn sim(net: &SimNet, round: Duration) -> SimSettings {
             still_answering: STILL_ANSWERING,
             ..MeetingTimes::default()
         },
+        // A node's first read of its directories is a real action: it meets
+        // the directory's machine, an event. Unlike the test's reads, those
+        // happen at a random time in the first 10 minutes, so they're kept
+        // out of the test.
+        first_read_wait: NO_ROUNDS,
         ..SimSettings::default()
     }
 }
@@ -322,13 +327,25 @@ async fn each_event_comes_from_a_real_action() {
     // Named only as the resharer hosting it, if at all.
     assert!(host.is_none() || host == Some(jimmy_id), "{host:?}");
 
-    // Fred is listed, and Kim's read brings him.
+    // Fred is listed, and Kim's read brings him. The directory takes in
+    // Fred's listing a moment after his ask, so Kim reads until he's there.
     assert!(fred.ask_to_be_listed().await);
-    call(&kim, ClientRequest::ReadDirectories).await;
-    let found = event_when(&kim, "Kim finding Fred", |w| {
-        matches!(w, EventWhat::Found { .. })
-    })
-    .await;
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let found = loop {
+        call(&kim, ClientRequest::ReadDirectories).await;
+        let (all, text) = events(&kim).await;
+        if let Some(e) = all
+            .into_iter()
+            .find(|e| matches!(e.what, EventWhat::Found { .. }))
+        {
+            break e;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for Kim finding Fred: {text}"
+        );
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    };
     let req = ClientRequest::Universe {
         level: Default::default(),
         region: None,
