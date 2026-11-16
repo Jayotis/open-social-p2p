@@ -101,7 +101,7 @@ async fn code_ticket(alice: &Node) -> FollowTicket {
 async fn open(kim: &Node, id: ObjectId, ticket: &FollowTicket) -> FeedItem {
     let req = ClientRequest::OpenPost {
         id,
-        ticket: ticket.to_string(),
+        ticket: Some(ticket.to_string()),
     };
     let ClientResponse::Item { item } = call(kim, req).await else {
         panic!("not an item")
@@ -135,6 +135,26 @@ async fn feed_ids(kim: &Node) -> Vec<ObjectId> {
         ClientResponse::Feed { items } => items.iter().map(|i| i.id).collect(),
         other => panic!("unexpected {other:?}"),
     }
+}
+
+/// Recently opened, by ID.
+async fn recently_opened(kim: &Node) -> Vec<ObjectId> {
+    match call(kim, ClientRequest::OpenedPosts).await {
+        ClientResponse::Feed { items } => {
+            assert!(items.iter().all(|i| i.opened));
+            items.iter().map(|i| i.id).collect()
+        }
+        other => panic!("unexpected {other:?}"),
+    }
+}
+
+/// Opens a post from Recently opened: no code.
+async fn reopen(kim: &Node, id: ObjectId) -> FeedItem {
+    let req = ClientRequest::OpenPost { id, ticket: None };
+    let ClientResponse::Item { item } = call(kim, req).await else {
+        panic!("not an item")
+    };
+    item
 }
 
 /// Kim's public, media and direct endpoints.
@@ -182,10 +202,17 @@ async fn an_opened_post_shows_with_its_media_from_a_throwaway_key_and_in_no_list
 
     // Opening it again shows it as opened still.
     assert!(open(&kim, id, &ticket).await.opened);
+    // Recently opened lists it, and opens it with no code.
+    assert_eq!(recently_opened(&kim).await, [id]);
+    assert!(reopen(&kim, id).await.opened);
 
     // Remove: the post and its media go now, and Alice's profile with them.
     call(&kim, ClientRequest::ForgetOpened { id }).await;
+    assert!(recently_opened(&kim).await.is_empty());
     assert!(show(&kim, id).await.is_err());
+    // Without a code, a post the node no longer holds doesn't open.
+    let req = ClientRequest::OpenPost { id, ticket: None };
+    assert!(refused(&kim, req).await.contains("isn't on your node"));
     assert_eq!(kim.blob_class(&photo).unwrap(), None);
     let for_alice = ClientRequest::InviteFor {
         actor: alice.identity(),
@@ -222,7 +249,7 @@ async fn alices_delete_takes_an_opened_post_away_when_kim_opens_it_again() {
     // And it stays gone: a code for it now says so.
     let req = ClientRequest::OpenPost {
         id,
-        ticket: ticket.to_string(),
+        ticket: Some(ticket.to_string()),
     };
     let message = refused(&kim, req).await;
     assert!(message.contains("deleted"), "{message}");
@@ -246,11 +273,45 @@ async fn following_alice_makes_an_opened_post_an_ordinary_one() {
         panic!("no ticket")
     };
     call(&kim, ClientRequest::Follow { ticket: full }).await;
+    // The marker goes; the post and Alice's profile stay, now in the lists.
     let item = show(&kim, id).await.unwrap();
     assert!(!item.opened);
+    assert_eq!(item.actor_name.as_deref(), Some("Alice"));
+    assert!(recently_opened(&kim).await.is_empty());
     assert!(people(&kim).await.contains(&alice.identity()));
     assert_eq!(search(&kim, "good").await.1, 1);
     // Nothing left to remove as opened.
+    let message = refused(&kim, ClientRequest::ForgetOpened { id }).await;
+    assert!(message.contains("isn't an opened post"), "{message}");
+
+    for node in [kim, alice] {
+        node.shutdown().await.unwrap();
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn resharing_an_opened_post_makes_it_an_ordinary_one() {
+    let dir = tempfile::tempdir().unwrap();
+    let net = SimNet::new(73);
+    let alice = start(dir.path(), &net, "Alice").await;
+    let kim = start(dir.path(), &net, "Kim").await;
+    let (id, photo) = post_photo(&alice, dir.path(), "Worth passing on").await;
+    let ticket = code_ticket(&alice).await;
+    assert!(open(&kim, id, &ticket).await.opened);
+    kim.open_blob(&photo).await.unwrap();
+
+    let req = ClientRequest::Reshare { id, host: false };
+    let ClientResponse::Posted { id: reshare } = call(&kim, req).await else {
+        panic!("not reshared")
+    };
+    // The marker goes; the post, its media and Alice's profile stay.
+    let item = show(&kim, id).await.unwrap();
+    assert!(!item.opened);
+    assert_eq!(item.actor_name.as_deref(), Some("Alice"));
+    assert!(show(&kim, reshare).await.is_ok());
+    assert!(kim.blob_class(&photo).unwrap().is_some());
+    assert!(recently_opened(&kim).await.is_empty());
+    assert!(people(&kim).await.contains(&alice.identity()));
     let message = refused(&kim, ClientRequest::ForgetOpened { id }).await;
     assert!(message.contains("isn't an opened post"), "{message}");
 

@@ -1180,12 +1180,34 @@ impl OspApp {
         };
         let req = ClientRequest::OpenPost {
             id,
-            ticket: by.to_string(),
+            ticket: Some(by.to_string()),
         };
         let ClientResponse::Item { item } = self.client.request(&req).await? else {
             bail!("unexpected reply to OpenPost");
         };
         Ok(post(item))
+    }
+
+    /// Opens a post from Recently opened: one the node keeps as opened,
+    /// whose 7 days start over.
+    pub async fn reopen_post(&self, post_id: String) -> Result<Post> {
+        let req = ClientRequest::OpenPost {
+            id: post_id.parse()?,
+            ticket: None,
+        };
+        let ClientResponse::Item { item } = self.client.request(&req).await? else {
+            bail!("unexpected reply to OpenPost");
+        };
+        Ok(post(item))
+    }
+
+    /// Recently opened (ADR 0039 §4): the posts opened from shared codes
+    /// and kept for a while, the most lately opened first.
+    pub async fn opened_posts(&self) -> Result<Vec<Post>> {
+        match self.client.request(&ClientRequest::OpenedPosts).await? {
+            ClientResponse::Feed { items } => Ok(items.into_iter().map(post).collect()),
+            _ => bail!("unexpected reply to OpenedPosts"),
+        }
     }
 
     /// Drops an opened post and its media now.

@@ -16,7 +16,7 @@
 use std::{sync::Arc, time::Duration};
 
 use anyhow::{Context, Result, bail, ensure};
-use iroh::EndpointAddr;
+use iroh::{EndpointAddr, EndpointId, PublicKey};
 use osp_proto::{
     FollowTicket, ObjectId, Payload, Person, SOCIAL_ALPN, SignedObject,
     rpc::FeedItem,
@@ -56,23 +56,35 @@ enum Fetched {
 }
 
 impl Core {
-    /// Opens `id` from an OSP code naming `ticket` (`ClientRequest::OpenPost`).
+    /// Opens `id` from an OSP code naming `ticket`, or from Recently opened
+    /// with none (`ClientRequest::OpenPost`).
     pub(crate) async fn open_post(
         self: &Arc<Self>,
         id: &ObjectId,
-        ticket: &FollowTicket,
+        ticket: Option<&FollowTicket>,
     ) -> Result<FeedItem> {
-        if self.db.get_object(id)?.is_some() {
-            if self.db.touch_opened(id, now_ms())? {
-                let (core, id, ticket) = (self.clone(), *id, ticket.clone());
-                tokio::spawn(async move {
-                    if let Err(e) = core.fetch_opened(&id, &ticket).await {
-                        debug!(post = %id.fmt_short(), "asking again for an opened post: {e:#}");
-                    }
-                });
+        if let Some(obj) = self.db.get_object(id)? {
+            if self.db.touch_opened(id, now_ms())?
+                && let Ok(Payload::Note(note)) = obj.verify()
+            {
+                // Asked again, after answering, so a post its author
+                // deleted goes (ADR 0019).
+                let node = match ticket {
+                    Some(t) => Some(t.node.id),
+                    None => self.nodes_of(&note.actor).first().copied(),
+                };
+                if let Some(node) = node {
+                    let (core, id) = (self.clone(), *id);
+                    tokio::spawn(async move {
+                        if let Err(e) = core.fetch_opened(&id, note.actor, node).await {
+                            debug!(post = %id.fmt_short(), "asking again for an opened post: {e:#}");
+                        }
+                    });
+                }
             }
             return self.show(id).await;
         }
+        let ticket = ticket.context("that post isn't on your node any more")?;
         ensure!(
             ticket.actor != self.signer.identity(),
             "that post of yours isn't on your node any more"
@@ -81,13 +93,25 @@ impl Core {
             !self.db.is_following(&ticket.actor)?,
             "that post isn't on your node yet; it comes with the next sync with its author"
         );
-        match self.fetch_opened(id, ticket).await? {
+        match self.fetch_opened(id, ticket.actor, ticket.node.id).await? {
             Fetched::Deleted => bail!("its author deleted that post"),
             Fetched::Post => {}
         }
         self.trim_opened().await?;
         info!(post = %id.fmt_short(), author = %ticket.actor.fmt_short(), "opened a shared post");
         self.show(id).await
+    }
+
+    /// Recently opened (`ClientRequest::OpenedPosts`): the opened posts, the
+    /// most lately opened first.
+    pub(crate) async fn opened_posts(&self) -> Result<Vec<FeedItem>> {
+        let mut items = Vec::new();
+        for id in self.db.opened_posts()? {
+            if let Ok(item) = self.show(&id).await {
+                items.push(item);
+            }
+        }
+        Ok(items)
     }
 
     /// Drops an opened post and its media now (`ClientRequest::ForgetOpened`).
@@ -117,10 +141,15 @@ impl Core {
         Ok(ids.len())
     }
 
-    /// Asks the node `ticket` names for `id` and its author's profile, from a
-    /// throwaway key, and keeps what it answers: the post as opened, or its
-    /// author's delete.
-    async fn fetch_opened(&self, id: &ObjectId, ticket: &FollowTicket) -> Result<Fetched> {
+    /// Asks `node`, `actor`'s, for `id` and their profile, from a throwaway
+    /// key, and keeps what it answers: the post as opened, or its author's
+    /// delete.
+    async fn fetch_opened(
+        &self,
+        id: &ObjectId,
+        actor: PublicKey,
+        node: EndpointId,
+    ) -> Result<Fetched> {
         let deadline = Instant::now() + ASK_TIMEOUT;
         let working = match &self.tor {
             Some(tor) if !tor.dialled() => tor.wait_dialled(deadline - DIAL_AT_LEAST).await,
@@ -136,7 +165,7 @@ impl Core {
         let endpoint = self.throwaway_endpoint().await?;
         let asked = async {
             let conn = endpoint
-                .connect(EndpointAddr::new(ticket.node.id), SOCIAL_ALPN)
+                .connect(EndpointAddr::new(node), SOCIAL_ALPN)
                 .await
                 .context("connecting to its author's node")?;
             let objects = request_on(&conn, &SocialRequest::GetObjects { ids: vec![*id] }).await?;
@@ -155,11 +184,11 @@ impl Core {
         for obj in objects {
             match self.verify_received(&obj) {
                 Ok(Payload::Note(note))
-                    if obj.id() == *id && note.actor == ticket.actor && !note.is_reply() =>
+                    if obj.id() == *id && note.actor == actor && !note.is_reply() =>
                 {
                     let profile = match profile {
                         Ok(SocialResponse::Profile { profile }) => {
-                            self.opened_profile(profile, ticket)
+                            self.opened_profile(profile, actor)
                         }
                         _ => None,
                     };
@@ -173,7 +202,7 @@ impl Core {
                     )?;
                     return Ok(Fetched::Post);
                 }
-                Ok(Payload::Delete(d)) if d.object == *id && d.actor == ticket.actor => {
+                Ok(Payload::Delete(d)) if d.object == *id && d.actor == actor => {
                     if let Some(deleted) = self.db.apply_delete(&obj, &d, true, &me)? {
                         self.store.let_go(&deleted.files).await;
                     }
@@ -190,9 +219,9 @@ impl Core {
     fn opened_profile(
         &self,
         profile: SignedObject,
-        ticket: &FollowTicket,
+        actor: PublicKey,
     ) -> Option<(Person, SignedObject)> {
-        if profile.signer() != ticket.actor {
+        if profile.signer() != actor {
             return None;
         }
         match self.verify_received(&profile) {

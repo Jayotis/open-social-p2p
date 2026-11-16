@@ -125,6 +125,18 @@ impl Db {
         )? > 0)
     }
 
+    /// The opened posts, the most lately opened, liked or replied to first.
+    pub(crate) fn opened_posts(&self) -> Result<Vec<ObjectId>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare("SELECT id FROM opened_posts ORDER BY until_ms DESC")?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+        let mut ids = Vec::new();
+        for row in rows {
+            ids.push(row?.parse()?);
+        }
+        Ok(ids)
+    }
+
     /// Drops the opened post `id` and what came only with it: its files
     /// that nothing else here names, and its author's profile if it was
     /// held only for opened posts. Returns the files to let go of, or None
@@ -196,6 +208,18 @@ fn profile_held_now(conn: &Connection, actor: &str) -> Result<bool> {
 
 /// See `Db::drop_opened`.
 pub(super) fn drop_opened(conn: &Connection, id: &str) -> Result<Option<Vec<BlobHash>>> {
+    // Something else here points at it, a reshare held say: it isn't only
+    // opened, so it stays as an ordinary post.
+    let needed: bool = conn.query_row(
+        "SELECT EXISTS (SELECT 1 FROM opened_posts WHERE id = ?1)
+             AND EXISTS (SELECT 1 FROM refs WHERE ref = ?1 AND id != ?1)",
+        params![id],
+        |row| row.get(0),
+    )?;
+    if needed {
+        opened_post_is_kept(conn, id)?;
+        return Ok(Some(Vec::new()));
+    }
     let actor: Option<String> = conn
         .query_row(
             "DELETE FROM opened_posts WHERE id = ?1 RETURNING actor",

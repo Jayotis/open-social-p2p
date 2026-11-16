@@ -7044,6 +7044,24 @@ mod tests {
         assert_eq!(db.drop_opened(&his).unwrap(), Some(vec![]));
         assert_eq!(db.people(&me, 50).unwrap().len(), 1);
 
+        // A reshare of an opened post held here needs it: Remove leaves it,
+        // an ordinary post now, and Jimmy's profile with it.
+        let shared = keep_opened_note(&db, &jimmy, "walnut", now_ms());
+        let carol = SecretKey::generate();
+        let reshare = Payload::Announce(osp_proto::Announce {
+            actor: carol.public(),
+            object: shared,
+            object_actor: jimmy.public(),
+            published: LATER.into(),
+            hosting: false,
+        });
+        let signed = SignedObject::sign(&carol, &reshare).unwrap();
+        assert!(db.insert_object(&signed, &reshare).unwrap());
+        assert_eq!(db.drop_opened(&shared).unwrap(), Some(vec![]));
+        assert!(db.get_object(&shared).unwrap().is_some());
+        assert_eq!(db.opened_until(&shared).unwrap(), None);
+        assert!(db.profile(&jimmy.public()).unwrap().is_some());
+
         // Alice's came only with her opened post: it goes with it.
         let hers = keep_opened_note(&db, &alice, "almond", now_ms());
         assert!(db.profile(&alice.public()).unwrap().is_some());
