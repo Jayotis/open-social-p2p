@@ -30,6 +30,12 @@ Under a post, one row of icons with their counts (likes, replies, reshares), eac
 
 `app/test/look_test.dart` draws Home, the Universe and a profile, light and dark, with the app's fonts, and compares them with `app/test/goldens/`. A change to the look on purpose updates the pictures in the same pull request, so a reviewer sees it.
 
+### 6. Motion and access on the map
+
+The Universe flies (`Motion.long`) and crossfades when what it draws changes (`Motion.medium`): a new region, a layer, a search, a connection. Under reduced motion all of it is zero: the camera jumps, the map changes at once, the pinch hint holds still, and what the node did is told in words under the map without moving on it.
+
+For screen readers, each star, group and sky cell on screen is a button in words ("Kim. You follow them. 1 step from you"), and the map has Zoom in and Zoom out actions, since a pinch can't be made. Names drawn on the map grow with the phone's text size up to 1.5 times, past which they would cover the stars they name; everything else grows with it fully, and `look_test` draws Home, the Universe and a profile at twice the size. Names keep off their own star's lines where they can, and have a rim of the night so a line passing under them doesn't cross them out.
+
 ## Steps
 
 1. The tokens, Inter, the Universe's night in both themes, and the pictures.

@@ -309,6 +309,12 @@ TextTheme _type(TextTheme base) {
       .apply(fontFamily: Fonts.family);
 }
 
+/// Buttons: a pill on one line, as the corners are rounder than half its
+/// height; on two, with large text, the corners stay clear of the words.
+const buttonShape = RoundedRectangleBorder(
+  borderRadius: BorderRadius.all(Radius.circular(Corner.l)),
+);
+
 ThemeData ospTheme(Brightness brightness) {
   final scheme = ospScheme(brightness);
   final dark = brightness == Brightness.dark;
@@ -386,13 +392,13 @@ ThemeData ospTheme(Brightness brightness) {
     ),
     filledButtonTheme: FilledButtonThemeData(
       style: FilledButton.styleFrom(
-        shape: const StadiumBorder(),
+        shape: buttonShape,
         textStyle: text.labelLarge,
       ),
     ),
     outlinedButtonTheme: OutlinedButtonThemeData(
       style: OutlinedButton.styleFrom(
-        shape: const StadiumBorder(),
+        shape: buttonShape,
         side: BorderSide(color: scheme.outline),
         textStyle: text.labelLarge,
       ),

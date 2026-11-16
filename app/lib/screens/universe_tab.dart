@@ -3,6 +3,7 @@ import 'dart:math';
 
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/semantics.dart';
 
 import '../connection_lights.dart';
 import '../format.dart';
@@ -117,8 +118,15 @@ class _UniverseTabState extends State<UniverseTab>
   /// Set when the next region comes from zooming out: the map stays.
   bool _stay = false;
 
-  /// The last snapshot drawn, kept while the next region's comes.
-  UniverseSnapshot? _shown;
+  /// What the map draws now: the last snapshot, kept while the next
+  /// region's comes, with the layer it was asked with and what's lit.
+  _Scene _scene = const _Scene();
+
+  /// What the map drew before the last change, fading out as [_scene]
+  /// fades in (ADR 0040 §4). Nothing fades under reduced motion.
+  _Scene? _before;
+  late final AnimationController _fade;
+  UniverseSnapshot? get _shown => _scene.snapshot;
 
   /// The search last flown to, and whether the next region framed is
   /// framed on its results.
@@ -151,10 +159,12 @@ class _UniverseTabState extends State<UniverseTab>
   @override
   void initState() {
     super.initState();
-    _fly = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 450),
-    )..addListener(_flying);
+    _fly = AnimationController(vsync: this, duration: Motion.long)
+      ..addListener(_flying);
+    _fade = AnimationController(vsync: this, duration: Motion.medium)
+      ..addStatusListener((status) {
+        if (status == AnimationStatus.completed) _before = null;
+      });
     _event = AnimationController(vsync: this, duration: _Play.length)
       ..addStatusListener((status) {
         if (status != AnimationStatus.completed) return;
@@ -190,9 +200,21 @@ class _UniverseTabState extends State<UniverseTab>
   void _openEvents() =>
       widget.open(EventsScreen(node: _node, open: widget.open));
 
+  /// Each movement's length, zero when the phone asks for reduced motion:
+  /// the camera jumps, the map changes at once, and an event is told in
+  /// words under the map without moving on it.
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _fly.duration = Motion.of(context, Motion.long);
+    _fade.duration = Motion.of(context, Motion.medium);
+    _event.duration = Motion.of(context, _Play.length);
+  }
+
   @override
   void dispose() {
     _fly.dispose();
+    _fade.dispose();
     _event.dispose();
     _captionGone?.cancel();
     _camera.dispose();
@@ -201,7 +223,7 @@ class _UniverseTabState extends State<UniverseTab>
   }
 
   void _flying() {
-    final t = Curves.easeInOutCubic.transform(_fly.value);
+    final t = Motion.curve.transform(_fly.value);
     _camera.set(
       Offset.lerp(_fromCentre, _toCentre, t)!,
       // Geometric, so zooming feels even.
@@ -382,8 +404,12 @@ class _UniverseTabState extends State<UniverseTab>
     _open('', toward: Offset.zero);
   }
 
-  void _tap(Offset screen, UniverseSnapshot s) {
-    switch (_hit(s, _camera, screen)) {
+  void _tap(Offset screen, UniverseSnapshot s) =>
+      _act(_hit(s, _camera, screen));
+
+  /// What a tap on [hit] does, by finger or by a screen reader.
+  void _act(_Hit? hit) {
+    switch (hit) {
       case _OnPerson(:final person) when person.step == 0:
         widget.open(NodeSummaryScreen(node: _node, open: widget.open));
       case _OnPerson(:final person):
@@ -407,6 +433,16 @@ class _UniverseTabState extends State<UniverseTab>
         );
       case null:
         break;
+    }
+  }
+
+  /// Zooms by [factor] about the middle, for a screen reader's actions,
+  /// which can't pinch. Out far enough, it goes up the path as a pinch does.
+  void _zoom(double factor) {
+    _flyTo(_camera.centre, _camera.scale * factor);
+    if (factor < 1) {
+      final fit = _fits[_node.universeRegion];
+      if (fit != null && _toScale < fit * _Fit.up) _up();
     }
   }
 
@@ -469,7 +505,21 @@ class _UniverseTabState extends State<UniverseTab>
     final colors = OspColors.of(context);
     final node = _node;
     final here = node.universe;
-    if (here != null) _shown = here;
+    final lights = node.searchLights;
+    final paths = node.connection;
+    // The map changed: what it drew fades out as the new fades in. A layer
+    // shows with the snapshot asked for it, not before.
+    final scene = _Scene(
+      snapshot: here ?? _scene.snapshot,
+      layer: here != null ? node.universeLayer : _scene.layer,
+      lights: lights,
+      connection: paths,
+    );
+    if (!scene.sameAs(_scene)) {
+      _before = _scene;
+      _fade.forward(from: 0);
+    }
+    _scene = scene;
     final s = _shown;
     if (here != null && _framed != here.region) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -483,8 +533,6 @@ class _UniverseTabState extends State<UniverseTab>
       });
     }
     final standing = _standingAt(s, node.universeRegion);
-    final lights = node.searchLights;
-    final paths = node.connection;
     // A connection just answered: fly to its paths once.
     if (paths != null && !paths.asking && !identical(paths, _flownPaths)) {
       _flownPaths = paths;
@@ -518,21 +566,49 @@ class _UniverseTabState extends State<UniverseTab>
                     onScaleUpdate: _scaleUpdate,
                     onScaleEnd: (_) => _scaleEnd(),
                     onTapUp: s == null ? null : (d) => _tap(d.localPosition, s),
+                    // The map as a whole, then each light on screen as its
+                    // own button, so a screen reader can go star by star.
                     child: Semantics(
-                      label: _describe(s, node.universeLayer, lights),
-                      child: CustomPaint(
-                        painter: _Map(
-                          camera: _camera,
-                          colors: colors,
-                          snapshot: s,
-                          standing: standing,
-                          labels: _labels,
-                          ownName: _ownName(node),
-                          layer: node.universeLayer,
-                          lights: lights,
-                          connection: paths,
-                          event: _playing,
-                          played: _event,
+                      container: true,
+                      label: _describe(s, scene.layer, lights),
+                      customSemanticsActions: {
+                        _zoomIn: () => _zoom(2),
+                        _zoomOut: () => _zoom(0.5),
+                      },
+                      // Rebuilt as the camera moves, so the buttons a screen
+                      // reader finds are where the lights are drawn.
+                      child: ListenableBuilder(
+                        listenable: _camera,
+                        builder: (context, _) => CustomPaint(
+                          painter: _Map(
+                            camera: _camera,
+                            colors: colors,
+                            scene: scene,
+                            standing: standing,
+                            labels: _labels,
+                            text: MediaQuery.textScalerOf(context),
+                            ownName: _ownName(node),
+                            event: _playing,
+                            played: _event,
+                            onTap: _act,
+                            before: switch (_before) {
+                              final b? => _Map(
+                                camera: _camera,
+                                colors: colors,
+                                scene: b,
+                                standing: _standingAt(
+                                  b.snapshot,
+                                  b.snapshot?.region ?? '',
+                                ),
+                                labels: _labels,
+                                text: MediaQuery.textScalerOf(context),
+                                ownName: _ownName(node),
+                                played: _event,
+                              ),
+                              null => null,
+                            },
+                            fade: _fade,
+                          ),
                         ),
                       ),
                     ),
@@ -689,6 +765,9 @@ class _UniverseTabState extends State<UniverseTab>
     );
   }
 
+  static const _zoomIn = CustomSemanticsAction(label: 'Zoom in');
+  static const _zoomOut = CustomSemanticsAction(label: 'Zoom out');
+
   static String _describe(
     UniverseSnapshot? s,
     UniverseLayer? layer,
@@ -739,50 +818,59 @@ class _PinchHintState extends State<_PinchHint>
   @override
   Widget build(BuildContext context) {
     final colors = widget.colors;
-    return IgnorePointer(
-      child: AnimatedBuilder(
-        animation: _play,
-        builder: (context, _) {
-          final t = _play.value;
-          // In and out gently, at the start and the end.
-          final shown = min(1.0, min(t, 1 - t) * 10);
-          // Out and back within each one.
-          final round = (t * _times) % 1;
-          final spread = Curves.easeInOut.transform(
-            round < 0.5 ? round * 2 : 2 - round * 2,
-          );
-          final apart = 16 + 44 * spread;
-          return Opacity(
-            opacity: shown,
-            // Low on the map, clear of her star and name in the middle.
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.end,
-              children: [
-                SizedBox(
-                  width: 160,
-                  height: 120,
-                  child: CustomPaint(painter: _Fingertips(apart, colors.onSky)),
-                ),
-                DecoratedBox(
-                  decoration: BoxDecoration(
-                    color: colors.skyHaze,
-                    borderRadius: BorderRadius.circular(16),
-                  ),
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: Space.m,
-                      vertical: Space.xs,
-                    ),
-                    child: Text(
-                      'Pinch to zoom',
-                      style: TextStyle(color: colors.onSky),
+    // Asked for less motion: the fingertips held apart, shown as long.
+    final still = Motion.of(context, Motion.quick) == Duration.zero;
+    // A screen reader has the map's own zoom actions instead.
+    return ExcludeSemantics(
+      child: IgnorePointer(
+        child: AnimatedBuilder(
+          animation: _play,
+          builder: (context, _) {
+            final t = _play.value;
+            // In and out gently, at the start and the end.
+            final shown = still ? 1.0 : min(1.0, min(t, 1 - t) * 10);
+            // Out and back within each one.
+            final round = (t * _times) % 1;
+            final spread = still
+                ? 0.5
+                : Curves.easeInOut.transform(
+                    round < 0.5 ? round * 2 : 2 - round * 2,
+                  );
+            final apart = 16 + 44 * spread;
+            return Opacity(
+              opacity: shown,
+              // Low on the map, clear of her star and name in the middle.
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.end,
+                children: [
+                  SizedBox(
+                    width: 160,
+                    height: 120,
+                    child: CustomPaint(
+                      painter: _Fingertips(apart, colors.onSky),
                     ),
                   ),
-                ),
-              ],
-            ),
-          );
-        },
+                  DecoratedBox(
+                    decoration: BoxDecoration(
+                      color: colors.skyHaze,
+                      borderRadius: BorderRadius.circular(16),
+                    ),
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: Space.m,
+                        vertical: Space.xs,
+                      ),
+                      child: Text(
+                        'Pinch to zoom',
+                        style: TextStyle(color: colors.onSky),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            );
+          },
+        ),
       ),
     );
   }
@@ -832,6 +920,42 @@ UniversePerson? _standingAt(UniverseSnapshot? s, String region) {
     if (p.identity == identity) return p.step == 0 ? null : p;
   }
   return null;
+}
+
+/// A person on the map in words, for a screen reader: their name, who they
+/// are to the owner, how far, and what's lit on them.
+@visibleForTesting
+String describePerson(
+  UniversePerson p, {
+  UniverseLayer? layer,
+  bool found = false,
+  bool standing = false,
+}) => [
+  p.name.isEmpty ? 'Someone' : p.name,
+  if (standing) 'You are standing here',
+  if (p.followed) 'You follow them',
+  if (p.known) 'Someone you know',
+  if (!p.followed && !p.known && p.foundThrough != null)
+    listedBy(p.foundThrough!),
+  switch (p.step) {
+    null when p.group == null => 'In the public sky',
+    1 => '1 step from you',
+    final n? => '$n steps from you',
+    null => null,
+  },
+  ?_litWords(layer, p.lit),
+  if (found) 'lit up',
+].nonNulls.join('. ');
+
+/// How much of [layer] a light holds, in words, if it holds any.
+String? _litWords(UniverseLayer? layer, int lit) {
+  if (layer == null || lit == 0) return null;
+  final one = lit == 1;
+  return switch (layer) {
+    UniverseLayer.posts => one ? '1 post lately' : '$lit posts lately',
+    UniverseLayer.video => one ? '1 video lately' : '$lit videos lately',
+    UniverseLayer.shared => one ? '1 reshare lately' : '$lit reshares lately',
+  };
 }
 
 /// Where in [s] the search's results are: the people found or whose posts
@@ -1049,15 +1173,24 @@ double _personRadius(int bright) => 3 + bright / 100 * 3;
 class _Labels {
   final _cache = <String, TextPainter>{};
 
-  TextPainter of(String text, Color color, double size) {
-    final key = '$text|${color.toARGB32()}|$size';
+  /// [text] at [size], or with [halo] its letters' rim alone, in that
+  /// colour, to draw under it.
+  TextPainter of(String text, Color color, double size, {Color? halo}) {
+    final key = '$text|${color.toARGB32()}|$size|${halo?.toARGB32()}';
     return _cache.putIfAbsent(key, () {
       if (_cache.length > 800) _clear();
       return TextPainter(
         text: TextSpan(
           text: text,
           style: TextStyle(
-            color: color,
+            color: halo == null ? color : null,
+            foreground: halo == null
+                ? null
+                : (Paint()
+                    ..style = PaintingStyle.stroke
+                    ..strokeWidth = 3
+                    ..strokeJoin = StrokeJoin.round
+                    ..color = halo.withValues(alpha: 0.85)),
             fontSize: size,
             fontFamily: Fonts.family,
             fontWeight: FontWeight.w500,
@@ -1066,7 +1199,8 @@ class _Labels {
         textDirection: TextDirection.ltr,
         maxLines: 1,
         ellipsis: '…',
-      )..layout(maxWidth: 140);
+        // About 13 letters at 11 px, more as the text grows.
+      )..layout(maxWidth: size * 13);
     });
   }
 
@@ -1080,30 +1214,12 @@ class _Labels {
   void dispose() => _clear();
 }
 
-/// The map: the sky, its lights, the lines and the people, in that order.
-class _Map extends CustomPainter {
-  _Map({
-    required this.camera,
-    required this.colors,
-    required this.snapshot,
-    required this.standing,
-    required this.labels,
-    required this.ownName,
-    required this.layer,
-    required this.lights,
-    required this.connection,
-    required this.event,
-    required this.played,
-  }) : super(repaint: Listenable.merge([camera, played]));
+/// What the map draws: a snapshot, the layer it was asked with, and what a
+/// search or a connection lights on it.
+class _Scene {
+  const _Scene({this.snapshot, this.layer, this.lights, this.connection});
 
-  final _Camera camera;
-  final OspColors colors;
   final UniverseSnapshot? snapshot;
-  final UniversePerson? standing;
-  final _Labels labels;
-
-  /// The owner's name as drawn under her star, to keep clear.
-  final String ownName;
 
   /// What lights up, if anything does but people (ADR 0035 §1).
   final UniverseLayer? layer;
@@ -1114,9 +1230,76 @@ class _Map extends CustomPainter {
   /// The paths of "How are we connected?" to draw (ADR 0037).
   final ConnectionLights? connection;
 
+  /// Whether the map would draw the same: the node hands back the same
+  /// snapshot while nothing changed.
+  bool sameAs(_Scene o) =>
+      identical(snapshot, o.snapshot) &&
+      layer == o.layer &&
+      identical(lights, o.lights) &&
+      identical(connection, o.connection);
+}
+
+/// Names on the map grow with the phone's text size up to this much, past
+/// which they'd cover the stars they name.
+const _mapTextMost = 1.5;
+
+/// The map: the sky, its lights, the lines and the people, in that order.
+/// Each light on screen is also a button for screen readers.
+class _Map extends CustomPainter {
+  _Map({
+    required this.camera,
+    required this.colors,
+    required _Scene scene,
+    required this.standing,
+    required this.labels,
+    required TextScaler text,
+    required this.ownName,
+    this.event,
+    required this.played,
+    this.onTap,
+    this.before,
+    Animation<double>? fade,
+  }) : snapshot = scene.snapshot,
+       layer = scene.layer,
+       lights = scene.lights,
+       connection = scene.connection,
+       text = text.clamp(maxScaleFactor: _mapTextMost),
+       fade = fade ?? kAlwaysCompleteAnimation,
+       centre = camera.centre,
+       scale = camera.scale,
+       super(repaint: Listenable.merge([camera, played, ?fade]));
+
+  final _Camera camera;
+  final OspColors colors;
+  final UniverseSnapshot? snapshot;
+  final UniversePerson? standing;
+  final _Labels labels;
+
+  /// The phone's text size for names on the map, held to [_mapTextMost].
+  final TextScaler text;
+
+  /// The owner's name as drawn under her star, to keep clear.
+  final String ownName;
+
+  final UniverseLayer? layer;
+  final SearchLights? lights;
+  final ConnectionLights? connection;
+
   /// The event being drawn (ADR 0036 §1), and how far along it is.
   final UniverseEvent? event;
   final Animation<double> played;
+
+  /// What a tap on a light does, for screen readers.
+  final void Function(_Hit hit)? onTap;
+
+  /// The map before its last change, fading out as this one fades in.
+  final _Map? before;
+  final Animation<double> fade;
+
+  /// Where the camera was when this was made, for the screen reader's
+  /// buttons to follow it.
+  final Offset centre;
+  final double scale;
 
   /// How bright a light is drawn: as usual, or dimmed when a layer is on
   /// and it holds none of the layer's items, or a search is shown and it
@@ -1168,7 +1351,27 @@ class _Map extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
+    _sky(canvas, size);
+    final t = fade.value;
+    final b = before;
+    if (b == null || t >= 1) {
+      _lights(canvas, size);
+      return;
+    }
+    // Each drawn whole, then faded, so where they overlap neither shows
+    // through the other.
     final view = Offset.zero & size;
+    final eased = Motion.curve.transform(t);
+    canvas.saveLayer(view, Paint()..color = Color.fromRGBO(0, 0, 0, 1 - eased));
+    b._lights(canvas, size);
+    canvas.restore();
+    canvas.saveLayer(view, Paint()..color = Color.fromRGBO(0, 0, 0, eased));
+    _lights(canvas, size);
+    canvas.restore();
+  }
+
+  /// The night behind everything: the haze round her star and the dust.
+  void _sky(Canvas canvas, Size size) {
     final home = camera.toScreen(Offset.zero);
     final haze = size.shortestSide * 0.6;
     canvas.drawCircle(
@@ -1188,6 +1391,13 @@ class _Map extends CustomPainter {
         paint,
       );
     }
+  }
+
+  /// Everything the snapshot places, and the names.
+  void _lights(Canvas canvas, Size size) {
+    final view = Offset.zero & size;
+    final home = camera.toScreen(Offset.zero);
+    final paint = Paint();
     final s = snapshot;
     // Nothing from her node yet, or it couldn't answer: her star still.
     if (s == null) {
@@ -1209,7 +1419,11 @@ class _Map extends CustomPainter {
       );
       final top = home - Offset(0, inner);
       if (seen(top, 0)) {
-        final label = labels.of('The public sky', colors.onSkyQuiet, 11);
+        final label = labels.of(
+          'The public sky',
+          colors.onSkyQuiet,
+          text.scale(11),
+        );
         label.paint(canvas, top - Offset(label.width / 2, label.height + 4));
       }
     }
@@ -1326,7 +1540,7 @@ class _Map extends CustomPainter {
     // Names where there's room: the one stood at first, then those the
     // owner follows or knows, then the rest in the snapshot's order. Her
     // star and her own name under it take their space.
-    final own = labels.of(ownName, colors.onSky, 16);
+    final own = labels.of(ownName, colors.onSky, text.scale(16));
     final taken = <Rect>[
       Rect.fromCircle(center: home, radius: 14),
       Rect.fromCenter(
@@ -1341,21 +1555,180 @@ class _Map extends CustomPainter {
         ? 1
         : (p.followed || p.known ? 2 : 3);
     names.sort((a, b) => rank(a.$1).compareTo(rank(b.$1)));
+    // Each named person's own lines leave their star: their name keeps off
+    // them, where it can.
+    final index = {for (final (i, p) in s.people.indexed) p: i};
+    final ends = <int, List<Offset>>{};
+    if (names.isNotEmpty) {
+      for (final l in s.lines) {
+        if (l.from >= points.length || l.to >= points.length) continue;
+        ends.putIfAbsent(l.from, () => []).add(points[l.to]);
+        ends.putIfAbsent(l.to, () => []).add(points[l.from]);
+      }
+    }
+    final size11 = text.scale(11);
     for (final (p, at, r) in names) {
       final here = p == standing;
-      final label = labels.of(
-        p.name.isEmpty ? 'Someone' : p.name,
-        here ? colors.onSky : colors.onSkyQuiet,
-        11,
-      );
-      // Below the ring round the one stood at.
-      final below = here ? r + 9 : r + 3;
-      final box = (at + Offset(-label.width / 2, below)) & label.size;
-      if (!here && taken.any((t) => t.overlaps(box))) continue;
+      final name = p.name.isEmpty ? 'Someone' : p.name;
+      final color = here ? colors.onSky : colors.onSkyQuiet;
+      final label = labels.of(name, color, size11);
+      // Clear of the ring round the one stood at.
+      final gap = here ? r + 9 : r + 3;
+      final w = label.width, h = label.height;
+      // Below first, as names usually are; then above, right and left.
+      final boxes = [
+        Rect.fromLTWH(at.dx - w / 2, at.dy + gap, w, h),
+        Rect.fromLTWH(at.dx - w / 2, at.dy - gap - h, w, h),
+        Rect.fromLTWH(at.dx + gap + 2, at.dy - h / 2, w, h),
+        Rect.fromLTWH(at.dx - gap - 2 - w, at.dy - h / 2, w, h),
+      ];
+      final mine = ends[index[p]] ?? const <Offset>[];
+      bool free(Rect box) => !taken.any((t) => t.overlaps(box));
+      bool clear(Rect box) => !mine.any((end) => _crosses(box, at, end));
+      final box =
+          boxes.where((b) => free(b) && clear(b)).firstOrNull ??
+          boxes.where(free).firstOrNull ??
+          (here ? boxes.first : null);
+      if (box == null) continue;
       taken.add(box.inflate(2));
+      // A rim of the night round the letters, so a line passing under
+      // them doesn't cross them out.
+      labels
+          .of(name, color, size11, halo: colors.sky)
+          .paint(canvas, box.topLeft);
       label.paint(canvas, box.topLeft);
     }
   }
+
+  /// Whether the line from [a] to [b] passes through [box].
+  static bool _crosses(Rect box, Offset a, Offset b) {
+    if (box.contains(a) || box.contains(b)) return true;
+    // Clipped to the box's sides in turn (Liang–Barsky).
+    var t0 = 0.0, t1 = 1.0;
+    final d = b - a;
+    for (final (p, q) in [
+      (-d.dx, a.dx - box.left),
+      (d.dx, box.right - a.dx),
+      (-d.dy, a.dy - box.top),
+      (d.dy, box.bottom - a.dy),
+    ]) {
+      if (p == 0) {
+        if (q < 0) return false;
+        continue;
+      }
+      final t = q / p;
+      if (p < 0) {
+        if (t > t1) return false;
+        t0 = max(t0, t);
+      } else {
+        if (t < t0) return false;
+        t1 = min(t1, t);
+      }
+    }
+    return t0 <= t1;
+  }
+
+  @override
+  SemanticsBuilderCallback? get semanticsBuilder =>
+      onTap == null ? null : _semantics;
+
+  /// A button for each light on screen, in words: who, and who they are to
+  /// the owner. Her own star is a button of its own over the map.
+  List<CustomPainterSemantics> _semantics(Size size) {
+    final s = snapshot;
+    final tap = onTap;
+    if (s == null || tap == null) return const [];
+    final view = Offset.zero & size;
+    final out = <CustomPainterSemantics>[];
+    void add(
+      String key,
+      Offset world,
+      double r,
+      String label,
+      String hint,
+      _Hit hit,
+    ) {
+      final at = camera.toScreen(world);
+      if (!view.contains(at) || out.length >= 80) return;
+      out.add(
+        CustomPainterSemantics(
+          key: ValueKey(key),
+          // At least a fingertip across, as buttons are.
+          rect: Rect.fromCircle(center: at, radius: max(r, 24)),
+          properties: SemanticsProperties(
+            button: true,
+            label: label,
+            hintOverrides: SemanticsHintOverrides(onTapHint: hint),
+            onTap: () => tap(hit),
+            textDirection: TextDirection.ltr,
+          ),
+        ),
+      );
+    }
+
+    final few = s.people.length <= 40;
+    for (final p in s.people) {
+      if (p.step == 0) continue;
+      final r = _personRadius(p.bright) * (few ? 1.8 : 1);
+      add(
+        'p:${p.identity}',
+        Offset(p.x, p.y),
+        r,
+        describePerson(
+          p,
+          layer: layer,
+          found: _foundPerson(p),
+          standing: p == standing,
+        ),
+        'stand there',
+        _OnPerson(p),
+      );
+    }
+    for (final g in s.groups) {
+      add(
+        'g:${g.id}',
+        Offset(g.x, g.y),
+        _groupRadius(g.people),
+        [
+          g.people == 1
+              ? 'A group of 1 person'
+              : 'A group of ${g.people} people',
+          ?_litWords(layer, g.lit),
+          if (_foundGroup(g)) 'lit up',
+        ].join('. '),
+        'see who is in it',
+        _OnGroup(g),
+      );
+    }
+    for (final c in s.sky) {
+      add(
+        'sky:${c.level}/${c.x}/${c.y}',
+        Offset(c.atX, c.atY),
+        _cellRadius(c.people),
+        [
+          c.people == 1
+              ? 'Part of the public sky, 1 person'
+              : 'Part of the public sky, ${c.people} people',
+          ?_litWords(layer, c.lit),
+          if (lights?.holdsCell(c) ?? false) 'lit up',
+        ].join('. '),
+        'go closer',
+        _OnCell(c),
+      );
+    }
+    return out;
+  }
+
+  @override
+  bool shouldRebuildSemantics(_Map old) =>
+      old.snapshot != snapshot ||
+      old.standing != standing ||
+      old.layer != layer ||
+      old.lights != lights ||
+      old.connection != connection ||
+      old.centre != centre ||
+      old.scale != scale ||
+      old.camera.size != camera.size;
 
   /// The paths of "How are we connected?" (ADR 0037 §3): the owner's own
   /// follows and the people she knows in one colour, signed reshares and
@@ -1482,7 +1855,7 @@ class _Map extends CustomPainter {
   }
 
   void _count(Canvas canvas, Offset at, double r, int people) {
-    final label = labels.of('$people', colors.onSky, 10);
+    final label = labels.of('$people', colors.onSky, text.scale(10));
     label.paint(canvas, at + Offset(-label.width / 2, r * 0.5 + 2));
   }
 
@@ -1493,6 +1866,8 @@ class _Map extends CustomPainter {
       old.standing != standing ||
       old.layer != layer ||
       old.lights != lights ||
+      old.connection != connection ||
+      old.text != text ||
       old.event != event;
 }
 
@@ -1554,9 +1929,13 @@ class _YourStar extends StatelessWidget {
               ),
             ),
           ),
+          // A name on the map, held to the size the others grow to.
           Text(
             name,
             style: theme.textTheme.titleMedium?.copyWith(color: colors.onSky),
+            textScaler: MediaQuery.textScalerOf(
+              context,
+            ).clamp(maxScaleFactor: _mapTextMost),
           ),
           if (!crowded || node.reachability != Reachability.online) ...[
             const SizedBox(height: Space.xs),

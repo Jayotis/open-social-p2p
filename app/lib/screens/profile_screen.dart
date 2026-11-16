@@ -405,7 +405,10 @@ class _ProfileScreenState extends State<ProfileScreen> {
           ),
         OutlinedButton(
           onPressed: enabled ? _askTrust : null,
-          child: Text('Ask $name to confirm they know you'),
+          child: Text(
+            'Ask $name to confirm they know you',
+            textAlign: TextAlign.center,
+          ),
         ),
       ],
     );
