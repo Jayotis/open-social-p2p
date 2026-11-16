@@ -735,7 +735,7 @@ void main() {
     await tester.pump();
     expect(
       find.text(
-        'Tor is still starting; your node asks once it reaches others…',
+        'Your node is still connecting; it asks once it can reach others…',
       ),
       findsOne,
     );

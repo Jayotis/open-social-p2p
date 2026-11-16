@@ -93,7 +93,7 @@ class ConnectionLights {
   String get source {
     final c = connection;
     if (c == null && torStarting) {
-      return 'Tor is still starting; your node asks once it reaches others…';
+      return 'Your node is still connecting; it asks once it can reach others…';
     }
     if (c == null) return 'Looking for how you’re connected…';
     return switch (c.side) {

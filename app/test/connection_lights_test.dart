@@ -142,7 +142,7 @@ void main() {
     final c = ConnectionLights.asking('jimmy', 'Jimmy', torStarting: true);
     expect(
       c.source,
-      'Tor is still starting; your node asks once it reaches others…',
+      'Your node is still connecting; it asks once it can reach others…',
     );
   });
 }
