@@ -116,6 +116,19 @@ impl Db {
         Ok(())
     }
 
+    /// Whether `voucher` has a vouch of `kind` for `post`.
+    pub fn has_vouch(&self, kind: VouchKind, post: &ObjectId, voucher: &PublicKey) -> Result<bool> {
+        Ok(self
+            .conn()
+            .query_row(
+                "SELECT 1 FROM vouches WHERE kind = ?1 AND post = ?2 AND voucher = ?3",
+                params![kind.as_str(), post.to_string(), voucher.to_string()],
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_some())
+    }
+
     /// How many vouches of `kind` there are for `post`: for a reshare, how
     /// many people reshared it.
     pub fn vouches_for(&self, kind: VouchKind, post: &ObjectId) -> Result<usize> {

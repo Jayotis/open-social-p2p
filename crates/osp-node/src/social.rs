@@ -861,7 +861,8 @@ impl Core {
         if let Some(bound) = direct {
             self.check_endpoint(&addr.id, EndpointKind::Direct, bound)?;
         }
-        if !self.db.is_follower(&addr.id)? {
+        let new = !self.db.is_follower(&addr.id)?;
+        if new {
             let now = now_ms();
             self.db
                 .drop_silent_followers(now - FOLLOWER_SILENCE.as_millis() as i64)?;
@@ -876,6 +877,10 @@ impl Core {
             );
         }
         self.db.add_follower(addr, shares)?;
+        if new {
+            self.db
+                .note_activity(&format!("followed:{}", addr.id), false, false, now_ms())?;
+        }
         if let Some(bound) = media {
             self.keep_endpoint(&addr.id, EndpointKind::Media, bound)?;
         }

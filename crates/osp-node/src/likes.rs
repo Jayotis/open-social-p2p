@@ -254,6 +254,12 @@ impl Core {
             },
             MAX_KEPT,
         )?;
+        // A new liker moves the post's likes up the owner's Activity; a
+        // newer like by the same person doesn't.
+        if held.is_none() {
+            self.db
+                .note_activity(&format!("liked:{}", l.object), true, false, now)?;
+        }
         info!(liker = %l.actor.fmt_short(), post = %l.object.fmt_short(), "received a like");
         Ok(SocialResponse::Ok)
     }

@@ -23,6 +23,7 @@ use tracing::info;
 
 use crate::{events, meet, peers, trust};
 
+mod activity;
 mod likes;
 mod profiles;
 mod replies;
@@ -565,6 +566,17 @@ const MIGRATIONS: &[&str] = &[
         error        TEXT
     );
     CREATE INDEX sent_likes_next_try ON sent_likes(next_try_ms);",
+    // 38: the owner's Activity (ADR 0038 §3, `db::activity`): one row for
+    // each thing it's about, by its key, and whether the owner read it. A
+    // change takes the row a new `seq`, so the latest is first. What each
+    // says is read from where that's kept.
+    "CREATE TABLE activity (
+        seq      INTEGER PRIMARY KEY AUTOINCREMENT,
+        key      TEXT NOT NULL UNIQUE,
+        first_ms INTEGER NOT NULL,
+        last_ms  INTEGER NOT NULL,
+        read     INTEGER NOT NULL
+    );",
 ];
 
 /// How many days of `served_days` are kept: the summary's 30, and today.
@@ -3577,6 +3589,36 @@ impl Db {
             |row| row.get(0),
         )?;
         Ok(n as usize)
+    }
+
+    /// What `node` said when it asked to be trusted, or was trusted, in any
+    /// state: whose node it is, and the note.
+    pub fn trust_row(&self, node: &EndpointId) -> Result<Option<TrustRow>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT node, actor, name, note, COALESCE(asked_ms, answered_ms, 0) FROM trust
+             WHERE node = ?1",
+        )?;
+        let row = stmt
+            .query_row(params![node.to_string()], |row| {
+                Ok((
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, i64>(4)?,
+                ))
+            })
+            .optional()?;
+        row.map(|(actor, name, note, at_ms)| {
+            Ok(TrustRow {
+                node: *node,
+                actor: actor.parse()?,
+                name,
+                note,
+                at_ms,
+            })
+        })
+        .transpose()
     }
 
     /// The nodes trusted, the most recently trusted first.
@@ -6834,7 +6876,7 @@ mod tests {
                      DROP INDEX objects_by_actor_date; DROP TABLE icons;
                      DROP TABLE universe_places; DROP TABLE served_days;
                      DROP TABLE events; ALTER TABLE declared_sizes DROP COLUMN post;
-                     DROP TABLE likes; DROP TABLE sent_likes;
+                     DROP TABLE likes; DROP TABLE sent_likes; DROP TABLE activity;
                      PRAGMA user_version = 24;",
                 )
                 .unwrap();
