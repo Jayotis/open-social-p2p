@@ -44,6 +44,7 @@ Each record captures one significant decision: the problem, the options consider
 | [0038](0038-likes-and-activity.md) | Likes, and one Activity inbox | Accepted 2026-11-14; P8; a signed `Like` with no part in standing or ranking |
 | [0039](0039-sharing-your-universe.md) | Sharing your Universe | Accepted 2026-11-14; P10; a share card from its own, stricter allowlist |
 | [0040](0040-the-night-sky-look.md) | The night sky look | Accepted 2026-11-16; P9; night first, Inter, icons with counts on posts, pictures of the look in tests |
+| [0041](0041-public-communities-and-stewards.md) | Public communities governed by independent stewards | Proposed 2026-11-16; post-Product-Alpha; Front Page governance, moderation, succession and community identity |
 
 Proposals under review that may become ADRs: [peer reciprocity and recognition](../12-peer-reciprocity-and-recognition.md) (its first phase, measuring, is ADR 0011) and [hosting roles and the follower swarm](../13-hosting-roles-and-follower-swarm.md) (its first phase is accepted, and whether to share copies is asked at setup, ADR 0012). See the [critical review](../reviews/2026-10-21-review-of-docs-12-and-13.md) for what blocks them.
 
