@@ -1,166 +1,131 @@
 # Feature Responsibility Model
 
-**Status:** Planning guide. This document does not change protocol or product behaviour by itself. It makes the architecture already accepted in [ADR 0001](decisions/0001-home-node-architecture.md), [ADR 0008](decisions/0008-device-pairing-and-client-protocol.md) and [ADR 0010](decisions/0010-signing-keys-and-revocation.md) explicit for future product work.
+**Status:** Planning guide. It does not change OSP's protocol or Product Alpha. It puts the existing architecture from [ADR 0001](decisions/0001-home-node-architecture.md), [ADR 0008](decisions/0008-device-pairing-and-client-protocol.md) and [ADR 0010](decisions/0010-signing-keys-and-revocation.md) into one rule for future work.
 
-OSP has one persistent participant in the network for each person: **their home node**. The phone is the person's primary interface to that node. Product features such as Home, Universe, Media and Front Page are user experiences in the app backed by work performed on the node.
+> **The app shows things and captures what the person wants. The home node does the lasting work.**
 
-The rule for future development is:
+The phone talks only to its own node. A new screen does not turn the phone into another OSP peer.
 
-> **The app captures what the person wants and presents results. The home node performs persistent social, storage, ranking, cryptographic and peer-to-peer work.**
+## Where work belongs
 
-The phone talks only to its own node. It does not become an independent OSP peer merely because a new screen needs network data.
-
-## The five implementation layers
-
-Every substantial product feature is planned under the same five headings.
-
-| Layer | Responsibility |
+| Part | What it does |
 | --- | --- |
-| **App** | Display, interaction, camera/media capture, editing, playback, accessibility and clear user controls |
-| **Client API** | The authenticated contract between the app and its paired node: requests, responses, progress and errors |
-| **Home node** | Persistent state, signing, verification, discovery, ranking, indexing, storage, media preparation, policy and background work |
-| **OSP protocol** | Signed objects and node-to-node requests required for independent nodes to interoperate |
-| **Tests** | Unit, integration, phone, multi-node and simulation evidence that the complete journey works |
+| **App** | Display, interaction, camera/media capture, editing, playback and accessibility |
+| **Client API** | Carries the person's requests to their node and returns results/progress |
+| **Home node** | Stores state, signs and verifies, discovers, indexes, ranks, prepares media, applies policy and keeps working while the phone is off |
+| **OSP protocol** | Carries facts or actions that another independent node must be able to verify |
+| **Tests** | Prove the whole journey works across the app, node and other nodes |
 
-A feature may need little or no new work in one layer. That is a useful result. A new screen does not justify a new network protocol when the node can already provide the needed information.
+A feature may need little or no work in one of these parts. That is good. Do not add a network protocol just because a new screen needs data.
 
-## Product experiences are not network roles
+## App
 
-The app may expose several product experiences:
+The app should handle work that needs the person's attention or suits a phone:
 
-- **Home:** people the owner follows and what they share.
-- **Universe:** exploration of people, content and the network.
-- **Media:** a continuous media viewer, including short-form video.
-- **Front Page:** public communities and their discussions.
-- **You:** the owner's identity, posts, relationships, node and settings.
-
-These are views of the same identity and node. They do not create separate accounts, storage systems or peer-to-peer networks.
-
-Similarly, Home, Hunter and Creator node profiles are capability profiles of the same node software, not different social classes. See [doc 18](18-node-capability-profiles.md).
-
-## App responsibilities
-
-The app should do what requires the user's attention or what the phone is especially good at:
-
-- navigation, layout and accessibility;
+- navigation and accessibility;
 - camera and microphone capture;
-- lightweight editing and preview;
-- playback and touch interactions;
+- light editing and preview;
+- playback and touch controls;
 - composing posts, replies and reports;
-- presenting moderation decisions and governance proposals;
-- asking for explicit choices and confirmation;
-- retaining only the local state needed for a responsive client, offline display and resumable uploads.
+- showing moderation choices and other decisions;
+- asking for confirmation;
+- enough local cache for a responsive/offline view and resumable uploads.
 
-The app should not independently:
+The app should not:
 
-- crawl directories or community indexes;
-- maintain a second social database;
-- decide whether a remote governance signature is valid;
-- hold OSP identity signing authority;
-- contact arbitrary OSP peers for ordinary product features;
-- implement a second recommendation engine whose state disagrees with the node.
+- crawl directories or community indexes itself;
+- keep a second copy of the social database;
+- verify remote governance or protocol signatures;
+- hold the OSP identity signing key;
+- contact arbitrary OSP peers for ordinary features;
+- run a second recommendation system that disagrees with the node.
 
-The app may cache display data, but the node remains authoritative for the owner's OSP state.
+## Client API
 
-## Client API responsibilities
+The app should ask for the outcome the person wants, not build protocol objects itself.
 
-The client API is a deliberate boundary, not an implementation detail.
-
-Requests should express **user intent**, for example:
+Examples:
 
 - follow this person;
 - join this community;
-- give me the next Media candidates;
-- post this draft;
+- give me the next Media items;
+- publish this draft;
 - hide this item for me;
-- approve this steward proposal.
+- approve this moderation action.
 
-The app should not have to assemble protocol records itself. The node validates the current state, creates and signs records where appropriate, performs network work, and returns a result suitable for the app.
+The node checks the current state, creates and signs anything needed, does the network work, and returns a result the app can show.
 
-For long work, requests expose progress or durable job state rather than requiring the phone to stay awake. A phone restart must not create a second post, vote, moderation action or governance approval.
+Long work should have durable progress. Restarting the phone must not accidentally create a second post, moderation action or other network action.
 
-Client API changes are versioned and tested independently of the Flutter widgets that use them.
+## Home node
 
-## Home-node responsibilities
-
-The node is the person's always-on agent. Depending on the feature it may:
+The node is the person's always-on participant in OSP. Depending on the feature, it may:
 
 - keep identity and signing state;
-- fetch and verify profiles, posts, community records and moderation records;
-- maintain local indexes and subscriptions;
-- build Home, Media and Front Page candidate sets;
-- apply the owner's blocks, mutes, content preferences and moderation policy;
-- prefetch thumbnails or media within explicit resource limits;
-- transcode media uploaded from the phone;
-- cache and optionally serve verified public media;
+- fetch and verify profiles, posts and community records;
+- maintain local search/indexes and subscriptions;
+- build Home, Media or Front Page candidates;
+- apply blocks, mutes and content preferences;
+- prefetch thumbnails/media within limits;
+- transcode uploads;
+- cache and optionally serve public media;
 - synchronize while the phone is off;
-- queue outgoing actions until peers return;
-- verify community steward authority and quorum;
-- run optional moderation-assistance rules or models under bounded permissions;
-- expose plain-language state to the app and detailed diagnostics under Advanced.
+- retry outgoing work when another node returns;
+- run optional moderation helpers under local limits;
+- give the app plain-language status and put technical details under Advanced.
 
-The node may make local choices for its owner, but those choices do not become network-wide authority unless the owner signs a protocol action that actually has such scope.
+A local choice made by the node for its owner does not become a rule for everybody else.
 
-## OSP protocol responsibilities
+## OSP protocol
 
-A protocol addition is justified only when independent OSP nodes need a shared, verifiable fact or action.
+Add protocol only when another independent node must verify or act on something.
 
-Examples include:
+Examples:
 
-- a signed community identity;
-- a post placement in a community;
-- a steward moderation record;
-- a delete by the author;
+- a signed post or Delete;
+- a public community's identity;
+- placing a post in a community;
+- a community moderation action;
 - an index snapshot another node can verify.
 
-Local ranking weights, screen layout, personal mute terms and a local AI spam score generally do **not** belong in the network protocol.
+Screen layout, personal mute words, local ranking weights and a local spam score normally stay off the wire.
 
-Protocol records have explicit versioning, size/rate bounds, replay rules, signature rules and compatibility tests before product code relies on them.
+## How to plan a feature
 
-## Testing responsibilities
-
-A feature is not complete because its screen renders or its protocol object verifies. The test plan follows the same layers.
-
-1. **App tests:** interaction, accessibility, error states and cached/offline display.
-2. **Client API tests:** request/response compatibility, retries and idempotence.
-3. **Node tests:** persistence, policy, ranking, resource limits and restart behaviour.
-4. **Protocol tests:** signatures, malformed peers, replay, conflicting state and version mismatch.
-5. **Journey tests:** real phone -> real node -> independent nodes, including outages.
-6. **Simulation:** scale, abuse and adversarial cases that are impractical on a few lab machines.
-
-Mock app data is allowed for UI development, but is visibly test data and must not be confused with live discoveries. Before a feature gate passes, the same screen is exercised against real node responses.
-
-## How work is divided in issues
-
-A product feature should normally have one parent issue and separate implementation tasks where parallel work helps:
-
-- **Product/App**
-- **Client API**
-- **Node**
-- **Protocol**
-- **Tests**
-
-Each task states what it consumes and produces. A protocol or API task should land before downstream code depends on an unstable shape, unless both sides work against an explicitly versioned mock contract.
-
-A feature issue should answer:
+Do not require one parent issue plus five child issues. For a solo project, use this checklist in the issue or design note:
 
 1. What problem does the person see?
-2. Which work belongs on the app?
-3. Which work continues on the node after the app closes?
+2. What belongs in the app?
+3. What keeps working on the node after the app closes?
 4. Does another node need to verify anything new?
-5. What client request expresses the person's intent?
-6. What private data stays local?
-7. What are the storage, CPU, bandwidth and abuse limits?
-8. What proves the complete journey works?
+5. What app-to-node request expresses the person's intent?
+6. What private information stays local?
+7. What CPU, storage, bandwidth and abuse limits are needed?
+8. What end-to-end test proves it works?
 
-## Security boundary
+Split work into separate issues only when that makes parallel development or review easier.
 
-Plugins, scripts, recommendation code and moderation assistants run **inside the node's policy boundary**, not above it. A component may suggest an action without receiving unrestricted signing authority. See [doc 19](19-node-assisted-moderation.md).
+## Testing
 
-The same principle applies to hardware: extra CPU, disk or bandwidth can let a node do more work, but does not grant additional social, ranking or governance authority.
+A feature is not finished just because the screen renders or a protocol object verifies.
 
-## Relationship to the Product Alpha
+Check, as needed:
 
-[ADR 0030](decisions/0030-product-alpha-before-testers.md) remains the current release gate. This document does not interrupt its order.
+- app interaction and offline/error states;
+- app-to-node requests, retry and duplicate prevention;
+- node persistence and restart behaviour;
+- malformed or hostile remote input;
+- a real phone -> real node -> other nodes journey;
+- simulation for scale or abuse that is impractical in the lab.
 
-After the Product Alpha, new experiences such as Front Page and Media should be planned with this responsibility model from their first issue, rather than being implemented as a screen first and separated later.
+Mock data is fine while building a screen, but it must be clearly test data. The feature gate uses real node responses.
+
+## Moderation and plugins
+
+Scripts, classifiers and AI helpers run **under the node's policy**, not above it. They may suggest actions without receiving the owner's signing keys. See [doc 19](19-node-assisted-moderation.md).
+
+Likewise, more CPU, disk or bandwidth lets a node do more work; it does not grant more votes, organic reach or community authority.
+
+## Product Alpha
+
+[ADR 0030](decisions/0030-product-alpha-before-testers.md) remains the current release gate. This guide is for work that follows it and does not change P9-P12.
