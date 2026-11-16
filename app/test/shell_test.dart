@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'dart:math';
 
@@ -117,9 +118,13 @@ class FakeApp implements OspApp {
   Connection? connectionAnswer;
   final connectedAsked = <String>[];
 
+  /// When set, the answer waits for it.
+  Completer<void>? holdConnection;
+
   @override
   Future<Connection> howConnected({required String identity}) async {
     connectedAsked.add(identity);
+    await holdConnection?.future;
     return connectionAnswer ??
         Connection(
           identity: identity,
@@ -150,6 +155,7 @@ NodeStatus nodeStatus({
   int replyRequests = 0,
   int hostedPosts = 0,
   int servedLatelyBytes = 0,
+  bool torStarting = false,
 }) => NodeStatus(
   name: 'Alice',
   version: '0.1.0',
@@ -164,6 +170,7 @@ NodeStatus nodeStatus({
   trustRequests: trustRequests,
   replyRequests: replyRequests,
   overTor: false,
+  torStarting: torStarting,
   hostedPosts: hostedPosts,
   servedLatelyBytes: servedLatelyBytes,
   spaceBytes: 1400 * 1000 * 1000,
@@ -681,7 +688,12 @@ void main() {
     await tester.pumpAndSettle();
     expect(app.connectedAsked, ['id-Kim']);
     expect(node.universeRegion, '', reason: 'the paths start at your star');
-    expect(find.text('How you’re connected to Kim'), findsOne);
+    final card = find.byKey(const Key('paths-card'));
+    expect(
+      find.descendant(of: card, matching: find.text('Kim')),
+      findsOne,
+      reason: 'the name is the title, not cut off after a sentence',
+    );
     expect(
       find.text('Their node named 1 person who vouched for them'),
       findsOne,
@@ -708,6 +720,29 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('Your node hasn’t found a connection.'), findsOne);
     expect(find.textContaining('not connected'), findsNothing);
+    expect(find.text('Their node named nobody who vouched for them'), findsOne);
+  });
+
+  testWidgets('an ask while Tor starts says it waits for Tor', (tester) async {
+    app.snapshot = world(['Kim']);
+    app.regions['p:id-Kim'] = world(['Kim'], region: 'p:id-Kim', path: ['']);
+    app.holdConnection = Completer();
+    await start(tester, Place.universe);
+    node.status = nodeStatus(torStarting: true);
+    await tester.tapAt(drawnAt(tester, 1, 1));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('How are we connected?'));
+    await tester.pump();
+    expect(
+      find.text(
+        'Tor is still starting; your node asks once it reaches others…',
+      ),
+      findsOne,
+    );
+    expect(find.textContaining('try again'), findsNothing);
+
+    app.holdConnection!.complete();
+    await tester.pumpAndSettle();
     expect(find.text('Their node named nobody who vouched for them'), findsOne);
   });
 

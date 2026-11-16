@@ -28,6 +28,7 @@ use osp_proto::{
     connected::{Connection, Named, Path, SideFrom},
     social::{CarriedVouch, MAX_VOUCHES_ANSWERED, SocialRequest, SocialResponse},
 };
+use tokio::time::Instant;
 use tracing::{debug, info};
 
 use crate::{
@@ -40,10 +41,13 @@ use crate::{
 /// Taps a node lets ask someone's node, an hour. Past it, the paths are the
 /// owner's own world's and those kept from replies.
 pub(crate) const MAX_ASKS_PER_HOUR: u32 = 10;
-/// How long a tap waits for the other node: a first connection over Tor
-/// can take most of a minute, and the owner's device waits a minute for any
-/// answer (`osp-client`'s `REPLY_TIMEOUT`), so the node answers first.
-const ASK_TIMEOUT: Duration = Duration::from_secs(45);
+/// How long a tap waits for the other node, waiting for Tor included: a
+/// first connection over Tor can take most of a minute, and the owner's
+/// device waits a minute for any answer (`osp-client`'s `REPLY_TIMEOUT`),
+/// so the node answers first.
+const ASK_TIMEOUT: Duration = Duration::from_secs(50);
+/// The least of it left to dial in, however long Tor takes to work.
+const DIAL_AT_LEAST: Duration = Duration::from_secs(20);
 
 impl Core {
     /// The paths this node knows from its owner to `actor`, nearest first.
@@ -143,6 +147,11 @@ impl Core {
     /// Asks `actor`'s node who vouched for them, once, from a throwaway key.
     /// None when it isn't asked: no node known for them, or too many taps
     /// this hour.
+    ///
+    /// Over Tor, it first waits for Tor to have reached some node since it
+    /// started: Tor says it's ready a few minutes before that works, at
+    /// times, and "try again later" would only be tried again. A tap that
+    /// dials before Tor has worked isn't counted among the hour's.
     async fn ask_who_vouched_for(&self, actor: PublicKey) -> Result<Option<Vec<CarriedVouch>>> {
         let Some(&node) = self
             .nodes_of(&actor)
@@ -151,9 +160,18 @@ impl Core {
         else {
             return Ok(None);
         };
-        if !self
-            .connected_asks
-            .allow(self.endpoint.id(), MAX_ASKS_PER_HOUR)
+        let deadline = Instant::now() + ASK_TIMEOUT;
+        let working = match &self.tor {
+            Some(tor) if !tor.dialled() => {
+                debug!("waiting for Tor to reach a node before asking");
+                tor.wait_dialled(deadline - DIAL_AT_LEAST).await
+            }
+            _ => true,
+        };
+        if working
+            && !self
+                .connected_asks
+                .allow(self.endpoint.id(), MAX_ASKS_PER_HOUR)
         {
             debug!("too many taps asked other nodes this hour");
             return Ok(None);
@@ -166,7 +184,7 @@ impl Core {
                 .context("connecting")?;
             request_on(&conn, &SocialRequest::WhoVouched).await
         };
-        let answer = tokio::time::timeout(ASK_TIMEOUT, asked).await;
+        let answer = tokio::time::timeout_at(deadline, asked).await;
         endpoint.close().await;
         match answer.context("no answer in time")?? {
             SocialResponse::Vouches { mut vouches } => {

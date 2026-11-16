@@ -6,9 +6,13 @@ import 'src/rust/api/osp.dart';
 /// node knows from its owner to someone, lit up hop by hop, and written out
 /// under the map. While the node is still looking, [connection] is none.
 class ConnectionLights {
-  ConnectionLights.asking(this.identity, this.name) : connection = null;
+  /// While the node asks. [torStarting]: its Tor hasn't reached anyone
+  /// yet, so the node waits for it first.
+  ConnectionLights.asking(this.identity, this.name, {this.torStarting = false})
+    : connection = null;
 
-  ConnectionLights(this.identity, this.name, Connection this.connection) {
+  ConnectionLights(this.identity, this.name, Connection this.connection)
+    : torStarting = false {
     for (final p in connection!.people) {
       _names[p.identity] = p.name;
       _regions[p.identity] = p.regions;
@@ -20,6 +24,7 @@ class ConnectionLights {
   final String name;
 
   final Connection? connection;
+  final bool torStarting;
 
   final _names = <String, String?>{};
   final _regions = <String, List<String>>{};
@@ -87,6 +92,9 @@ class ConnectionLights {
   /// Where the paths came from, in words, under the title.
   String get source {
     final c = connection;
+    if (c == null && torStarting) {
+      return 'Tor is still starting; your node asks once it reaches others…';
+    }
     if (c == null) return 'Looking for how you’re connected…';
     return switch (c.side) {
       SideFrom.replied => 'From when they replied to you',

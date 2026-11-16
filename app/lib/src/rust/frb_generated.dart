@@ -2612,8 +2612,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   NodeStatus dco_decode_node_status(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 17)
-      throw Exception('unexpected arr length: expect 17 but see ${arr.length}');
+    if (arr.length != 18)
+      throw Exception('unexpected arr length: expect 18 but see ${arr.length}');
     return NodeStatus(
       name: dco_decode_String(arr[0]),
       version: dco_decode_String(arr[1]),
@@ -2629,9 +2629,10 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       trustRequests: dco_decode_u_32(arr[11]),
       replyRequests: dco_decode_u_32(arr[12]),
       overTor: dco_decode_bool(arr[13]),
-      hostedPosts: dco_decode_u_32(arr[14]),
-      servedLatelyBytes: dco_decode_i_64(arr[15]),
-      spaceBytes: dco_decode_i_64(arr[16]),
+      torStarting: dco_decode_bool(arr[14]),
+      hostedPosts: dco_decode_u_32(arr[15]),
+      servedLatelyBytes: dco_decode_i_64(arr[16]),
+      spaceBytes: dco_decode_i_64(arr[17]),
     );
   }
 
@@ -3686,6 +3687,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_trustRequests = sse_decode_u_32(deserializer);
     var var_replyRequests = sse_decode_u_32(deserializer);
     var var_overTor = sse_decode_bool(deserializer);
+    var var_torStarting = sse_decode_bool(deserializer);
     var var_hostedPosts = sse_decode_u_32(deserializer);
     var var_servedLatelyBytes = sse_decode_i_64(deserializer);
     var var_spaceBytes = sse_decode_i_64(deserializer);
@@ -3704,6 +3706,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       trustRequests: var_trustRequests,
       replyRequests: var_replyRequests,
       overTor: var_overTor,
+      torStarting: var_torStarting,
       hostedPosts: var_hostedPosts,
       servedLatelyBytes: var_servedLatelyBytes,
       spaceBytes: var_spaceBytes,
@@ -4833,6 +4836,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_u_32(self.trustRequests, serializer);
     sse_encode_u_32(self.replyRequests, serializer);
     sse_encode_bool(self.overTor, serializer);
+    sse_encode_bool(self.torStarting, serializer);
     sse_encode_u_32(self.hostedPosts, serializer);
     sse_encode_i_64(self.servedLatelyBytes, serializer);
     sse_encode_i_64(self.spaceBytes, serializer);

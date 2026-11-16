@@ -101,6 +101,10 @@ pub struct TorState {
 #[derive(Clone)]
 pub struct Tor {
     state: watch::Receiver<TorState>,
+    /// The restart count when a stream last reached an onion service
+    /// through Tor's SOCKS port: Tor says it's ready minutes before that
+    /// works, at times.
+    dialled: Arc<watch::Sender<Option<u32>>>,
     requests: mpsc::UnboundedSender<Request>,
     next_service: Arc<AtomicU64>,
     _task: Arc<AbortOnDropHandle<()>>,
@@ -160,6 +164,7 @@ impl Tor {
         let task = tokio::spawn(supervisor.run());
         Self {
             state: state_rx,
+            dialled: Arc::new(watch::channel(None).0),
             requests,
             next_service: Arc::default(),
             _task: Arc::new(AbortOnDropHandle::new(task)),
@@ -173,6 +178,37 @@ impl Tor {
     /// Tor's SOCKS port, while Tor runs.
     pub fn socks(&self) -> Option<SocketAddr> {
         self.state.borrow().socks
+    }
+
+    /// Whether a stream has reached an onion service through this Tor since
+    /// it last started, any key's: a better sign than [`Phase::Ready`] that
+    /// dials will work.
+    pub fn dialled(&self) -> bool {
+        let restarts = self.state.borrow().restarts;
+        *self.dialled.borrow() == Some(restarts)
+    }
+
+    /// Waits until [`dialled`](Self::dialled), or `deadline`. Says which.
+    pub async fn wait_dialled(&self, deadline: Instant) -> bool {
+        let mut dialled = self.dialled.subscribe();
+        let mut state = self.state.clone();
+        let waited = tokio::time::timeout_at(deadline, async {
+            while !self.dialled() {
+                tokio::select! {
+                    r = dialled.changed() => if r.is_err() { return },
+                    r = state.changed() => if r.is_err() { return },
+                }
+            }
+        })
+        .await;
+        waited.is_ok() && self.dialled()
+    }
+
+    /// Notes that a stream reached an onion service through this Tor.
+    pub(crate) fn note_dialled(&self) {
+        let restarts = self.state.borrow().restarts;
+        self.dialled
+            .send_if_modified(|d| d.replace(restarts) != Some(restarts));
     }
 
     /// Sets up an onion service for `key` whose streams to `port` go to
