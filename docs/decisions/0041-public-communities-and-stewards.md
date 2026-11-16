@@ -255,7 +255,7 @@ Only after real communities exist, decide whether OSP needs:
 - handling of two conflicting signed governance histories;
 - close/archive votes.
 
-Those ideas are parked in [notes/future-ideas.md](../../notes/future-ideas.md), not prerequisites for F1-F2.
+They are listed in [doc 16's Later section](../16-front-page-and-communities.md#later), and none is a prerequisite for F1–F2.
 
 ## Options rejected for the first prototype
 

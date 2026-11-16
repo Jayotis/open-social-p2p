@@ -17,7 +17,7 @@ Initial experience:
 - creator/profile, caption and community/context where applicable;
 - Like, Reply, Share and Follow;
 - Following/New first; Discover later;
-- clear "Why am I seeing this?" explanation;
+- a clear "Why am I seeing this?" once Discover exists;
 - controls for topics, languages, mutes and recommendation sources;
 - graceful unavailable/buffering states.
 

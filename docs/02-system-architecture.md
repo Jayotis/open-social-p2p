@@ -82,7 +82,7 @@ Post-Product-Alpha product work is split by responsibility rather than implement
 - [doc 16](16-front-page-and-communities.md): Front Page/public community implementation plan;
 - [doc 17](17-media-experience.md): continuous Media/short-form video plan;
 - [doc 18](18-node-capability-profiles.md): Home/Hunter/Creator resource profiles;
-- [doc 19](19-node-assisted-moderation.md): local scripts/AI and steward-assistance boundary.
+- [doc 19](19-node-assisted-moderation.md): local scripts and AI helpers, and what they may never decide.
 
 ## Evaluation
 

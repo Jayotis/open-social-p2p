@@ -92,4 +92,4 @@ When these presets become real, check at least:
 
 ## Later hardware products
 
-Prebuilt OSP Home/Library/Studio boxes are a possible future product, not part of this plan. Vendor choices, SBC models and product SKUs are parked in [notes/future-ideas.md](../notes/future-ideas.md) until real workloads have been measured.
+Prebuilt OSP Home/Library/Studio boxes are a possible future product, not part of this plan. Vendor choices, SBC models and product names wait until real workloads have been measured. Buying a stronger box must never give social rank, feed priority or community authority.
