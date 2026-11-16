@@ -58,7 +58,10 @@ class FakeApp implements OspApp {
 
   @override
   Future<ActivityPage> activity({int? before, required int limit}) async =>
-      const ActivityPage(entries: [], unread: 0, more: false);
+      ActivityPage(entries: activity_, unread: 2, more: false);
+
+  @override
+  Future<void> activityRead({required List<String> keys, int? through}) async {}
 
   @override
   Future<List<FoundPerson>> people({required int limit}) async => [];
@@ -173,6 +176,44 @@ final posts = [
     'Anyone else reading the river survey? Page 40 has the old mill.',
     const Duration(days: 1),
   ),
+];
+
+ActivityItem item(
+  int seq,
+  String kind,
+  List<String> names,
+  Duration age, {
+  bool read = false,
+  int count = 1,
+  String postText = 'Moved my node to the loft. Same Tor address, quieter fan.',
+  String text = '',
+}) => ActivityItem(
+  key: '$kind:$seq',
+  seq: seq,
+  atMs: DateTime.now().subtract(age).millisecondsSinceEpoch,
+  read: read,
+  kind: kind,
+  post: 'post-$seq',
+  postText: postText,
+  people: [for (final n in names) ActivityName(identity: 'id-$n', name: n)],
+  count: count,
+  text: text,
+  waiting: false,
+  node: 'node-$seq',
+);
+
+final activity_ = [
+  item(5, 'liked', ['Kim', 'Jimmy'], const Duration(minutes: 12), count: 2),
+  item(
+    4,
+    'reply',
+    ['Fred'],
+    const Duration(hours: 1),
+    text: 'Does the loft get cold enough to worry about?',
+  ),
+  item(3, 'followed', ['Priya'], const Duration(hours: 4), read: true),
+  item(2, 'reshared', ['Kim'], const Duration(hours: 9), read: true),
+  item(1, 'knows_you', ['Tom'], const Duration(days: 1), read: true),
 ];
 
 const kim = Profile(
@@ -324,6 +365,26 @@ void main() {
       await expectLater(
         find.byType(MaterialApp),
         matchesGoldenFile('goldens/universe_$name.png'),
+      );
+    });
+
+    testWidgets('You, $name', (tester) async {
+      await show(tester, b, AppShell(node: node));
+      await tester.tap(find.text('You'));
+      await tester.pumpAndSettle();
+      await expectLater(
+        find.byType(MaterialApp),
+        matchesGoldenFile('goldens/you_$name.png'),
+      );
+    });
+
+    testWidgets('Activity, $name', (tester) async {
+      await show(tester, b, AppShell(node: node));
+      await tester.tap(find.byTooltip('Activity'));
+      await tester.pumpAndSettle();
+      await expectLater(
+        find.byType(MaterialApp),
+        matchesGoldenFile('goldens/activity_$name.png'),
       );
     });
 

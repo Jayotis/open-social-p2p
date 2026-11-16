@@ -6,12 +6,14 @@ import '../node.dart';
 import '../src/rust/api/osp.dart';
 import '../theme.dart';
 import '../widgets/person_avatar.dart';
+import '../widgets/sky_band.dart';
 import '../widgets/post_card.dart';
 import 'edit_profile_screen.dart';
 import 'image_screen.dart';
 import 'people_screen.dart' show AskTrustDialog;
 import 'player_screen.dart';
 import 'trust_screen.dart' show confirmTrust, shownName;
+import '../widgets/empty_state.dart';
 
 /// Someone's profile (ADR 0032 §4): picture, name, summary and links, then
 /// their posts, a grid of their photos and videos, and their reshares, as
@@ -184,7 +186,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
   Widget build(BuildContext context) {
     final profile = _profile;
     return Scaffold(
-      appBar: AppBar(title: Text(profile?.own ?? false ? 'You' : _name)),
+      // Once loaded, the sky band is the bar (see [_sky]).
+      appBar: profile == null ? AppBar(title: Text(_name)) : null,
       body: profile == null
           ? Center(
               child: _error == null
@@ -201,6 +204,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
               onRefresh: _reload,
               child: CustomScrollView(
                 slivers: [
+                  _sky(context, profile),
                   SliverToBoxAdapter(child: _header(context, profile)),
                   SliverToBoxAdapter(child: _choice(profile)),
                   ..._items(context, profile),
@@ -210,8 +214,50 @@ class _ProfileScreenState extends State<ProfileScreen> {
     );
   }
 
+  /// Their own strip of sky, as the bar: it shrinks to the bar as the
+  /// page scrolls, and stays night in both themes.
+  Widget _sky(BuildContext context, Profile profile) {
+    final colors = OspColors.of(context);
+    final glow = profile.own
+        ? colors.yourStar
+        : InitialAvatar.tintFor(profile.identity);
+    const r = 44.0;
+    return SliverAppBar(
+      pinned: true,
+      expandedHeight: 200,
+      backgroundColor: colors.sky,
+      foregroundColor: colors.onSky,
+      title: Text(profile.own ? 'You' : shownName(profile.name)),
+      flexibleSpace: FlexibleSpaceBar(
+        collapseMode: CollapseMode.pin,
+        background: Stack(
+          alignment: Alignment.bottomCenter,
+          children: [
+            Positioned.fill(
+              child: SkyBand(seed: profile.identity, glow: glow),
+            ),
+            // Their picture, as their star on their own sky.
+            Padding(
+              padding: const EdgeInsets.only(bottom: Space.m),
+              child: PersonAvatar(
+                node: _node,
+                name: profile.name,
+                identity: profile.identity,
+                picture: profile.picture,
+                radius: r,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   Widget _header(BuildContext context, Profile profile) {
     final theme = Theme.of(context);
+    final quiet = theme.textTheme.bodyMedium?.copyWith(
+      color: theme.colorScheme.onSurfaceVariant,
+    );
     final counts = [
       if (profile.followers case final n?)
         n == 1 ? '1 follower' : '$n followers',
@@ -220,77 +266,81 @@ class _ProfileScreenState extends State<ProfileScreen> {
     return Padding(
       padding: const EdgeInsets.fromLTRB(Space.m, Space.m, Space.m, 0),
       child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Row(
-            children: [
-              PersonAvatar(
-                node: _node,
-                name: profile.name,
-                identity: profile.identity,
-                picture: profile.picture,
-                radius: 40,
-              ),
-              const SizedBox(width: Space.m),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      shownName(profile.name),
-                      style: theme.textTheme.headlineSmall,
-                    ),
-                    if (counts.isNotEmpty)
-                      Text(
-                        counts.join(' · '),
-                        style: theme.textTheme.bodySmall,
-                      ),
-                    if (profile.known && !profile.own)
-                      Text(
-                        'You know ${shownName(profile.name)}',
-                        style: theme.textTheme.bodySmall,
-                      ),
-                  ],
-                ),
-              ),
-            ],
+          Text(
+            shownName(profile.name),
+            style: theme.textTheme.headlineSmall,
+            textAlign: TextAlign.center,
           ),
+          if (counts.isNotEmpty) Text(counts.join(' · '), style: quiet),
+          if (profile.known && !profile.own)
+            Padding(
+              padding: const EdgeInsets.only(top: Space.xs),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(
+                    Icons.handshake_outlined,
+                    size: 16,
+                    color: theme.colorScheme.tertiary,
+                  ),
+                  const SizedBox(width: Space.xs),
+                  Text(
+                    'You know ${shownName(profile.name)}',
+                    style: quiet?.copyWith(color: theme.colorScheme.tertiary),
+                  ),
+                ],
+              ),
+            ),
           if (profile.summary case final summary?) ...[
             const SizedBox(height: Space.m),
-            SelectableText(summary, style: theme.textTheme.bodyLarge),
-          ],
-          for (final link in profile.links)
-            ListTile(
-              contentPadding: EdgeInsets.zero,
-              dense: true,
-              leading: const Icon(Icons.link),
-              title: Text(link.name),
-              subtitle: Text(link.url),
-              onTap: () {
-                Clipboard.setData(ClipboardData(text: link.url));
-                ScaffoldMessenger.of(
-                  context,
-                ).showSnackBar(const SnackBar(content: Text('Link copied.')));
-              },
+            SelectableText(
+              summary,
+              style: theme.textTheme.bodyLarge,
+              textAlign: TextAlign.center,
             ),
-          const SizedBox(height: Space.s),
+          ],
+          if (profile.links.isNotEmpty) ...[
+            const SizedBox(height: Space.s),
+            for (final link in profile.links)
+              ListTile(
+                dense: true,
+                contentPadding: EdgeInsets.zero,
+                visualDensity: VisualDensity.compact,
+                leading: Icon(Icons.link, color: theme.colorScheme.primary),
+                title: Text(link.name),
+                subtitle: Text(
+                  link.url,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+                trailing: const Icon(Icons.copy, size: 18),
+                onTap: () {
+                  Clipboard.setData(ClipboardData(text: link.url));
+                  ScaffoldMessenger.of(
+                    context,
+                  ).showSnackBar(const SnackBar(content: Text('Link copied.')));
+                },
+              ),
+          ],
+          const SizedBox(height: Space.m),
           _actions(profile),
           if (!profile.own)
-            Align(
-              alignment: Alignment.centerLeft,
-              child: TextButton.icon(
-                onPressed: () => _howConnected(profile),
-                icon: const Icon(Icons.route),
-                label: const Text('How are we connected?'),
-              ),
+            TextButton.icon(
+              onPressed: () => _howConnected(profile),
+              icon: const Icon(Icons.route),
+              label: const Text('How are we connected?'),
             ),
           if (!profile.own && !profile.followed)
             Padding(
               padding: const EdgeInsets.only(top: Space.s),
               child: Text(
-                'This is what your node has found of theirs. Follow them to '
-                'get everything they post from now on.',
-                style: theme.textTheme.bodySmall,
+                'This is what your node has found of theirs. Follow them '
+                'to get everything they post from now on.',
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: theme.colorScheme.onSurfaceVariant,
+                ),
+                textAlign: TextAlign.center,
               ),
             ),
           if (_busy)
@@ -329,6 +379,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
       );
     }
     return Wrap(
+      alignment: WrapAlignment.center,
       spacing: Space.s,
       runSpacing: Space.xs,
       children: [
@@ -367,24 +418,22 @@ class _ProfileScreenState extends State<ProfileScreen> {
       ProfileList.reshares => profile.reshares,
     };
     return Padding(
-      padding: const EdgeInsets.fromLTRB(Space.m, Space.m, Space.m, Space.s),
-      child: SingleChildScrollView(
-        scrollDirection: Axis.horizontal,
-        child: SegmentedButton<ProfileList>(
-          showSelectedIcon: false,
-          segments: [
-            for (final list in ProfileList.values)
-              ButtonSegment(
-                value: list,
-                label: Text('${list.label} ${count(list)}'),
-              ),
-          ],
-          selected: {_list},
-          onSelectionChanged: (chosen) {
-            setState(() => _list = chosen.first);
-            _more();
-          },
-        ),
+      padding: const EdgeInsets.fromLTRB(Space.m, Space.l, Space.m, Space.s),
+      child: Wrap(
+        alignment: WrapAlignment.center,
+        spacing: Space.s,
+        children: [
+          for (final list in ProfileList.values)
+            ChoiceChip(
+              label: Text('${list.label} ${count(list)}'),
+              showCheckmark: false,
+              selected: _list == list,
+              onSelected: (_) {
+                setState(() => _list = list);
+                _more();
+              },
+            ),
+        ],
       ),
     );
   }
@@ -412,13 +461,17 @@ class _ProfileScreenState extends State<ProfileScreen> {
         child: TextButton(onPressed: _more, child: const Text('Show more')),
       );
     } else if (listed.posts.isEmpty) {
-      end = Padding(
-        padding: const EdgeInsets.all(Space.xl),
-        child: Text(switch (_list) {
+      end = EmptyState(
+        icon: switch (_list) {
+          ProfileList.posts => Icons.article_outlined,
+          ProfileList.media => Icons.photo_library_outlined,
+          ProfileList.reshares => Icons.repeat,
+        },
+        message: switch (_list) {
           ProfileList.posts => 'No posts here yet.',
           ProfileList.media => 'No photos or videos here yet.',
           ProfileList.reshares => 'No reshares here yet.',
-        }, textAlign: TextAlign.center),
+        },
       );
     } else {
       end = const SizedBox(height: Space.l);
@@ -478,7 +531,9 @@ class _GridTile extends StatelessWidget {
       child: Stack(
         fit: StackFit.expand,
         children: [
-          Container(color: Colors.black12),
+          ColoredBox(
+            color: Theme.of(context).colorScheme.surfaceContainerHighest,
+          ),
           if (thumb != null)
             FutureBuilder<String>(
               future: node.mediaUrl(thumb, 'image/webp'),
@@ -495,7 +550,7 @@ class _GridTile extends StatelessWidget {
             const Center(
               child: Icon(
                 Icons.play_circle_outline,
-                color: Colors.white,
+                color: Palette.moon,
                 size: 36,
               ),
             ),

@@ -7,6 +7,7 @@ import '../theme.dart';
 import '../widgets/node_banner.dart';
 import '../widgets/post_card.dart';
 import 'compose_screen.dart';
+import '../widgets/empty_state.dart';
 
 /// Home (ADR 0031): the posts of people you follow and what they reshared,
 /// newest first, gathered by your node.
@@ -76,24 +77,25 @@ class _Empty extends StatelessWidget {
     // A scrollable child, so pull-to-refresh works on an empty Home too.
     return ListView(
       children: [
-        Padding(
-          padding: const EdgeInsets.all(Space.xl),
-          child: Text(message, textAlign: TextAlign.center),
+        const SizedBox(height: Space.xl),
+        EmptyState(
+          icon: switch (node.reachability) {
+            Reachability.offline => Icons.cloud_off,
+            Reachability.online => Icons.auto_awesome,
+            _ => Icons.hourglass_empty,
+          },
+          message: message,
+          action: online
+              ? FilledButton.icon(
+                  onPressed: onExplore,
+                  icon: const Icon(Icons.auto_awesome),
+                  label: const Text('Explore the Universe'),
+                )
+              : null,
+          footnote: node.lastContact != null && !online
+              ? 'Last reached ${formatAgo(node.lastContact!)}'
+              : null,
         ),
-        if (online)
-          Center(
-            child: FilledButton.icon(
-              onPressed: onExplore,
-              icon: const Icon(Icons.auto_awesome),
-              label: const Text('Explore the Universe'),
-            ),
-          ),
-        if (node.lastContact != null && !online)
-          Text(
-            'Last reached ${formatAgo(node.lastContact!)}',
-            textAlign: TextAlign.center,
-            style: Theme.of(context).textTheme.bodySmall,
-          ),
       ],
     );
   }

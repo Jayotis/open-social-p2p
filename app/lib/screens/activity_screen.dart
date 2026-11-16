@@ -12,6 +12,8 @@ import 'profile_screen.dart';
 import 'reply_requests_screen.dart';
 import 'thread_screen.dart';
 import 'trust_screen.dart';
+import '../widgets/empty_state.dart';
+import '../widgets/person_avatar.dart';
 
 /// Entries asked for at a time.
 const activityPage = 50;
@@ -170,12 +172,11 @@ class _ActivityScreenState extends State<ActivityScreen> {
                     ),
                   ),
                 if (!_loading && _error == null && _entries.isEmpty)
-                  const Padding(
-                    padding: EdgeInsets.all(Space.l),
-                    child: Text(
-                      'Nothing yet. Replies, likes and new followers show '
-                      'up here.',
-                    ),
+                  const EmptyState(
+                    icon: Icons.notifications_none,
+                    message:
+                        'Nothing yet. Replies, likes and new followers show '
+                        'up here.',
                   ),
                 for (final e in _entries)
                   _EntryTile(entry: e, onTap: () => _openEntry(e)),
@@ -218,15 +219,58 @@ class _EntryTile extends StatelessWidget {
       DateTime.fromMillisecondsSinceEpoch(entry.atMs.toInt()),
     );
     final opens = !(entry.kind == 'followed' && entry.people.isEmpty);
+    final scheme = theme.colorScheme;
+    final first = entry.people.firstOrNull;
     return ListTile(
-      leading: Badge(
-        isLabelVisible: !entry.read,
-        smallSize: 10,
-        child: Icon(_icon(entry)),
+      tileColor: entry.read ? null : scheme.primary.withValues(alpha: 0.07),
+      leading: SizedBox(
+        width: 44,
+        height: 44,
+        child: Stack(
+          clipBehavior: Clip.none,
+          children: [
+            // Who it's from, as their star; someone unnamed, as a plain one.
+            InitialAvatar(
+              name: first?.name ?? '',
+              seed: first?.identity ?? entry.kind,
+              radius: 20,
+            ),
+            // What happened, small at the corner.
+            Positioned(
+              right: -2,
+              bottom: -2,
+              child: Container(
+                padding: const EdgeInsets.all(3),
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: scheme.surfaceContainerHighest,
+                  border: Border.all(color: scheme.surface, width: 2),
+                ),
+                child: Icon(_icon(entry), size: 12, color: scheme.primary),
+              ),
+            ),
+            if (!entry.read)
+              Positioned(
+                left: -2,
+                top: -2,
+                child: Container(
+                  width: 10,
+                  height: 10,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: scheme.tertiary,
+                    border: Border.all(color: scheme.surface, width: 1.5),
+                  ),
+                ),
+              ),
+          ],
+        ),
       ),
       title: Text(
         activityLine(entry),
-        style: entry.read ? null : const TextStyle(fontWeight: FontWeight.w600),
+        style: theme.textTheme.bodyLarge?.copyWith(
+          fontWeight: entry.read ? FontWeight.w400 : FontWeight.w600,
+        ),
       ),
       subtitle: Text(
         [?quote, when].join('\n'),
