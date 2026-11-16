@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../format.dart';
 import '../node.dart';
 import '../src/rust/api/osp.dart';
+import '../widgets/sky_bar.dart';
 
 /// People you know (trusted followers in ADR 0013): people who say they
 /// know you, waiting for an answer, and those you said you know.
@@ -102,15 +103,17 @@ class _TrustScreenState extends State<TrustScreen> {
     final theme = Theme.of(context);
     final list = _list;
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('People you know'),
-        actions: [
-          IconButton(
-            tooltip: 'Refresh',
-            onPressed: _busy ? null : _load,
-            icon: const Icon(Icons.refresh),
-          ),
-        ],
+      appBar: SkyBar(
+        AppBar(
+          title: const Text('People you know'),
+          actions: [
+            IconButton(
+              tooltip: 'Refresh',
+              onPressed: _busy ? null : _load,
+              icon: const Icon(Icons.refresh),
+            ),
+          ],
+        ),
       ),
       body: RefreshIndicator(
         onRefresh: _load,

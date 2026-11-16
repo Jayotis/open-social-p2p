@@ -5,6 +5,7 @@ import '../format.dart';
 import '../node.dart';
 import '../src/rust/api/osp.dart';
 import 'profile_screen.dart';
+import '../widgets/sky_bar.dart';
 
 /// Who likes one of the owner's posts (ADR 0038), newest first. Only the
 /// owner's node knows; anyone else reading the post sees how many.
@@ -41,7 +42,7 @@ class _LikersScreenState extends State<LikersScreen> {
   Widget build(BuildContext context) {
     final likers = _likers;
     return Scaffold(
-      appBar: AppBar(title: const Text('Likes')),
+      appBar: SkyBar(AppBar(title: const Text('Likes'))),
       body: switch ((likers, _error)) {
         (_, final String error) => Padding(
           padding: const EdgeInsets.all(16),

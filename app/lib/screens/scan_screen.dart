@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
+import '../widgets/sky_bar.dart';
 
 /// Scans QR codes until one passes [accept], then returns its text.
 class ScanScreen extends StatefulWidget {
@@ -55,7 +56,7 @@ class _ScanScreenState extends State<ScanScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: Text(widget.title)),
+      appBar: SkyBar(AppBar(title: Text(widget.title))),
       body: Stack(
         children: [
           MobileScanner(

@@ -6,6 +6,7 @@ import 'package:share_plus/share_plus.dart';
 
 import '../format.dart';
 import '../node.dart';
+import '../widgets/sky_bar.dart';
 
 /// Advanced details (ADR 0031 §2): how this phone reaches your node and how
 /// the node is doing, in the protocol's own words. The only screen where
@@ -68,19 +69,21 @@ class _AdvancedScreenState extends State<AdvancedScreen> {
   Widget build(BuildContext context) {
     final node = widget.node;
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('Advanced details'),
-        actions: [
-          IconButton(
-            tooltip: 'Copy details for a bug report',
-            onPressed: _copyReport,
-            icon: const Icon(Icons.bug_report_outlined),
-          ),
-          IconButton(
-            onPressed: node.checkStatus,
-            icon: const Icon(Icons.refresh),
-          ),
-        ],
+      appBar: SkyBar(
+        AppBar(
+          title: const Text('Advanced details'),
+          actions: [
+            IconButton(
+              tooltip: 'Copy details for a bug report',
+              onPressed: _copyReport,
+              icon: const Icon(Icons.bug_report_outlined),
+            ),
+            IconButton(
+              onPressed: node.checkStatus,
+              icon: const Icon(Icons.refresh),
+            ),
+          ],
+        ),
       ),
       body: ListenableBuilder(
         listenable: node,

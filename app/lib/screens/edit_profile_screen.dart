@@ -8,6 +8,7 @@ import '../node.dart';
 import '../src/rust/api/osp.dart';
 import '../theme.dart';
 import '../widgets/person_avatar.dart';
+import '../widgets/sky_bar.dart';
 
 /// Changing your profile (ADR 0032 §3): picture, name, summary and up to
 /// four links. Your node publishes it; those who follow you get it on their
@@ -187,14 +188,16 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
     final hasPicture =
         _photo != null || (widget.profile.picture != null && !_removePicture);
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('Edit your profile'),
-        actions: [
-          TextButton(
-            onPressed: _saving ? null : _save,
-            child: const Text('Save'),
-          ),
-        ],
+      appBar: SkyBar(
+        AppBar(
+          title: const Text('Edit your profile'),
+          actions: [
+            TextButton(
+              onPressed: _saving ? null : _save,
+              child: const Text('Save'),
+            ),
+          ],
+        ),
       ),
       body: ListView(
         padding: const EdgeInsets.all(Space.m),

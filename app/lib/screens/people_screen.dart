@@ -7,6 +7,7 @@ import '../node.dart';
 import '../src/rust/api/osp.dart';
 import 'scan_screen.dart';
 import 'trust_screen.dart';
+import '../widgets/sky_bar.dart';
 
 /// Following works by exchanging invite codes (follow codes in ADR 0003):
 /// show yours, or scan someone else's. People you follow can be marked as
@@ -129,7 +130,7 @@ class _PeopleScreenState extends State<PeopleScreen> {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     return Scaffold(
-      appBar: AppBar(title: const Text('Invite and follow')),
+      appBar: SkyBar(AppBar(title: const Text('Invite and follow'))),
       body: ListView(
         padding: const EdgeInsets.all(24),
         children: [

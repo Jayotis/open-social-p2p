@@ -14,6 +14,7 @@ import 'people_screen.dart' show AskTrustDialog;
 import 'player_screen.dart';
 import 'trust_screen.dart' show confirmTrust, shownName;
 import '../widgets/empty_state.dart';
+import '../widgets/sky_bar.dart';
 
 /// Someone's profile (ADR 0032 §4): picture, name, summary and links, then
 /// their posts, a grid of their photos and videos, and their reshares, as
@@ -187,7 +188,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
     final profile = _profile;
     return Scaffold(
       // Once loaded, the sky band is the bar (see [_sky]).
-      appBar: profile == null ? AppBar(title: Text(_name)) : null,
+      appBar: profile == null ? SkyBar(AppBar(title: Text(_name))) : null,
       body: profile == null
           ? Center(
               child: _error == null

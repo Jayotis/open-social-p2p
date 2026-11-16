@@ -14,6 +14,7 @@ import 'thread_screen.dart';
 import 'trust_screen.dart';
 import '../widgets/empty_state.dart';
 import '../widgets/person_avatar.dart';
+import '../widgets/sky_bar.dart';
 
 /// Entries asked for at a time.
 const activityPage = 50;
@@ -135,7 +136,7 @@ class _ActivityScreenState extends State<ActivityScreen> {
     final node = _node;
     final theme = Theme.of(context);
     return Scaffold(
-      appBar: AppBar(title: const Text('Activity')),
+      appBar: SkyBar(AppBar(title: const Text('Activity'))),
       body: RefreshIndicator(
         onRefresh: _load,
         child: ListenableBuilder(
