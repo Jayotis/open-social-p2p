@@ -1,5 +1,8 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
+import '../activity_notifications.dart';
 import '../activity_words.dart';
 import '../format.dart';
 import '../node.dart';
@@ -39,6 +42,7 @@ class _ActivityScreenState extends State<ActivityScreen> {
   @override
   void initState() {
     super.initState();
+    unawaited(clearActivityNotice());
     _node.checkStatus();
     _load();
   }

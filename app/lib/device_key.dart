@@ -48,7 +48,8 @@ class DeviceKey {
   final bool isNew;
 }
 
-const _name = 'device_key';
+/// The key's name in secure storage.
+const deviceKeyName = 'device_key';
 
 /// Loads the device key from [store], making one with [newKey] the first
 /// time. A key an older version of the app left as a plain file in [dir]
@@ -61,23 +62,23 @@ Future<DeviceKey> loadDeviceKey(
   final oldFile = File('${dir.path}/device.key');
   String? key;
   try {
-    key = await store.read(_name);
+    key = await store.read(deviceKeyName);
   } catch (_) {
     // Unreadable, so as good as gone.
-    await store.delete(_name);
+    await store.delete(deviceKeyName);
   }
   if (key == null && await oldFile.exists()) {
     key = (await oldFile.readAsString()).trim();
-    await store.write(_name, key);
+    await store.write(deviceKeyName, key);
     // The file goes only once the key reads back from the store.
-    if (await store.read(_name) != key) {
+    if (await store.read(deviceKeyName) != key) {
       throw StateError("the device key couldn't be moved to secure storage");
     }
   }
   final isNew = key == null;
   if (key == null) {
     key = newKey();
-    await store.write(_name, key);
+    await store.write(deviceKeyName, key);
   }
   if (await oldFile.exists()) await oldFile.delete();
   return DeviceKey(key, isNew: isNew);

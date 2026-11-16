@@ -36,6 +36,8 @@ Each entry opens what it's about, and the words are those of a social app, not a
 
 **Notifications.** On Android, the app checks its node in the background and notifies. iPhones need Apple's push service, which needs a server, and OSP has none. On an iPhone, Activity shows when the app is opened. Push for iPhones is left for later.
 
+*Built (2026-11-16, P8 part 4):* while the app isn't on screen, Android's scheduler has it ask the node for its unread count about every 15 minutes, and less often while the phone sleeps. Entries changed since the last notification are told in Activity's own words: one entry as its line, with what was said under it, or several as "3 new in Activity" with a line each. A second like on the same post takes a new place in Activity, so it's told too. There's one notification, updated in place, and it sounds once until it's seen, so a busy night doesn't wake anyone again and again. Android's Do Not Disturb and Bedtime mode silence it as they do any other. It goes once Activity is open, or when a later check finds nothing unread, as after reading on another device. Tapping it opens Activity. A check never makes a device key, and the phone asks once to show notifications (Android 13 and later), at pairing or on the first open of this version. Forgetting the node stops the checks. Tried on the Pixel 3 XL (Android 12) with node A: Kim's like came as "Kim liked your post “test video”" on the scheduler's own time, held back from sight under Do Not Disturb, and tapping it opened Activity and took it away. Tests: what's told, and that nothing is told twice.
+
 ## Options considered
 
 - **Several reactions from the start.** More expressive, more to decide, and each one needs words in every language.

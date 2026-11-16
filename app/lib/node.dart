@@ -6,6 +6,7 @@ import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:device_info_plus/device_info_plus.dart';
 import 'package:flutter/widgets.dart';
 
+import 'activity_notifications.dart';
 import 'connection_lights.dart';
 import 'device_key.dart';
 import 'format.dart';
@@ -116,6 +117,12 @@ class HomeNode extends ChangeNotifier with WidgetsBindingObserver {
   /// from a profile does; the shell takes it and shows the Universe.
   bool mapWanted = false;
 
+  /// Set when a notification asks for Activity.
+  bool activityWanted = false;
+
+  /// Whether the phone asked to show notifications, once.
+  File? _askedToNotify;
+
   /// What the node did or saw lately (ADR 0036 §1), asked for with the
   /// Universe.
   final events = NetworkEvents();
@@ -206,6 +213,7 @@ class HomeNode extends ChangeNotifier with WidgetsBindingObserver {
           'Pair it with your node again.';
     }
     node._zoomHintShown = File('$dir/zoom-hint-shown');
+    node._askedToNotify = File('$dir/asked-to-notify');
     node.zoomHintDue = !node._zoomHintShown!.existsSync();
     node.paired = node.app.pairedNode();
     node._showSaved();
@@ -221,7 +229,11 @@ class HomeNode extends ChangeNotifier with WidgetsBindingObserver {
       node.app.networkChanged();
       node.checkStatus();
     });
-    if (node.paired != null) node._start();
+    setOnScreen(true);
+    if (node.paired != null) {
+      node._start();
+      node._startNotices();
+    }
     return node;
   }
 
@@ -413,6 +425,7 @@ class HomeNode extends ChangeNotifier with WidgetsBindingObserver {
     firstRun = true;
     notifyListeners();
     _start();
+    _startNotices();
     return info;
   }
 
@@ -538,6 +551,33 @@ class HomeNode extends ChangeNotifier with WidgetsBindingObserver {
     return wanted;
   }
 
+  /// Opens Activity, as a notification's tap does.
+  void showActivity() {
+    activityWanted = true;
+    notifyListeners();
+  }
+
+  /// Takes a notification's wish to show Activity.
+  bool takeActivityWanted() {
+    final wanted = activityWanted;
+    activityWanted = false;
+    return wanted;
+  }
+
+  /// Starts Activity's notifications (Android), and asks once to show them.
+  void _startNotices() {
+    unawaited(
+      startActivityChecks(onTap: showActivity).then((opened) {
+        if (opened) showActivity();
+      }),
+    );
+    final asked = _askedToNotify;
+    if (asked != null && !asked.existsSync()) {
+      asked.writeAsStringSync('');
+      unawaited(askToNotify());
+    }
+  }
+
   /// Asks the node for everyone it holds a profile of (the list the
   /// Universe opens). One at a time.
   Future<void> loadPeople() async {
@@ -581,6 +621,7 @@ class HomeNode extends ChangeNotifier with WidgetsBindingObserver {
   /// Forgets the node on this phone.
   Future<void> forget() async {
     _stop();
+    await stopActivityChecks();
     await app.forget();
     await uploads.clean();
     unsent = null;
@@ -619,10 +660,12 @@ class HomeNode extends ChangeNotifier with WidgetsBindingObserver {
     switch (state) {
       case AppLifecycleState.resumed:
         _inBackground = false;
+        setOnScreen(true);
         app.resumed();
         _start();
       case AppLifecycleState.paused:
         _inBackground = true;
+        setOnScreen(false);
         _stop();
         // Save the battery, unless a post is still being sent. Deletes
         // still waiting go first.

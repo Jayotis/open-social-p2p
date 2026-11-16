@@ -60,6 +60,12 @@ class _AppShellState extends State<AppShell> {
         if (mounted) _go(Place.universe);
       });
     }
+    // A notification asked for Activity.
+    if (node.takeActivityWanted()) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _open(ActivityScreen(node: node, open: _open));
+      });
+    }
     final online = node.reachability == Reachability.online;
     final waiting = node.status?.activityUnread ?? 0;
     final onSky = _place == Place.universe;
