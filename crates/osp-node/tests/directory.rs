@@ -24,7 +24,7 @@ use osp_proto::{
     SOCIAL_ALPN, SignedObject,
     framing::{read_frame, write_frame},
     machine::{ListingEntry, ListingItem, MachineRecord, MachineRequest, MachineResponse},
-    rpc::{ClientRequest, ClientResponse, DirectoryStatus, FeedItem, PersonInfo, StatusInfo},
+    rpc::{ClientRequest, ClientResponse, FeedItem, PersonInfo, StatusInfo},
     social::{OutboxEntry, SocialRequest, SocialResponse},
 };
 
@@ -408,14 +408,12 @@ async fn a_directory_gives_out_those_who_asked_and_nobody_else() {
     let (entries, _) = read_lists(&net, &directory, 0).await;
     let bobs = listing_of(bob.identity());
     assert!(entries.iter().all(|e| bobs(e).is_none()), "{entries:?}");
-    let shown = status(&directory).await.directory;
-    assert_eq!(
-        shown,
-        Some(DirectoryStatus {
-            people: 1,
-            machines: 0
-        })
-    );
+    // Only Alice is listed. Alice's and Bob's machines may have met the
+    // directory's by now: each node's first round of meeting machines comes
+    // at a time of its own, within minutes of starting.
+    let shown = status(&directory).await.directory.unwrap();
+    assert_eq!(shown.people, 1, "{shown:?}");
+    assert!(shown.machines <= 2, "{shown:?}");
 
     // Nothing of theirs reaches its owner: it keeps them apart.
     let ClientResponse::Feed { items } = call(&directory, ClientRequest::Feed { limit: 50 }).await
