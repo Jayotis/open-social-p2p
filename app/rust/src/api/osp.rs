@@ -78,6 +78,9 @@ pub struct NodeStatus {
     /// Messages between nodes go through Tor, so they take seconds, and a
     /// first contact up to a few minutes.
     pub over_tor: bool,
+    /// Over Tor, it hasn't reached another node yet since Tor started: Tor
+    /// may say it's ready a few minutes before that works.
+    pub tor_starting: bool,
     /// Posts the node reshared with hosting, and keeps available.
     pub hosted_posts: u32,
     /// Media bytes it sent other nodes over the last 30 days (ADR 0036 §3).
@@ -650,6 +653,7 @@ impl OspApp {
             trust_requests: s.trust_requests as u32,
             reply_requests: s.reply_requests as u32,
             over_tor: s.tor.is_some(),
+            tor_starting: s.tor.as_ref().is_some_and(|t| !t.dialled),
             hosted_posts: s.shared.posts as u32,
             served_lately_bytes: s.served_lately_bytes as i64,
             space_bytes: s.space_bytes as i64,

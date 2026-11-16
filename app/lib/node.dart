@@ -503,7 +503,11 @@ class HomeNode extends ChangeNotifier with WidgetsBindingObserver {
   /// owner's own tap only (ADR 0037 §2): it may ask their node once. The map
   /// shows it, the search it showed put away.
   Future<void> askConnection(String identity, String name) async {
-    final asking = ConnectionLights.asking(identity, name);
+    final asking = ConnectionLights.asking(
+      identity,
+      name,
+      torStarting: status?.torStarting ?? false,
+    );
     connection = asking;
     connectionError = null;
     searchLights = null;

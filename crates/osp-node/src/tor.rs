@@ -125,6 +125,18 @@ impl TorSide {
         Ok(())
     }
 
+    /// Whether a dial through this Tor has reached another node's onion
+    /// service since Tor last started. Tor says it's ready a while before
+    /// that works.
+    pub fn dialled(&self) -> bool {
+        self.tor.dialled()
+    }
+
+    /// Waits until [`dialled`](Self::dialled), or `deadline`. Says which.
+    pub async fn wait_dialled(&self, deadline: tokio::time::Instant) -> bool {
+        self.tor.wait_dialled(deadline).await
+    }
+
     /// Waits until Tor is ready to carry messages.
     pub async fn ready(&self) {
         let mut state = self.tor.state();
@@ -148,6 +160,7 @@ impl TorSide {
             onion_error: state.onion_error,
             streams: streams.open,
             dialling: streams.dialling,
+            dialled: self.tor.dialled(),
         }
     }
 

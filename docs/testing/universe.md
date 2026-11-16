@@ -164,5 +164,7 @@ ADR 0037's gate, over real Tor: the owner asks how they're connected to someone.
 
 **Still open:**
 - A new circuit each time makes an ask take 5 to 30 s. That's the price of not being linked to the owner.
-- In the first two minutes after Tor starts, asks mostly fail, and the card says the other node didn't answer. It doesn't say why.
-- The card's title is cut off: "How you're connected to …", without the name.
+
+**Since then (P7 part 5):**
+- An ask no longer fails in the first minutes after Tor starts. Tor says it's ready before onion services can be reached, so the node waits for a better sign: a stream through its Tor has reached another node's onion service since Tor last started. Any of the node's keys count, and the node's own syncing makes such streams anyway. Until then the ask waits, up to 30 s, and then has 20 s or more to dial, all inside the phone's minute. The card says "Tor is still starting; your node asks once it reaches others…". An ask dialled before Tor has worked doesn't count against the 10 an hour. `osp status` adds "reached no node yet" to Tor's line until then. The wait is checked against a fake Tor that says it's ready but can't reach anyone (`osp-tor/tests/fake_tor.rs`).
+- The card's title is the person's name; "How you're connected to …" cut the name off.

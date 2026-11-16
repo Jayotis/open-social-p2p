@@ -1817,7 +1817,7 @@ class _PathsCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final c = paths;
-    final who = c == null ? 'them' : c.nameOf(c.identity);
+    final who = c == null ? 'How you’re connected' : c.nameOf(c.identity);
     return Card(
       key: const Key('paths-card'),
       child: Padding(
@@ -1828,8 +1828,10 @@ class _PathsCard extends StatelessWidget {
           children: [
             ListTile(
               leading: const Icon(Icons.route),
+              // The name, not "How you're connected to …": a phone's
+              // width cut that off before the name.
               title: Text(
-                'How you’re connected to $who',
+                who,
                 style: theme.textTheme.titleSmall,
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,

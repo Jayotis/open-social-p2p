@@ -137,4 +137,12 @@ void main() {
     expect(c.lines(shown([person('jimmy', 4)])), isEmpty);
     expect(c.source, 'Looking for how you’re connected…');
   });
+
+  test('while Tor starts, it says the node waits for it', () {
+    final c = ConnectionLights.asking('jimmy', 'Jimmy', torStarting: true);
+    expect(
+      c.source,
+      'Tor is still starting; your node asks once it reaches others…',
+    );
+  });
 }

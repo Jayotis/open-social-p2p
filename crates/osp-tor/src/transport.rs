@@ -293,11 +293,15 @@ fn tor_dial(tor: &Tor, me: EndpointId) -> Dial {
     let tor = tor.clone();
     let isolation: Arc<str> = me.to_string().into();
     Arc::new(move |node| {
-        let socks = tor.socks();
+        let tor = tor.clone();
         let isolation = isolation.clone();
         Box::pin(async move {
-            let socks = socks.ok_or_else(|| io::Error::other("Tor isn't running"))?;
-            socks::connect(socks, &isolation, &onion::host(&node), ONION_PORT).await
+            let socks = tor
+                .socks()
+                .ok_or_else(|| io::Error::other("Tor isn't running"))?;
+            let stream = socks::connect(socks, &isolation, &onion::host(&node), ONION_PORT).await?;
+            tor.note_dialled();
+            Ok(stream)
         })
     })
 }

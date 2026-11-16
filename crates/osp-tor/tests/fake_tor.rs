@@ -5,21 +5,24 @@
 use std::{
     net::SocketAddr,
     path::PathBuf,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicU8, Ordering::Relaxed},
+    },
     time::Duration,
 };
 
 use anyhow::Result;
 use data_encoding::HEXUPPER;
-use iroh::{EndpointId, SecretKey};
+use iroh::{Endpoint, EndpointId, SecretKey};
 use osp_tor::{Phase, Source, Tor, TorState, TorTransport, onion};
 use ring::hmac;
 use tokio::{
-    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
+    io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
     net::{TcpListener, TcpStream},
     sync::watch,
     task::AbortHandle,
-    time::timeout,
+    time::{Instant, timeout},
 };
 
 /// Answers the commands the node sends, as Tor 0.4.9 does.
@@ -30,6 +33,8 @@ struct FakeTor {
     impostor: bool,
     /// The onion service it names in reply to `ADD_ONION`.
     service_id: String,
+    /// The SOCKS port it names: nothing listens on port 9.
+    socks: Mutex<SocketAddr>,
     commands: Mutex<Vec<String>>,
     connections: Mutex<Vec<AbortHandle>>,
 }
@@ -49,6 +54,7 @@ impl FakeTor {
             cookie_file,
             impostor,
             service_id: onion::service_id(names),
+            socks: Mutex::new("127.0.0.1:9".parse().unwrap()),
             commands: Mutex::default(),
             connections: Mutex::default(),
         });
@@ -128,9 +134,10 @@ impl FakeTor {
                 }
                 ("AUTHENTICATE", _) => "515 Authentication failed\r\n".to_string(),
                 ("SETEVENTS", _) | ("DEL_ONION", _) => "250 OK\r\n".to_string(),
-                ("GETINFO", Some("net/listeners/socks")) => {
-                    "250-net/listeners/socks=\"127.0.0.1:9\"\r\n250 OK\r\n".to_string()
-                }
+                ("GETINFO", Some("net/listeners/socks")) => format!(
+                    "250-net/listeners/socks=\"{}\"\r\n250 OK\r\n",
+                    self.socks.lock().unwrap()
+                ),
                 ("GETINFO", Some("status/bootstrap-phase")) => {
                     "250-status/bootstrap-phase=NOTICE BOOTSTRAP PROGRESS=100 TAG=done SUMMARY=\"Done\"\r\n250 OK\r\n"
                         .to_string()
@@ -147,6 +154,40 @@ impl FakeTor {
             }
         }
     }
+}
+
+/// A SOCKS port as Tor's: every stream asked for gets `reply`'s code, 0
+/// being reached. A reached stream is held open, and says nothing.
+async fn fake_socks(reply: Arc<AtomicU8>) -> SocketAddr {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        while let Ok((mut s, _)) = listener.accept().await {
+            let code = reply.load(Relaxed);
+            tokio::spawn(async move {
+                let mut hello = [0; 3];
+                s.read_exact(&mut hello).await?;
+                s.write_all(&[5, 2]).await?;
+                let mut head = [0; 2];
+                s.read_exact(&mut head).await?;
+                let mut user = vec![0; head[1] as usize + 1];
+                s.read_exact(&mut user).await?;
+                let mut pass = vec![0; user[head[1] as usize] as usize];
+                s.read_exact(&mut pass).await?;
+                s.write_all(&[1, 0]).await?;
+                let mut head = [0; 5];
+                s.read_exact(&mut head).await?;
+                let mut rest = vec![0; head[4] as usize + 2];
+                s.read_exact(&mut rest).await?;
+                s.write_all(&[5, code, 0, 1, 127, 0, 0, 1, 0, 80]).await?;
+                if code == 0 {
+                    let _ = s.read_to_end(&mut Vec::new()).await;
+                }
+                Ok::<_, std::io::Error>(())
+            });
+        }
+    });
+    addr
 }
 
 /// Waits until Tor's state passes `check`.
@@ -236,4 +277,49 @@ async fn says_when_tor_isnt_installed() {
         "{}",
         s.phase
     );
+}
+
+/// Tor says it's ready minutes before onion services can be reached, at
+/// times (ADR 0037's gate run): `dialled` waits for a stream that did,
+/// and starts over when Tor does.
+#[tokio::test]
+async fn says_when_a_dial_has_reached_an_onion_service() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let key = SecretKey::generate();
+    let (fake, addr) = FakeTor::start(&dir, &key.public(), false).await;
+    // Tor's code for an onion service it can't find yet.
+    let reply = Arc::new(AtomicU8::new(0xf0));
+    *fake.socks.lock().unwrap() = fake_socks(reply.clone()).await;
+    let tor = Tor::start(Source::External(addr));
+    wait_for(&mut tor.state(), |s| s.phase == Phase::Ready).await;
+    assert!(!tor.dialled());
+
+    let dialler = || async {
+        let transport = TorTransport::dial_only(&tor, SecretKey::generate());
+        let endpoint = Endpoint::builder(transport.preset()).bind().await?;
+        let target = SecretKey::generate().public();
+        let dialling = endpoint.clone();
+        tokio::spawn(async move { dialling.connect(target, b"test").await });
+        anyhow::Ok(endpoint)
+    };
+    // Ready, but nobody reached.
+    let _a = dialler().await?;
+    let soon = Instant::now() + Duration::from_secs(2);
+    assert!(!tor.wait_dialled(soon).await);
+
+    // Reached: whoever waits is told.
+    let waiting = tor.wait_dialled(Instant::now() + Duration::from_secs(10));
+    reply.store(0, Relaxed);
+    let _b = dialler().await?;
+    assert!(waiting.await);
+    assert!(tor.dialled());
+
+    // Started again, Tor has reached nobody yet.
+    reply.store(0xf0, Relaxed);
+    fake.stop();
+    wait_for(&mut tor.state(), |s| matches!(s.phase, Phase::Down(_))).await;
+    assert!(!tor.dialled());
+    wait_for(&mut tor.state(), |s| s.phase == Phase::Ready).await;
+    assert!(!tor.dialled());
+    Ok(())
 }

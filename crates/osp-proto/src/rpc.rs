@@ -714,6 +714,10 @@ pub struct TorStatus {
     /// Streams open to other nodes, and being dialled.
     pub streams: usize,
     pub dialling: usize,
+    /// Whether a dial has reached another node through Tor since it last
+    /// started. Until then, Tor may say it's ready and still reach nobody.
+    #[serde(default)]
+    pub dialled: bool,
 }
 
 /// How this node's network maps its outgoing UDP, which decides whether

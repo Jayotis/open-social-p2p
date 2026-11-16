@@ -2066,6 +2066,10 @@ fn print_status(s: &StatusInfo) {
             (true, false) => ", onion service not published yet",
             _ => "",
         };
+        let dialled = match (tor.ready, tor.dialled) {
+            (true, false) => ", reached no node yet",
+            _ => "",
+        };
         let restarts = match tor.restarts {
             0 => String::new(),
             1 => ", restarted once".to_string(),
@@ -2075,7 +2079,10 @@ fn print_status(s: &StatusInfo) {
             1 => "1 stream".to_string(),
             n => format!("{n} streams"),
         };
-        println!("Tor:       {}{published}, {streams}{restarts}", tor.state);
+        println!(
+            "Tor:       {}{published}{dialled}, {streams}{restarts}",
+            tor.state
+        );
     }
     if s.machine {
         println!("Machine:   on (`osp machine show` gives its name)");

@@ -588,6 +588,10 @@ class NodeStatus {
   /// first contact up to a few minutes.
   final bool overTor;
 
+  /// Over Tor, it hasn't reached another node yet since Tor started: Tor
+  /// may say it's ready a few minutes before that works.
+  final bool torStarting;
+
   /// Posts the node reshared with hosting, and keeps available.
   final int hostedPosts;
 
@@ -612,6 +616,7 @@ class NodeStatus {
     required this.trustRequests,
     required this.replyRequests,
     required this.overTor,
+    required this.torStarting,
     required this.hostedPosts,
     required this.servedLatelyBytes,
     required this.spaceBytes,
@@ -633,6 +638,7 @@ class NodeStatus {
       trustRequests.hashCode ^
       replyRequests.hashCode ^
       overTor.hashCode ^
+      torStarting.hashCode ^
       hostedPosts.hashCode ^
       servedLatelyBytes.hashCode ^
       spaceBytes.hashCode;
@@ -656,6 +662,7 @@ class NodeStatus {
           trustRequests == other.trustRequests &&
           replyRequests == other.replyRequests &&
           overTor == other.overTor &&
+          torStarting == other.torStarting &&
           hostedPosts == other.hostedPosts &&
           servedLatelyBytes == other.servedLatelyBytes &&
           spaceBytes == other.spaceBytes;
