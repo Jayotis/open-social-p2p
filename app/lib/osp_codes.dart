@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:share_plus/share_plus.dart';
 
@@ -126,7 +128,7 @@ Future<void> sharePost(BuildContext context, HomeNode node, Post post) async {
 }
 
 /// Opens an OSP code: a person's is followed, once the owner says so; a
-/// post's opens its thread, if the node holds the post.
+/// post's opens its thread, fetched from its author's node if need be.
 Future<void> openOspCode(
   BuildContext context,
   HomeNode node,
@@ -137,39 +139,49 @@ Future<void> openOspCode(
   void say(String text) =>
       messenger.showSnackBar(SnackBar(content: Text(text)));
 
-  final postId = code.post;
-  if (postId != null) {
+  // A post opens as the node holds it, or else is fetched from its
+  // author's node and kept as an opened post (ADR 0039 §4).
+  if (code.post != null) {
+    if (!context.mounted) return;
+    final root = Navigator.of(context, rootNavigator: true);
+    // Over Tor, its author's node can take a minute or two to answer.
+    unawaited(
+      showDialog<void>(
+        context: context,
+        barrierDismissible: false,
+        builder: (_) => const AlertDialog(
+          content: Row(
+            children: [
+              CircularProgressIndicator(),
+              SizedBox(width: 16),
+              Expanded(child: Text("Opening the post from its author's node…")),
+            ],
+          ),
+        ),
+      ),
+    );
     try {
-      final post = await node.app.showPost(id: postId);
+      final post = await node.app.openPost(code: code.code);
+      root.pop();
       navigator.push(
         MaterialPageRoute(
           builder: (_) => ThreadScreen(node: node, post: post),
         ),
       );
-      return;
-    } catch (_) {
-      // Not on this node: offer to follow its author, below.
+    } catch (e) {
+      root.pop();
+      say("Couldn't open that post: ${describeError(e)}");
     }
+    return;
   }
 
   if (code.actor == node.paired?.identity) {
-    say(
-      postId == null
-          ? "That's your own code."
-          : "That post of yours isn't on your node any more.",
-    );
+    say("That's your own code.");
     return;
   }
   final following = await node.app.following();
   final followed = following.where((f) => f.identity == code.actor);
   if (followed.isNotEmpty) {
-    if (postId != null) {
-      say(
-        "That post isn't on your node yet. It comes with the next sync with "
-        'its author.',
-      );
-      return;
-    }
     final person = followed.first;
     navigator.push(
       MaterialPageRoute(
@@ -186,14 +198,10 @@ Future<void> openOspCode(
   final follow = await showDialog<bool>(
     context: context,
     builder: (context) => AlertDialog(
-      title: Text(postId == null ? 'Follow them?' : 'Follow its author?'),
-      content: Text(
-        postId == null
-            ? 'Your node asks theirs for their profile and public posts, '
-                  'and keeps getting new ones.'
-            : "This post is by someone you don't follow, so it isn't on "
-                  'your node. Follow them to get their public posts, this '
-                  'one among them.',
+      title: const Text('Follow them?'),
+      content: const Text(
+        'Your node asks theirs for their profile and public posts, '
+        'and keeps getting new ones.',
       ),
       actions: [
         TextButton(

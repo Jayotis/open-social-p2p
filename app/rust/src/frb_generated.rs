@@ -40,7 +40,7 @@ flutter_rust_bridge::frb_generated_boilerplate!(
     default_rust_auto_opaque = RustAutoOpaqueMoi,
 );
 pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_VERSION: &str = "2.13.0";
-pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = 1978034152;
+pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = -1849851830;
 
 // Section: executor
 
@@ -1040,6 +1040,64 @@ fn wire__crate__api__osp__OspApp_forget_impl(
         },
     )
 }
+fn wire__crate__api__osp__OspApp_forget_opened_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_async::<flutter_rust_bridge::for_generated::SseCodec, _, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "OspApp_forget_opened",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_that = <RustOpaqueMoi<
+                flutter_rust_bridge::for_generated::RustAutoOpaqueInner<OspApp>,
+            >>::sse_decode(&mut deserializer);
+            let api_post_id = <String>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| async move {
+                transform_result_sse::<_, flutter_rust_bridge::for_generated::anyhow::Error>(
+                    (move || async move {
+                        let mut api_that_guard = None;
+                        let decode_indices_ =
+                            flutter_rust_bridge::for_generated::lockable_compute_decode_order(
+                                vec![flutter_rust_bridge::for_generated::LockableOrderInfo::new(
+                                    &api_that, 0, false,
+                                )],
+                            );
+                        for i in decode_indices_ {
+                            match i {
+                                0 => {
+                                    api_that_guard =
+                                        Some(api_that.lockable_decode_async_ref().await)
+                                }
+                                _ => unreachable!(),
+                            }
+                        }
+                        let api_that_guard = api_that_guard.unwrap();
+                        let output_ok =
+                            crate::api::osp::OspApp::forget_opened(&*api_that_guard, api_post_id)
+                                .await?;
+                        std::result::Result::Ok(output_ok)
+                    })()
+                    .await,
+                )
+            }
+        },
+    )
+}
 fn wire__crate__api__osp__OspApp_hide_reply_impl(
     port_: flutter_rust_bridge::for_generated::MessagePort,
     ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
@@ -1526,6 +1584,63 @@ fn wire__crate__api__osp__OspApp_open_impl(
                     (move || async move {
                         let output_ok =
                             crate::api::osp::OspApp::open(api_dir, api_device_key).await?;
+                        std::result::Result::Ok(output_ok)
+                    })()
+                    .await,
+                )
+            }
+        },
+    )
+}
+fn wire__crate__api__osp__OspApp_open_post_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_async::<flutter_rust_bridge::for_generated::SseCodec, _, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "OspApp_open_post",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_that = <RustOpaqueMoi<
+                flutter_rust_bridge::for_generated::RustAutoOpaqueInner<OspApp>,
+            >>::sse_decode(&mut deserializer);
+            let api_code = <String>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| async move {
+                transform_result_sse::<_, flutter_rust_bridge::for_generated::anyhow::Error>(
+                    (move || async move {
+                        let mut api_that_guard = None;
+                        let decode_indices_ =
+                            flutter_rust_bridge::for_generated::lockable_compute_decode_order(
+                                vec![flutter_rust_bridge::for_generated::LockableOrderInfo::new(
+                                    &api_that, 0, false,
+                                )],
+                            );
+                        for i in decode_indices_ {
+                            match i {
+                                0 => {
+                                    api_that_guard =
+                                        Some(api_that.lockable_decode_async_ref().await)
+                                }
+                                _ => unreachable!(),
+                            }
+                        }
+                        let api_that_guard = api_that_guard.unwrap();
+                        let output_ok =
+                            crate::api::osp::OspApp::open_post(&*api_that_guard, api_code).await?;
                         std::result::Result::Ok(output_ok)
                     })()
                     .await,
@@ -4473,6 +4588,7 @@ impl SseDecode for crate::api::osp::Post {
         let mut var_resharers = <Option<u32>>::sse_decode(deserializer);
         let mut var_likes = <Option<u32>>::sse_decode(deserializer);
         let mut var_liked = <bool>::sse_decode(deserializer);
+        let mut var_opened = <bool>::sse_decode(deserializer);
         let mut var_regions = <Vec<String>>::sse_decode(deserializer);
         return crate::api::osp::Post {
             id: var_id,
@@ -4488,6 +4604,7 @@ impl SseDecode for crate::api::osp::Post {
             resharers: var_resharers,
             likes: var_likes,
             liked: var_liked,
+            opened: var_opened,
             regions: var_regions,
         };
     }
@@ -5058,44 +5175,46 @@ fn pde_ffi_dispatcher_primary_impl(
         15 => wire__crate__api__osp__OspApp_follow_person_impl(port, ptr, rust_vec_len, data_len),
         16 => wire__crate__api__osp__OspApp_following_impl(port, ptr, rust_vec_len, data_len),
         17 => wire__crate__api__osp__OspApp_forget_impl(port, ptr, rust_vec_len, data_len),
-        18 => wire__crate__api__osp__OspApp_hide_reply_impl(port, ptr, rust_vec_len, data_len),
-        19 => wire__crate__api__osp__OspApp_how_connected_impl(port, ptr, rust_vec_len, data_len),
-        20 => wire__crate__api__osp__OspApp_invite_impl(port, ptr, rust_vec_len, data_len),
-        21 => wire__crate__api__osp__OspApp_like_impl(port, ptr, rust_vec_len, data_len),
-        22 => wire__crate__api__osp__OspApp_likes_impl(port, ptr, rust_vec_len, data_len),
-        24 => wire__crate__api__osp__OspApp_media_url_impl(port, ptr, rust_vec_len, data_len),
-        25 => wire__crate__api__osp__OspApp_network_changed_impl(port, ptr, rust_vec_len, data_len),
-        26 => wire__crate__api__osp__OspApp_open_impl(port, ptr, rust_vec_len, data_len),
-        27 => wire__crate__api__osp__OspApp_pair_impl(port, ptr, rust_vec_len, data_len),
-        30 => wire__crate__api__osp__OspApp_people_impl(port, ptr, rust_vec_len, data_len),
-        31 => wire__crate__api__osp__OspApp_post_impl(port, ptr, rust_vec_len, data_len),
-        32 => wire__crate__api__osp__OspApp_profile_impl(port, ptr, rust_vec_len, data_len),
-        33 => wire__crate__api__osp__OspApp_profile_items_impl(port, ptr, rust_vec_len, data_len),
-        35 => wire__crate__api__osp__OspApp_region_items_impl(port, ptr, rust_vec_len, data_len),
-        36 => wire__crate__api__osp__OspApp_reply_impl(port, ptr, rust_vec_len, data_len),
-        37 => wire__crate__api__osp__OspApp_reply_requests_impl(port, ptr, rust_vec_len, data_len),
-        38 => wire__crate__api__osp__OspApp_reshare_impl(port, ptr, rust_vec_len, data_len),
-        39 => wire__crate__api__osp__OspApp_resumed_impl(port, ptr, rust_vec_len, data_len),
-        42 => wire__crate__api__osp__OspApp_search_impl(port, ptr, rust_vec_len, data_len),
-        43 => wire__crate__api__osp__OspApp_sent_replies_impl(port, ptr, rust_vec_len, data_len),
-        44 => wire__crate__api__osp__OspApp_set_profile_impl(port, ptr, rust_vec_len, data_len),
-        45 => wire__crate__api__osp__OspApp_set_replier_impl(port, ptr, rust_vec_len, data_len),
-        46 => {
+        18 => wire__crate__api__osp__OspApp_forget_opened_impl(port, ptr, rust_vec_len, data_len),
+        19 => wire__crate__api__osp__OspApp_hide_reply_impl(port, ptr, rust_vec_len, data_len),
+        20 => wire__crate__api__osp__OspApp_how_connected_impl(port, ptr, rust_vec_len, data_len),
+        21 => wire__crate__api__osp__OspApp_invite_impl(port, ptr, rust_vec_len, data_len),
+        22 => wire__crate__api__osp__OspApp_like_impl(port, ptr, rust_vec_len, data_len),
+        23 => wire__crate__api__osp__OspApp_likes_impl(port, ptr, rust_vec_len, data_len),
+        25 => wire__crate__api__osp__OspApp_media_url_impl(port, ptr, rust_vec_len, data_len),
+        26 => wire__crate__api__osp__OspApp_network_changed_impl(port, ptr, rust_vec_len, data_len),
+        27 => wire__crate__api__osp__OspApp_open_impl(port, ptr, rust_vec_len, data_len),
+        28 => wire__crate__api__osp__OspApp_open_post_impl(port, ptr, rust_vec_len, data_len),
+        29 => wire__crate__api__osp__OspApp_pair_impl(port, ptr, rust_vec_len, data_len),
+        32 => wire__crate__api__osp__OspApp_people_impl(port, ptr, rust_vec_len, data_len),
+        33 => wire__crate__api__osp__OspApp_post_impl(port, ptr, rust_vec_len, data_len),
+        34 => wire__crate__api__osp__OspApp_profile_impl(port, ptr, rust_vec_len, data_len),
+        35 => wire__crate__api__osp__OspApp_profile_items_impl(port, ptr, rust_vec_len, data_len),
+        37 => wire__crate__api__osp__OspApp_region_items_impl(port, ptr, rust_vec_len, data_len),
+        38 => wire__crate__api__osp__OspApp_reply_impl(port, ptr, rust_vec_len, data_len),
+        39 => wire__crate__api__osp__OspApp_reply_requests_impl(port, ptr, rust_vec_len, data_len),
+        40 => wire__crate__api__osp__OspApp_reshare_impl(port, ptr, rust_vec_len, data_len),
+        41 => wire__crate__api__osp__OspApp_resumed_impl(port, ptr, rust_vec_len, data_len),
+        44 => wire__crate__api__osp__OspApp_search_impl(port, ptr, rust_vec_len, data_len),
+        45 => wire__crate__api__osp__OspApp_sent_replies_impl(port, ptr, rust_vec_len, data_len),
+        46 => wire__crate__api__osp__OspApp_set_profile_impl(port, ptr, rust_vec_len, data_len),
+        47 => wire__crate__api__osp__OspApp_set_replier_impl(port, ptr, rust_vec_len, data_len),
+        48 => {
             wire__crate__api__osp__OspApp_set_reply_policy_impl(port, ptr, rust_vec_len, data_len)
         }
-        47 => wire__crate__api__osp__OspApp_share_card_impl(port, ptr, rust_vec_len, data_len),
-        48 => wire__crate__api__osp__OspApp_show_post_impl(port, ptr, rust_vec_len, data_len),
-        49 => wire__crate__api__osp__OspApp_status_impl(port, ptr, rust_vec_len, data_len),
-        50 => wire__crate__api__osp__OspApp_sync_impl(port, ptr, rust_vec_len, data_len),
-        51 => wire__crate__api__osp__OspApp_thread_impl(port, ptr, rust_vec_len, data_len),
-        52 => wire__crate__api__osp__OspApp_trust_impl(port, ptr, rust_vec_len, data_len),
-        53 => wire__crate__api__osp__OspApp_trust_list_impl(port, ptr, rust_vec_len, data_len),
-        54 => wire__crate__api__osp__OspApp_unfollow_impl(port, ptr, rust_vec_len, data_len),
-        55 => wire__crate__api__osp__OspApp_universe_impl(port, ptr, rust_vec_len, data_len),
-        56 => wire__crate__api__osp__OspApp_universe_events_impl(port, ptr, rust_vec_len, data_len),
-        57 => wire__crate__api__osp__OspApp_untrust_impl(port, ptr, rust_vec_len, data_len),
-        58 => wire__crate__api__osp__OspApp_wait_for_media_impl(port, ptr, rust_vec_len, data_len),
-        60 => wire__crate__api__osp__init_app_impl(port, ptr, rust_vec_len, data_len),
+        49 => wire__crate__api__osp__OspApp_share_card_impl(port, ptr, rust_vec_len, data_len),
+        50 => wire__crate__api__osp__OspApp_show_post_impl(port, ptr, rust_vec_len, data_len),
+        51 => wire__crate__api__osp__OspApp_status_impl(port, ptr, rust_vec_len, data_len),
+        52 => wire__crate__api__osp__OspApp_sync_impl(port, ptr, rust_vec_len, data_len),
+        53 => wire__crate__api__osp__OspApp_thread_impl(port, ptr, rust_vec_len, data_len),
+        54 => wire__crate__api__osp__OspApp_trust_impl(port, ptr, rust_vec_len, data_len),
+        55 => wire__crate__api__osp__OspApp_trust_list_impl(port, ptr, rust_vec_len, data_len),
+        56 => wire__crate__api__osp__OspApp_unfollow_impl(port, ptr, rust_vec_len, data_len),
+        57 => wire__crate__api__osp__OspApp_universe_impl(port, ptr, rust_vec_len, data_len),
+        58 => wire__crate__api__osp__OspApp_universe_events_impl(port, ptr, rust_vec_len, data_len),
+        59 => wire__crate__api__osp__OspApp_untrust_impl(port, ptr, rust_vec_len, data_len),
+        60 => wire__crate__api__osp__OspApp_wait_for_media_impl(port, ptr, rust_vec_len, data_len),
+        62 => wire__crate__api__osp__init_app_impl(port, ptr, rust_vec_len, data_len),
         _ => unreachable!(),
     }
 }
@@ -5109,17 +5228,17 @@ fn pde_ffi_dispatcher_sync_impl(
     // Codec=Pde (Serialization + dispatch), see doc to use other codecs
     match func_id {
         10 => wire__crate__api__osp__OspApp_device_id_impl(ptr, rust_vec_len, data_len),
-        23 => wire__crate__api__osp__OspApp_log_file_impl(ptr, rust_vec_len, data_len),
-        28 => wire__crate__api__osp__OspApp_paired_node_impl(ptr, rust_vec_len, data_len),
-        29 => wire__crate__api__osp__OspApp_pending_post_impl(ptr, rust_vec_len, data_len),
-        34 => wire__crate__api__osp__OspApp_recent_log_impl(ptr, rust_vec_len, data_len),
-        40 => wire__crate__api__osp__OspApp_saved_feed_impl(ptr, rust_vec_len, data_len),
-        41 => wire__crate__api__osp__OspApp_saved_universe_impl(ptr, rust_vec_len, data_len),
-        59 => wire__crate__api__osp__find_osp_code_impl(ptr, rust_vec_len, data_len),
-        61 => wire__crate__api__osp__is_follow_ticket_impl(ptr, rust_vec_len, data_len),
-        62 => wire__crate__api__osp__is_pairing_ticket_impl(ptr, rust_vec_len, data_len),
-        63 => wire__crate__api__osp__new_device_key_impl(ptr, rust_vec_len, data_len),
-        64 => wire__crate__api__osp__read_osp_code_impl(ptr, rust_vec_len, data_len),
+        24 => wire__crate__api__osp__OspApp_log_file_impl(ptr, rust_vec_len, data_len),
+        30 => wire__crate__api__osp__OspApp_paired_node_impl(ptr, rust_vec_len, data_len),
+        31 => wire__crate__api__osp__OspApp_pending_post_impl(ptr, rust_vec_len, data_len),
+        36 => wire__crate__api__osp__OspApp_recent_log_impl(ptr, rust_vec_len, data_len),
+        42 => wire__crate__api__osp__OspApp_saved_feed_impl(ptr, rust_vec_len, data_len),
+        43 => wire__crate__api__osp__OspApp_saved_universe_impl(ptr, rust_vec_len, data_len),
+        61 => wire__crate__api__osp__find_osp_code_impl(ptr, rust_vec_len, data_len),
+        63 => wire__crate__api__osp__is_follow_ticket_impl(ptr, rust_vec_len, data_len),
+        64 => wire__crate__api__osp__is_pairing_ticket_impl(ptr, rust_vec_len, data_len),
+        65 => wire__crate__api__osp__new_device_key_impl(ptr, rust_vec_len, data_len),
+        66 => wire__crate__api__osp__read_osp_code_impl(ptr, rust_vec_len, data_len),
         _ => unreachable!(),
     }
 }
@@ -5599,6 +5718,7 @@ impl flutter_rust_bridge::IntoDart for crate::api::osp::Post {
             self.resharers.into_into_dart().into_dart(),
             self.likes.into_into_dart().into_dart(),
             self.liked.into_into_dart().into_dart(),
+            self.opened.into_into_dart().into_dart(),
             self.regions.into_into_dart().into_dart(),
         ]
         .into_dart()
@@ -6903,6 +7023,7 @@ impl SseEncode for crate::api::osp::Post {
         <Option<u32>>::sse_encode(self.resharers, serializer);
         <Option<u32>>::sse_encode(self.likes, serializer);
         <bool>::sse_encode(self.liked, serializer);
+        <bool>::sse_encode(self.opened, serializer);
         <Vec<String>>::sse_encode(self.regions, serializer);
     }
 }

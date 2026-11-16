@@ -80,6 +80,18 @@ pub enum ClientRequest {
     Show {
         id: ObjectId,
     },
+    /// Opens a post from an OSP code (ADR 0039 §4): as this node holds it,
+    /// or, if it doesn't, fetched from the node `ticket` names, from a
+    /// throwaway key, and kept as an opened post for 7 days. Opening one
+    /// again starts its 7 days over. Answered with `Item`.
+    OpenPost {
+        id: ObjectId,
+        ticket: String,
+    },
+    /// Drops an opened post and its media now. Answered with `Ok`.
+    ForgetOpened {
+        id: ObjectId,
+    },
     /// Looks through the posts and profiles this node has received, on the
     /// node alone (ADR 0014). `limit` is for each of the two.
     Search {
@@ -1302,6 +1314,10 @@ pub struct FeedItem {
     /// Whether the owner likes it, as their node has it (ADR 0038).
     #[serde(default)]
     pub liked: bool,
+    /// Whether it's an opened post (ADR 0039 §4): opened from an OSP code,
+    /// its author not followed, and kept for a while only.
+    #[serde(default)]
+    pub opened: bool,
     /// Search only (ADR 0035 §3): where its author is on the Universe's map,
     /// as `universe::Region` names regions, the top (empty) first, so a
     /// device can light the regions that hold it and fly there. A placed

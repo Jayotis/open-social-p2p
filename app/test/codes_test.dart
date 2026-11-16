@@ -19,7 +19,10 @@ const postCode = 'osp:post/abc?by=OSP1ANN';
 /// The node, as far as OSP codes go: it holds one post, and follows nobody.
 class FakeApp implements OspApp {
   final followed = <String>[];
+  final followedPeople = <String>[];
   final codesFor = <(String, String?)>[];
+  final openedCodes = <String>[];
+  final forgotten = <String>[];
 
   @override
   Future<String> codeForPerson({required String identity}) async {
@@ -46,12 +49,40 @@ class FakeApp implements OspApp {
   @override
   Future<void> follow({required String ticket}) async => followed.add(ticket);
 
+  /// Ann's post, fetched from her node as an opened post.
+  @override
+  Future<Post> openPost({required String code}) async {
+    openedCodes.add(code);
+    return post('From Ann', opened: true);
+  }
+
+  @override
+  Future<void> forgetOpened({required String postId}) async =>
+      forgotten.add(postId);
+
+  @override
+  Future<void> followPerson({required String identity}) async =>
+      followedPeople.add(identity);
+
+  @override
+  Future<Thread> thread({required String postId, required int after}) async =>
+      const Thread(
+        policy: 'network',
+        replies: [],
+        more: false,
+        likes: 0,
+        liked: false,
+      );
+
+  @override
+  Future<List<SentReply>> sentReplies() async => const [];
+
   @override
   dynamic noSuchMethod(Invocation invocation) =>
       throw UnimplementedError('${invocation.memberName}');
 }
 
-Post post(String text) => Post(
+Post post(String text, {bool opened = false}) => Post(
   regions: const [],
   id: 'id-post',
   author: 'Ann',
@@ -61,6 +92,7 @@ Post post(String text) => Post(
   media: const [],
   resharerHosts: false,
   liked: false,
+  opened: opened,
 );
 
 void main() {
@@ -171,8 +203,8 @@ void main() {
     }
 
     testWidgets(
-      "a post not on the node offers to follow its author, and only follows "
-      'when asked',
+      "a post not on the node opens from its author's node, labelled, with "
+      'follow and remove',
       (tester) async {
         const code = SharedCode(
           code: postCode,
@@ -181,17 +213,31 @@ void main() {
           post: 'abc',
         );
         await open(tester, code);
-        expect(find.text('Follow its author?'), findsOneWidget);
+        expect(app.openedCodes, [postCode]);
+        expect(find.text('From Ann'), findsOneWidget);
+        expect(find.text('Opened from a shared OSP post'), findsOneWidget);
         expectPlainWords(tester);
-        await tester.tap(find.text('Not now'));
-        await tester.pumpAndSettle();
+        // No question first: opening it isn't following.
         expect(app.followed, isEmpty);
 
+        await tester.tap(find.text('Follow Ann'));
+        await tester.pumpAndSettle();
+        expect(app.followedPeople, ['id-Ann']);
+        // Followed: it's an ordinary post now.
+        expect(find.text('Opened from a shared OSP post'), findsNothing);
+
+        await tester.pageBack();
+        await tester.pumpAndSettle();
         await tester.tap(find.text('open'));
         await tester.pumpAndSettle();
-        await tester.tap(find.text('Follow'));
-        await tester.pump();
-        expect(app.followed, ['OSP1ANN']);
+        await tester.tap(find.text('Remove'));
+        await tester.pumpAndSettle();
+        expect(app.forgotten, ['id-post']);
+        // After "Following Ann." has had its turn.
+        await tester.pump(const Duration(seconds: 5));
+        await tester.pumpAndSettle();
+        expect(find.text('Removed from your node.'), findsOneWidget);
+        expect(find.text('From Ann'), findsNothing);
       },
     );
 

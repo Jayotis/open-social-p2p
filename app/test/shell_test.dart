@@ -1382,6 +1382,7 @@ void main() {
           media: [],
           resharerHosts: false,
           liked: false,
+          opened: false,
         ),
       ],
     );

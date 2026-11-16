@@ -9,7 +9,7 @@ use iroh::{EndpointId, PublicKey};
 use osp_proto::SignedObject;
 use rusqlite::{params, params_from_iter};
 
-use super::{Db, profiles::HAS_MEDIA};
+use super::{Db, NOT_OPENED, profiles::HAS_MEDIA};
 
 /// A profile held, and what this node holds of its person.
 pub(crate) struct HeldPerson {
@@ -69,9 +69,11 @@ impl Db {
                     c.newest
              FROM (
                SELECT actor, signed FROM profiles
+               WHERE actor NOT IN (SELECT actor FROM opened_people)
                UNION ALL
                SELECT actor, profile FROM voucher_profiles
-               WHERE actor NOT IN (SELECT actor FROM profiles)
+               WHERE actor NOT IN (SELECT actor FROM profiles
+                                   WHERE actor NOT IN (SELECT actor FROM opened_people))
              ) AS held
              LEFT JOIN (
                SELECT actor,
@@ -79,7 +81,8 @@ impl Db {
                       SUM(kind = 'Note' AND {HAS_MEDIA}) AS media,
                       SUM(kind = 'Announce') AS reshares,
                       MAX(published_ms) AS newest
-               FROM objects WHERE kind IN ('Note', 'Announce') GROUP BY actor
+               FROM objects WHERE kind IN ('Note', 'Announce') AND {NOT_OPENED}
+               GROUP BY actor
              ) AS c ON c.actor = held.actor
              WHERE held.actor != ?1"
         );

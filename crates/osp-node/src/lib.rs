@@ -27,6 +27,7 @@ pub mod media;
 mod meet;
 mod network;
 mod node;
+mod opened;
 mod peers;
 mod places;
 mod profiles;

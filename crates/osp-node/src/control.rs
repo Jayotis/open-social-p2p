@@ -135,6 +135,13 @@ impl Core {
             ClientRequest::Show { id } => ClientResponse::Item {
                 item: self.show(&id).await?,
             },
+            ClientRequest::OpenPost { id, ticket } => ClientResponse::Item {
+                item: self.open_post(&id, &ticket.parse()?).await?,
+            },
+            ClientRequest::ForgetOpened { id } => {
+                self.forget_opened(&id).await?;
+                ClientResponse::Ok
+            }
             ClientRequest::Search { words, limit } => {
                 // The read asks directories what's new in their lists, never
                 // for the words: the search itself stays on this node.
@@ -298,13 +305,19 @@ impl Core {
                 self.ask_trust(&actor, &note).await?;
                 ClientResponse::Ok
             }
-            ClientRequest::Reply { post, content } => ClientResponse::ReplySent {
-                reply: self
-                    .reply(&post, content, crate::replying::reply_wait(local))
-                    .await?,
-            },
+            ClientRequest::Reply { post, content } => {
+                // Replying to an opened post keeps it 7 days more.
+                self.db.touch_opened(&post, now_ms())?;
+                ClientResponse::ReplySent {
+                    reply: self
+                        .reply(&post, content, crate::replying::reply_wait(local))
+                        .await?,
+                }
+            }
             ClientRequest::Thread { post, after } => self.read_thread(&post, after).await?,
             ClientRequest::Like { post, liked } => {
+                // So does liking it.
+                self.db.touch_opened(&post, now_ms())?;
                 self.like(&post, liked)?;
                 ClientResponse::Ok
             }
@@ -889,7 +902,7 @@ impl Core {
         Ok(items)
     }
 
-    async fn show(&self, id: &ObjectId) -> Result<FeedItem> {
+    pub(crate) async fn show(&self, id: &ObjectId) -> Result<FeedItem> {
         let obj = self
             .db
             .get_object(id)?
@@ -1088,6 +1101,7 @@ impl Core {
             resharers,
             likes,
             liked,
+            opened: self.db.opened_until(&id)?.is_some(),
             regions: Vec::new(),
         }))
     }

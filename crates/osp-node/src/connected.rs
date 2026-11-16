@@ -45,10 +45,10 @@ pub(crate) const MAX_ASKS_PER_HOUR: u32 = 10;
 /// After a start, Tor took 80 s to reach anyone in the lab, and the first
 /// ask after that 49 s. The owner's device waits 3 minutes for this answer
 /// (`osp-client`'s `CONNECTED_REPLY_TIMEOUT`), so the node answers first.
-const ASK_TIMEOUT: Duration = Duration::from_secs(150);
+pub(crate) const ASK_TIMEOUT: Duration = Duration::from_secs(150);
 /// The least of it left to dial in, however long Tor takes to work: a dial
 /// over a new circuit took 5 to 50 s.
-const DIAL_AT_LEAST: Duration = Duration::from_secs(60);
+pub(crate) const DIAL_AT_LEAST: Duration = Duration::from_secs(60);
 
 impl Core {
     /// The paths this node knows from its owner to `actor`, nearest first.
@@ -199,7 +199,7 @@ impl Core {
 
     /// A new key, published nowhere and never bound to the owner's: over
     /// Tor, dial-only; without Tor, relay-only, as a viewing endpoint.
-    async fn throwaway_endpoint(&self) -> Result<Endpoint> {
+    pub(crate) async fn throwaway_endpoint(&self) -> Result<Endpoint> {
         self.throwaways_made.fetch_add(1, Ordering::Relaxed);
         match &self.tor {
             Some(tor) => {

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
@@ -45,6 +46,50 @@ class _ThreadScreenState extends State<ThreadScreen> {
   OspApp get _app => widget.node.app;
 
   bool get _own => widget.post.authorIdentity == _node.paired?.identity;
+
+  /// An opened post (ADR 0039 §4), until Kim follows its author.
+  late bool _opened = widget.post.opened;
+
+  /// Follows the author of an opened post: it's kept as any follow's then.
+  Future<void> _followAuthor() async {
+    final messenger = ScaffoldMessenger.of(context);
+    setState(() => _busy = true);
+    try {
+      await _app.followPerson(identity: widget.post.authorIdentity);
+      if (!mounted) return;
+      setState(() => _opened = false);
+      messenger.showSnackBar(
+        SnackBar(content: Text('Following ${shownName(widget.post.author)}.')),
+      );
+      unawaited(_node.refresh(sync: true));
+    } catch (e) {
+      messenger.showSnackBar(
+        SnackBar(content: Text("Couldn't follow: ${describeError(e)}")),
+      );
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  /// Drops an opened post and its media from the node now.
+  Future<void> _removeOpened() async {
+    final navigator = Navigator.of(context);
+    final messenger = ScaffoldMessenger.of(context);
+    setState(() => _busy = true);
+    try {
+      await _app.forgetOpened(postId: widget.post.id);
+      navigator.pop();
+      messenger.showSnackBar(
+        const SnackBar(content: Text('Removed from your node.')),
+      );
+    } catch (e) {
+      messenger.showSnackBar(
+        SnackBar(content: Text("Couldn't remove it: ${describeError(e)}")),
+      );
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
   String? get _me => _node.paired?.identity;
 
   @override
@@ -238,6 +283,15 @@ class _ThreadScreenState extends State<ThreadScreen> {
                 padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
                 children: [
                   _PostSummary(post: widget.post),
+                  if (_opened) ...[
+                    const SizedBox(height: 12),
+                    _OpenedNote(
+                      author: widget.post.author,
+                      enabled: online && !_busy,
+                      onFollow: _followAuthor,
+                      onRemove: _removeOpened,
+                    ),
+                  ],
                   _LikesRow(
                     node: _node,
                     post: widget.post,
@@ -679,4 +733,59 @@ Future<bool> confirmBlock(BuildContext context, String name) async {
     ),
   );
   return go == true;
+}
+
+/// Says a post was opened from a shared code and is kept for a while only,
+/// with following its author or removing it (ADR 0039 §4).
+class _OpenedNote extends StatelessWidget {
+  const _OpenedNote({
+    required this.author,
+    required this.enabled,
+    required this.onFollow,
+    required this.onRemove,
+  });
+
+  final String author;
+  final bool enabled;
+  final VoidCallback onFollow;
+  final VoidCallback onRemove;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Card(
+      margin: EdgeInsets.zero,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 12, 8, 4),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Opened from a shared OSP post',
+              style: theme.textTheme.titleSmall,
+            ),
+            const SizedBox(height: 4),
+            const Text(
+              "You don't follow its author, so it isn't in your feed or "
+              'your Universe. Your node keeps it for 7 days after you last '
+              'open, like or reply to it.',
+            ),
+            Wrap(
+              alignment: WrapAlignment.end,
+              children: [
+                TextButton(
+                  onPressed: enabled ? onRemove : null,
+                  child: const Text('Remove'),
+                ),
+                TextButton(
+                  onPressed: enabled ? onFollow : null,
+                  child: Text('Follow ${shownName(author)}'),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
 }
