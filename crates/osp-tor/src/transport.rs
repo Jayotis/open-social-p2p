@@ -186,7 +186,8 @@ impl TorTransport {
     pub async fn new(tor: &Tor, key: SecretKey) -> io::Result<Self> {
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
         let service = tor.serve(key.clone(), ONION_PORT, listener.local_addr()?);
-        let transport = Self::build(key, tor_dial(tor), Some(listener), Some(service));
+        let dial = tor_dial(tor, key.public());
+        let transport = Self::build(key, dial, Some(listener), Some(service));
         transport.retry_once_ready(tor);
         Ok(transport)
     }
@@ -194,7 +195,8 @@ impl TorTransport {
     /// A transport through `tor` that only dials. Nobody can reach it, but
     /// the nodes it reaches answer on the same stream.
     pub fn dial_only(tor: &Tor, key: SecretKey) -> Self {
-        let transport = Self::build(key, tor_dial(tor), None, None);
+        let dial = tor_dial(tor, key.public());
+        let transport = Self::build(key, dial, None, None);
         transport.retry_once_ready(tor);
         transport
     }
@@ -283,13 +285,19 @@ impl TorTransport {
     }
 }
 
-fn tor_dial(tor: &Tor) -> Dial {
+/// Dials through `tor` on circuits of `me`'s own: no other key's streams,
+/// this node's included, share them, so the node dialled can't link the
+/// keys by circuit. A throwaway key (ADR 0037) gets circuits nobody else
+/// used.
+fn tor_dial(tor: &Tor, me: EndpointId) -> Dial {
     let tor = tor.clone();
+    let isolation: Arc<str> = me.to_string().into();
     Arc::new(move |node| {
         let socks = tor.socks();
+        let isolation = isolation.clone();
         Box::pin(async move {
             let socks = socks.ok_or_else(|| io::Error::other("Tor isn't running"))?;
-            socks::connect(socks, &onion::host(&node), ONION_PORT).await
+            socks::connect(socks, &isolation, &onion::host(&node), ONION_PORT).await
         })
     })
 }

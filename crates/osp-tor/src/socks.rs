@@ -10,14 +10,41 @@ use tokio::{
 };
 
 /// Opens a stream to `host`:`port` through the SOCKS proxy at `proxy`.
-pub(crate) async fn connect(proxy: SocketAddr, host: &str, port: u16) -> io::Result<TcpStream> {
+///
+/// `isolation` goes as the SOCKS user name. Tor keeps streams with
+/// different names on different circuits (`IsolateSOCKSAuth`, on by
+/// default), so an onion service, which sees which circuit each stream
+/// came in on, can't tell that two keys' streams came from one Tor.
+pub(crate) async fn connect(
+    proxy: SocketAddr,
+    isolation: &str,
+    host: &str,
+    port: u16,
+) -> io::Result<TcpStream> {
+    let user = isolation.as_bytes();
+    let user_len = u8::try_from(user.len())
+        .ok()
+        .filter(|&n| n > 0)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "bad isolation name"))?;
     let mut stream = TcpStream::connect(proxy).await?;
-    // Version 5, one method: no authentication.
-    stream.write_all(&[5, 1, 0]).await?;
+    // Version 5, one method: user name and password (RFC 1929).
+    stream.write_all(&[5, 1, 2]).await?;
     let mut chosen = [0; 2];
     stream.read_exact(&mut chosen).await?;
-    if chosen != [5, 0] {
+    if chosen != [5, 2] {
         return Err(io::Error::other("Tor's SOCKS port refused to talk"));
+    }
+    // Tor takes any name and password; the password says nothing.
+    let mut auth = vec![1, user_len];
+    auth.extend_from_slice(user);
+    auth.extend_from_slice(&[1, b'-']);
+    stream.write_all(&auth).await?;
+    let mut status = [0; 2];
+    stream.read_exact(&mut status).await?;
+    if status[1] != 0 {
+        return Err(io::Error::other(
+            "Tor's SOCKS port refused the isolation name",
+        ));
     }
     let name = host.as_bytes();
     let len = u8::try_from(name.len())
@@ -76,14 +103,25 @@ mod tests {
     use super::*;
 
     /// A SOCKS proxy that answers one request with `code`, and then echoes.
-    async fn proxy(code: u8) -> (SocketAddr, tokio::task::JoinHandle<Vec<u8>>) {
+    /// Its task returns the user name, then the host and port asked for.
+    async fn proxy(code: u8) -> (SocketAddr, tokio::task::JoinHandle<(Vec<u8>, Vec<u8>)>) {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let task = tokio::spawn(async move {
             let (mut s, _) = listener.accept().await.unwrap();
             let mut hello = [0; 3];
             s.read_exact(&mut hello).await.unwrap();
-            s.write_all(&[5, 0]).await.unwrap();
+            assert_eq!(hello, [5, 1, 2], "offers only user name and password");
+            s.write_all(&[5, 2]).await.unwrap();
+            let mut head = [0; 2];
+            s.read_exact(&mut head).await.unwrap();
+            let mut user = vec![0; head[1] as usize];
+            s.read_exact(&mut user).await.unwrap();
+            let mut pass_len = [0; 1];
+            s.read_exact(&mut pass_len).await.unwrap();
+            let mut pass = vec![0; pass_len[0] as usize];
+            s.read_exact(&mut pass).await.unwrap();
+            s.write_all(&[1, 0]).await.unwrap();
             let mut head = [0; 5];
             s.read_exact(&mut head).await.unwrap();
             let mut rest = vec![0; head[4] as usize + 2];
@@ -97,20 +135,21 @@ mod tests {
                 s.read_exact(&mut buf).await.unwrap();
                 s.write_all(&buf).await.unwrap();
             }
-            rest
+            (user, rest)
         });
         (addr, task)
     }
 
     #[tokio::test]
-    async fn connects_by_name() {
+    async fn connects_by_name_under_its_isolation_name() {
         let (addr, task) = proxy(0).await;
-        let mut s = connect(addr, "example.onion", 677).await.unwrap();
+        let mut s = connect(addr, "key-1", "example.onion", 677).await.unwrap();
         s.write_all(b"hello").await.unwrap();
         let mut back = [0; 5];
         s.read_exact(&mut back).await.unwrap();
         assert_eq!(&back, b"hello");
-        let rest = task.await.unwrap();
+        let (user, rest) = task.await.unwrap();
+        assert_eq!(user, b"key-1");
         assert_eq!(&rest[..13], b"example.onion");
         assert_eq!(&rest[13..], &677u16.to_be_bytes());
     }
@@ -118,7 +157,9 @@ mod tests {
     #[tokio::test]
     async fn says_why_an_onion_service_wasnt_reached() {
         let (addr, _task) = proxy(0xf0).await;
-        let err = connect(addr, "example.onion", 677).await.unwrap_err();
+        let err = connect(addr, "key-1", "example.onion", 677)
+            .await
+            .unwrap_err();
         assert!(err.to_string().contains("isn't up"), "{err}");
     }
 }
