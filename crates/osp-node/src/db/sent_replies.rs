@@ -177,30 +177,35 @@ impl Db {
         error: Option<&str>,
     ) -> Result<()> {
         let conn = self.conn();
-        let deleting: Option<bool> = conn
+        let tx = conn.unchecked_transaction()?;
+        let held: Option<(bool, String)> = tx
             .query_row(
-                "SELECT delete_signed IS NOT NULL FROM sent_replies WHERE id = ?1",
+                "SELECT delete_signed IS NOT NULL, state FROM sent_replies WHERE id = ?1",
                 params![id.to_string()],
-                |row| row.get(0),
+                |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .optional()?;
-        match deleting {
+        match held {
             None => {}
-            Some(true) if status == SentStatus::Deleted => {
-                conn.execute(
+            Some((true, _)) if status == SentStatus::Deleted => {
+                tx.execute(
                     "DELETE FROM sent_replies WHERE id = ?1",
                     params![id.to_string()],
                 )?;
             }
-            Some(_) => {
-                conn.execute(
+            Some((deleting, was)) => {
+                tx.execute(
                     "UPDATE sent_replies
                      SET state = ?2, error = ?3, next_try_ms = NULL, tries = tries + 1
                      WHERE id = ?1",
                     params![id.to_string(), status_str(status), error],
                 )?;
+                if status == SentStatus::Published && !deleting {
+                    published(&tx, id, &was)?;
+                }
             }
         }
+        tx.commit()?;
         Ok(())
     }
 
@@ -271,13 +276,44 @@ impl Db {
     /// The reply was seen in its thread: it's published, whatever the
     /// creator's node said before. Not one being deleted.
     pub fn sent_reply_seen_published(&self, id: &ObjectId) -> Result<()> {
-        self.conn().execute(
-            "UPDATE sent_replies SET state = 'published', error = NULL, next_try_ms = NULL
-             WHERE id = ?1 AND delete_signed IS NULL AND state != 'published'",
-            params![id.to_string()],
-        )?;
+        let conn = self.conn();
+        let tx = conn.unchecked_transaction()?;
+        let was: Option<String> = tx
+            .query_row(
+                "SELECT state FROM sent_replies
+                 WHERE id = ?1 AND delete_signed IS NULL AND state != 'published'",
+                params![id.to_string()],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if let Some(was) = was {
+            tx.execute(
+                "UPDATE sent_replies SET state = 'published', error = NULL, next_try_ms = NULL
+                 WHERE id = ?1",
+                params![id.to_string()],
+            )?;
+            published(&tx, id, &was)?;
+        }
+        tx.commit()?;
         Ok(())
     }
+}
+
+/// Notes for the owner's Activity that their reply `id` is published, if
+/// it wasn't (`was`). Read already if it went straight in: the owner just
+/// sent it. Unread if it waited, for the creator or for an answer.
+fn published(conn: &rusqlite::Connection, id: &ObjectId, was: &str) -> Result<()> {
+    if was == "published" {
+        return Ok(());
+    }
+    let read = was == "sending";
+    super::activity::note(
+        conn,
+        &format!("published:{id}"),
+        false,
+        read,
+        super::now_ms(),
+    )
 }
 
 fn sent_rows(
@@ -453,6 +489,34 @@ mod tests {
         db.sent_reply_unanswered(&other.id, None, "off").unwrap();
         assert!(db.sent_replies().unwrap().is_empty());
     }
+    #[test]
+    fn a_reply_published_after_waiting_is_news_and_one_straight_in_is_not() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(&dir.path().join("t.db")).unwrap();
+        let key = SecretKey::generate();
+        let now = 1_000_000;
+        let straight = kept(&db, &key, now);
+        db.sent_reply_answered(&straight.id, SentStatus::Published, None)
+            .unwrap();
+        let waited = kept(&db, &key, now);
+        db.sent_reply_answered(&waited.id, SentStatus::AwaitingApproval, None)
+            .unwrap();
+        db.sent_reply_seen_published(&waited.id).unwrap();
+        // Seen again, nothing more is noted.
+        db.sent_reply_seen_published(&waited.id).unwrap();
+        db.sent_reply_answered(&waited.id, SentStatus::Published, None)
+            .unwrap();
+        let rows = db.activity_rows(None, 10).unwrap();
+        let read: Vec<(String, bool)> = rows.into_iter().map(|r| (r.key, r.read)).collect();
+        assert_eq!(
+            read,
+            [
+                (format!("published:{}", waited.id), false),
+                (format!("published:{}", straight.id), true),
+            ]
+        );
+    }
+
     #[test]
     fn a_creator_reached_again_makes_their_replies_due_at_once() {
         let dir = tempfile::tempdir().unwrap();

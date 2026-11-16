@@ -85,6 +85,10 @@ impl Core {
         let kept = self
             .db
             .add_trust_request(&ask, self.sim.trust_requests_per_hour)?;
+        if kept {
+            self.db
+                .note_activity(&format!("knows:{remote}"), false, false, ask.at_ms)?;
+        }
         debug!(
             node = %remote.fmt_short(),
             actor = %person.actor.fmt_short(),

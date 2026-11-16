@@ -94,6 +94,7 @@ impl Core {
         // To be kept: checked against the keys this node knows of now (ADR 0010).
         self.keys_current(&[profile, announce])?;
         let now = now_ms();
+        let new = !self.db.has_vouch(VouchKind::Reshare, &a.object, &a.actor)?;
         self.db.add_vouch(
             &NewVouch {
                 kind: VouchKind::Reshare,
@@ -105,6 +106,11 @@ impl Core {
             },
             MAX_RESHARE_VOUCHES,
         )?;
+        // A new resharer moves the post's reshares up the owner's Activity.
+        if new {
+            self.db
+                .note_activity(&format!("reshared:{}", a.object), true, false, now)?;
+        }
         self.db
             .keep_voucher_profile(&a.actor, profile, profile_ms)?;
         debug!(

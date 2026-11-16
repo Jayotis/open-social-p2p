@@ -223,6 +223,27 @@ pub enum ClientRequest {
     Likes {
         post: ObjectId,
     },
+    /// The owner's Activity (ADR 0038 §3), the latest change first: replies
+    /// to their posts and replies waiting, likes and reshares, new followers,
+    /// people who say they know them, and their own replies published.
+    /// `before` an entry's `seq` reads on past it; `limit` is at most
+    /// `MAX_ACTIVITY_PAGE`. Answered from the node alone.
+    Activity {
+        #[serde(default)]
+        before: Option<u64>,
+        #[serde(default)]
+        limit: Option<u32>,
+    },
+    /// Marks Activity entries read, on the node, so the owner's devices
+    /// agree: the entries named by `keys`, and with `through` every entry
+    /// whose `seq` is no later. An entry that changes after takes a new `seq`
+    /// and is unread again.
+    ActivityRead {
+        #[serde(default)]
+        keys: Vec<String>,
+        #[serde(default)]
+        through: Option<u64>,
+    },
     /// The owner's replies to others' posts, newest first, and where each
     /// stands.
     SentReplies,
@@ -509,6 +530,13 @@ pub enum ClientResponse {
     /// Who likes one of the owner's posts, newest first.
     Likes {
         likes: Vec<LikeInfo>,
+    },
+    /// The answer to `Activity`: a page of entries, and how many of all
+    /// the entries are unread.
+    Activity {
+        entries: Vec<ActivityEntry>,
+        unread: u64,
+        more: bool,
     },
     /// A reply was signed and kept, and where it stands.
     ReplySent {
@@ -983,6 +1011,94 @@ pub struct LikeInfo {
     pub name: String,
     /// When they liked it, as their like says.
     pub published: String,
+}
+
+/// Most entries in one page of `Activity`.
+pub const MAX_ACTIVITY_PAGE: u32 = 100;
+
+/// Most people named in one grouped Activity entry: "Jimmy, Alice and 3
+/// others liked your post".
+pub const MAX_ACTIVITY_NAMES: usize = 2;
+
+/// One entry in the owner's Activity (ADR 0038 §3).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ActivityEntry {
+    /// What it's about, the same however often it changes, for
+    /// `ActivityRead`.
+    pub key: String,
+    /// Its place: higher for a later change.
+    pub seq: u64,
+    /// When it last changed, on the node's clock.
+    pub at_ms: i64,
+    pub read: bool,
+    pub what: ActivityWhat,
+}
+
+/// What an Activity entry says. Each one opens what it's about: a post, a
+/// reply, or a person.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ActivityWhat {
+    /// Someone replied to one of the owner's posts. `waiting` while it's
+    /// among the requests, for the owner to let in.
+    Reply {
+        post: ObjectId,
+        /// The start of the post's text.
+        post_text: String,
+        reply: ObjectId,
+        actor: PublicKey,
+        /// The name in the profile that came with it. Not checked.
+        name: String,
+        content: String,
+        waiting: bool,
+    },
+    /// People like one of the owner's posts: the latest few, and how many
+    /// in all.
+    Liked {
+        post: ObjectId,
+        post_text: String,
+        people: Vec<ActivityPerson>,
+        count: u64,
+    },
+    /// People reshared one of the owner's posts (ADR 0029).
+    Reshared {
+        post: ObjectId,
+        post_text: String,
+        people: Vec<ActivityPerson>,
+        count: u64,
+    },
+    /// A node began following the owner. Whose it is only where the node
+    /// knows for sure: the same node asked to be trusted. Never a guess.
+    Followed {
+        node: EndpointId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        person: Option<ActivityPerson>,
+    },
+    /// Someone says they know the owner: their node asked to be trusted
+    /// (ADR 0013). The name is theirs, not checked.
+    KnowsYou {
+        node: EndpointId,
+        person: ActivityPerson,
+        /// The note they sent.
+        note: String,
+    },
+    /// The owner's reply to someone's post is in its thread.
+    ReplyPublished {
+        post: ObjectId,
+        reply: ObjectId,
+        creator: PublicKey,
+        /// The creator's name, where the node has their profile.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        creator_name: Option<String>,
+        content: String,
+    },
+}
+
+/// Someone named in an Activity entry.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ActivityPerson {
+    pub actor: PublicKey,
+    pub name: String,
 }
 
 /// One of the owner's replies to someone else's post, as their node has it.

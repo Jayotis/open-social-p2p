@@ -128,6 +128,11 @@ impl Core {
             received_ms: now,
         };
         let held = self.db.add_received_reply(&received, circle.is_some())?;
+        // The owner's own replies aren't news to them.
+        if held.is_some() && note.actor != self.signer.identity() {
+            self.db
+                .note_activity(&format!("reply:{id}"), false, false, now)?;
+        }
         // A stranger's request may be let in by who vouched for them.
         let show = held == Some(Held::Request) && circle.is_none() && self.asks_for_side(policy);
         if show {

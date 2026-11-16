@@ -41,9 +41,10 @@ use osp_proto::{
     framing::{read_frame, write_frame},
     machine::MAX_LISTED_POSTS,
     rpc::{
-        ClientRequest, ClientResponse, DeviceInfo, Direction, FeedItem, FollowerInfo, IconChange,
-        PeerRecord, ProfileInfo, ProfileItemKind, Reached, ReplierChoice, ReplyAnswer, ReplyInfo,
-        ReplyStatus, SentReplyInfo, SentStatus, StatusInfo, TrustInfo,
+        ActivityEntry, ActivityPerson, ActivityWhat, ClientRequest, ClientResponse, DeviceInfo,
+        Direction, FeedItem, FollowerInfo, IconChange, PeerRecord, ProfileInfo, ProfileItemKind,
+        Reached, ReplierChoice, ReplyAnswer, ReplyInfo, ReplyStatus, SentReplyInfo, SentStatus,
+        StatusInfo, TrustInfo,
     },
     social::ReplyPolicy,
 };
@@ -248,6 +249,24 @@ enum Command {
     Unlike { post: ObjectId },
     /// List who likes one of your posts, newest first
     Likes { post: ObjectId },
+    /// Show your Activity, the latest first: replies, likes, reshares, new
+    /// followers, people who say they know you, and your replies published.
+    /// Unread entries are marked with a dot
+    Activity {
+        /// Read on past the entry with this number
+        #[arg(long)]
+        before: Option<u64>,
+        #[arg(long)]
+        limit: Option<u32>,
+    },
+    /// Mark Activity entries read, on your node, so your devices agree
+    ActivityRead {
+        /// Every entry up to this number (as `osp activity` shows it)
+        #[arg(long)]
+        through: Option<u64>,
+        /// Entries by their key (as `osp activity --json` shows it)
+        keys: Vec<String>,
+    },
     /// Show the replies to a post, and who may reply to it. Others' posts are
     /// read without showing who you are, a page at a time
     Replies {
@@ -758,6 +777,8 @@ async fn main() -> Result<()> {
         Command::Like { post } => ClientRequest::Like { post, liked: true },
         Command::Unlike { post } => ClientRequest::Like { post, liked: false },
         Command::Likes { post } => ClientRequest::Likes { post },
+        Command::Activity { before, limit } => ClientRequest::Activity { before, limit },
+        Command::ActivityRead { through, keys } => ClientRequest::ActivityRead { keys, through },
         Command::Replies { post, after } => ClientRequest::Thread { post, after },
         Command::SentReplies => ClientRequest::SentReplies,
         Command::ReplyRequests => ClientRequest::ReplyRequests,
@@ -1782,6 +1803,32 @@ fn print(resp: ClientResponse, json: bool) -> Result<()> {
                 println!("{name}  {}  {}", like.actor.fmt_short(), like.published);
             }
         }
+        ClientResponse::Activity {
+            entries,
+            unread,
+            more,
+        } => {
+            if entries.is_empty() {
+                println!("Nothing yet.");
+            }
+            for entry in &entries {
+                print_activity(entry);
+            }
+            match unread {
+                0 => {}
+                1 => println!("1 unread."),
+                n => println!("{n} unread."),
+            }
+            if let Some(first) = entries.first().filter(|_| unread > 0) {
+                println!(
+                    "Mark these read: `osp activity-read --through {}`.",
+                    first.seq
+                );
+            }
+            if let Some(last) = entries.last().filter(|_| more) {
+                println!("More follow: add `--before {}`.", last.seq);
+            }
+        }
         ClientResponse::ReplySent { reply } => print_sent_reply(&reply),
         ClientResponse::SentReplies { replies } => {
             if replies.is_empty() {
@@ -2290,6 +2337,106 @@ fn print_reply(r: &ReplyInfo) {
 }
 
 /// One of your replies, and where it stands.
+/// "Jimmy", "Jimmy and Alice", "Jimmy, Alice and 3 others".
+fn names(people: &[ActivityPerson], count: u64) -> String {
+    let name = |p: &ActivityPerson| {
+        if p.name.is_empty() {
+            "Someone".to_string()
+        } else {
+            p.name.clone()
+        }
+    };
+    let named: Vec<String> = people.iter().map(name).collect();
+    let others = count.saturating_sub(named.len() as u64);
+    match (named.as_slice(), others) {
+        ([], n) => format!("{n} people"),
+        ([one], 0) => one.clone(),
+        ([a, b], 0) => format!("{a} and {b}"),
+        (some, 1) => format!("{} and 1 other", some.join(", ")),
+        (some, n) => format!("{} and {n} others", some.join(", ")),
+    }
+}
+
+fn print_activity(entry: &ActivityEntry) {
+    let dot = if entry.read { " " } else { "•" };
+    let post = |text: &str| {
+        let line = plain(text.lines().next().unwrap_or(""));
+        if line.is_empty() {
+            "your post".to_string()
+        } else {
+            format!("your post “{line}”")
+        }
+    };
+    let said = |text: &str| plain(text.lines().next().unwrap_or(""));
+    let who = |name: &str| {
+        if name.is_empty() {
+            "Someone".to_string()
+        } else {
+            name.to_string()
+        }
+    };
+    let line = match &entry.what {
+        ActivityWhat::Reply {
+            post_text,
+            name,
+            content,
+            waiting: false,
+            ..
+        } => format!(
+            "{} replied to {}: {}",
+            who(name),
+            post(post_text),
+            said(content)
+        ),
+        ActivityWhat::Reply {
+            post_text,
+            name,
+            content,
+            waiting: true,
+            ..
+        } => format!(
+            "{}'s reply to {} is waiting for you: {}",
+            who(name),
+            post(post_text),
+            said(content)
+        ),
+        ActivityWhat::Liked {
+            post_text,
+            people,
+            count,
+            ..
+        } => format!("{} liked {}", names(people, *count), post(post_text)),
+        ActivityWhat::Reshared {
+            post_text,
+            people,
+            count,
+            ..
+        } => format!("{} reshared {}", names(people, *count), post(post_text)),
+        ActivityWhat::Followed { person: None, .. } => "Someone new follows you".to_string(),
+        ActivityWhat::Followed {
+            person: Some(p), ..
+        } => format!("{} follows you", who(&p.name)),
+        ActivityWhat::KnowsYou { person, note, .. } if note.is_empty() => {
+            format!("{} says they know you", who(&person.name))
+        }
+        ActivityWhat::KnowsYou { person, note, .. } => {
+            format!("{} says they know you: {}", who(&person.name), said(note))
+        }
+        ActivityWhat::ReplyPublished {
+            creator_name,
+            content,
+            ..
+        } => {
+            let whose = match creator_name.as_deref() {
+                Some(n) if !n.is_empty() => format!("{n}'s"),
+                _ => "their".to_string(),
+            };
+            format!("Your reply is in {whose} thread: {}", said(content))
+        }
+    };
+    println!("{dot} {:>5}  {line}", entry.seq);
+}
+
 fn print_sent_reply(r: &SentReplyInfo) {
     let status = match r.status {
         SentStatus::Sending => "not answered yet; your node tries again",

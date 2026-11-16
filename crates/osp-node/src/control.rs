@@ -310,6 +310,11 @@ impl Core {
             ClientRequest::Likes { post } => ClientResponse::Likes {
                 likes: self.who_likes(&post)?,
             },
+            ClientRequest::Activity { before, limit } => self.activity(before, limit)?,
+            ClientRequest::ActivityRead { keys, through } => {
+                self.db.mark_activity_read(&keys, through)?;
+                ClientResponse::Ok
+            }
             ClientRequest::SentReplies => ClientResponse::SentReplies {
                 replies: self.sent_reply_list()?,
             },
