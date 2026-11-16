@@ -337,8 +337,8 @@ ThemeData ospTheme(Brightness brightness) {
       surfaceTintColor: Colors.transparent,
       scrolledUnderElevation: 0,
       centerTitle: false,
-      // No colour here, so a bar's foregroundColor (the sky's) still applies.
-      titleTextStyle: text.titleLarge,
+      // No titleTextStyle: Material's default is titleLarge in the bar's
+      // foregroundColor, which a bar on the sky sets.
     ),
     cardTheme: CardThemeData(
       color: scheme.surfaceContainerLow,

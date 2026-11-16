@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../node.dart';
 import '../theme.dart';
 import '../widgets/person_avatar.dart';
+import '../widgets/sky_band.dart';
 import 'advanced_screen.dart';
 import 'node_summary_screen.dart';
 import 'people_screen.dart';
@@ -23,43 +24,64 @@ class YouTab extends StatelessWidget {
     final me = node.me;
     final name = me?.name ?? node.status?.name ?? node.paired?.name ?? '';
     final identity = node.paired?.identity;
+    final sky = OspColors.of(context);
     return ListView(
       padding: const EdgeInsets.only(bottom: 88),
       children: [
-        InkWell(
-          onTap: identity == null
-              ? null
-              : () => open(
-                  ProfileScreen(node: node, identity: identity, name: name),
-                ),
-          child: Padding(
-            padding: const EdgeInsets.all(Space.l),
-            child: Row(
+        // You on your own strip of sky, your star in starlight.
+        Card(
+          margin: const EdgeInsets.fromLTRB(Space.m, Space.s, Space.m, Space.s),
+          color: sky.sky,
+          child: InkWell(
+            onTap: identity == null
+                ? null
+                : () => open(
+                    ProfileScreen(node: node, identity: identity, name: name),
+                  ),
+            child: Stack(
               children: [
-                PersonAvatar(
-                  node: node,
-                  name: name,
-                  identity: identity,
-                  picture: me?.picture,
-                  radius: 28,
+                Positioned.fill(
+                  child: SkyBand(
+                    seed: identity ?? name,
+                    glow: sky.yourStar,
+                    glowAt: const Alignment(-0.72, 0),
+                  ),
                 ),
-                const SizedBox(width: Space.m),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
+                Padding(
+                  padding: const EdgeInsets.all(Space.l),
+                  child: Row(
                     children: [
-                      Text(
-                        name.isEmpty ? 'You' : name,
-                        style: theme.textTheme.headlineSmall,
+                      PersonAvatar(
+                        node: node,
+                        name: name,
+                        identity: identity,
+                        picture: me?.picture,
+                        radius: 30,
                       ),
-                      Text(
-                        'Your profile and posts',
-                        style: theme.textTheme.bodySmall,
+                      const SizedBox(width: Space.m),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              name.isEmpty ? 'You' : name,
+                              style: theme.textTheme.headlineSmall?.copyWith(
+                                color: sky.onSky,
+                              ),
+                            ),
+                            Text(
+                              'Your profile and posts',
+                              style: theme.textTheme.bodyMedium?.copyWith(
+                                color: sky.onSkyQuiet,
+                              ),
+                            ),
+                          ],
+                        ),
                       ),
+                      Icon(Icons.chevron_right, color: sky.onSky),
                     ],
                   ),
                 ),
-                const Icon(Icons.chevron_right),
               ],
             ),
           ),

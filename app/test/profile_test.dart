@@ -288,12 +288,29 @@ void main() {
     ];
     await openProfile(tester, 'Jimmy');
     expect(find.text('second'), findsOneWidget);
+    // The page itself, not the text boxes on it that scroll too.
+    final page = find
+        .descendant(
+          of: find.byType(CustomScrollView),
+          matching: find.byType(Scrollable),
+        )
+        .first;
     expect(find.text('first'), findsNothing);
+    await tester.scrollUntilVisible(
+      find.text('Show more'),
+      200,
+      scrollable: page,
+    );
     await tester.tap(find.text('Show more'));
     await tester.pumpAndSettle();
     expect(find.text('first'), findsOneWidget);
     expect(find.text('Show more'), findsNothing);
 
+    await tester.scrollUntilVisible(
+      find.text('Media 1'),
+      -200,
+      scrollable: page,
+    );
     await tester.tap(find.text('Media 1'));
     await tester.pumpAndSettle();
     expect(app.asked, ['posts newest', 'posts 1', 'media newest']);
