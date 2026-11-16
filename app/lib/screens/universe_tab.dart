@@ -1866,6 +1866,8 @@ class _Map extends CustomPainter {
       old.standing != standing ||
       old.layer != layer ||
       old.lights != lights ||
+      old.connection != connection ||
+      old.text != text ||
       old.event != event;
 }
 
