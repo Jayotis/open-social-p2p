@@ -3,6 +3,7 @@ import 'dart:io';
 import 'dart:math';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/semantics.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:osp_app/node.dart';
 import 'package:osp_app/screens/activity_screen.dart';
@@ -319,10 +320,20 @@ void main() {
     root.deleteSync(recursive: true);
   });
 
-  Future<void> start(WidgetTester tester, Place place) async {
+  /// Opens the app at [place]; [still] as on a phone asking for reduced
+  /// motion.
+  Future<void> start(
+    WidgetTester tester,
+    Place place, {
+    bool still = false,
+  }) async {
     await tester.pumpWidget(
       MaterialApp(
         key: UniqueKey(),
+        builder: (context, child) => MediaQuery(
+          data: MediaQuery.of(context).copyWith(disableAnimations: still),
+          child: child!,
+        ),
         // As the app does: places redraw as the node changes.
         home: ListenableBuilder(
           listenable: node,
@@ -731,6 +742,80 @@ void main() {
     expect(find.text('Your node found 1 person'), findsOne);
     final back = tester.getCenter(find.byTooltip('Your node'));
     expect((back - home).distance, lessThan(1), reason: 'framed as before');
+  });
+
+  testWidgets('a screen reader finds each star, stands there and zooms', (
+    tester,
+  ) async {
+    final reader = tester.ensureSemantics();
+    app.snapshot = world(['Kim', 'Jimmy']);
+    app.regions['p:id-Kim'] = world(
+      ['Kim', 'Jimmy'],
+      region: 'p:id-Kim',
+      path: [''],
+    );
+    await start(tester, Place.universe);
+    expect(find.semantics.byLabel(RegExp(r'^Jimmy\. 1 step')), findsOne);
+
+    // The map's own zoom, as a screen reader can't pinch: her star twice as
+    // far from the middle.
+    final map = find.semantics.byLabel(RegExp('^The map of your Universe'));
+    final middle = tester.getCenter(find.byKey(const Key('universe-map')));
+    final before = tester.getCenter(find.byTooltip('Your node')) - middle;
+    tester.semantics.customAction(
+      map,
+      const CustomSemanticsAction(label: 'Zoom in'),
+    );
+    await tester.pumpAndSettle();
+    final after = tester.getCenter(find.byTooltip('Your node')) - middle;
+    expect(after.distance, closeTo(before.distance * 2, 1));
+
+    tester.semantics.tap(find.semantics.byLabel(RegExp(r'^Kim\. 1 step')));
+    await tester.pumpAndSettle();
+    expect(node.universeRegion, 'p:id-Kim');
+    expect(
+      find.semantics.byLabel(RegExp(r'^Kim\. You are standing here')),
+      findsOne,
+    );
+
+    // Out far enough, it goes up the path, as a pinch does.
+    for (var i = 0; i < 2; i++) {
+      tester.semantics.customAction(
+        map,
+        const CustomSemanticsAction(label: 'Zoom out'),
+      );
+      await tester.pumpAndSettle();
+    }
+    expect(node.universeRegion, '');
+    reader.dispose();
+  });
+
+  testWidgets('asked for less motion, the map jumps rather than flies', (
+    tester,
+  ) async {
+    app.snapshot = world(['Kim']);
+    app.regions['p:id-Kim'] = world(['Kim'], region: 'p:id-Kim', path: ['']);
+    await start(tester, Place.universe, still: true);
+
+    await tester.tapAt(drawnAt(tester, 1, 1));
+    // The tap, then the region from the node: nothing left to move.
+    await tester.pump();
+    await tester.pump();
+    expect(node.universeRegion, 'p:id-Kim');
+    expect(find.textContaining('1 public line shown'), findsOne);
+    expect(tester.binding.transientCallbackCount, 0, reason: 'nothing moves');
+  });
+
+  testWidgets('asked for less motion, what the node did is told, not drawn', (
+    tester,
+  ) async {
+    app.snapshot = world(['Jimmy']);
+    app.events = [
+      anEvent(2, EventKind.served, author: 'id-Jimmy', post: 'p1', bytes: 1),
+    ];
+    await start(tester, Place.universe, still: true);
+    expect(find.byKey(const Key('event-line')), findsOne);
+    expect(debugDrawnEvents, isEmpty);
   });
 
   testWidgets('only a tap asks how you are connected, and the paths show', (

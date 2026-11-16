@@ -331,7 +331,14 @@ void main() {
     root.deleteSync(recursive: true);
   });
 
-  Future<void> show(WidgetTester tester, Brightness b, Widget home) async {
+  /// Shows [home] on a phone-sized screen, its text [text] times as big as
+  /// the phone's usual size, as someone with large text has it.
+  Future<void> show(
+    WidgetTester tester,
+    Brightness b,
+    Widget home, {
+    double text = 1,
+  }) async {
     tester.view.physicalSize = const Size(412 * 2, 892 * 2);
     tester.view.devicePixelRatio = 2;
     addTearDown(tester.view.reset);
@@ -341,6 +348,12 @@ void main() {
         theme: ospTheme(Brightness.light),
         darkTheme: ospTheme(Brightness.dark),
         themeMode: b == Brightness.dark ? ThemeMode.dark : ThemeMode.light,
+        builder: (context, child) => MediaQuery(
+          data: MediaQuery.of(
+            context,
+          ).copyWith(textScaler: TextScaler.linear(text)),
+          child: child!,
+        ),
         home: home,
       ),
     );
@@ -400,4 +413,41 @@ void main() {
       );
     });
   }
+
+  // Large text (ADR 0040 step 4): the biggest Android offers. Nothing may
+  // overflow, and what matters must still fit on screen.
+  group('large text', () {
+    const big = 2.0;
+
+    testWidgets('Home', (tester) async {
+      await show(tester, Brightness.dark, AppShell(node: node), text: big);
+      await expectLater(
+        find.byType(MaterialApp),
+        matchesGoldenFile('goldens/home_large.png'),
+      );
+    });
+
+    testWidgets('the Universe', (tester) async {
+      await show(tester, Brightness.dark, AppShell(node: node), text: big);
+      await tester.tap(find.byTooltip('Universe'));
+      await tester.pumpAndSettle();
+      await expectLater(
+        find.byType(MaterialApp),
+        matchesGoldenFile('goldens/universe_large.png'),
+      );
+    });
+
+    testWidgets('a profile', (tester) async {
+      await show(
+        tester,
+        Brightness.dark,
+        ProfileScreen(node: node, identity: 'id-Kim', name: 'Kim'),
+        text: big,
+      );
+      await expectLater(
+        find.byType(MaterialApp),
+        matchesGoldenFile('goldens/profile_large.png'),
+      );
+    });
+  });
 }

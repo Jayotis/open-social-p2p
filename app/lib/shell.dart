@@ -103,7 +103,14 @@ class _AppShellState extends State<AppShell> {
             onPressed: () => _open(ActivityScreen(node: node, open: _open)),
             icon: Badge(
               isLabelVisible: waiting > 0,
-              label: Text('$waiting'),
+              // Held small with large text: the badge sits on the bell at
+              // the screen's edge.
+              label: Text(
+                '$waiting',
+                textScaler: MediaQuery.textScalerOf(
+                  context,
+                ).clamp(maxScaleFactor: 1.3),
+              ),
               child: const Icon(Icons.notifications_outlined),
             ),
           ),
