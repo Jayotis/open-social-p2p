@@ -1,272 +1,181 @@
 # Node-Assisted Moderation
 
-**Status:** Design and planning document. No AI model, script API or automatic community moderation is approved by this document alone.
+**Status:** Planning document. No AI model, script system or automatic community moderation is approved by this document alone.
 
-OSP's home node is well placed to help its owner filter spam and unwanted material because it is persistent, has more compute/storage than the phone, and already applies the owner's social state before presenting content.
+OSP's home node is a good place to help its owner keep out spam and unwanted material. It is always on, already holds the person's local social state, and has more room to work than the phone.
 
-Assistance must remain subordinate to human authority and protocol rules.
+The basic rule is:
 
-> **A moderation assistant may classify, prioritize or recommend. It gains no social or governance authority merely by running.**
+> **A helper can suggest. The node and the person remain in control.**
 
-This applies to hand-written rules, scripts, statistical classifiers and AI models.
+A helper can be a simple rule, a script, a classifier or an AI model.
 
-See [doc 15](15-feature-responsibility-model.md), [ADR 0019](decisions/0019-taking-posts-and-media-down.md), [ADR 0041](decisions/0041-public-communities-and-stewards.md) and the feed filtering requirements in [doc 08](08-open-feed-algorithm.md).
+## Personal filtering
 
-## Three scopes
+The owner's node may locally help with things such as:
 
-### 1. Personal moderation
+- blocks and mutes;
+- duplicate/repeated spam;
+- unwanted words, topics or links;
+- warnings/blurring for content the owner chose to treat cautiously;
+- a local review queue.
 
-The owner's node may locally:
+These choices affect **this person's node**. They do not remove the content from OSP or create a public accusation about its author.
 
-- block/mute identities, posts, files, words or topics;
-- suppress duplicate/repeated spam;
-- warn or blur material based on the owner's preferences;
-- reduce recommendations of unwanted topics;
-- hold suspicious content in a local review queue;
-- refuse to fetch/serve content under the owner's local policy where existing protocol rules permit.
+A person should be able to see why something was hidden and undo their own local filter.
 
-These are local decisions. They do not create public moderation records and do not tell another node what it must show.
+## Helping community moderators
 
-A local classifier result is not a fact about the author.
+For the first public-community prototype in [ADR 0041](decisions/0041-public-communities-and-stewards.md), a moderator's node may help by:
 
-### 2. Community steward assistance
+- grouping duplicate reports;
+- finding repeated/link spam;
+- matching a clear community rule;
+- putting suspicious items near the top of the moderation queue;
+- suggesting hide, restore or a 24-hour mute.
 
-For communities under ADR 0041, a steward's node may help:
+By default, the moderator approves the action.
 
-- group duplicate reports;
-- detect repeated/link spam;
-- identify likely rule matches;
-- prioritize a moderation queue;
-- summarize context;
-- suggest hide, reinstate or temporary-restriction actions;
-- prepare the exact action for the steward to review.
+Later, a moderator may explicitly allow a bounded automatic action for obvious, reversible cases. That should be learned from real moderation use rather than assumed now.
 
-By default, the steward explicitly approves the public moderation action.
+## What helpers never decide
 
-A community may later authorize **bounded automatic execution of routine, reversible actions**. Such automation is still attributed to a steward/policy and is never counted as a steward itself.
+Scripts/AI do not decide whether a signature is valid or whether someone has permission under the protocol.
 
-### 3. Network/protocol validity
+They may not independently:
 
-No AI or script decides cryptographic validity.
+- sign as the owner;
+- delete another person's post;
+- add/remove community moderators;
+- change community rules;
+- create a permanent community ban;
+- transfer/close a community;
+- change OSP governance.
 
-Signature checking, governance quorum, author deletion, rate-limit accounting and protocol permissions are deterministic node code. An assistant may not override them.
+Core protocol checks remain ordinary deterministic node code.
 
-## Assistant interface
+## Keep signing keys away from helpers
 
-Do not make a special API only for today's AI models. Define a general moderation-assistant result.
+A helper should not receive the owner's signing key.
 
-Conceptually:
-
-```text
-target: <local object reference>
-classification: suspicious
-confidence: 0.93
-reasons:
-  - duplicate_content
-  - repeated_link
-suggested_action: hold_for_review
-assistant: local-spam-v1
-```
-
-The stable interface should support:
-
-- target/reference;
-- one or more reason/category codes;
-- confidence where meaningful;
-- suggested action;
-- assistant/version identity;
-- optional human-readable explanation;
-- evidence references that do not expose unrelated private data.
-
-A deterministic rule may omit confidence.
-
-Assistant outputs are **local advisory records** unless a separate policy engine authorizes an action.
-
-## Policy engine and signing boundary
-
-Assistants must not receive unrestricted access to OSP signing keys.
-
-The path is:
+The flow is:
 
 ```text
-content/event
-    |
-assistant(s)
-    |
-suggestion
-    |
-node moderation policy
-    |
-allowed local action OR request for human approval
-    |
-OSP node signs a scoped protocol action only when permitted
+incoming content
+      |
+ moderation helper
+      |
+   suggestion
+      |
+ node policy
+      |
+local filter OR ask the person
+      |
+node performs an allowed signed action
 ```
 
-The policy engine enforces:
+The node policy decides:
 
-- which assistants may run;
-- which content they may inspect;
-- CPU/RAM/time budget;
-- which local actions can happen automatically;
-- whether community automation is enabled;
-- maximum automatic action rate;
-- what requires human approval;
-- what is prohibited regardless of recommendation.
+- which helpers may run;
+- what they may inspect;
+- CPU/RAM/time limits;
+- what may happen locally without asking;
+- what always needs a person;
+- how many automatic actions may happen in a period.
 
-A compromised assistant should not be able to sign a governance proposal, permanent ban or author Delete.
+If a helper crashes or behaves badly, the node must keep doing its normal social/network work.
 
-## Community automation boundary
+## One interface for rules and AI
 
-ADR 0041's human governance remains authoritative.
+Do not build an API tied to one AI vendor or model.
 
-Automation may eventually be authorized for actions such as:
+A useful local result can be as simple as:
 
-- hold an obvious duplicate flood for review;
-- hide a post that exactly matches a signed community rule/blocklist;
-- temporarily rate-limit repeated identical replies.
+```text
+target: <post>
+reason: repeated_link
+suggestion: review
+helper: local-spam-v1
+```
 
-These actions must be:
+An AI model may also provide a confidence/explanation. A simple exact rule does not need one.
 
-- routine and reversible;
-- explicitly enabled by an authorized steward/community policy;
-- rate/volume bounded;
-- recorded as automated;
-- attributable to the steward/policy that authorized the automation;
-- reviewable/reversible by stewards.
+These are local results unless the person/node policy turns one into an allowed action.
 
-Automation may **never** independently:
+## Local first
 
-- add/remove stewards;
-- count toward quorum;
-- change community rules/governance;
-- permanently ban a participant;
-- archive/close a community;
-- forge/delete another author's content;
-- resolve a governance fork.
+Where practical, personal filtering should work on the person's own node.
 
-Permanent bans still require ADR 0041's steward majority.
+That keeps reading/preferences at home and works while the phone is off.
 
-## Local models first
+Possible helpers include:
 
-Where practical, personal moderation should be able to run entirely on the owner's node.
-
-Benefits:
-
-- browsing history/preferences need not leave the home;
-- no central classifier gets a view of the person's feed;
-- classification can continue while the phone is off;
-- different people may choose different moderation preferences.
-
-Potential local tools include:
-
-- regex/keyword rules;
+- word/regex rules;
 - URL/domain lists;
-- duplicate/similarity detection;
+- duplicate/similarity checks;
 - language/topic classifiers;
-- text models;
-- image/video classifiers.
+- local text/image/video models.
 
-A feature must work without AI. Low-power Home nodes can use simpler rules or disable expensive assistants.
+AI is optional. OSP must still work on a modest Home node with every model switched off.
 
-Hunter/Creator hardware may run stronger local models without gaining network authority.
+Library or Studio hardware may have room for heavier helpers, but gets no extra authority from doing so.
 
-## External moderation services
+## External services
 
-A node may later support an optional external provider only with explicit owner configuration.
+An optional cloud moderation service can be considered later, but enabling it must clearly say what leaves the node.
 
-Before enabling it, the UI should state:
+A community moderator must not be able to silently make every reader's node send viewed content to an outside AI service.
 
-- what content/data leaves the node;
-- who receives it;
-- whether prompts/results are retained according to that service's terms;
-- whether media files or only derived text/features are sent;
-- how to disable/delete local configuration.
+## Public moderation vs personal filtering
 
-Cloud assistance is not required for OSP's core moderation capability.
+The app should say which one happened.
 
-Community stewards must not silently cause every member's node to upload viewed content to a third party.
+Examples:
 
-## Transparency and overrides
+- **Hidden by your spam filter**
+- **Muted by you**
+- **Removed from this community by a moderator**
+- **Held for moderator review by an automatic rule**
 
-For personal filtering, the app should offer useful explanations such as:
+A local AI score is not itself a public moderation action.
 
-- Hidden by your spam filter.
-- Blurred because you chose to warn on graphic imagery.
-- Reduced because you asked to see less of this topic.
+## Privacy
 
-Users can inspect/override local decisions.
+Reports can contain sensitive information.
 
-For community actions:
+If helpers examine reports, give them only what they need. Do not publish raw reports merely because a resulting hide/mute is public.
 
-- distinguish "removed from this community" from "hidden by your node";
-- show when a moderation action was automated under a steward-authorized policy;
-- preserve the signed community audit record;
-- never imply an AI system itself is a steward.
+Any future private moderator case store needs its own access/encryption design.
 
-## Reports and private evidence
-
-Reports may contain private/sensitive data.
-
-Assistants processing reports should receive only what they need. Public community moderation records contain bounded reason codes and safe explanations, not the raw private report.
-
-If OSP builds a restricted steward case store, its encryption/access model needs separate review before implementation.
-
-## Ranking separation
-
-Moderation/filtering occurs before recommendation ranking.
-
-An item being classified as safe does not make it interesting. An item receiving high engagement does not bypass moderation.
-
-Assistant scores are not organic popularity signals unless a future public algorithm explicitly and safely defines such use.
-
-## Abuse and failure cases
+## Testing
 
 Test at least:
 
-- spammer tries to trigger false positives against others;
-- prompt injection/content instructs an AI assistant to ignore policy;
-- malicious model/script tries to access signing keys or filesystem;
-- assistant hangs or consumes excessive memory/CPU;
-- classifier becomes unavailable;
-- two assistants disagree;
-- steward automation hides too much content quickly;
-- a model update changes decisions unexpectedly;
-- poisoned community blocklist/rules;
-- external provider unavailable/leaks metadata;
-- false positive reversed without affecting the author's original content.
+- spam designed to trigger false positives;
+- content that tells an AI model to ignore its instructions;
+- a bad helper trying to read files/keys it should not access;
+- a helper that hangs or uses too much memory/CPU;
+- helper unavailable/off;
+- two helpers disagree;
+- automatic rules hide too much too quickly;
+- a false positive is reversed;
+- disabling helpers leaves OSP fully usable.
 
-The node must continue its core social/network duties when moderation assistance fails.
+## Build in stages
 
-## Implementation stages
-
-### A1 — deterministic personal filters
-
-Use existing blocks/mutes plus bounded keyword/domain/duplicate rules. No model runtime required.
-
-### A2 — assistant API and local review queue
-
-Define the stable local assistant result/interface and policy engine. Add explanations and overrides in the app.
-
-### A3 — optional local models
-
-Support sandboxed/resource-bounded local classifiers. Keep them advisory by default.
-
-### A4 — steward assistance
-
-Integrate assistants with community report/moderation queues after Front Page governance exists.
-
-### A5 — bounded automatic community actions
-
-Only after real moderation workload exists and tests show safe, reversible automation. Permanent/community-governance actions remain human-quorum controlled.
+1. **Simple personal filters:** existing blocks/mutes plus duplicate/link/word rules.
+2. **Local helper interface:** one result format, limits and a review queue.
+3. **Optional local models:** sandbox/resource limits, advisory by default.
+4. **Community assistance:** only after ADR 0041's first community prototype exists.
+5. **Bounded automation:** only after real moderation use shows which reversible actions are safe to automate.
 
 ## Gate
 
 Assisted moderation is ready when:
 
-- disabling every assistant leaves OSP fully usable;
-- assistants cannot access unrestricted signing authority;
-- local filtering never becomes a public moderation record accidentally;
-- automated community actions are explicitly bounded, attributable and reversible;
-- permanent bans/governance remain human steward decisions;
-- failure/resource exhaustion cannot disable the node's core responsibilities;
-- users can understand and override important local outcomes.
+- OSP works normally with it all switched off;
+- helpers cannot access unrestricted signing authority;
+- personal filtering cannot accidentally become public moderation;
+- automatic community actions, if enabled, are bounded and reversible;
+- failures cannot stop the node's core work;
+- the person can understand and undo important local outcomes.
