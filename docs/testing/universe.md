@@ -141,3 +141,28 @@ ADR 0036's gate, on the phone: what the map draws comes only from the node's eve
 
 **Still open:**
 - Kim's star is close to the owner's, so the flow from it is short and easy to miss. The line under the map says it either way.
+
+## How are we connected?
+
+ADR 0037's gate, over real Tor: the owner asks how they're connected to someone. Their node answers from the paths it keeps, and asks the other person's node who vouched for them, under a throwaway key that nobody can link to the owner. (The paths, and the answer from the other node, are checked in `osp-sim/tests/universe.rs` and `osp-node/tests/vouches.rs`. Those tests don't use real Tor.)
+
+**The node.** Three lab nodes on P7 (migration 36), all on Tor. The owner's node follows Kim. A phone is paired with the owner's node (Pixel 3 XL, app build 17). We asked with `osp connected Kim` and with the phone's button on Kim's profile.
+
+**Result (2026-11-15):**
+
+| | |
+| --- | --- |
+| First asks | Kim's node answered 2 of 6. The other 4 waited the full 45 s and said "their node didn't answer". Kim's node saw no stream at all from the asks that failed. Each of those came soon after the owner's node had started. |
+| The phone's fallback | When Kim's node didn't answer, the phone still showed what the owner's node knew: the path to Kim lit on the map, and a card saying "Their node didn't answer; only what yours knows". |
+| The throwaway | Kim's node saw only the throwaway keys, and kept no record of them. Its list of peers named only the owner's node, from its usual sync. |
+
+**What the run showed, and what changed:**
+- After Tor starts, the owner's node often couldn't reach Kim's onion service at all for about two minutes. A plain SOCKS connection there timed out after 120 s, with or without isolation. Once Tor had warmed up, the same connection took 1 to 10 s. That's how Tor behaves, not this code.
+- One ask that worked connected in 59 ms: the throwaway's stream went over a circuit Tor already had open to Kim's onion service for the owner's own node. Kim's Tor sees which circuit each stream comes in on, so a modified node could link the throwaway key to the owner. Each key's dials now go under its own SOCKS user name, which Tor uses to keep them on separate circuits (`IsolateSOCKSAuth`). A throwaway therefore never shares a circuit, and neither do the node's other keys.
+
+**Again with the fix:** asked from the owner's node, Kim's node answered in 8.7 s: 5.5 s to dial a new circuit, then the question and the answer. From the phone, in 33 s, 28 s of it the dial. The card said "Their node named nobody who vouched for them", with the path to Kim lit. Both stayed within the 45 s the node waits. The owner's node kept syncing with its peers over Tor with the change.
+
+**Still open:**
+- A new circuit each time makes an ask take 5 to 30 s. That's the price of not being linked to the owner.
+- In the first two minutes after Tor starts, asks mostly fail, and the card says the other node didn't answer. It doesn't say why.
+- The card's title is cut off: "How you're connected to …", without the name.
