@@ -5,10 +5,12 @@ import 'screens/activity_screen.dart';
 import 'screens/compose_screen.dart';
 import 'screens/first_run_screen.dart';
 import 'screens/home_tab.dart';
+import 'screens/node_summary_screen.dart';
 import 'screens/search_screen.dart';
 import 'screens/universe_tab.dart';
 import 'screens/you_tab.dart';
 import 'theme.dart';
+import 'widgets/node_mark.dart';
 
 /// The app's three places (ADR 0031 §1).
 enum Place { home, universe, you }
@@ -83,6 +85,10 @@ class _AppShellState extends State<AppShell> {
         backgroundColor: onSky ? sky.sky : null,
         foregroundColor: onSky ? sky.onSky : null,
         actions: [
+          NodeMark(
+            reachability: node.reachability,
+            onTap: () => _open(NodeSummaryScreen(node: node, open: _open)),
+          ),
           if (_place != Place.you)
             IconButton(
               tooltip: 'Search',

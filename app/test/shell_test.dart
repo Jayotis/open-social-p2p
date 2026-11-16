@@ -354,8 +354,9 @@ void main() {
     'You': ([_nav('You')], _title('You')),
     'Post': ([find.byTooltip('Post')], find.byType(ComposeScreen)),
     'Activity': ([find.byTooltip('Activity')], find.byType(ActivityScreen)),
+    // The app's icon in the top bar, lit as the node is (ADR 0040 §7).
     'your node': (
-      [_nav('You'), find.text('Your node')],
+      [find.byKey(const Key('node-mark'))],
       find.byType(NodeSummaryScreen),
     ),
   };
@@ -420,6 +421,27 @@ void main() {
     );
     expect(find.text('It uses 1.3 GB of space for OSP.'), findsOne);
     expectPlainWords(tester);
+  });
+
+  testWidgets('the icon in the top bar says how your node is', (tester) async {
+    await start(tester, Place.home);
+    expect(find.byTooltip('Your node: running'), findsOne);
+
+    node.reachability = Reachability.offline;
+    node.notifyListeners();
+    await tester.pumpAndSettle();
+    expect(find.byTooltip("Your node: can't reach it"), findsOne);
+
+    // Reaching it breathes, but holds still when asked for less motion.
+    node.reachability = Reachability.connecting;
+    node.notifyListeners();
+    await tester.pump();
+    expect(find.byTooltip('Your node: reaching it'), findsOne);
+    expect(tester.binding.transientCallbackCount, greaterThan(0));
+    await start(tester, Place.home, still: true);
+    await tester.pump();
+    expect(find.byTooltip('Your node: reaching it'), findsOne);
+    expect(tester.binding.transientCallbackCount, 0, reason: 'still');
   });
 
   testWidgets('out of reach, the map says it is the last one seen', (
