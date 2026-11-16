@@ -83,11 +83,16 @@ pub enum ClientRequest {
     /// Opens a post from an OSP code (ADR 0039 §4): as this node holds it,
     /// or, if it doesn't, fetched from the node `ticket` names, from a
     /// throwaway key, and kept as an opened post for 7 days. Opening one
-    /// again starts its 7 days over. Answered with `Item`.
+    /// again starts its 7 days over. Without `ticket`, as from Recently
+    /// opened, only a post the node holds opens. Answered with `Item`.
     OpenPost {
         id: ObjectId,
-        ticket: String,
+        #[serde(default)]
+        ticket: Option<String>,
     },
+    /// Recently opened (ADR 0039 §4): the opened posts, the most lately
+    /// opened first. Answered with `Feed`.
+    OpenedPosts,
     /// Drops an opened post and its media now. Answered with `Ok`.
     ForgetOpened {
         id: ObjectId,

@@ -135,8 +135,14 @@ impl Core {
             ClientRequest::Show { id } => ClientResponse::Item {
                 item: self.show(&id).await?,
             },
-            ClientRequest::OpenPost { id, ticket } => ClientResponse::Item {
-                item: self.open_post(&id, &ticket.parse()?).await?,
+            ClientRequest::OpenPost { id, ticket } => {
+                let ticket: Option<FollowTicket> = ticket.map(|t| t.parse()).transpose()?;
+                ClientResponse::Item {
+                    item: self.open_post(&id, ticket.as_ref()).await?,
+                }
+            }
+            ClientRequest::OpenedPosts => ClientResponse::Feed {
+                items: self.opened_posts().await?,
             },
             ClientRequest::ForgetOpened { id } => {
                 self.forget_opened(&id).await?;

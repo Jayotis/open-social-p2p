@@ -51,7 +51,10 @@ There is no web page for a profile or post: OSP has no server to put one on.
 - **For 7 days**, marked in its own table. The post and Alice's profile are kept where posts and profiles always are, as a found post's are, so liking, replying and media work as for any post; every list leaves opened posts out, with a test for each (maintainer, 2026-11-16). Opening it again, liking it or replying starts the 7 days over. A count cap and a byte cap drop the oldest first.
 - **Not part of Kim's network.** It isn't in the Universe, in People found, or in the feed. Opening it never makes Kim's node a host of it or a source for anyone's reputation.
 - **Follow** is the normal follow of Alice. **Reshare** follows the normal rules, and Kim's node hosts it only if she opts in, as for any reshare.
-- **Remove** drops the post and its media at once. If Alice deletes it, Kim's copy goes too, as for any post.
+- **If Alice deletes it,** Kim's copy goes too, as for any post.
+
+- **Recently opened** (maintainer, 2026-11-16), under You, is the way back: Kim kept it so she can look again, reply later, follow Alice or reshare it. It lists her opened posts, the most lately opened first, and nothing else; it's on her node alone. Opening one there starts its 7 days over, as opening the code does. A post leaves the list when its 7 days end, when Kim removes it, or when it becomes an ordinary post: she follows Alice, reshares it, or it arrives another way. It's not Activity, which is what happens around Kim, and not "History": it's a small cache that empties itself, not a record of what she views.
+- **Remove** deletes the post and its media only where nothing else on Kim's node needs them. If something does (a reshare of it held here, say), the post just stops being opened.
 
 This replaces 3a's "Follow its author?" question for a post code.
 

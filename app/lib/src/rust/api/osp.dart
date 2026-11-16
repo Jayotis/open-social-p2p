@@ -141,6 +141,10 @@ abstract class OspApp implements RustOpaqueInterface {
   /// `code` is the whole `osp:post/...` code.
   Future<Post> openPost({required String code});
 
+  /// Recently opened (ADR 0039 §4): the posts opened from shared codes
+  /// and kept for a while, the most lately opened first.
+  Future<List<Post>> openedPosts();
+
   Future<NodeInfo> pair({required String ticket, required String deviceName});
 
   NodeInfo? pairedNode();
@@ -181,6 +185,10 @@ abstract class OspApp implements RustOpaqueInterface {
   /// newest post first, and their posts, newest first. `region` is `g:`
   /// or `sky:`. Nothing leaves the node.
   Future<Found> regionItems({required String region, required int limit});
+
+  /// Opens a post from Recently opened: one the node keeps as opened,
+  /// whose 7 days start over.
+  Future<Post> reopenPost({required String postId});
 
   /// Replies to `post_id` as the owner (ADR 0028). The node keeps it and
   /// sends it to the post's creator, trying again for 30 days. A reshare's
