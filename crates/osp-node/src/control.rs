@@ -85,11 +85,10 @@ impl Core {
         Ok(match req {
             ClientRequest::Status => ClientResponse::Status(self.status().await?),
             ClientRequest::Invite => ClientResponse::Ticket {
-                ticket: FollowTicket {
-                    actor: self.signer.identity(),
-                    node: self.shareable_addr().await,
-                }
-                .to_string(),
+                ticket: self.own_ticket().await.to_string(),
+            },
+            ClientRequest::InviteFor { actor } => ClientResponse::Ticket {
+                ticket: self.invite_for(&actor).await?.to_string(),
             },
             ClientRequest::Follow { ticket } => {
                 self.follow(&ticket.parse()?).await?;
@@ -531,6 +530,30 @@ impl Core {
     /// where to ask: the sync this wakes first asks that node for their profile,
     /// and goes no further unless the node speaks for them (ADR 0014).
     async fn follow_person(&self, actor: &PublicKey) -> Result<()> {
+        self.follow(&self.held_ticket(actor)?).await
+    }
+
+    /// A follow ticket for `actor`, for an OSP code (ADR 0039 §4): the
+    /// owner's own, or one naming the first node of the profile this node
+    /// holds of someone else. Like any ticket in public, it holds no IP
+    /// address unless relays are off.
+    async fn invite_for(&self, actor: &PublicKey) -> Result<FollowTicket> {
+        if *actor == self.signer.identity() {
+            return Ok(self.own_ticket().await);
+        }
+        self.held_ticket(actor)
+    }
+
+    async fn own_ticket(&self) -> FollowTicket {
+        FollowTicket {
+            actor: self.signer.identity(),
+            node: self.shareable_addr().await,
+        }
+    }
+
+    /// A ticket naming the first node of the profile this node holds of
+    /// `actor`, by its ID alone.
+    fn held_ticket(&self, actor: &PublicKey) -> Result<FollowTicket> {
         let profile = self.db.profile(actor)?.with_context(|| {
             format!(
                 "this node holds no profile of {}; search for them first",
@@ -547,11 +570,10 @@ impl Core {
             .nodes
             .first()
             .with_context(|| format!("the profile of {} names no node", actor.fmt_short()))?;
-        let ticket = FollowTicket {
+        Ok(FollowTicket {
             actor: *actor,
             node: EndpointAddr::new(node),
-        };
-        self.follow(&ticket).await
+        })
     }
 
     pub(crate) async fn post(

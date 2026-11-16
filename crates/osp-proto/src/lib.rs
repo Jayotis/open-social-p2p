@@ -6,6 +6,7 @@
 //! and follow tickets. This crate does no networking of its own.
 
 pub mod binding;
+pub mod code;
 pub mod connected;
 pub mod framing;
 pub mod machine;
@@ -20,6 +21,7 @@ pub mod universe;
 use std::time::SystemTime;
 
 pub use binding::{BoundEndpoint, EndpointBinding, EndpointKind};
+pub use code::{CodeError, OspCode};
 pub use iroh_base::{EndpointAddr, EndpointId, PublicKey, SecretKey};
 pub use object::{CertifiedKey, ObjectId, SignedObject};
 pub use ticket::{FollowTicket, PairingTicket, pairing_pass_hash};
