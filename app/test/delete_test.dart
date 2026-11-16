@@ -120,7 +120,11 @@ void main() {
       of: find.text(text),
       matching: find.byType(PostCard),
     );
-    await tester.tap(find.descendant(of: card, matching: find.text('Delete')));
+    await tester.tap(
+      find.descendant(of: card, matching: find.byTooltip('More')),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Delete'));
     await tester.pumpAndSettle();
     await tester.tap(find.text(confirm));
     await tester.pumpAndSettle();
@@ -130,12 +134,12 @@ void main() {
     tester,
   ) async {
     await open(tester);
-    expect(find.text('Delete'), findsNWidgets(2));
+    expect(find.byTooltip('More'), findsNWidgets(2));
   });
 
   testWidgets('your own post says how many reshared it', (tester) async {
     await open(tester);
-    expect(find.text('Reshared by 2 people'), findsOneWidget);
+    expect(find.byTooltip('Reshare. Reshared by 2 people'), findsOneWidget);
   });
 
   testWidgets('a delete waits a minute, and Undo keeps the post', (

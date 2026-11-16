@@ -4,6 +4,7 @@ import '../format.dart';
 import '../node.dart';
 import '../screens/likers_screen.dart';
 import '../src/rust/api/osp.dart';
+import 'post_action.dart';
 
 /// Like on someone's post (ADR 0038), shown liked at once; the node sends
 /// it on, trying their node for days if it must. On the owner's own post,
@@ -15,7 +16,11 @@ class LikeButton extends StatefulWidget {
     required this.post,
     this.liked,
     this.onChanged,
+    this.compact = false,
   });
+
+  /// Under a post card: the icon and its count, without words (ADR 0040).
+  final bool compact;
 
   final HomeNode node;
   final Post post;
@@ -69,20 +74,45 @@ class _LikeButtonState extends State<LikeButton> {
     }
   }
 
+  /// How many like it, where known, with the owner's change shown at once.
+  int? get _count {
+    final n = widget.post.likes;
+    if (n == null) return null;
+    final was = widget.liked ?? widget.post.liked;
+    return n + (_liked == was ? 0 : (_liked ? 1 : -1));
+  }
+
+  void _openLikers() => Navigator.of(context).push(
+    MaterialPageRoute(
+      builder: (_) => LikersScreen(node: widget.node, post: widget.post),
+    ),
+  );
+
   @override
   Widget build(BuildContext context) {
     final online = widget.node.reachability == Reachability.online;
+    if (widget.compact) {
+      final n = _count ?? 0;
+      if (_own) {
+        return PostAction(
+          icon: Icons.favorite_border,
+          label: n == 0 ? 'No likes yet' : likesLine(n),
+          count: n,
+          onPressed: n == 0 ? null : _openLikers,
+        );
+      }
+      return PostAction(
+        icon: _liked ? Icons.favorite : Icons.favorite_border,
+        label: _liked ? 'Liked' : 'Like',
+        count: n,
+        color: _liked ? Theme.of(context).colorScheme.primary : null,
+        onPressed: online && !_busy ? _toggle : null,
+      );
+    }
     if (_own) {
       final n = widget.post.likes ?? 0;
       return TextButton.icon(
-        onPressed: n == 0
-            ? null
-            : () => Navigator.of(context).push(
-                MaterialPageRoute(
-                  builder: (_) =>
-                      LikersScreen(node: widget.node, post: widget.post),
-                ),
-              ),
+        onPressed: n == 0 ? null : _openLikers,
         icon: const Icon(Icons.favorite_border),
         label: Text(n == 0 ? 'No likes yet' : likesLine(n)),
       );

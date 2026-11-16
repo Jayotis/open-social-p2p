@@ -39,6 +39,7 @@ class YouTab extends StatelessWidget {
                 PersonAvatar(
                   node: node,
                   name: name,
+                  identity: identity,
                   picture: me?.picture,
                   radius: 28,
                 ),

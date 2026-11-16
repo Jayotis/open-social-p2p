@@ -7,7 +7,10 @@ import '../screens/player_screen.dart';
 import '../screens/profile_screen.dart';
 import '../screens/thread_screen.dart';
 import '../src/rust/api/osp.dart';
+import '../theme.dart';
 import 'like_button.dart';
+import 'person_avatar.dart';
+import 'post_action.dart';
 
 /// One post in the feed: author, text, photos and videos, and reshare.
 class PostCard extends StatelessWidget {
@@ -110,75 +113,118 @@ class PostCard extends StatelessWidget {
     );
   }
 
+  void _openProfile(BuildContext context) => Navigator.of(context).push(
+    MaterialPageRoute(
+      builder: (_) => ProfileScreen(
+        node: node,
+        identity: post.authorIdentity,
+        name: post.author,
+      ),
+    ),
+  );
+
+  void _openThread(BuildContext context) => Navigator.of(context).push(
+    MaterialPageRoute(
+      builder: (_) => ThreadScreen(node: node, post: post),
+    ),
+  );
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final quiet = theme.textTheme.bodySmall?.copyWith(
+      color: theme.colorScheme.onSurfaceVariant,
+    );
     final published = DateTime.tryParse(post.published);
+    final online = node.reachability == Reachability.online;
+    final resharers = post.resharers ?? 0;
     return Card(
-      margin: const EdgeInsets.fromLTRB(12, 8, 12, 0),
-      clipBehavior: Clip.antiAlias,
+      margin: const EdgeInsets.fromLTRB(Space.m, Space.s, Space.m, 0),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           if (post.resharedBy != null)
             Padding(
-              padding: const EdgeInsets.fromLTRB(16, 10, 16, 0),
+              padding: const EdgeInsets.fromLTRB(Space.m, Space.m, Space.m, 0),
               child: Row(
                 children: [
-                  Icon(
-                    Icons.repeat,
-                    size: 16,
-                    color: theme.colorScheme.secondary,
-                  ),
-                  const SizedBox(width: 6),
+                  Icon(Icons.repeat, size: 16, color: quiet?.color),
+                  const SizedBox(width: Space.s),
                   Expanded(
                     child: Text(
                       'Reshared by ${post.resharedBy}${post.resharerHosts ? ', who hosts a copy' : ''}',
-                      style: theme.textTheme.bodySmall,
+                      style: quiet,
                     ),
                   ),
                 ],
               ),
             ),
-          ListTile(
-            leading: CircleAvatar(
-              child: Text(
-                post.author.isEmpty ? '?' : post.author[0].toUpperCase(),
-              ),
-            ),
-            title: Text(post.author),
-            subtitle: published != null ? Text(formatAgo(published)) : null,
-            onTap: () => Navigator.of(context).push(
-              MaterialPageRoute(
-                builder: (_) => ProfileScreen(
-                  node: node,
-                  identity: post.authorIdentity,
-                  name: post.author,
+          Padding(
+            padding: const EdgeInsets.fromLTRB(Space.m, Space.s, Space.xs, 0),
+            child: Row(
+              children: [
+                Expanded(
+                  child: InkWell(
+                    borderRadius: BorderRadius.circular(Corner.s),
+                    onTap: () => _openProfile(context),
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(vertical: Space.s),
+                      child: Row(
+                        children: [
+                          PersonAvatar(
+                            node: node,
+                            name: post.author,
+                            identity: post.authorIdentity,
+                            radius: 18,
+                          ),
+                          const SizedBox(width: Space.s + 4),
+                          Flexible(
+                            child: Text(
+                              post.author.isEmpty ? 'Someone' : post.author,
+                              style: theme.textTheme.titleSmall,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                          if (published != null) ...[
+                            Text('  ·  ', style: quiet),
+                            Text(formatAgo(published), style: quiet),
+                          ],
+                        ],
+                      ),
+                    ),
+                  ),
                 ),
-              ),
+                if (post.deletable != null)
+                  PopupMenuButton<String>(
+                    tooltip: 'More',
+                    icon: Icon(Icons.more_horiz, color: quiet?.color),
+                    enabled: online,
+                    onSelected: (_) => _delete(context),
+                    itemBuilder: (_) => const [
+                      PopupMenuItem(
+                        value: 'delete',
+                        child: ListTile(
+                          leading: Icon(Icons.delete_outline),
+                          title: Text('Delete'),
+                          contentPadding: EdgeInsets.zero,
+                        ),
+                      ),
+                    ],
+                  )
+                else
+                  const SizedBox(height: 48),
+              ],
             ),
           ),
-          if ((post.resharers ?? 0) > 0)
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-              child: Text(
-                post.resharers == 1
-                    ? 'Reshared by 1 person'
-                    : 'Reshared by ${post.resharers} people',
-                style: theme.textTheme.bodySmall,
-              ),
-            ),
           if (post.foundThrough != null)
             Padding(
-              padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-              child: Text(
-                listedBy(post.foundThrough!),
-                style: theme.textTheme.bodySmall,
-              ),
+              padding: const EdgeInsets.fromLTRB(Space.m, 0, Space.m, Space.s),
+              child: Text(listedBy(post.foundThrough!), style: quiet),
             ),
           if (post.text.isNotEmpty)
             Padding(
-              padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+              padding: const EdgeInsets.fromLTRB(Space.m, 0, Space.m, Space.s),
               child: SelectableText(
                 post.text,
                 style: theme.textTheme.bodyLarge,
@@ -186,38 +232,28 @@ class PostCard extends StatelessWidget {
             ),
           for (final media in post.media)
             _MediaTile(node: node, post: post, media: media),
-          Wrap(
-            alignment: WrapAlignment.end,
-            children: [
-              LikeButton(node: node, post: post),
-              if (post.deletable != null)
-                TextButton.icon(
-                  onPressed: node.reachability == Reachability.online
-                      ? () => _delete(context)
-                      : null,
-                  icon: const Icon(Icons.delete_outline),
-                  label: const Text('Delete'),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(Space.xs, 0, Space.xs, Space.xs),
+            child: Row(
+              children: [
+                LikeButton(node: node, post: post, compact: true),
+                PostAction(
+                  icon: Icons.chat_bubble_outline,
+                  label: 'Replies',
+                  onPressed: online ? () => _openThread(context) : null,
                 ),
-              TextButton.icon(
-                onPressed: node.reachability == Reachability.online
-                    ? () => _reshare(context)
-                    : null,
-                icon: const Icon(Icons.repeat),
-                label: const Text('Reshare'),
-              ),
-              TextButton.icon(
-                onPressed: node.reachability == Reachability.online
-                    ? () => Navigator.of(context).push(
-                        MaterialPageRoute(
-                          builder: (_) => ThreadScreen(node: node, post: post),
-                        ),
-                      )
-                    : null,
-                icon: const Icon(Icons.chat_bubble_outline),
-                label: const Text('Replies'),
-              ),
-              const SizedBox(width: 8),
-            ],
+                PostAction(
+                  icon: Icons.repeat,
+                  label: switch (resharers) {
+                    0 => 'Reshare',
+                    1 => 'Reshare. Reshared by 1 person',
+                    _ => 'Reshare. Reshared by $resharers people',
+                  },
+                  count: resharers,
+                  onPressed: online ? () => _reshare(context) : null,
+                ),
+              ],
+            ),
           ),
         ],
       ),
@@ -251,54 +287,65 @@ class _MediaTile extends StatelessWidget {
     // Tall portrait media gets a shorter box in the feed; it opens in full.
     final box = aspect < 0.8 ? 0.8 : aspect;
     final thumb = media.thumbnailBlob;
+    final scheme = Theme.of(context).colorScheme;
     return Padding(
-      padding: const EdgeInsets.only(bottom: 4),
-      child: AspectRatio(
-        aspectRatio: box,
-        child: InkWell(
-          onTap: () => _open(context),
-          child: Stack(
-            fit: StackFit.expand,
-            children: [
-              Container(color: Colors.black12),
-              if (thumb != null)
-                FutureBuilder<String>(
-                  future: node.mediaUrl(thumb, 'image/webp'),
-                  builder: (context, url) => url.hasData
-                      ? Image.network(
-                          url.data!,
-                          fit: BoxFit.cover,
-                          errorBuilder: (_, _, _) => const Center(
-                            child: Icon(Icons.broken_image_outlined),
-                          ),
-                        )
-                      : const SizedBox.shrink(),
-                ),
-              if (media.isVideo)
-                const Center(
-                  child: CircleAvatar(
-                    radius: 28,
-                    backgroundColor: Colors.black54,
-                    child: Icon(
-                      Icons.play_arrow,
-                      color: Colors.white,
-                      size: 36,
-                    ),
+      padding: const EdgeInsets.fromLTRB(Space.m, Space.xs, Space.m, Space.xs),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(Corner.s + 4),
+        child: AspectRatio(
+          aspectRatio: box,
+          child: InkWell(
+            onTap: () => _open(context),
+            child: Stack(
+              fit: StackFit.expand,
+              children: [
+                ColoredBox(color: scheme.surfaceContainerHighest),
+                Center(
+                  child: Icon(
+                    media.isVideo ? Icons.movie_outlined : Icons.image_outlined,
+                    size: 40,
+                    color: scheme.outline,
                   ),
                 ),
-              Positioned(
-                right: 8,
-                bottom: 8,
-                child: _Badge(
-                  text: [
-                    if (media.durationMs != null)
-                      formatDuration(media.durationMs!),
-                    formatBytes(media.size),
-                    if (!media.onNode) 'not on your node yet',
-                  ].join(' · '),
+                if (thumb != null)
+                  FutureBuilder<String>(
+                    future: node.mediaUrl(thumb, 'image/webp'),
+                    builder: (context, url) => url.hasData
+                        ? Image.network(
+                            url.data!,
+                            fit: BoxFit.cover,
+                            errorBuilder: (_, _, _) => const Center(
+                              child: Icon(Icons.broken_image_outlined),
+                            ),
+                          )
+                        : const SizedBox.shrink(),
+                  ),
+                if (media.isVideo)
+                  Center(
+                    child: CircleAvatar(
+                      radius: 28,
+                      backgroundColor: Palette.night.withValues(alpha: 0.6),
+                      child: const Icon(
+                        Icons.play_arrow,
+                        color: Palette.moon,
+                        size: 36,
+                      ),
+                    ),
+                  ),
+                Positioned(
+                  right: 8,
+                  bottom: 8,
+                  child: _Badge(
+                    text: [
+                      if (media.durationMs != null)
+                        formatDuration(media.durationMs!),
+                      formatBytes(media.size),
+                      if (!media.onNode) 'not on your node yet',
+                    ].join(' · '),
+                  ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
         ),
       ),
@@ -314,14 +361,16 @@ class _Badge extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+      padding: const EdgeInsets.symmetric(horizontal: Space.s, vertical: 3),
       decoration: BoxDecoration(
-        color: Colors.black54,
-        borderRadius: BorderRadius.circular(4),
+        color: Palette.night.withValues(alpha: 0.7),
+        borderRadius: BorderRadius.circular(Corner.s),
       ),
       child: Text(
         text,
-        style: const TextStyle(color: Colors.white, fontSize: 12),
+        style: Theme.of(
+          context,
+        ).textTheme.labelSmall?.copyWith(color: Palette.moon),
       ),
     );
   }

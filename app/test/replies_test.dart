@@ -372,19 +372,19 @@ void main() {
         body: PostCard(node: node, post: post('Ann')),
       ),
     );
-    await tester.tap(find.text('Like'));
+    await tester.tap(find.byTooltip('Like'));
     await tester.pumpAndSettle();
-    expect(find.text('Liked'), findsOne);
+    expect(find.byTooltip('Liked'), findsOne);
     expect(app.likesSent, [('post-Ann', true)]);
-    await tester.tap(find.text('Liked'));
+    await tester.tap(find.byTooltip('Liked'));
     await tester.pumpAndSettle();
     expect(app.likesSent.last, ('post-Ann', false));
 
     // Kept nowhere: it goes back, and says why.
     app.likeFails = true;
-    await tester.tap(find.text('Like'));
+    await tester.tap(find.byTooltip('Like'));
     await tester.pumpAndSettle();
-    expect(find.text('Like'), findsOne);
+    expect(find.byTooltip('Like'), findsOne);
     expect(find.textContaining("Couldn't like it"), findsOne);
   });
 
@@ -405,8 +405,9 @@ void main() {
         body: PostCard(node: node, post: post('Kim', likes: 2)),
       ),
     );
-    expect(find.text('Like'), findsNothing);
-    await tester.tap(find.text('2 likes'));
+    expect(find.byTooltip('Like'), findsNothing);
+    expect(find.text('2'), findsOne);
+    await tester.tap(find.byTooltip('2 likes'));
     await tester.pumpAndSettle();
     expect(find.byType(LikersScreen), findsOneWidget);
     expect(find.text('Alice'), findsOne);

@@ -11,6 +11,7 @@ import '../node.dart';
 import '../search_lights.dart';
 import '../src/rust/api/osp.dart';
 import '../theme.dart';
+import '../widgets/person_avatar.dart';
 import 'events_screen.dart';
 import 'found_people_screen.dart';
 import 'node_summary_screen.dart';
@@ -1763,7 +1764,11 @@ class _StandingAt extends StatelessWidget {
         mainAxisSize: MainAxisSize.min,
         children: [
           ListTile(
-            leading: CircleAvatar(child: Text(name.characters.first)),
+            leading: InitialAvatar(
+              name: name,
+              seed: p.identity,
+              yours: p.step == 0,
+            ),
             title: Text(name, style: theme.textTheme.titleSmall),
             subtitle: detail.isEmpty
                 ? null

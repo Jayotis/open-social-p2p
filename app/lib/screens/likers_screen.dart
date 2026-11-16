@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../widgets/person_avatar.dart';
 import '../format.dart';
 import '../node.dart';
 import '../src/rust/api/osp.dart';
@@ -55,11 +56,7 @@ class _LikersScreenState extends State<LikersScreen> {
           children: [
             for (final liker in l)
               ListTile(
-                leading: CircleAvatar(
-                  child: Text(
-                    liker.name.isEmpty ? '?' : liker.name[0].toUpperCase(),
-                  ),
-                ),
+                leading: InitialAvatar(name: liker.name, seed: liker.identity),
                 title: Text(liker.name.isEmpty ? 'Someone' : liker.name),
                 subtitle: switch (DateTime.tryParse(liker.published)) {
                   final t? => Text(formatAgo(t)),

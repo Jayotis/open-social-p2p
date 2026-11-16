@@ -227,6 +227,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
               PersonAvatar(
                 node: _node,
                 name: profile.name,
+                identity: profile.identity,
                 picture: profile.picture,
                 radius: 40,
               ),

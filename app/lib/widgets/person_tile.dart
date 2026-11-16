@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import 'person_avatar.dart';
 import '../format.dart';
 import '../node.dart';
 import '../screens/profile_screen.dart';
@@ -66,9 +67,7 @@ class _PersonTileState extends State<PersonTile> {
       if (person.foundThrough != null) listedBy(person.foundThrough!),
     ];
     return ListTile(
-      leading: CircleAvatar(
-        child: Text(person.name.isEmpty ? '?' : person.name[0].toUpperCase()),
-      ),
+      leading: InitialAvatar(name: person.name, seed: person.identity),
       title: Text(person.name),
       subtitle: about.isEmpty ? null : Text(about.join('\n')),
       trailing: trailing,

@@ -113,6 +113,7 @@ Post post(
   int? likes,
   bool liked = false,
   int? resharers,
+  bool mine = false,
   List<Media> media = const [],
 }) => Post(
   regions: const [],
@@ -127,6 +128,7 @@ Post post(
   likes: likes,
   liked: liked,
   resharers: resharers,
+  deletable: mine ? 'post-$who-${text.length}' : null,
 );
 
 const photo = Media(
@@ -148,6 +150,14 @@ final posts = [
     const Duration(hours: 2),
     likes: 3,
     media: const [photo],
+  ),
+  post(
+    'Alice',
+    'Moved my node to the loft. Same Tor address, quieter fan.',
+    const Duration(hours: 3),
+    likes: 4,
+    resharers: 2,
+    mine: true,
   ),
   post(
     'Jimmy',
