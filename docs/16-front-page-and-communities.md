@@ -6,17 +6,18 @@ Front Page is OSP's public discussion experience: people discover communities, s
 
 The implementation follows [doc 15](15-feature-responsibility-model.md): the app presents and captures intent; the home node maintains the person's community state and works in the background; independent nodes exchange signed community records.
 
+**Navigation is not decided here.** [ADR 0031](decisions/0031-app-shell-home-universe-you.md) still defines Home · Universe · You. Before Front Page becomes another place, decide whether the shell changes or Front Page lives inside an existing place. That choice is parked in [notes/future-ideas.md](../notes/future-ideas.md).
+
 ## Product shape
 
-The future Front Page offers at least:
+The first Front Page prototype should be simple:
 
 - **Joined:** discussions from communities the person follows;
-- **New:** chronological eligible community posts;
-- **Hot:** locally ranked recent conversations gaining attention;
-- **Top:** locally ranked posts over a selected period;
-- **Discover:** public communities and discussions outside the person's subscriptions.
+- **New:** chronological eligible community posts.
 
-No view may imply that one node has a complete global count or ranking when it does not. [Doc 08](08-open-feed-algorithm.md) governs transparent ranking.
+**Hot, Top and Discover come later.** [ADR 0038 §2](decisions/0038-likes-and-activity.md#2-what-a-like-is-not) explicitly says Likes do not affect feed order, and changing that needs its own decision record. Front Page must not quietly turn Likes into votes or ranking input.
+
+No view may imply that one node has a complete global count or ranking when it does not. [Doc 08](08-open-feed-algorithm.md) remains the proposal for transparent ranking once a later ADR allows ranking signals.
 
 A community page shows:
 
@@ -31,8 +32,8 @@ A community page shows:
 
 The Flutter app owns the interaction:
 
-- add Front Page to the future navigation;
-- browse Joined/New/Hot/Top/Discover;
+- show the Front Page experience after its navigation placement is decided;
+- browse Joined/New in the first prototype;
 - open a community and its rules;
 - join/leave;
 - start a discussion;
@@ -41,10 +42,9 @@ The Flutter app owns the interaction:
 - report content;
 - show community removal vs the owner's own local filter clearly;
 - create a community;
-- invite/accept stewardship;
-- review moderation queues and appeals for stewards;
-- approve or reject governance proposals;
-- show conflicts or stale state in plain language.
+- invite/accept co-moderators;
+- review a simple moderation queue;
+- show stale/incomplete community data in plain language.
 
 Normal screens should not expose hashes, keys, endpoints, Tor or quorum arithmetic. Advanced may show the verifiable details.
 
@@ -76,12 +76,12 @@ The API returns enough provenance for the app to explain "removed by community",
 The node owns the persistent community experience:
 
 - community subscriptions;
-- verified Community IDs and current governance epochs;
+- verified Community IDs and current owner/co-moderator list;
 - rules and metadata;
 - discovery and synchronization of independent community indexes;
 - local community post/reply indexes;
 - nested-thread assembly;
-- moderation state and reversals;
+- moderation hides/restores and 24-hour mutes;
 - outgoing community actions and retry;
 - local Front Page candidate generation and ranking;
 - personal filtering before presentation;
@@ -95,19 +95,19 @@ A community index that is missing records cannot cause the node to present "noth
 
 ## Protocol work
 
-[ADR 0041](decisions/0041-public-communities-and-stewards.md) proposes the governance foundation. Follow-on protocol work must settle:
+[ADR 0041](decisions/0041-public-communities-and-stewards.md) proposes the first community foundation. The first protocol work should settle only what F1-F2 need:
 
 - Community ID and immutable founding record;
 - mutable community metadata/rules;
-- steward acceptance, proposals, approvals and governance epochs;
+- owner and accepted co-moderators;
 - community placement of an existing signed Note;
-- moderation actions and reversals;
-- permanent community bans;
-- authenticated community index snapshots and catch-up;
+- reversible community hides/restores and 24-hour mutes;
+- basic community index/catch-up;
 - nested replies with parent, root and community context;
 - author deletes interacting with community indexes;
-- fork/conflict detection and recovery;
 - rate/size/replay limits.
+
+Shared stewardship, permanent-ban voting, appeals, succession/recovery and conflicting governance histories are later work, parked in [notes/future-ideas.md](../notes/future-ideas.md) until real communities show which problems actually need solving.
 
 The author's original Note stays an ordinary OSP signed object. A community references it instead of rewriting ownership.
 
@@ -115,30 +115,23 @@ The precise relationship between creator-controlled ADR 0028 threads and communi
 
 ## Ranking and voting
 
-Front Page ranking runs on the owner's node.
+The first prototype uses **New**, chronological after eligibility and filtering, and **Joined**.
 
-**New** is chronological after eligibility and filtering.
+Hot/Top/Discover are blocked on a later ADR because [ADR 0038 §2](decisions/0038-likes-and-activity.md#2-what-a-like-is-not) says Likes do not affect any feed order. That ADR must be deliberately changed or a different ranking/voting signal designed and tested first.
 
-**Hot** and **Top** may use signed public interactions and distributed evidence, but must:
-
-- disclose scope/coverage;
-- resist repeated or Sybil activity as far as tested;
-- keep network performance/hosting capacity separate from social popularity;
-- apply moderation and personal blocks before ranking;
-- provide a "Why am I seeing this?" explanation;
-- allow a chronological view.
-
-A vote/reaction protocol is not invented in this document. Existing Likes may be reused or extended only after deciding what a community score means under incomplete distributed observations.
+When ranking is added later, it still runs on the owner's node and must keep moderation, personal blocks and network performance separate from popularity.
 
 ## Moderation
 
-ADR 0041's rule is immediate, reviewable moderation:
+ADR 0041's first prototype uses immediate, reversible moderation:
 
-- one steward may hide/remove from the community immediately;
-- a one-steward temporary suspension expires within 24 hours unless appropriately renewed;
-- permanent bans require the community's normal governance quorum;
-- community moderation does not sign an author's Delete;
-- appeals and reversals remain visible in the signed history.
+- the owner or an accepted co-moderator may hide/remove from the community immediately;
+- they may restore it;
+- they may mute someone from the community for at most 24 hours;
+- there is no permanent community ban in F1-F2;
+- community moderation never signs an author's Delete.
+
+Permanent bans, appeals and shared governance wait until real use shows what is needed.
 
 The home node may help stewards with local rules/scripts/AI, but automation is not a steward and cannot count toward quorum. See [doc 19](19-node-assisted-moderation.md).
 
@@ -172,40 +165,36 @@ Joined-community subscriptions are local state unless a later protocol explicitl
 - bounded pagination/catch-up;
 - real phone-to-node journeys.
 
-### F3 — Steward governance and moderation
+### F3 — Learn from real use
 
-- multi-steward acceptance and epochs;
-- immediate moderation and review;
-- permanent-ban quorum;
-- appeals;
-- governance-conflict state;
-- steward app tools.
+Do not prebuild the full governance system. After F1-F2 have real users, measure:
 
-### F4 — Front Page ranking and discovery
+- how often one owner is not enough;
+- how co-moderators disagree;
+- whether 24-hour mutes are enough;
+- what spam/abuse actually reaches communities;
+- which index failures occur in practice.
 
-- Joined/New/Hot/Top/Discover;
-- transparent local ranking;
+Only then decide shared stewardship, permanent bans, appeals and succession.
+
+### F4 — Ranking and discovery, after a ranking ADR
+
+Possible later work:
+
+- Hot/Top/Discover;
 - community search;
-- missing/stale coverage explanations;
-- abuse and Sybil simulations.
-
-### F5 — Recovery and wider release
-
-- precommitted recovery policy;
-- adversarial fork/revocation/recovery tests;
-- independent index failure tests;
-- moderation-flood tests;
-- usability testing with people who did not build OSP.
+- transparent local ranking;
+- abuse/Sybil tests for whichever public signals are chosen.
 
 ## Gate
 
-Front Page is ready for public testing only when:
+The first Front Page prototype is ready for testing when:
 
-- a person can join, read, post and reply from the phone while the node does the network work;
-- public discussions remain readable from verified replicas when their creator or a steward is offline;
-- one steward can act on spam promptly without gaining permanent unilateral ban power;
-- a malicious/stale index cannot silently replace governance;
+- a person can create/join a public community, read, post and reply from the phone while the node does the network work;
+- a community owner can add a co-moderator who explicitly accepts;
+- owner/co-moderators can hide, restore and apply a 24-hour mute;
+- a moderator cannot delete another person's original signed post;
+- a stale/incomplete index is shown as stale/incomplete rather than as an empty community;
 - personal filtering does not become a public moderation action;
-- the app explains incomplete/conflicting state instead of fabricating certainty;
 - resource limits hold under floods;
 - the same signed post may appear in multiple communities without changing authorship.
