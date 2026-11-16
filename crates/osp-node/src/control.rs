@@ -15,7 +15,7 @@ use n0_future::{BufferedStreamExt, StreamExt, stream};
 use osp_proto::{
     Announce, Attachment, BlobRef, Delete, FollowTicket, Note, ObjectId, Payload, Person,
     SignedObject,
-    framing::{read_frame, write_frame},
+    framing::{UPDATE_YOUR_NODE, is_unknown_message, read_frame, write_frame},
     rpc::{
         AttachmentInfo, ClientRequest, ClientResponse, DirectoryStatus, FeedItem, FetchedFile,
         FollowerInfo, IconChange, PeerRecord, PersonInfo, ReplierChoice, ResharedBy, SharedStatus,
@@ -1301,8 +1301,16 @@ pub(crate) async fn serve_unix(core: Arc<Core>, path: PathBuf) -> Result<JoinHan
             let core = core.clone();
             tokio::spawn(async move {
                 let (mut reader, mut writer) = stream.into_split();
-                let Ok(req) = read_frame::<_, ClientRequest>(&mut reader).await else {
-                    return;
+                let req = match read_frame::<_, ClientRequest>(&mut reader).await {
+                    Ok(req) => req,
+                    Err(e) if is_unknown_message(&e) => {
+                        let resp = ClientResponse::Error {
+                            message: UPDATE_YOUR_NODE.to_string(),
+                        };
+                        let _ = write_frame(&mut writer, &resp).await;
+                        return;
+                    }
+                    Err(_) => return,
                 };
                 let resp = core.handle_client(req, Origin::Local).await;
                 let _ = write_frame(&mut writer, &resp).await;

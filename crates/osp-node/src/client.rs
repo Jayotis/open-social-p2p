@@ -21,7 +21,7 @@ use iroh::{
 };
 use osp_proto::{
     BlobHash, PairingTicket,
-    framing::{read_frame_max, write_frame},
+    framing::{UPDATE_YOUR_NODE, is_unknown_message, read_frame_max, write_frame},
     rpc::{
         ClientRequest, ClientResponse, DeviceInfo, IconChange, MAX_PAIR_REQUEST_LEN,
         MAX_REQUEST_LEN,
@@ -144,9 +144,23 @@ async fn serve_stream(
     } else {
         MAX_PAIR_REQUEST_LEN
     };
-    let req: ClientRequest = tokio::time::timeout(IDLE_TIMEOUT, read_frame_max(&mut recv, max))
+    let read = tokio::time::timeout(IDLE_TIMEOUT, read_frame_max(&mut recv, max))
         .await
-        .context("request timed out")??;
+        .context("request timed out")?;
+    let req: ClientRequest = match read {
+        Ok(req) => req,
+        // A newer app asked for something this node doesn't have yet: say
+        // so, rather than close the stream on it.
+        Err(e) if paired && is_unknown_message(&e) => {
+            let resp = ClientResponse::Error {
+                message: UPDATE_YOUR_NODE.to_string(),
+            };
+            write_frame(&mut send, &resp).await?;
+            send.finish()?;
+            return Err(e);
+        }
+        Err(e) => return Err(e),
+    };
     if let ClientRequest::Pair { secret, name } = req {
         let resp = reply(core.pair_device(device, &secret, &name));
         write_frame(&mut send, &resp).await?;
