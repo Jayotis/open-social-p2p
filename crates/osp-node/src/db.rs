@@ -26,6 +26,7 @@ use crate::{events, meet, peers, trust};
 use opened::NOT_OPENED;
 
 mod activity;
+mod blocks;
 mod likes;
 mod opened;
 mod profiles;
@@ -598,6 +599,15 @@ const MIGRATIONS: &[&str] = &[
     CREATE TABLE opened_people (
         actor TEXT PRIMARY KEY
     );",
+    // What the owner blocked (ADR 0042 §5): a person, a post or a file,
+    // by its hex ID. `name` is a person's name when they were blocked.
+    "CREATE TABLE blocks (
+        kind   TEXT NOT NULL,
+        target TEXT NOT NULL,
+        name   TEXT,
+        at_ms  INTEGER NOT NULL,
+        PRIMARY KEY (kind, target)
+    );",
 ];
 
 /// How many days of `served_days` are kept: the summary's 30, and today.
@@ -1151,37 +1161,12 @@ impl Db {
                     gone.push(id);
                 }
             }
-            for id in &gone {
-                tx.execute("DELETE FROM objects WHERE id = ?1", params![id])?;
-                tx.execute("DELETE FROM outbox WHERE id = ?1", params![id])?;
-                tx.execute("DELETE FROM found_posts WHERE id = ?1", params![id])?;
-                tx.execute("DELETE FROM found_blobs WHERE post = ?1", params![id])?;
-                tx.execute("DELETE FROM opened_posts WHERE id = ?1", params![id])?;
-                tx.execute("DELETE FROM refetch WHERE id = ?1", params![id])?;
-                remove_from_search(&tx, id)?;
-                replies::forget_replies_to(&tx, id)?;
-            }
-            for blob in note.iter().flat_map(|n| n.blobs()) {
-                let blob_hex = blob.to_string();
-                let named: Option<i64> = tx
-                    .query_row(
-                        "SELECT 1 FROM refs WHERE ref = ?1 LIMIT 1",
-                        params![blob_hex],
-                        |row| row.get(0),
-                    )
-                    .optional()?;
-                if named.is_some() || deleted.files.contains(&blob) {
-                    continue;
-                }
-                for table in ["blobs", "hosts", "swarm", "declared_sizes"] {
-                    let column = if table == "blobs" { "hash" } else { "blob" };
-                    tx.execute(
-                        &format!("DELETE FROM {table} WHERE {column} = ?1"),
-                        params![blob_hex],
-                    )?;
-                }
-                deleted.files.push(blob);
-            }
+            drop_objects(
+                &tx,
+                &gone,
+                note.iter().flat_map(|n| n.blobs()),
+                &mut deleted.files,
+            )?;
             opened::settle_opened_person(&tx, &d.actor.to_string())?;
         }
         tx.commit()?;
@@ -4221,6 +4206,10 @@ fn profile_is_newer(conn: &Connection, person: &Person) -> Result<bool> {
 
 fn upsert_profile(conn: &Connection, person: &Person, obj: &SignedObject) -> Result<()> {
     let actor = person.actor.to_string();
+    // Someone the owner blocked isn't kept, so no list shows them.
+    if blocks::blocks_account(conn, &actor)? {
+        return Ok(());
+    }
     // Held for another reason now, not only for an opened post. Opening
     // one marks them again after this.
     opened::opened_person_is_kept(conn, &actor)?;
@@ -4257,6 +4246,10 @@ fn insert_object(
     if is_deleted(conn, &obj.id(), payload)? {
         return Ok(false);
     }
+    // The owner blocked it, its author or a file it names (ADR 0042 §5).
+    if blocks::blocks_object(conn, &obj.id(), payload)? {
+        return Ok(false);
+    }
     // Replies are kept apart (ADR 0028), never where a feed, an outbox, search
     // or a directory's lists would find them.
     ensure!(
@@ -4289,6 +4282,56 @@ fn insert_object(
         }
     }
     Ok(n > 0)
+}
+
+/// Takes the objects `gone` from objects, the outbox, the feed, search and
+/// found posts, with replies to them, then each of `blobs` no post kept here
+/// names any more, adding those to `files`: the caller lets them go from the
+/// store. Used by a delete (ADR 0019) and a block (ADR 0042 §5).
+fn drop_objects(
+    tx: &Connection,
+    gone: &[String],
+    blobs: impl IntoIterator<Item = BlobHash>,
+    files: &mut Vec<BlobHash>,
+) -> Result<()> {
+    for id in gone {
+        tx.execute("DELETE FROM objects WHERE id = ?1", params![id])?;
+        tx.execute("DELETE FROM outbox WHERE id = ?1", params![id])?;
+        tx.execute("DELETE FROM found_posts WHERE id = ?1", params![id])?;
+        tx.execute("DELETE FROM found_blobs WHERE post = ?1", params![id])?;
+        tx.execute("DELETE FROM opened_posts WHERE id = ?1", params![id])?;
+        tx.execute("DELETE FROM refetch WHERE id = ?1", params![id])?;
+        remove_from_search(tx, id)?;
+        replies::forget_replies_to(tx, id)?;
+    }
+    for blob in blobs {
+        let blob_hex = blob.to_string();
+        let named: Option<i64> = tx
+            .query_row(
+                "SELECT 1 FROM refs WHERE ref = ?1 LIMIT 1",
+                params![blob_hex],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if named.is_some() || files.contains(&blob) {
+            continue;
+        }
+        forget_blob(tx, &blob_hex)?;
+        files.push(blob);
+    }
+    Ok(())
+}
+
+/// Forgets a file: its record, who hosts it, its swarm and declared size.
+fn forget_blob(tx: &Connection, blob_hex: &str) -> Result<()> {
+    for table in ["blobs", "hosts", "swarm", "declared_sizes"] {
+        let column = if table == "blobs" { "hash" } else { "blob" };
+        tx.execute(
+            &format!("DELETE FROM {table} WHERE {column} = ?1"),
+            params![blob_hex],
+        )?;
+    }
+    Ok(())
 }
 
 /// Whether `id`'s author deleted it, or, for a reshare, the post it points at.
@@ -5695,6 +5738,118 @@ mod tests {
     }
 
     #[test]
+    fn blocking_a_person_drops_what_is_held_of_them_and_keeps_them_out() {
+        use osp_proto::rpc::BlockTarget;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.db");
+        let db = Db::open(&path).unwrap();
+        // Alice's node; Kim is blocked; Bob reshared Kim's post, and so
+        // did Alice.
+        let (alice, kim, bob) = (
+            SecretKey::generate(),
+            SecretKey::generate(),
+            SecretKey::generate(),
+        );
+        let file = BlobHash::from_bytes([7; 32]);
+        let (post, payload) = note_with_media(&kim, &[(file, 10)]);
+        db.insert_object(&post, &payload).unwrap();
+        db.put_blob(&file, BlobClass::Prefetch, 10).unwrap();
+        let (bobs, bobs_payload) = signed_reshare(&bob, &post, kim.public());
+        db.insert_object(&bobs, &bobs_payload).unwrap();
+        let (hers, her_payload) = signed_reshare(&alice, &post, kim.public());
+        db.insert_object(&hers, &her_payload).unwrap();
+        let bobs_own = store_note(&db, &bob, "oak", EARLIER);
+        let (person, profile) = signed_person(&kim, "Kim", None);
+        db.upsert_profile(&person, &profile).unwrap();
+        db.upsert_follow(&kim.public(), &some_addr()).unwrap();
+
+        let kim_block = BlockTarget::Account {
+            actor: kim.public(),
+        };
+        let dropped = db.block(&kim_block, &alice.public()).unwrap();
+        assert_eq!(dropped.posts, 2);
+        assert_eq!(dropped.files, vec![file]);
+        assert_eq!(db.get_object(&post.id()).unwrap(), None);
+        assert_eq!(db.get_object(&bobs.id()).unwrap(), None);
+        assert_eq!(db.blob_class(&file).unwrap(), None);
+        // Alice's own reshare goes only if she deletes it; Bob's own post stays.
+        assert!(db.get_object(&hers.id()).unwrap().is_some());
+        assert!(db.get_object(&bobs_own).unwrap().is_some());
+        assert_eq!(db.profile(&kim.public()).unwrap(), None);
+        assert!(db.follows().unwrap().is_empty());
+        assert_eq!(
+            db.replier_choice(&kim.public()).unwrap(),
+            Some(Choice::Blocked)
+        );
+        let listed = db.blocks().unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].target, kim_block);
+        assert_eq!(listed[0].name.as_deref(), Some("Kim"));
+
+        // Kept out, after a restart too: posts, reshares and the profile.
+        drop(db);
+        let db = Db::open(&path).unwrap();
+        assert!(!db.insert_object(&post, &payload).unwrap());
+        assert!(!db.insert_object(&bobs, &bobs_payload).unwrap());
+        db.upsert_profile(&person, &profile).unwrap();
+        assert_eq!(db.profile(&kim.public()).unwrap(), None);
+        // Blocking again drops nothing more.
+        assert_eq!(
+            db.block(&kim_block, &alice.public()).unwrap(),
+            blocks::Dropped::default()
+        );
+
+        assert!(db.unblock(&kim_block).unwrap());
+        assert!(!db.unblock(&kim_block).unwrap());
+        assert_eq!(db.replier_choice(&kim.public()).unwrap(), None);
+        assert!(db.insert_object(&post, &payload).unwrap());
+        assert!(db.blocks().unwrap().is_empty());
+    }
+
+    #[test]
+    fn blocking_a_post_or_a_file_drops_the_posts_it_names() {
+        use osp_proto::rpc::BlockTarget;
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(&dir.path().join("t.db")).unwrap();
+        let (alice, kim, bob) = (
+            SecretKey::generate(),
+            SecretKey::generate(),
+            SecretKey::generate(),
+        );
+        let me = alice.public();
+
+        // A post, and a reshare of it; Kim's other post stays.
+        let (post, payload) = signed_note(&kim, "oak", EARLIER);
+        db.insert_object(&post, &payload).unwrap();
+        let (bobs, bobs_payload) = signed_reshare(&bob, &post, kim.public());
+        db.insert_object(&bobs, &bobs_payload).unwrap();
+        let other = store_note(&db, &kim, "ash", EARLIER);
+        let dropped = db.block(&BlockTarget::Post { id: post.id() }, &me).unwrap();
+        assert_eq!(dropped.posts, 2);
+        assert_eq!(db.get_object(&post.id()).unwrap(), None);
+        assert!(db.get_object(&other).unwrap().is_some());
+        assert!(!db.insert_object(&bobs, &bobs_payload).unwrap());
+
+        // A file: Kim's post naming it goes, and the file with it, even
+        // though Alice's own post names it too, which stays.
+        let file = BlobHash::from_bytes([9; 32]);
+        let (kims, kims_payload) = note_with_media(&kim, &[(file, 10)]);
+        db.insert_object(&kims, &kims_payload).unwrap();
+        let (own, own_payload) = note_with_media(&alice, &[(file, 10)]);
+        db.insert_object(&own, &own_payload).unwrap();
+        db.put_blob(&file, BlobClass::Own, 10).unwrap();
+        let target = BlockTarget::File { hash: file };
+        let dropped = db.block(&target, &me).unwrap();
+        assert_eq!(dropped.posts, 1);
+        assert_eq!(dropped.files, vec![file]);
+        assert_eq!(db.get_object(&kims.id()).unwrap(), None);
+        assert!(db.get_object(&own.id()).unwrap().is_some());
+        assert_eq!(db.blob_class(&file).unwrap(), None);
+        assert!(db.is_blocked(&target).unwrap());
+        assert!(!db.insert_object(&kims, &kims_payload).unwrap());
+    }
+
+    #[test]
     fn only_a_posts_author_can_delete_it_and_a_reshares_only_the_resharer() {
         let dir = tempfile::tempdir().unwrap();
         let db = Db::open(&dir.path().join("t.db")).unwrap();
@@ -6914,7 +7069,7 @@ mod tests {
                      DROP TABLE universe_places; DROP TABLE served_days;
                      DROP TABLE events; ALTER TABLE declared_sizes DROP COLUMN post;
                      DROP TABLE likes; DROP TABLE sent_likes; DROP TABLE activity;
-                     DROP TABLE opened_posts; DROP TABLE opened_people;
+                     DROP TABLE opened_posts; DROP TABLE opened_people; DROP TABLE blocks;
                      PRAGMA user_version = 24;",
                 )
                 .unwrap();

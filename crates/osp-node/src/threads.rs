@@ -18,7 +18,7 @@ use iroh::{
 use osp_proto::{
     Note, ObjectId, Payload, Person,
     framing::{read_frame_max, write_frame},
-    rpc::{ClientResponse, ReplyInfo, ReplyStatus},
+    rpc::{BlockTarget, ClientResponse, ReplyInfo, ReplyStatus},
     social::{
         MAX_REQUEST_LEN, MAX_THREAD_PAGE, MAX_THREAD_PAGE_BYTES, REPLIES_ALPN, RepliesRequest,
         RepliesResponse, ThreadReply,
@@ -207,6 +207,11 @@ impl Core {
                     );
                     last = reply.seq;
                     match checked_reply(reply, root) {
+                        // Someone the owner blocked isn't shown (ADR 0042 §5).
+                        Ok(info)
+                            if self
+                                .db
+                                .is_blocked(&BlockTarget::Account { actor: info.actor })? => {}
                         Ok(info) => {
                             if info.actor == me {
                                 self.db.sent_reply_seen_published(&info.id)?;

@@ -71,6 +71,13 @@ It shows a QR code. In the app, tap *Scan QR code* and point the camera at it. `
 - **your posts stay public:** it can still read them, as anyone can, through your node or a directory;
 - it's one node, not a person. Someone who makes a new node can follow you again from it.
 
+## Blocking
+
+`osp block account <name or start of their identity>`, `osp block post <ID or OSP code>` or `osp block file <hash>` makes your node drop what it holds of that person, post or file, and stop fetching, serving and showing it. Blocking a person also stops following them and hides their replies on your posts. Nothing is sent: they aren't told.
+
+- Your own posts and reshares stay; delete them to take them down.
+- `osp blocks` lists what you blocked; `osp unblock account …` (or `post`, `file`) undoes one. What was dropped comes back only as your node fetches it again.
+
 ## Updating
 
 **The node:** run the newer release's `install.sh` the same way. It stops the node, replaces `osp` (keeping the old one as `osp.prev`), and starts it again. Your node and its settings are left as they are.

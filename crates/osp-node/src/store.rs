@@ -48,7 +48,7 @@ use iroh_blobs::{
     util::connection_pool::{self, ConnectionPool, PoolConnectError},
 };
 use n0_future::{FuturesUnordered, StreamExt, boxed::BoxStream};
-use osp_proto::{BlobHash, universe::EventWhat};
+use osp_proto::{BlobHash, rpc::BlockTarget, universe::EventWhat};
 use tokio::{
     io::{AsyncWrite, AsyncWriteExt},
     sync::{Notify, OwnedSemaphorePermit, Semaphore, mpsc, watch},
@@ -371,6 +371,11 @@ impl ContentStore {
         declared: u64,
         via: Option<&ConnectionPool>,
     ) -> Result<u64> {
+        // The owner blocked it (ADR 0042 §5): never fetched again.
+        ensure!(
+            !self.db.is_blocked(&BlockTarget::File { hash: *hash })?,
+            "the owner blocked this file"
+        );
         let h = to_hash(hash);
         if let Some(size) = self.size(h).await? {
             // Already here. Hosting it for others still has to fit that quota.
@@ -2079,7 +2084,16 @@ fn note_served(db: &Db, blob: &BlobHash, bytes: u64) -> Result<()> {
 }
 
 fn may_serve(db: &Db, hash: Hash, peer: Option<EndpointId>, share_prefetched: bool) -> Option<u64> {
-    let (class, size) = match db.blob(&to_blob_hash(hash)) {
+    // A blocked file is let go, but one still in the store isn't served.
+    let blob = to_blob_hash(hash);
+    if db
+        .is_blocked(&BlockTarget::File { hash: blob })
+        .unwrap_or(true)
+    {
+        debug!(hash = %hash.fmt_short(), ?peer, "refused a blocked blob");
+        return None;
+    }
+    let (class, size) = match db.blob(&blob) {
         Ok(Some((class, size))) => (Some(class), size),
         Ok(None) => (None, 0),
         Err(e) => {
@@ -2114,6 +2128,21 @@ mod tests {
     use osp_proto::rpc::PeerCounts;
 
     use super::*;
+
+    #[test]
+    fn a_blocked_file_is_never_served() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(&dir.path().join("node.db")).unwrap();
+        let blob = BlobHash::from_bytes([3; 32]);
+        let hash = to_hash(&blob);
+        db.put_blob(&blob, BlobClass::Own, 10).unwrap();
+        assert_eq!(may_serve(&db, hash, None, false), Some(10));
+        let me = SecretKey::generate().public();
+        db.block(&BlockTarget::File { hash: blob }, &me).unwrap();
+        // Recorded again, say by an upload under way: still refused.
+        db.put_blob(&blob, BlobClass::Own, 10).unwrap();
+        assert_eq!(may_serve(&db, hash, None, false), None);
+    }
 
     const KB: u64 = 1 << 10;
     /// Short, so a test sees the collector run.
