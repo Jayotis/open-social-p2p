@@ -66,6 +66,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   ActivityPage dco_decode_activity_page(dynamic raw);
 
   @protected
+  BlockedThing dco_decode_blocked_thing(dynamic raw);
+
+  @protected
   bool dco_decode_bool(dynamic raw);
 
   @protected
@@ -154,6 +157,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   List<ActivityName> dco_decode_list_activity_name(dynamic raw);
+
+  @protected
+  List<BlockedThing> dco_decode_list_blocked_thing(dynamic raw);
 
   @protected
   List<CardLine> dco_decode_list_card_line(dynamic raw);
@@ -410,6 +416,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   ActivityPage sse_decode_activity_page(SseDeserializer deserializer);
 
   @protected
+  BlockedThing sse_decode_blocked_thing(SseDeserializer deserializer);
+
+  @protected
   bool sse_decode_bool(SseDeserializer deserializer);
 
   @protected
@@ -506,6 +515,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   List<ActivityName> sse_decode_list_activity_name(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  List<BlockedThing> sse_decode_list_blocked_thing(
     SseDeserializer deserializer,
   );
 
@@ -799,6 +813,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_encode_activity_page(ActivityPage self, SseSerializer serializer);
 
   @protected
+  void sse_encode_blocked_thing(BlockedThing self, SseSerializer serializer);
+
+  @protected
   void sse_encode_bool(bool self, SseSerializer serializer);
 
   @protected
@@ -921,6 +938,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_list_activity_name(
     List<ActivityName> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_blocked_thing(
+    List<BlockedThing> self,
     SseSerializer serializer,
   );
 

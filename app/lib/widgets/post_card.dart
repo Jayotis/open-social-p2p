@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../blocking.dart';
 import '../format.dart';
 import '../node.dart';
 import '../osp_codes.dart';
@@ -203,6 +204,13 @@ class PostCard extends StatelessWidget {
                   onSelected: (choice) => switch (choice) {
                     'delete' => _delete(context),
                     'report' => openReport(reportUri(post: post.id)),
+                    'hide' => blockPost(context, node, post.id),
+                    'block' => blockPerson(
+                      context,
+                      node,
+                      identity: post.authorIdentity,
+                      name: post.author,
+                    ),
                     _ => sharePost(context, node, post),
                   },
                   itemBuilder: (_) => [
@@ -225,6 +233,26 @@ class PostCard extends StatelessWidget {
                           contentPadding: EdgeInsets.zero,
                         ),
                       ),
+                    if (post.authorIdentity != node.paired?.identity) ...[
+                      PopupMenuItem(
+                        value: 'hide',
+                        enabled: online,
+                        child: const ListTile(
+                          leading: Icon(Icons.visibility_off_outlined),
+                          title: Text('Hide this post'),
+                          contentPadding: EdgeInsets.zero,
+                        ),
+                      ),
+                      PopupMenuItem(
+                        value: 'block',
+                        enabled: online,
+                        child: ListTile(
+                          leading: const Icon(Icons.block),
+                          title: Text('Block ${shownAuthor(post.author)}'),
+                          contentPadding: EdgeInsets.zero,
+                        ),
+                      ),
+                    ],
                     // Not through the node, so it works with the node down.
                     if (post.authorIdentity != node.paired?.identity)
                       const PopupMenuItem(
@@ -398,3 +426,6 @@ class _Badge extends StatelessWidget {
     );
   }
 }
+
+/// An author's name for a menu, or "them" without one.
+String shownAuthor(String name) => name.isEmpty ? 'them' : name;

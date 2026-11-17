@@ -16,9 +16,10 @@ use osp_client::{
     osp_proto::{
         connected,
         rpc::{
-            ActivityEntry, ActivityPerson, ActivityWhat, ClientRequest, ClientResponse, FeedItem,
-            LikeInfo, ProfileInfo, ProfileItemKind, Reached, ReplierChoice, ReplyAnswer, ReplyInfo,
-            ReplyStatus, ResharedBy, SentReplyInfo, SentStatus, TrustInfo,
+            ActivityEntry, ActivityPerson, ActivityWhat, BlockTarget, ClientRequest,
+            ClientResponse, FeedItem, LikeInfo, ProfileInfo, ProfileItemKind, Reached,
+            ReplierChoice, ReplyAnswer, ReplyInfo, ReplyStatus, ResharedBy, SentReplyInfo,
+            SentStatus, TrustInfo,
         },
         social::ReplyPolicy,
         universe, BlobHash, FollowTicket, MediaKind, ObjectId, OspCode, ProfileLink,
@@ -1092,6 +1093,50 @@ impl OspApp {
         Ok(())
     }
 
+    /// Blocks a person (`account`, by identity), a post (`post`, by ID) or
+    /// a file (`file`, by hash) on the node (ADR 0042 §5): it drops what it
+    /// holds of it and won't fetch, serve or show it. Nobody is told.
+    pub async fn block(&self, kind: String, id: String) -> Result<()> {
+        let target = block_target(&kind, &id)?;
+        self.client
+            .request(&ClientRequest::Block { target })
+            .await?;
+        Ok(())
+    }
+
+    /// Undoes a block.
+    pub async fn unblock(&self, kind: String, id: String) -> Result<()> {
+        let target = block_target(&kind, &id)?;
+        self.client
+            .request(&ClientRequest::Unblock { target })
+            .await?;
+        Ok(())
+    }
+
+    /// What the owner blocked, newest first.
+    pub async fn blocks(&self) -> Result<Vec<BlockedThing>> {
+        let ClientResponse::Blocks { blocks } = self.client.request(&ClientRequest::Blocks).await?
+        else {
+            bail!("unexpected reply to Blocks");
+        };
+        Ok(blocks
+            .into_iter()
+            .map(|b| {
+                let (kind, id) = match b.target {
+                    BlockTarget::Account { actor } => ("account", actor.to_string()),
+                    BlockTarget::Post { id } => ("post", id.to_string()),
+                    BlockTarget::File { hash } => ("file", hash.to_string()),
+                };
+                BlockedThing {
+                    kind: kind.into(),
+                    id,
+                    name: b.name,
+                    since: b.since,
+                }
+            })
+            .collect())
+    }
+
     /// Who the node follows, by name.
     pub async fn following(&self) -> Result<Vec<Followed>> {
         let ClientResponse::Following { follows } =
@@ -2067,4 +2112,23 @@ mod tests {
         let three = [by(None, false), by(None, false), by(None, true)];
         assert_eq!(found_resharers(&three), (Some("3 people".into()), false));
     }
+}
+
+/// Something the owner blocked: `kind` is `account`, `post` or `file`.
+pub struct BlockedThing {
+    pub kind: String,
+    pub id: String,
+    /// A person's name, if known when they were blocked.
+    pub name: Option<String>,
+    /// When, as RFC 3339.
+    pub since: String,
+}
+
+fn block_target(kind: &str, id: &str) -> Result<BlockTarget> {
+    Ok(match kind {
+        "account" => BlockTarget::Account { actor: id.parse()? },
+        "post" => BlockTarget::Post { id: id.parse()? },
+        "file" => BlockTarget::File { hash: id.parse()? },
+        other => bail!("can't block a {other}"),
+    })
 }
