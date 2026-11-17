@@ -36,15 +36,15 @@ use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use osp_node::{Config, Home, Node, RelayChoice, plain};
 use osp_proto::{
-    EarlierKeys, EndpointId, ObjectId, PublicKey,
+    BlobHash, EarlierKeys, EndpointId, ObjectId, OspCode, PublicKey,
     connected::{self, Connection, How, SideFrom},
     framing::{read_frame, write_frame},
     machine::MAX_LISTED_POSTS,
     rpc::{
-        ActivityEntry, ActivityPerson, ActivityWhat, ClientRequest, ClientResponse, DeviceInfo,
-        Direction, FeedItem, FollowerInfo, IconChange, PeerRecord, ProfileInfo, ProfileItemKind,
-        Reached, ReplierChoice, ReplyAnswer, ReplyInfo, ReplyStatus, SentReplyInfo, SentStatus,
-        StatusInfo, TrustInfo,
+        ActivityEntry, ActivityPerson, ActivityWhat, BlockTarget, ClientRequest, ClientResponse,
+        DeviceInfo, Direction, FeedItem, FollowerInfo, IconChange, PeerRecord, ProfileInfo,
+        ProfileItemKind, Reached, ReplierChoice, ReplyAnswer, ReplyInfo, ReplyStatus,
+        SentReplyInfo, SentStatus, StatusInfo, TrustInfo,
     },
     social::ReplyPolicy,
 };
@@ -140,6 +140,16 @@ enum Command {
     Follow { ticket: String },
     /// Stop following someone
     Unfollow { actor: PublicKey },
+    /// Block a person, a post or a file: your node drops what it holds of
+    /// it, and won't fetch, serve or show it again. Nothing is sent; they
+    /// aren't told
+    #[command(subcommand)]
+    Block(BlockCommand),
+    /// Undo a block. What it dropped comes back as it's fetched again
+    #[command(subcommand)]
+    Unblock(BlockCommand),
+    /// List what you blocked
+    Blocks,
     /// List who you follow
     Following,
     /// Publish a post, optionally with photos or videos
@@ -380,6 +390,16 @@ enum Command {
     /// being built (ADR 0015)
     #[command(subcommand)]
     Directory(DirectoryCommand),
+}
+
+#[derive(Subcommand)]
+enum BlockCommand {
+    /// A person, by name or the start of their identity
+    Account { who: String },
+    /// A post, by its ID or an OSP code for it
+    Post { post: String },
+    /// A file, by its hash
+    File { hash: BlobHash },
 }
 
 #[derive(Subcommand)]
@@ -668,6 +688,13 @@ async fn main() -> Result<()> {
             Err(_) => ClientRequest::Follow { ticket },
         },
         Command::Unfollow { actor } => ClientRequest::Unfollow { actor },
+        Command::Block(what) => ClientRequest::Block {
+            target: block_target(&home, what).await?,
+        },
+        Command::Unblock(what) => ClientRequest::Unblock {
+            target: block_target(&home, what).await?,
+        },
+        Command::Blocks => ClientRequest::Blocks,
         Command::Following => ClientRequest::Following,
         Command::Devices => ClientRequest::Devices,
         Command::Peers => ClientRequest::Peers,
@@ -1371,6 +1398,23 @@ async fn daemon(home: &Path) -> Result<()> {
     node.shutdown().await
 }
 
+/// What `osp block` or `osp unblock` names.
+async fn block_target(home: &Path, what: BlockCommand) -> Result<BlockTarget> {
+    Ok(match what {
+        BlockCommand::Account { who } => BlockTarget::Account {
+            actor: find_person(home, Some(&who)).await?,
+        },
+        BlockCommand::Post { post } => match post.parse::<ObjectId>() {
+            Ok(id) => BlockTarget::Post { id },
+            Err(_) => match post.parse::<OspCode>() {
+                Ok(OspCode::Post { id, .. }) => BlockTarget::Post { id },
+                _ => bail!("give a post's ID, or an OSP code for a post"),
+            },
+        },
+        BlockCommand::File { hash } => BlockTarget::File { hash },
+    })
+}
+
 /// Shows a pairing QR code, then waits until a new device appears.
 async fn pair(home: &Path, no_qr: bool, json: bool) -> Result<()> {
     let before: Vec<EndpointId> = devices(home).await?.iter().map(|d| d.id).collect();
@@ -1950,6 +1994,27 @@ fn print(resp: ClientResponse, json: bool) -> Result<()> {
             ),
         },
         ClientResponse::Ticket { ticket } => println!("{ticket}"),
+        ClientResponse::Blocked { posts, files } => {
+            println!(
+                "Blocked. Your node dropped {posts} post(s) and {files} file(s) it held, and told nobody."
+            );
+        }
+        ClientResponse::Blocks { blocks } => {
+            if blocks.is_empty() {
+                println!("You haven't blocked anything.");
+            }
+            for b in blocks {
+                let what = match b.target {
+                    BlockTarget::Account { actor } => format!(
+                        "person {}  {actor}",
+                        plain(b.name.as_deref().unwrap_or("(name unknown)"))
+                    ),
+                    BlockTarget::Post { id } => format!("post {id}"),
+                    BlockTarget::File { hash } => format!("file {hash}"),
+                };
+                println!("{what}\n    since {}", b.since);
+            }
+        }
         ClientResponse::Posted { id } => println!("Published {id}"),
         ClientResponse::Following { follows } => {
             if follows.is_empty() {

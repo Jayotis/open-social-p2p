@@ -17,9 +17,9 @@ use osp_proto::{
     SignedObject,
     framing::{UPDATE_YOUR_NODE, is_unknown_message, read_frame, write_frame},
     rpc::{
-        AttachmentInfo, ClientRequest, ClientResponse, DirectoryStatus, FeedItem, FetchedFile,
-        FollowerInfo, IconChange, PeerRecord, PersonInfo, ReplierChoice, ResharedBy, SharedStatus,
-        SideInfo, StatusInfo, VoucherInfo,
+        AttachmentInfo, BlockTarget, ClientRequest, ClientResponse, DirectoryStatus, FeedItem,
+        FetchedFile, FollowerInfo, IconChange, PeerRecord, PersonInfo, ReplierChoice, ResharedBy,
+        SharedStatus, SideInfo, StatusInfo, VoucherInfo,
     },
     social::SocialRequest,
     types::{MAX_ATTACHMENTS, MAX_CONTENT_BYTES},
@@ -215,6 +215,14 @@ impl Core {
                     devices: self.devices()?,
                 }
             }
+            ClientRequest::Block { target } => self.block(&target).await?,
+            ClientRequest::Unblock { target } => {
+                ensure!(self.db.unblock(&target)?, "that isn't blocked");
+                ClientResponse::Ok
+            }
+            ClientRequest::Blocks => ClientResponse::Blocks {
+                blocks: self.db.blocks()?,
+            },
             ClientRequest::Unpair { device } => {
                 ensure!(local, "devices can only be unpaired from the node itself");
                 self.unpair(&device)?;
@@ -536,6 +544,12 @@ impl Core {
             ticket.actor != self.signer.identity(),
             "you can't follow yourself"
         );
+        ensure!(
+            !self.db.is_blocked(&BlockTarget::Account {
+                actor: ticket.actor
+            })?,
+            "you blocked them; unblock them first"
+        );
         check_addr(&ticket.node)?;
         remember(&self.lookup, &ticket.node);
         self.db.upsert_follow(&ticket.actor, &ticket.node)?;
@@ -550,6 +564,27 @@ impl Core {
     /// may have come from a directory and be out of date, so it's only taken as
     /// where to ask: the sync this wakes first asks that node for their profile,
     /// and goes no further unless the node speaks for them (ADR 0014).
+    /// Blocks a person, a post or a file (ADR 0042 §5): what's held of it
+    /// goes, and its files are let go. No message leaves the node.
+    async fn block(&self, target: &BlockTarget) -> Result<ClientResponse> {
+        let me = self.signer.identity();
+        if let BlockTarget::Account { actor } = target {
+            ensure!(*actor != me, "you can't block yourself");
+        }
+        let dropped = self.db.block(target, &me)?;
+        self.store.let_go(&dropped.files).await;
+        info!(
+            ?target,
+            posts = dropped.posts,
+            files = dropped.files.len(),
+            "blocked"
+        );
+        Ok(ClientResponse::Blocked {
+            posts: dropped.posts,
+            files: dropped.files.len(),
+        })
+    }
+
     async fn follow_person(&self, actor: &PublicKey) -> Result<()> {
         self.follow(&self.held_ticket(actor)?).await
     }

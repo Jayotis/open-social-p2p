@@ -139,6 +139,18 @@ pub enum ClientRequest {
     Unpair {
         device: EndpointId,
     },
+    /// Stop fetching, serving and showing a person's posts, a post, or a
+    /// file, and drop what's held of it (ADR 0042 §5). Nothing is sent to
+    /// anyone. Answered with `Blocked`.
+    Block {
+        target: BlockTarget,
+    },
+    /// Undo a block. What it dropped comes back only as it's fetched again.
+    Unblock {
+        target: BlockTarget,
+    },
+    /// What the owner blocked, newest first. Answered with `Blocks`.
+    Blocks,
     /// A new device's first request: the secret from a pairing ticket, and a
     /// name to show for the device (`osp/client/0` only).
     Pair {
@@ -488,6 +500,15 @@ pub enum ClientResponse {
     /// The answer to `People`.
     People {
         people: Vec<PersonInfo>,
+    },
+    /// The answer to `Block`: how many posts and files it dropped here.
+    Blocked {
+        posts: usize,
+        files: usize,
+    },
+    /// The answer to `Blocks`.
+    Blocks {
+        blocks: Vec<BlockInfo>,
     },
     Fetched {
         files: Vec<FetchedFile>,
@@ -1226,6 +1247,28 @@ pub struct DeviceInfo {
     pub paired: String,
     /// Whether it has a live connection to the node right now.
     pub connected: bool,
+}
+
+/// What the owner can block (ADR 0042 §5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum BlockTarget {
+    /// A person: their posts, reshares, replies and profile.
+    Account { actor: PublicKey },
+    /// One post, and reshares of it.
+    Post { id: ObjectId },
+    /// A file, and any post naming it.
+    File { hash: BlobHash },
+}
+
+/// One block, as `Blocks` lists it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BlockInfo {
+    pub target: BlockTarget,
+    /// A person's name, if their profile was held when they were blocked.
+    pub name: Option<String>,
+    /// When, as RFC 3339.
+    pub since: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
