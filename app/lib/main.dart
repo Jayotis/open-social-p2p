@@ -10,6 +10,7 @@ import 'device_key.dart';
 import 'format.dart';
 import 'node.dart';
 import 'screens/pair_screen.dart';
+import 'screens/welcome_screen.dart';
 import 'shell.dart';
 import 'src/rust/api/osp.dart';
 import 'src/rust/frb_generated.dart';
@@ -74,7 +75,9 @@ class PhoneApp extends StatelessWidget {
         null => _StartupError(message: startupError ?? 'unknown error'),
         final node => ListenableBuilder(
           listenable: node,
-          builder: (context, _) => node.paired == null
+          builder: (context, _) => node.termsDue
+              ? WelcomeScreen(node: node)
+              : node.paired == null
               ? PairScreen(node: node)
               : AppShell(node: node),
         ),

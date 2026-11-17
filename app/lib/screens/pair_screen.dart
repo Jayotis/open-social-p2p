@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 
 import '../format.dart';
@@ -111,6 +113,16 @@ class _PairScreenState extends State<PairScreen> {
             const Text(
               'Then scan the QR code it shows. The code works once, for 10 minutes.',
             ),
+            if (Platform.isIOS) ...[
+              const SizedBox(height: 16),
+              const Text(
+                'Your iPhone will ask whether this app may find devices on '
+                'your local network. Allowing it lets the phone reach your '
+                "node straight over your home Wi-Fi; the app doesn't search "
+                "for other devices. If you don't allow it, the app still "
+                'works, just slower at home.',
+              ),
+            ],
             const SizedBox(height: 24),
             FilledButton.icon(
               onPressed: _busy ? null : _scan,
