@@ -13,6 +13,7 @@ import 'format.dart';
 import 'network_events.dart';
 import 'search_lights.dart';
 import 'src/rust/api/osp.dart';
+import 'terms.dart';
 import 'uploads.dart';
 import 'waiting_deletes.dart';
 
@@ -195,6 +196,25 @@ class HomeNode extends ChangeNotifier with WidgetsBindingObserver {
     }
   }
 
+  /// The version of the terms of use this phone agreed to, 0 if none
+  /// (ADR 0042 §3). Kept as a file.
+  int _termsAgreed = 0;
+  File? _termsFile;
+
+  /// Whether the terms must be shown and agreed to before going on: on
+  /// first start, and once after they change.
+  bool get termsDue => _termsAgreed < termsVersion;
+
+  void agreeToTerms() {
+    _termsAgreed = termsVersion;
+    try {
+      _termsFile?.writeAsStringSync('$termsVersion');
+    } on FileSystemException catch (e) {
+      debugPrint('Agreement to the terms not kept: $e');
+    }
+    notifyListeners();
+  }
+
   Timer? _poll;
   StreamSubscription<List<ConnectivityResult>>? _network;
   final Map<String, Future<String>> _urls = {};
@@ -219,6 +239,13 @@ class HomeNode extends ChangeNotifier with WidgetsBindingObserver {
     node._zoomHintShown = File('$dir/zoom-hint-shown');
     node._askedToNotify = File('$dir/asked-to-notify');
     node.zoomHintDue = !node._zoomHintShown!.existsSync();
+    node._termsFile = File('$dir/terms-agreed');
+    try {
+      node._termsAgreed =
+          int.tryParse(node._termsFile!.readAsStringSync().trim()) ?? 0;
+    } on FileSystemException {
+      // Not agreed yet.
+    }
     node.paired = node.app.pairedNode();
     node._showSaved();
     node._hold('', node.app.savedUniverse());

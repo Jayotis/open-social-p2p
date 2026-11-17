@@ -47,7 +47,7 @@ The APK is signed by OSP. Android installs an update over it only when the updat
 
 ## 3. Pairing
 
-The app opens on *Pair with your node*. On your node's computer, run:
+The app first says what it needs, a node, then shows the [terms of use](terms.md) to agree to. Then it opens on *Pair with your node*. On your node's computer, run:
 
 ```sh
 osp pair

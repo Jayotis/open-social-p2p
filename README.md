@@ -81,6 +81,10 @@ The alpha still depends on public relay infrastructure for media paths that cann
 - Only **public content** is in scope for this alpha. Private groups/content require a separate validated design.
 - **ActivityPub is planned, not implemented.** OSP currently uses its own native protocol. A bridge to Mastodon and the wider fediverse is a later stage.
 
+## Terms of use
+
+The official apps and software follow one set of [terms of use](docs/terms.md): post only what you may share, you answer for what you post, and no explicit sexual material, graphic violence, sexual material involving minors, intimate images shared without consent, or threats. The apps show them before pairing ([ADR 0042](docs/decisions/0042-content-rules-reports-and-the-project-hide-list.md)).
+
 ## Evidence, not just plans
 
 Design work in this repository is normally followed by a measurable gate. Examples include:
