@@ -2,7 +2,8 @@ name: Release
 
 # A tag such as v0.1.0 builds `osp` for Linux and makes a draft release with
 # the installer. The maintainer adds directories.txt to the draft (it isn't in
-# the repository: the first directories are temporary, ADR 0015), then
+# the repository: the first directories are temporary, ADR 0015) and the
+# signed APK (scripts/release-apk.sh; the key stays off GitHub), then
 # publishes it.
 on:
   push:
@@ -69,5 +70,5 @@ jobs:
           cd out
           sha256sum osp-linux-*.tar.gz > SHA256SUMS
           gh release create "$TAG" --draft --title "$TAG" \
-            --notes "Add directories.txt before publishing. Install: see docs/install.md." \
+            --notes "Add directories.txt and the APK (scripts/release-apk.sh) before publishing. Install: see docs/install.md." \
             osp-linux-*.tar.gz SHA256SUMS install.sh
