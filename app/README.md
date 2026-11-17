@@ -62,7 +62,7 @@ Building for an iPhone needs a Mac, so the app is built on [Codemagic](https://c
 - `ios-adhoc` makes an **ad hoc** build: signed for the iPhones registered in an Apple Developer account and installed over USB, without the App Store or TestFlight.
 - `ios-testflight` makes an App Store build and uploads it to **TestFlight**, for the account's own testers. It needs the app created in App Store Connect, with its Apple ID in `APP_STORE_APPLE_ID`. Each build's number is one more than the latest in TestFlight. App Store Connect asks once per build whether the app uses encryption, until `ITSAppUsesNonExemptEncryption` in `Info.plist` answers it.
 
-The app runs on iOS 14 and later; keeping a post sending in the background for more than about 30 seconds needs iOS 26.
+The app runs on iOS 15 and later (App Store Connect wants 15 from April 2027); keeping a post sending in the background for more than about 30 seconds needs iOS 26.
 
 To set it up once:
 
