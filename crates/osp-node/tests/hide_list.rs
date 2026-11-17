@@ -217,7 +217,7 @@ fn everything_and_again(everything: &[String]) -> Vec<String> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn without_a_key_the_list_is_never_applied() {
+async fn with_no_key_set_the_projects_key_is_used() {
     let dir = tempfile::tempdir().unwrap();
     let alice = start(dir.path(), "Alice", None).await;
     let project = SecretKey::from_bytes(&[7; 32]);
@@ -234,6 +234,8 @@ async fn without_a_key_the_list_is_never_applied() {
     let ClientResponse::HideList { info } = call(&alice, ClientRequest::HideList).await else {
         panic!("no info")
     };
-    assert!(info.on && info.key.is_none() && info.seq.is_none());
+    // The key built in, not the one that signed this list.
+    assert!(info.on && info.seq.is_none());
+    assert!(info.key.is_some() && info.key != Some(project.public()));
     alice.shutdown().await.unwrap();
 }
