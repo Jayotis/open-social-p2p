@@ -1,6 +1,6 @@
 # ADR 0042: Content rules, reports and the project's hide list
 
-**Status:** Accepted (2026-11-17), the maintainer's choices on scope, reports and the hide list, and the rest as drafted with them. Part of P11 ([ADR 0030](0030-product-alpha-before-testers.md)), needed before outside testers on either phone. Answers [ADR 0019](0019-taking-posts-and-media-down.md)'s open question of who publishes the first list.
+**Status:** Accepted (2026-11-17), the maintainer's choices on scope, reports and the hide list, and the rest as drafted with them. Part of P11 ([ADR 0030](0030-product-alpha-before-testers.md)), needed before outside testers on either phone. Answers [ADR 0019](0019-taking-posts-and-media-down.md)'s open question of who publishes the first list. Step 1 built (2026-11-17): the terms before pairing and Report. Step 2 built (2026-11-17): `osp block` and Block in the app; unblocking a person puts back their profile as it was, so they can be followed again. Step 3's node side built (2026-11-17): the list's format, `osp-list` to sign it, the node's daily fetch over Tor from `https://osp2p.com/lists/hide.json`, applying it on the node and in a directory's lists, and `osp hide-list on|off` ([how to check it](../testing/tor.md#the-hide-list)). The project's key isn't built in yet, so until it is the list is applied only where `[lists] hide_key` names one. Next: the app.
 
 ## Context
 

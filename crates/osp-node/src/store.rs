@@ -376,6 +376,11 @@ impl ContentStore {
             !self.db.is_blocked(&BlockTarget::File { hash: *hash })?,
             "the owner blocked this file"
         );
+        // The project's hide list holds it (§6), while the list is on.
+        ensure!(
+            !self.db.hides_file(hash)?,
+            "the project's hide list holds this file"
+        );
         let h = to_hash(hash);
         if let Some(size) = self.size(h).await? {
             // Already here. Hosting it for others still has to fit that quota.
@@ -2091,6 +2096,11 @@ fn may_serve(db: &Db, hash: Hash, peer: Option<EndpointId>, share_prefetched: bo
         .unwrap_or(true)
     {
         debug!(hash = %hash.fmt_short(), ?peer, "refused a blocked blob");
+        return None;
+    }
+    // Nor one the project's hide list holds, the owner's own included.
+    if db.hides_file(&blob).unwrap_or(true) {
+        debug!(hash = %hash.fmt_short(), ?peer, "refused a blob the hide list holds");
         return None;
     }
     let (class, size) = match db.blob(&blob) {

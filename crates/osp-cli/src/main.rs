@@ -150,6 +150,12 @@ enum Command {
     Unblock(BlockCommand),
     /// List what you blocked
     Blocks,
+    /// The project's hide list (ADR 0042): what it holds isn't fetched,
+    /// served or shown. With no change given, how it stands
+    HideList {
+        #[command(subcommand)]
+        change: Option<HideListCommand>,
+    },
     /// List who you follow
     Following,
     /// Publish a post, optionally with photos or videos
@@ -400,6 +406,17 @@ enum BlockCommand {
     Post { post: String },
     /// A file, by its hash
     File { hash: BlobHash },
+}
+
+#[derive(Subcommand)]
+enum HideListCommand {
+    /// Apply the list again; it's fetched within a minute or so
+    On,
+    /// Stop applying it: everything it hid comes back
+    Off,
+    /// Apply a signed list from a file, as if fetched. It's checked against
+    /// the same key
+    Apply { file: PathBuf },
 }
 
 #[derive(Subcommand)]
@@ -695,6 +712,15 @@ async fn main() -> Result<()> {
             target: block_target(&home, what).await?,
         },
         Command::Blocks => ClientRequest::Blocks,
+        Command::HideList { change } => match change {
+            None => ClientRequest::HideList,
+            Some(HideListCommand::On) => ClientRequest::SetHideList { on: true },
+            Some(HideListCommand::Off) => ClientRequest::SetHideList { on: false },
+            Some(HideListCommand::Apply { file }) => ClientRequest::ApplyHideList {
+                list: std::fs::read_to_string(&file)
+                    .with_context(|| format!("reading {}", file.display()))?,
+            },
+        },
         Command::Following => ClientRequest::Following,
         Command::Devices => ClientRequest::Devices,
         Command::Peers => ClientRequest::Peers,
@@ -2015,6 +2041,23 @@ fn print(resp: ClientResponse, json: bool) -> Result<()> {
                 println!("{what}\n    since {}", b.since);
             }
         }
+        ClientResponse::HideList { info } => match (info.on, info.key) {
+            (_, None) => println!(
+                "The project's hide list isn't applied: this build has no key to check it by."
+            ),
+            (false, Some(_)) => println!(
+                "The project's hide list is off: nothing it holds is hidden here. `osp hide-list on` applies it again."
+            ),
+            (true, Some(key)) => {
+                println!("The project's hide list is on (key {}).", key.fmt_short());
+                match (info.seq, info.entries, info.published, info.fetched) {
+                    (Some(seq), Some(entries), Some(published), Some(fetched)) => println!(
+                        "List number {seq}, signed {published}: {entries} entries in force. Last fetched {fetched}."
+                    ),
+                    _ => println!("No list fetched yet: it comes through Tor, once a day."),
+                }
+            }
+        },
         ClientResponse::Posted { id } => println!("Published {id}"),
         ClientResponse::Following { follows } => {
             if follows.is_empty() {

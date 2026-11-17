@@ -151,6 +151,20 @@ pub enum ClientRequest {
     },
     /// What the owner blocked, newest first. Answered with `Blocks`.
     Blocks,
+    /// The project's hide list as this node applies it (ADR 0042 §6).
+    /// Answered with `HideList`.
+    HideList,
+    /// Turn the hide list on or off. Off, everything it hid comes back; on,
+    /// it's fetched again soon.
+    SetHideList {
+        on: bool,
+    },
+    /// Apply a signed hide list given by hand, as if fetched: it's checked
+    /// against the same key (from the node itself only). Answered with
+    /// `HideList`.
+    ApplyHideList {
+        list: String,
+    },
     /// A new device's first request: the secret from a pairing ticket, and a
     /// name to show for the device (`osp/client/0` only).
     Pair {
@@ -509,6 +523,10 @@ pub enum ClientResponse {
     /// The answer to `Blocks`.
     Blocks {
         blocks: Vec<BlockInfo>,
+    },
+    /// The answer to `HideList`.
+    HideList {
+        info: HideListInfo,
     },
     Fetched {
         files: Vec<FetchedFile>,
@@ -1259,6 +1277,22 @@ pub enum BlockTarget {
     Post { id: ObjectId },
     /// A file, and any post naming it.
     File { hash: BlobHash },
+}
+
+/// The project's hide list on this node (ADR 0042 §6).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HideListInfo {
+    /// Whether the owner has it on.
+    pub on: bool,
+    /// Whether this build has a key to check it by. Without one it's never
+    /// applied.
+    pub key: Option<PublicKey>,
+    /// The list applied, if one is: its number, when the project signed it,
+    /// its entries in force, and when it was last fetched (RFC 3339).
+    pub seq: Option<u64>,
+    pub published: Option<String>,
+    pub entries: Option<u64>,
+    pub fetched: Option<String>,
 }
 
 /// One block, as `Blocks` lists it.

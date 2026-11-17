@@ -18,6 +18,7 @@ mod directory;
 mod endpoints;
 mod events;
 mod health;
+mod hide_list;
 mod home;
 mod hosting;
 mod keys;

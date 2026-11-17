@@ -223,6 +223,23 @@ impl Core {
             ClientRequest::Blocks => ClientResponse::Blocks {
                 blocks: self.db.blocks()?,
             },
+            ClientRequest::HideList => ClientResponse::HideList {
+                info: self.hide_list_info()?,
+            },
+            ClientRequest::SetHideList { on } => {
+                self.set_hide_list(on)?;
+                ClientResponse::Ok
+            }
+            ClientRequest::ApplyHideList { list } => {
+                ensure!(
+                    local,
+                    "a hide list is only given by hand on the node itself"
+                );
+                self.apply_hide_list(list.as_bytes()).await?;
+                ClientResponse::HideList {
+                    info: self.hide_list_info()?,
+                }
+            }
             ClientRequest::Unpair { device } => {
                 ensure!(local, "devices can only be unpaired from the node itself");
                 self.unpair(&device)?;

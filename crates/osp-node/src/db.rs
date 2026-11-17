@@ -27,6 +27,7 @@ use opened::NOT_OPENED;
 
 mod activity;
 mod blocks;
+mod hide;
 mod likes;
 mod opened;
 mod profiles;
@@ -34,6 +35,7 @@ mod replies;
 mod sent_replies;
 mod universe;
 mod vouches;
+pub use hide::Applied as HideApplied;
 pub(crate) use likes::{HeldLike, SentLike};
 pub(crate) use replies::{Choice, Held, ReceivedReply, ReplyRow};
 pub(crate) use sent_replies::SentReply;
@@ -611,6 +613,32 @@ const MIGRATIONS: &[&str] = &[
     // A person's signed profile as it was when they were blocked, out of
     // every list, so unblocking puts it back and they can be followed again.
     "ALTER TABLE blocks ADD COLUMN profile TEXT;",
+    // The project's hide list (ADR 0042 §6): its entries in force, each a
+    // hash of a post's ID or a file's hash; the list as last applied, signed,
+    // for phones, and the owner, whose own posts it never hides; and the posts
+    // it hides, kept out of every table that shows them, for a retraction.
+    "CREATE TABLE hide_list (
+        kind TEXT NOT NULL,
+        h    TEXT NOT NULL,
+        PRIMARY KEY (kind, h)
+    );
+    CREATE TABLE hide_state (
+        one        INTEGER PRIMARY KEY CHECK (one = 1),
+        key        TEXT NOT NULL,
+        seq        INTEGER NOT NULL,
+        published  TEXT NOT NULL,
+        entries    INTEGER NOT NULL,
+        fetched_ms INTEGER NOT NULL,
+        signed     TEXT NOT NULL,
+        owner      TEXT NOT NULL
+    );
+    CREATE TABLE hidden_objects (
+        id          TEXT PRIMARY KEY,
+        kind        TEXT NOT NULL,
+        actor       TEXT NOT NULL,
+        signed      TEXT NOT NULL,
+        received_ms INTEGER NOT NULL
+    );",
 ];
 
 /// How many days of `served_days` are kept: the summary's 30, and today.
@@ -2133,9 +2161,20 @@ impl Db {
             if !entries.is_empty() && bytes > MAX_LISTING_PAGE_BYTES {
                 break;
             }
+            let mut item: ListingItem = serde_json::from_str(&item).context("corrupt listing")?;
+            // What the hide list holds isn't given out (ADR 0042 §6).
+            if let ListingItem::Person {
+                posts, reshares, ..
+            } = &mut item
+            {
+                posts.retain(|p| !hide_held_object(&conn, p));
+                reshares.retain(|r| {
+                    !hide_held_object(&conn, &r.announce) && !hide_held_object(&conn, &r.post)
+                });
+            }
             entries.push(ListingEntry {
                 seq: row.get::<_, i64>(0)? as u64,
-                item: serde_json::from_str(&item).context("corrupt listing")?,
+                item,
             });
         }
         Ok((entries, latest.unwrap_or(0) as u64))
@@ -4259,6 +4298,13 @@ fn insert_object(
         !matches!(payload, Payload::Note(note) if note.is_reply()),
         "a reply isn't stored as a post"
     );
+    // The project's hide list holds it (ADR 0042 §6): kept aside, for a
+    // retraction to bring back. After the check above, so a reply, which a
+    // retraction couldn't put back here, is never kept aside.
+    if hide::hides_object(conn, &obj.id(), payload)? {
+        hide::keep_aside(conn, obj, payload, received)?;
+        return Ok(false);
+    }
     // Clamp author-claimed time so a future-dated post can't pin itself to the top.
     let published = osp_proto::parse_rfc3339_ms(payload.published())
         .unwrap_or(received)
@@ -4323,6 +4369,13 @@ fn drop_objects(
         files.push(blob);
     }
     Ok(())
+}
+
+/// Whether the hide list holds `obj`, which a directory is about to give
+/// out. One that doesn't verify is left to the reader to refuse.
+fn hide_held_object(conn: &Connection, obj: &SignedObject) -> bool {
+    obj.verify()
+        .is_ok_and(|p| hide::hides_object(conn, &obj.id(), &p).unwrap_or(false))
 }
 
 /// Forgets a file: its record, who hosts it, its swarm and declared size.
@@ -7073,6 +7126,7 @@ mod tests {
                      DROP TABLE events; ALTER TABLE declared_sizes DROP COLUMN post;
                      DROP TABLE likes; DROP TABLE sent_likes; DROP TABLE activity;
                      DROP TABLE opened_posts; DROP TABLE opened_people; DROP TABLE blocks;
+                     DROP TABLE hide_list; DROP TABLE hide_state; DROP TABLE hidden_objects;
                      PRAGMA user_version = 24;",
                 )
                 .unwrap();

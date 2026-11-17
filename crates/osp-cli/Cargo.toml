@@ -11,6 +11,11 @@ repository.workspace = true
 name = "osp"
 path = "src/main.rs"
 
+# Makes and signs the project's hide list (ADR 0042 §6), where the list key is.
+[[bin]]
+name = "osp-list"
+path = "src/list.rs"
+
 [dependencies]
 osp-proto.workspace = true
 osp-node.workspace = true

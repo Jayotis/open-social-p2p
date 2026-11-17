@@ -144,6 +144,26 @@ accept = true    # dial a machine introduced sooner
 
 Over real Tor, one of three test nodes, meeting the other two, built **55 circuits a day for its machine name,** counted from its Tor's own circuit events for a day from 2 minutes after it started (2026-11-07): 21 to reach other machine names, and 34 for its own, 27 of them to keep its introduction points. 13 came in the first hour, while it met the others. That's a floor: with two machines to meet it has a few conversations a day, so most of it is what an onion service costs standing still. A node in a larger network, dialling 6 new machines an hour, builds more, as the simulator estimates. Tor's own circuits on that node, about 2,100 a day (publishing descriptors, vanguards, timing tests), aren't named for a service, so what the machine name adds to them isn't known.
 
+## The hide list
+
+The project's hide list ([ADR 0042 §6](../decisions/0042-content-rules-reports-and-the-project-hide-list.md#6-the-projects-hide-list)) comes through the node's Tor once a day, from `https://osp2p.com/lists/hide.json`. Until the project's key is built in, name a key to test with in `config.toml`, and restart the node:
+
+```toml
+[lists]
+hide_key = "<the public key osp-list keygen printed>"
+```
+
+Make a list, with a key kept off the node:
+
+```sh
+osp-list keygen --out /media/stick/list.key
+osp-list add post <a post your node holds> --key /media/stick/list.key --list hide.json
+```
+
+Then `osp hide-list apply hide.json` applies it as a fetch would: the post leaves Home, search and the Universe, and `osp hide-list` gives the list's number and entries. A list signed by another key is refused. `osp-list retract post <id> …` and applying again bring the post back, if you follow its author; `osp hide-list off` brings back everything the list hid. Your own posts are never hidden on your own node, though a listed file isn't served, yours included.
+
+The site sees a Tor exit, never the node. `osp hide-list` says when the list was last fetched; a fetch that failed is in the log (`journalctl --user -u osp`) and tried again an hour later.
+
 ## Check it recovers
 
 With a ping every few seconds from one node to the other, stop either node's Tor, as a crash would. Find it by its settings file, so the system's Tor, if it runs, is left alone:

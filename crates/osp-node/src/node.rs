@@ -319,6 +319,11 @@ pub(crate) struct Core {
     pub read_directories_now: Notify,
     /// When the last read of directories started, however it was started.
     pub directories_read_at: Mutex<Option<Instant>>,
+    /// Whether the project's hide list is applied, as the owner last set it
+    /// (ADR 0042 §6).
+    pub hide_list_on: std::sync::atomic::AtomicBool,
+    /// Wakes the hide list's fetch, when it's turned on.
+    pub fetch_hide_list_now: Notify,
     /// Endpoints for fetching found posts' media unseen (ADR 0024).
     pub viewing: Viewing,
     /// Held while the owner's side is gathered (ADR 0029), one at a time.
@@ -610,6 +615,7 @@ impl Node {
         );
 
         let (prefetch_later, later) = mpsc::channel(sync::MAX_WAITING);
+        let hide_on = config.lists.hide;
         let core = Arc::new(Core {
             home,
             config,
@@ -662,6 +668,8 @@ impl Node {
             reading_directories: tokio::sync::Mutex::new(HashSet::new()),
             read_directories_now: Notify::new(),
             directories_read_at: Mutex::new(None),
+            hide_list_on: std::sync::atomic::AtomicBool::new(hide_on),
+            fetch_hide_list_now: Notify::new(),
             viewing: Viewing::new(sim.viewing_reuse, sim.viewing_life),
             gathering: tokio::sync::Mutex::new(()),
             trying_replies: Default::default(),
@@ -759,6 +767,7 @@ impl Node {
         let vouches = tokio::spawn(vouches::vouches_loop(core.clone()));
         let side = tokio::spawn(vouches::gather_loop(core.clone()));
         let opened = tokio::spawn(crate::opened::sweep_loop(core.clone()));
+        let hide_list = tokio::spawn(crate::hide_list::fetch_loop(core.clone()));
         let mut tasks = vec![
             serving_rules,
             sync_loop,
@@ -772,6 +781,7 @@ impl Node {
             vouches,
             side,
             opened,
+            hide_list,
         ];
         tasks.extend(directory_tasks);
         if core.config.network.relay != RelayChoice::Disabled {

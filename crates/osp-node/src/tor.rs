@@ -137,6 +137,11 @@ impl TorSide {
         self.tor.wait_dialled(deadline).await
     }
 
+    /// Tor's SOCKS port, once Tor has said where it is.
+    pub fn socks(&self) -> Option<std::net::SocketAddr> {
+        self.tor.socks()
+    }
+
     /// Waits until Tor is ready to carry messages.
     pub async fn ready(&self) {
         let mut state = self.tor.state();

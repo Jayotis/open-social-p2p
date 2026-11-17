@@ -3043,11 +3043,14 @@ dependencies = [
  "n0-watcher",
  "noq-udp",
  "ring",
+ "rustls",
  "sha3",
  "tempfile",
  "tokio",
+ "tokio-rustls",
  "tracing",
  "tracing-subscriber",
+ "webpki-roots",
 ]
 
 [[package]]
