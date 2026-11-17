@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 
 import '../format.dart';
 import '../node.dart';
+import '../report.dart';
 import '../osp_codes.dart';
 import '../src/rust/api/osp.dart';
 import '../theme.dart';
@@ -247,6 +248,21 @@ class _ProfileScreenState extends State<ProfileScreen> {
           ),
           icon: const Icon(Icons.share),
         ),
+        if (!profile.own)
+          PopupMenuButton<String>(
+            tooltip: 'More',
+            onSelected: (_) => openReport(reportUri(account: profile.identity)),
+            itemBuilder: (_) => const [
+              PopupMenuItem(
+                value: 'report',
+                child: ListTile(
+                  leading: Icon(Icons.flag_outlined),
+                  title: Text('Report'),
+                  contentPadding: EdgeInsets.zero,
+                ),
+              ),
+            ],
+          ),
       ],
       flexibleSpace: FlexibleSpaceBar(
         collapseMode: CollapseMode.pin,

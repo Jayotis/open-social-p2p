@@ -22,7 +22,3 @@ const termsOfUse = [
   'Your node is yours. There\'s no account with the project, and the '
       'project can\'t change what\'s on your node.',
 ];
-
-/// Where the full guide to installing a node is. Opened, not shown.
-const installGuideUrl =
-    'https://github.com/Jayotis/open-social-p2p/blob/main/docs/install.md'; // not shown

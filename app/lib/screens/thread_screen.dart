@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 
 import '../format.dart';
 import '../node.dart';
+import '../report.dart';
 import '../src/rust/api/osp.dart';
 import '../widgets/like_button.dart';
 import 'likers_screen.dart';
@@ -565,6 +566,7 @@ class _ReplyCard extends StatelessWidget {
         ),
       if (own && !mine)
         const PopupMenuItem(value: 'block', child: Text('Block them')),
+      if (!mine) const PopupMenuItem(value: 'report', child: Text('Report')),
     ];
     return Card(
       child: Opacity(
@@ -594,6 +596,7 @@ class _ReplyCard extends StatelessWidget {
                         'delete' => onDelete(),
                         'hide' => onHide(true),
                         'show' => onHide(false),
+                        'report' => openReport(reportUri(reply: reply.id)),
                         _ => onBlock(),
                       },
                       itemBuilder: (_) => actions,

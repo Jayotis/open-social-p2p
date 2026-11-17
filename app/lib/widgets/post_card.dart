@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../format.dart';
 import '../node.dart';
 import '../osp_codes.dart';
+import '../report.dart';
 import '../screens/image_screen.dart';
 import '../screens/player_screen.dart';
 import '../screens/profile_screen.dart';
@@ -199,25 +200,38 @@ class PostCard extends StatelessWidget {
                 PopupMenuButton<String>(
                   tooltip: 'More',
                   icon: Icon(Icons.more_horiz, color: quiet?.color),
-                  enabled: online,
-                  onSelected: (choice) => choice == 'delete'
-                      ? _delete(context)
-                      : sharePost(context, node, post),
+                  onSelected: (choice) => switch (choice) {
+                    'delete' => _delete(context),
+                    'report' => openReport(reportUri(post: post.id)),
+                    _ => sharePost(context, node, post),
+                  },
                   itemBuilder: (_) => [
-                    const PopupMenuItem(
+                    PopupMenuItem(
                       value: 'share',
-                      child: ListTile(
+                      enabled: online,
+                      child: const ListTile(
                         leading: Icon(Icons.share),
                         title: Text('Share'),
                         contentPadding: EdgeInsets.zero,
                       ),
                     ),
                     if (post.deletable != null)
-                      const PopupMenuItem(
+                      PopupMenuItem(
                         value: 'delete',
-                        child: ListTile(
+                        enabled: online,
+                        child: const ListTile(
                           leading: Icon(Icons.delete_outline),
                           title: Text('Delete'),
+                          contentPadding: EdgeInsets.zero,
+                        ),
+                      ),
+                    // Not through the node, so it works with the node down.
+                    if (post.authorIdentity != node.paired?.identity)
+                      const PopupMenuItem(
+                        value: 'report',
+                        child: ListTile(
+                          leading: Icon(Icons.flag_outlined),
+                          title: Text('Report'),
                           contentPadding: EdgeInsets.zero,
                         ),
                       ),
