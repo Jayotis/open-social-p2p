@@ -900,11 +900,15 @@ impl Core {
         let mut actors = vec![self.signer.identity()];
         actors.extend(self.db.follows()?.into_iter().map(|f| f.actor));
         let mut items = Vec::new();
-        for obj in self.db.feed(&actors, limit)? {
+        // A post and its reshares are one item, so ask for more rows than
+        // items.
+        for obj in self.db.feed(&actors, limit.saturating_mul(2))? {
             if let Some(item) = self.feed_item(&obj).await? {
                 items.push(item);
             }
         }
+        let mut items = one_per_post(items);
+        items.truncate(limit as usize);
         Ok(items)
     }
 
@@ -1335,6 +1339,32 @@ fn error_text(e: &anyhow::Error) -> String {
         text.push_str(&cause);
     }
     text
+}
+
+/// Home shows each post once. Kim's post, reshared by Jimmy whom the owner
+/// follows too, comes in twice: kept where the newest of them is, saying
+/// who reshared it, and what the owner may delete from either.
+fn one_per_post(items: Vec<FeedItem>) -> Vec<FeedItem> {
+    let mut kept: Vec<FeedItem> = Vec::with_capacity(items.len());
+    let mut at: HashMap<ObjectId, usize> = HashMap::new();
+    for item in items {
+        match at.get(&item.id) {
+            Some(&i) => {
+                let first = &mut kept[i];
+                if first.reshared_by.is_none() {
+                    first.reshared_by = item.reshared_by;
+                }
+                if first.deletable.is_none() {
+                    first.deletable = item.deletable;
+                }
+            }
+            None => {
+                at.insert(item.id, kept.len());
+                kept.push(item);
+            }
+        }
+    }
+    kept
 }
 
 #[cfg(test)]

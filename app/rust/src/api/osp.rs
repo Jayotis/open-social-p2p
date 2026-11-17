@@ -18,7 +18,7 @@ use osp_client::{
         rpc::{
             ActivityEntry, ActivityPerson, ActivityWhat, ClientRequest, ClientResponse, FeedItem,
             LikeInfo, ProfileInfo, ProfileItemKind, Reached, ReplierChoice, ReplyAnswer, ReplyInfo,
-            ReplyStatus, SentReplyInfo, SentStatus, TrustInfo,
+            ReplyStatus, ResharedBy, SentReplyInfo, SentStatus, TrustInfo,
         },
         social::ReplyPolicy,
         universe, BlobHash, FollowTicket, MediaKind, ObjectId, OspCode, ProfileLink,
@@ -1723,7 +1723,7 @@ fn post(item: FeedItem) -> Post {
             Some(by.name.unwrap_or_else(|| by.actor.fmt_short().to_string())),
             by.hosting,
         ),
-        None => (None, false),
+        None => found_resharers(&item.found_reshares),
     };
     Post {
         id: item.id.to_string(),
@@ -1756,6 +1756,26 @@ fn post(item: FeedItem) -> Post {
         opened: item.opened,
         regions: item.regions,
     }
+}
+
+/// Who reshared a post found through a directory (ADR 0025), for the card's
+/// "Reshared by" line: the newest one with a name, and how many others, so
+/// a newcomer sees who passed it on. A post nobody reshared gets nothing.
+fn found_resharers(found: &[ResharedBy]) -> (Option<String>, bool) {
+    if found.is_empty() {
+        return (None, false);
+    }
+    let others = found.len() - 1;
+    // "who hosts a copy" reads right only for one.
+    let hosts = others == 0 && found[0].hosting;
+    let text = match found.iter().find_map(|r| r.name.as_deref()) {
+        Some(name) if others == 0 => name.to_string(),
+        Some(name) if others == 1 => format!("{name} and 1 other"),
+        Some(name) => format!("{name} and {others} others"),
+        None if others == 0 => "1 person".to_string(),
+        None => format!("{} people", found.len()),
+    };
+    (Some(text), hosts)
 }
 
 /// A new device key, as 64 hex digits, for the app to keep in the phone's
@@ -2011,5 +2031,40 @@ fn found_person(p: osp_client::osp_proto::rpc::PersonInfo) -> FoundPerson {
         found_through: p.found_through,
         newest: p.newest,
         regions: p.regions,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use osp_client::SecretKey;
+
+    use super::*;
+
+    fn by(name: Option<&str>, hosting: bool) -> ResharedBy {
+        let actor = SecretKey::from_bytes(&[name.map_or(0, |n| n.len() as u8); 32]).public();
+        ResharedBy {
+            actor,
+            name: name.map(String::from),
+            announce: ObjectId::of(b"reshare"),
+            published: String::new(),
+            hosting,
+        }
+    }
+
+    #[test]
+    fn a_found_post_says_who_reshared_it() {
+        assert_eq!(found_resharers(&[]), (None, false));
+        assert_eq!(
+            found_resharers(&[by(Some("Jimmy"), true)]),
+            (Some("Jimmy".into()), true)
+        );
+        // The newest with a name, and how many others; hosting only for one.
+        let two = [by(None, true), by(Some("Jimmy"), false)];
+        assert_eq!(
+            found_resharers(&two),
+            (Some("Jimmy and 1 other".into()), false)
+        );
+        let three = [by(None, false), by(None, false), by(None, true)];
+        assert_eq!(found_resharers(&three), (Some("3 people".into()), false));
     }
 }
