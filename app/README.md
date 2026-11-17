@@ -55,6 +55,17 @@ Back up the keystore and its password somewhere other than this computer. Androi
 
 To check which key signed an APK: `apksigner verify --print-certs build/app/outputs/flutter-apk/app-release.apk` (`apksigner` is in the Android SDK's `build-tools`).
 
+### The APK in a release
+
+The APK in a release is built and uploaded from the maintainer's computer, after the Release workflow has made the draft for a tag:
+
+```sh
+git checkout v0.1.0-alpha.6          # the release's tag, in a clean checkout
+scripts/release-apk.sh v0.1.0-alpha.6
+```
+
+The script builds the APK with the tag as its version name and the number of commits as its version code, so each release's code is higher than the last one's (Android won't install an update over a higher code). It refuses an APK not signed with OSP's release key, then uploads it to the draft as `osp-android-arm64.apk` and adds its line to the draft's `SHA256SUMS`. Run it again to replace both. `--no-upload` builds and checks without uploading.
+
 ## iPhone
 
 Building for an iPhone needs a Mac, so the app is built on [Codemagic](https://codemagic.io)'s, by the workflows in [`codemagic.yaml`](../codemagic.yaml), started by hand:
