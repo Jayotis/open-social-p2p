@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 
 import '../format.dart';
 import '../node.dart';
+import '../blocking.dart';
 import '../report.dart';
 import '../osp_codes.dart';
 import '../src/rust/api/osp.dart';
@@ -251,8 +252,28 @@ class _ProfileScreenState extends State<ProfileScreen> {
         if (!profile.own)
           PopupMenuButton<String>(
             tooltip: 'More',
-            onSelected: (_) => openReport(reportUri(account: profile.identity)),
+            onSelected: (choice) async {
+              if (choice == 'report') {
+                await openReport(reportUri(account: profile.identity));
+                return;
+              }
+              final blocked = await blockPerson(
+                context,
+                widget.node,
+                identity: profile.identity,
+                name: profile.name,
+              );
+              if (blocked && context.mounted) Navigator.of(context).pop();
+            },
             itemBuilder: (_) => const [
+              PopupMenuItem(
+                value: 'block',
+                child: ListTile(
+                  leading: Icon(Icons.block),
+                  title: Text('Block'),
+                  contentPadding: EdgeInsets.zero,
+                ),
+              ),
               PopupMenuItem(
                 value: 'report',
                 child: ListTile(

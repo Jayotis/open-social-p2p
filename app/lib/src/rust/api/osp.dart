@@ -6,7 +6,7 @@
 import '../frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `activity_item`, `found_person`, `invite_for`, `liker`, `node_info`, `path_hop`, `post`, `profile_of`, `progress`, `reply_info`, `report_to`, `run_post`, `sent_reply`, `shared_code`, `trust_entry`, `universe_event`, `universe`
+// These functions are ignored because they are not marked as `pub`: `activity_item`, `block_target`, `found_person`, `found_resharers`, `invite_for`, `liker`, `node_info`, `path_hop`, `post`, `profile_of`, `progress`, `reply_info`, `report_to`, `run_post`, `sent_reply`, `shared_code`, `trust_entry`, `universe_event`, `universe`
 // These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`
 
 /// A new device key, as 64 hex digits, for the app to keep in the phone's
@@ -53,6 +53,14 @@ abstract class OspApp implements RustOpaqueInterface {
   /// Asks someone the node follows to trust the owner, with a note saying
   /// who they are. Their node never says whether it did.
   Future<void> askTrust({required String identity, required String note});
+
+  /// Blocks a person (`account`, by identity), a post (`post`, by ID) or
+  /// a file (`file`, by hash) on the node (ADR 0042 §5): it drops what it
+  /// holds of it and won't fetch, serve or show it. Nobody is told.
+  Future<void> block({required String kind, required String id});
+
+  /// What the owner blocked, newest first.
+  Future<List<BlockedThing>> blocks();
 
   /// An OSP code for someone (ADR 0039 §4): the owner, or anyone whose
   /// profile the node holds.
@@ -254,6 +262,9 @@ abstract class OspApp implements RustOpaqueInterface {
   /// trusted.
   Future<TrustList> trustList();
 
+  /// Undoes a block.
+  Future<void> unblock({required String kind, required String id});
+
   /// Stops following someone, whether or not the node has reached theirs.
   Future<void> unfollow({required String identity});
 
@@ -428,6 +439,39 @@ class ActivityPage {
           entries == other.entries &&
           unread == other.unread &&
           more == other.more;
+}
+
+/// Something the owner blocked: `kind` is `account`, `post` or `file`.
+class BlockedThing {
+  final String kind;
+  final String id;
+
+  /// A person's name, if known when they were blocked.
+  final String? name;
+
+  /// When, as RFC 3339.
+  final String since;
+
+  const BlockedThing({
+    required this.kind,
+    required this.id,
+    this.name,
+    required this.since,
+  });
+
+  @override
+  int get hashCode =>
+      kind.hashCode ^ id.hashCode ^ name.hashCode ^ since.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BlockedThing &&
+          runtimeType == other.runtimeType &&
+          kind == other.kind &&
+          id == other.id &&
+          name == other.name &&
+          since == other.since;
 }
 
 /// A line between two points, by their place in `points`.

@@ -5,6 +5,7 @@ import '../theme.dart';
 import '../widgets/person_avatar.dart';
 import '../widgets/sky_band.dart';
 import 'advanced_screen.dart';
+import 'blocked_screen.dart';
 import 'node_summary_screen.dart';
 import 'people_screen.dart';
 import 'profile_screen.dart';
@@ -114,6 +115,11 @@ class YouTab extends StatelessWidget {
             _ => 'Your home computer',
           }),
           onTap: () => open(NodeSummaryScreen(node: node, open: open)),
+        ),
+        ListTile(
+          leading: const Icon(Icons.block),
+          title: const Text('Blocked'),
+          onTap: () => open(BlockedScreen(node: node)),
         ),
         const Divider(),
         ListTile(
