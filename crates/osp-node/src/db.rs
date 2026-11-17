@@ -608,6 +608,9 @@ const MIGRATIONS: &[&str] = &[
         at_ms  INTEGER NOT NULL,
         PRIMARY KEY (kind, target)
     );",
+    // A person's signed profile as it was when they were blocked, out of
+    // every list, so unblocking puts it back and they can be followed again.
+    "ALTER TABLE blocks ADD COLUMN profile TEXT;",
 ];
 
 /// How many days of `served_days` are kept: the summary's 30, and today.

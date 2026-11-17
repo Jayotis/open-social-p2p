@@ -16,7 +16,7 @@ use osp_proto::{
 };
 use rusqlite::{Connection, OptionalExtension, params};
 
-use super::{Db, drop_objects, forget_blob, now_ms, opened, remove_from_search};
+use super::{Db, drop_objects, forget_blob, now_ms, opened, remove_from_search, upsert_profile};
 
 /// What a block dropped here.
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -87,20 +87,23 @@ impl Db {
         let conn = self.conn();
         let tx = conn.unchecked_transaction()?;
         let (kind, hex) = key(target);
-        let name: Option<String> = match target {
+        // A person's profile is kept with the block, out of sight, for an
+        // unblock to put back.
+        let (name, profile): (Option<String>, Option<String>) = match target {
             BlockTarget::Account { actor } => tx
                 .query_row(
-                    "SELECT name FROM profiles WHERE actor = ?1",
+                    "SELECT name, signed FROM profiles WHERE actor = ?1",
                     params![actor.to_string()],
-                    |row| row.get(0),
+                    |row| Ok((row.get(0)?, row.get(1)?)),
                 )
-                .optional()?,
-            _ => None,
+                .optional()?
+                .unwrap_or_default(),
+            _ => (None, None),
         };
         tx.execute(
-            "INSERT INTO blocks (kind, target, name, at_ms) VALUES (?1, ?2, ?3, ?4)
+            "INSERT INTO blocks (kind, target, name, at_ms, profile) VALUES (?1, ?2, ?3, ?4, ?5)
              ON CONFLICT (kind, target) DO NOTHING",
-            params![kind, hex, name, now_ms()],
+            params![kind, hex, name, now_ms(), profile],
         )?;
 
         // What goes: the posts the block names, then reshares of them.
@@ -195,11 +198,19 @@ impl Db {
     }
 
     /// Undoes a block. Returns false if there was none. A person unblocked
-    /// may reply again; what was dropped comes back only as it's fetched.
+    /// may reply again, and their profile as it was is back, so they can be
+    /// followed again; what was dropped comes back only as it's fetched.
     pub fn unblock(&self, target: &BlockTarget) -> Result<bool> {
         let conn = self.conn();
         let tx = conn.unchecked_transaction()?;
         let (kind, hex) = key(target);
+        let profile: Option<Option<String>> = tx
+            .query_row(
+                "SELECT profile FROM blocks WHERE kind = ?1 AND target = ?2",
+                params![kind, hex],
+                |row| row.get(0),
+            )
+            .optional()?;
         let n = tx.execute(
             "DELETE FROM blocks WHERE kind = ?1 AND target = ?2",
             params![kind, hex],
@@ -209,6 +220,13 @@ impl Db {
                 "DELETE FROM repliers WHERE actor = ?1 AND choice = 'blocked'",
                 params![hex],
             )?;
+            if let Some(json) = profile.flatten() {
+                let obj: SignedObject =
+                    serde_json::from_str(&json).context("corrupt stored profile")?;
+                if let Ok(Payload::Person(person)) = obj.verify() {
+                    upsert_profile(&tx, &person, &obj)?;
+                }
+            }
         }
         tx.commit()?;
         Ok(n > 0)

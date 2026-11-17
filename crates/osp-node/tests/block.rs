@@ -154,8 +154,17 @@ async fn a_blocked_person_stays_out_after_a_restart() {
     assert_eq!(blocks[0].target, target);
     assert_eq!(blocks[0].name.as_deref(), Some("Kim"));
 
-    // Unblocked, Kim can be followed again, and her posts come back.
+    // Unblocked, Kim's profile is back, so she can be followed again by her
+    // identity alone, with no ticket, as the app does.
     call(&alice, ClientRequest::Unblock { target }).await;
+    call(&alice, ClientRequest::FollowPerson { actor: kim_id }).await;
+    let ClientResponse::Following { follows } = call(&alice, ClientRequest::Following).await else {
+        panic!("no follows")
+    };
+    assert!(follows.iter().any(|f| f.actor == kim_id));
+    // Her profile names her node by its ID alone, which loopback with no
+    // relays or DNS can't dial; a ticket gives its address, and her posts
+    // come back.
     call(
         &alice,
         ClientRequest::Follow {
