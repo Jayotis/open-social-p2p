@@ -7,33 +7,45 @@
 # CERTIFICATE_PRIVATE_KEY (the RSA key of the signing certificate). Variables
 # rather than a Codemagic integration: the build didn't find the personal
 # account's one ("does not exist").
+
+# Written once, used by both workflows.
+definitions:
+  environment: &environment
+    groups:
+      - app_store_connect
+    vars:
+      BUNDLE_ID: io.github.jayotis.ospApp
+      # The app's Apple ID in App Store Connect (App Information).
+      APP_STORE_APPLE_ID: "6835691605"
+    flutter: 3.44.6
+    # The background upload needs the iOS 26 SDK or later.
+    xcode: latest
+    cocoapods: default
+  rust: &rust
+    name: Rust
+    script: |
+      # cargokit builds the app's Rust code with rustup's stable Rust,
+      # which needs to be at least the workspace's rust-version.
+      if ! command -v rustup > /dev/null; then
+        curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+          | sh -s -- -y --profile minimal --default-toolchain none
+        export PATH="$HOME/.cargo/bin:$PATH"
+        echo "PATH=$PATH" >> "$CM_ENV"
+      fi
+      rustup toolchain install stable --profile minimal --target aarch64-apple-ios
+      rustc +stable --version
+  artifacts: &artifacts
+    - app/build/ios/ipa/*.ipa
+    - /tmp/xcodebuild_logs/*.log
+
 workflows:
   ios-adhoc:
     name: iPhone app (ad hoc)
     instance_type: mac_mini_m2
     max_build_duration: 60
-    environment:
-      groups:
-        - app_store_connect
-      vars:
-        BUNDLE_ID: io.github.jayotis.ospApp
-      flutter: 3.44.6
-      # The background upload needs the iOS 26 SDK or later.
-      xcode: latest
-      cocoapods: default
+    environment: *environment
     scripts:
-      - name: Rust
-        script: |
-          # cargokit builds the app's Rust code with rustup's stable Rust,
-          # which needs to be at least the workspace's rust-version.
-          if ! command -v rustup > /dev/null; then
-            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
-              | sh -s -- -y --profile minimal --default-toolchain none
-            export PATH="$HOME/.cargo/bin:$PATH"
-            echo "PATH=$PATH" >> "$CM_ENV"
-          fi
-          rustup toolchain install stable --profile minimal --target aarch64-apple-ios
-          rustc +stable --version
+      - *rust
       - name: Signing
         script: |
           # An ad hoc profile for the devices registered in the Apple
@@ -50,6 +62,38 @@ workflows:
           flutter build ipa --release \
             --build-number="$BUILD_NUMBER" \
             --export-options-plist="$HOME/export_options.plist"
-    artifacts:
-      - app/build/ios/ipa/*.ipa
-      - /tmp/xcodebuild_logs/*.log
+    artifacts: *artifacts
+
+  ios-testflight:
+    name: iPhone app (TestFlight)
+    instance_type: mac_mini_m2
+    max_build_duration: 60
+    environment: *environment
+    scripts:
+      - *rust
+      - name: Signing
+        script: |
+          # An App Store profile; the distribution certificate is the one
+          # the ad hoc builds use.
+          keychain initialize
+          app-store-connect fetch-signing-files "$BUNDLE_ID" --type IOS_APP_STORE --create
+          keychain add-certificates
+          cd app && xcode-project use-profiles --project ios/Runner.xcodeproj
+      - name: Build
+        script: |
+          # App Store Connect refuses a build number that isn't higher than
+          # its last one; before the first upload there is none.
+          latest=$(app-store-connect get-latest-testflight-build-number "$APP_STORE_APPLE_ID" 2> /dev/null || echo 0)
+          cd app
+          flutter pub get
+          flutter build ipa --release \
+            --build-number="$((latest + 1))" \
+            --export-options-plist="$HOME/export_options.plist"
+    artifacts: *artifacts
+    # Uploads to TestFlight for the account's own testers. Outside testers
+    # (submit_to_testflight and a beta group) wait for P12.
+    publishing:
+      app_store_connect:
+        api_key: $APP_STORE_CONNECT_PRIVATE_KEY
+        key_id: $APP_STORE_CONNECT_KEY_IDENTIFIER
+        issuer_id: $APP_STORE_CONNECT_ISSUER_ID
