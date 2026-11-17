@@ -267,3 +267,38 @@ async fn a_held_post_is_shown_once_its_media_is_here_or_wont_be() {
         node.shutdown().await.unwrap();
     }
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_post_reshared_by_someone_followed_is_shown_once_saying_who() {
+    let dir = tempfile::tempdir().unwrap();
+    let kim = start(dir.path(), "Kim", &Setup::default()).await;
+    let jimmy = start(dir.path(), "Jimmy", &Setup::default()).await;
+    let alice = start(dir.path(), "Alice", &Setup::default()).await;
+    follow(&jimmy, &kim).await;
+    let post = post_text(&kim, "Kim's post").await;
+    sync(&jimmy).await;
+    call(
+        &jimmy,
+        ClientRequest::Reshare {
+            id: post,
+            host: false,
+        },
+    )
+    .await;
+    follow(&alice, &kim).await;
+    follow(&alice, &jimmy).await;
+    sync(&alice).await;
+
+    let ClientResponse::Feed { items } = call(&alice, ClientRequest::Feed { limit: 50 }).await
+    else {
+        panic!("no feed");
+    };
+    let shown: Vec<_> = items.iter().filter(|i| i.id == post).collect();
+    assert_eq!(shown.len(), 1, "Kim's post is shown once");
+    let by = shown[0].reshared_by.as_ref().expect("says who reshared it");
+    assert_eq!(by.actor, jimmy.identity());
+
+    for node in [kim, jimmy, alice] {
+        node.shutdown().await.unwrap();
+    }
+}
