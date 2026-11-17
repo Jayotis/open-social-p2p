@@ -2079,6 +2079,25 @@ fn found_person(p: osp_client::osp_proto::rpc::PersonInfo) -> FoundPerson {
     }
 }
 
+/// Something the owner blocked: `kind` is `account`, `post` or `file`.
+pub struct BlockedThing {
+    pub kind: String,
+    pub id: String,
+    /// A person's name, if known when they were blocked.
+    pub name: Option<String>,
+    /// When, as RFC 3339.
+    pub since: String,
+}
+
+fn block_target(kind: &str, id: &str) -> Result<BlockTarget> {
+    Ok(match kind {
+        "account" => BlockTarget::Account { actor: id.parse()? },
+        "post" => BlockTarget::Post { id: id.parse()? },
+        "file" => BlockTarget::File { hash: id.parse()? },
+        other => bail!("can't block a {other}"),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use osp_client::SecretKey;
@@ -2112,23 +2131,4 @@ mod tests {
         let three = [by(None, false), by(None, false), by(None, true)];
         assert_eq!(found_resharers(&three), (Some("3 people".into()), false));
     }
-}
-
-/// Something the owner blocked: `kind` is `account`, `post` or `file`.
-pub struct BlockedThing {
-    pub kind: String,
-    pub id: String,
-    /// A person's name, if known when they were blocked.
-    pub name: Option<String>,
-    /// When, as RFC 3339.
-    pub since: String,
-}
-
-fn block_target(kind: &str, id: &str) -> Result<BlockTarget> {
-    Ok(match kind {
-        "account" => BlockTarget::Account { actor: id.parse()? },
-        "post" => BlockTarget::Post { id: id.parse()? },
-        "file" => BlockTarget::File { hash: id.parse()? },
-        other => bail!("can't block a {other}"),
-    })
 }
