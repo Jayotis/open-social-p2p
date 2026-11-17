@@ -20,10 +20,10 @@ use crate::{
     node::Core,
 };
 
-/// The project's list key, built into official builds. None until the
-/// project has made it: the list is then off unless `[lists] hide_key`
-/// names one.
-pub const PROJECT_LIST_KEY: Option<&str> = None;
+/// The project's list key, built into official builds; `[lists] hide_key`
+/// overrides it. Its secret is kept offline by the maintainer.
+pub const PROJECT_LIST_KEY: Option<&str> =
+    Some("ebb87603bed700de13ccf6445c2f25dc15c791eb3169955253c5bc38246f2f49");
 
 /// How often the list is fetched.
 const FETCH_EVERY: Duration = Duration::from_secs(24 * 3600);
@@ -157,5 +157,18 @@ pub(crate) async fn fetch_loop(core: Arc<Core>) {
                 RETRY_AFTER
             }
         };
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A key that didn't parse would turn the list off without a word.
+    #[test]
+    fn project_key_parses() {
+        let key = PROJECT_LIST_KEY.expect("the project has a list key");
+        key.parse::<PublicKey>()
+            .expect("PROJECT_LIST_KEY is a public key");
     }
 }

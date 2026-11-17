@@ -37,6 +37,11 @@ enum Command {
         #[arg(long)]
         out: PathBuf,
     },
+    /// Start the list: sign an empty one, number 1
+    New {
+        #[command(flatten)]
+        files: Files,
+    },
     /// Put a post or a file on the list, and sign it again
     Add {
         kind: Kind,
@@ -101,6 +106,14 @@ impl Kind {
 fn main() -> Result<()> {
     match Cli::parse().command {
         Command::Keygen { out } => keygen(&out),
+        Command::New { files } => {
+            ensure!(
+                !files.list.exists(),
+                "{} is there already: add or retract instead",
+                files.list.display()
+            );
+            change(&files, |_, _| true, "", "")
+        }
         Command::Add { kind, id, files } => {
             let (kind, h) = kind.entry(&id)?;
             change(
@@ -230,8 +243,11 @@ fn change(
     let tmp = files.list.with_extension("json.new");
     fs::write(&tmp, signed.to_json())?;
     fs::rename(&tmp, &files.list)?;
+    if !done.is_empty() {
+        print!("Entry {done}. ");
+    }
     println!(
-        "Entry {done}. List number {} written to {}: put it on the site as it is.",
+        "List number {} written to {}: put it on the site as it is.",
         list.seq,
         files.list.display()
     );
