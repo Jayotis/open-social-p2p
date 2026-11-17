@@ -318,8 +318,14 @@ void main() {
     );
     expect(find.text("Refused by Ann's node: the text is too long."), findsOne);
     expect(find.text('Elsewhere'), findsNothing);
-    // Not the owner's post, and not their reply: nothing to choose.
-    expect(find.byTooltip('Reply options'), findsNothing);
+    // Not the owner's post, and not their reply: only Report (ADR 0042 §4).
+    await tester.tap(find.byTooltip('Reply options'));
+    await tester.pumpAndSettle();
+    expect(find.text('Report'), findsOne);
+    expect(find.text('Block them'), findsNothing);
+    expect(find.text('Delete'), findsNothing);
+    await tester.tapAt(Offset.zero);
+    await tester.pumpAndSettle();
 
     final send = find.widgetWithIcon(IconButton, Icons.send);
     expect(tester.widget<IconButton>(send).onPressed, isNull);

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../node.dart';
+import '../osp_codes.dart';
 import '../terms.dart';
 import '../theme.dart';
 
@@ -70,7 +71,7 @@ class _WelcomeScreenState extends State<WelcomeScreen> {
                 const SizedBox(height: Space.l),
                 OutlinedButton.icon(
                   onPressed: () => launchUrl(
-                    Uri.parse(installGuideUrl),
+                    Uri.parse(installGuide),
                     mode: LaunchMode.externalApplication,
                   ),
                   icon: const Icon(Icons.open_in_new),
