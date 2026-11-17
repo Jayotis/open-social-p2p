@@ -3,6 +3,8 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:osp_app/node.dart';
+import 'package:osp_app/blocking.dart';
+import 'package:osp_app/screens/advanced_screen.dart';
 import 'package:osp_app/screens/blocked_screen.dart';
 import 'package:osp_app/src/rust/api/osp.dart';
 import 'package:osp_app/uploads.dart';
@@ -35,6 +37,44 @@ class FakeApp implements OspApp {
 
   @override
   Future<NodeStatus> status() async => nodeStatus();
+
+  /// The hide list (ADR 0042 §6), with Kim excepted.
+  final excepted = <(String, bool)>[];
+  final turned = <bool>[];
+  HideListState hide = const HideListState(
+    asked: true,
+    inUse: true,
+    hasKey: true,
+    number: 3,
+    signed: '2026-11-17T21:19:17Z',
+    entries: 2,
+    checked: true,
+    exceptions: [HideExceptionPerson(identity: 'id-Kim', name: 'Kim')],
+  );
+
+  @override
+  Future<HideListState> hideList() async => hide;
+
+  @override
+  Future<HideListState> hideException({
+    required String identity,
+    required bool except,
+  }) async {
+    excepted.add((identity, except));
+    return hide;
+  }
+
+  @override
+  Future<HideListState> setHideList({required bool inUse}) async {
+    turned.add(inUse);
+    return hide;
+  }
+
+  @override
+  String deviceId() => 'device-0123456789';
+
+  @override
+  String recentLog({required int lines}) => '';
 
   @override
   dynamic noSuchMethod(Invocation invocation) =>
@@ -166,5 +206,78 @@ void main() {
     expect(app.unblocked, [('account', 'id-Kim')]);
     expect(find.text('Kim'), findsNothing);
     expect(find.textContaining('Kim is unblocked'), findsOne);
+  });
+
+  testWidgets("not hiding a person's posts asks first, then tells the node", (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: Builder(
+            builder: (context) => Column(
+              children: [
+                TextButton(
+                  onPressed: () => exceptFromHideList(
+                    context,
+                    node,
+                    identity: 'id-Kim',
+                    name: 'Kim',
+                    except: true,
+                  ),
+                  child: const Text('except'),
+                ),
+                TextButton(
+                  onPressed: () => exceptFromHideList(
+                    context,
+                    node,
+                    identity: 'id-Kim',
+                    name: 'Kim',
+                    except: false,
+                  ),
+                  child: const Text('unexcept'),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.tap(find.text('except'));
+    await tester.pumpAndSettle();
+    expect(find.text("Don't hide Kim's posts?"), findsOne);
+    expect(find.textContaining('never passes those on'), findsOne);
+    expectPlainWords(tester);
+    await tester.tap(find.text("Don't hide"));
+    await tester.pumpAndSettle();
+    expect(app.excepted, [('id-Kim', true)]);
+    expect(find.text("Kim's posts aren't hidden for you."), findsOne);
+
+    // Hiding them again needs no asking.
+    await tester.tap(find.text('unexcept'));
+    await tester.pumpAndSettle();
+    expect(app.excepted.last, ('id-Kim', false));
+  });
+
+  testWidgets('Advanced shows the hide list, its switch and exceptions', (
+    tester,
+  ) async {
+    await tester.pumpWidget(MaterialApp(home: AdvancedScreen(node: node)));
+    await tester.pumpAndSettle();
+    await tester.scrollUntilVisible(
+      find.text('Hide again'),
+      100,
+      scrollable: find.byType(Scrollable).first,
+    );
+    expect(find.text("Use the project's hide list"), findsOne);
+    expect(find.textContaining('Number 3, 2 entries'), findsOne);
+    expect(find.textContaining('this app checked'), findsOne);
+    await tester.tap(find.text('Hide again'));
+    await tester.pumpAndSettle();
+    expect(app.excepted, [('id-Kim', false)]);
+
+    await tester.tap(find.byType(Switch));
+    await tester.pumpAndSettle();
+    expect(app.turned, [false]);
   });
 }

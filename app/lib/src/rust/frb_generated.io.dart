@@ -133,6 +133,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   FoundPerson dco_decode_found_person(dynamic raw);
 
   @protected
+  HideExceptionPerson dco_decode_hide_exception_person(dynamic raw);
+
+  @protected
+  HideListState dco_decode_hide_list_state(dynamic raw);
+
+  @protected
   HopKind dco_decode_hop_kind(dynamic raw);
 
   @protected
@@ -176,6 +182,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   List<FoundPerson> dco_decode_list_found_person(dynamic raw);
+
+  @protected
+  List<HideExceptionPerson> dco_decode_list_hide_exception_person(dynamic raw);
 
   @protected
   List<Liker> dco_decode_list_liker(dynamic raw);
@@ -489,6 +498,14 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   FoundPerson sse_decode_found_person(SseDeserializer deserializer);
 
   @protected
+  HideExceptionPerson sse_decode_hide_exception_person(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  HideListState sse_decode_hide_list_state(SseDeserializer deserializer);
+
+  @protected
   HopKind sse_decode_hop_kind(SseDeserializer deserializer);
 
   @protected
@@ -542,6 +559,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   List<FoundPerson> sse_decode_list_found_person(SseDeserializer deserializer);
+
+  @protected
+  List<HideExceptionPerson> sse_decode_list_hide_exception_person(
+    SseDeserializer deserializer,
+  );
 
   @protected
   List<Liker> sse_decode_list_liker(SseDeserializer deserializer);
@@ -910,6 +932,15 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_encode_found_person(FoundPerson self, SseSerializer serializer);
 
   @protected
+  void sse_encode_hide_exception_person(
+    HideExceptionPerson self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_hide_list_state(HideListState self, SseSerializer serializer);
+
+  @protected
   void sse_encode_hop_kind(HopKind self, SseSerializer serializer);
 
   @protected
@@ -972,6 +1003,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_list_found_person(
     List<FoundPerson> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_hide_exception_person(
+    List<HideExceptionPerson> self,
     SseSerializer serializer,
   );
 

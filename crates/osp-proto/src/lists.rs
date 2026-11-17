@@ -16,6 +16,16 @@ use serde::{Deserialize, Serialize};
 
 use crate::{object::base64url, types::BlobHash};
 
+/// The project's list key (ADR 0042 §6), built into official nodes and
+/// apps. Its secret is kept offline by the maintainer; a new key comes with
+/// a new release.
+pub const PROJECT_KEY: &str = "ebb87603bed700de13ccf6445c2f25dc15c791eb3169955253c5bc38246f2f49";
+
+/// [`PROJECT_KEY`], parsed.
+pub fn project_key() -> PublicKey {
+    PROJECT_KEY.parse().expect("PROJECT_KEY is a public key")
+}
+
 /// The format's name, in every list and mixed into its signature.
 pub const LIST_FORMAT: &str = "osp-list/1";
 
@@ -145,6 +155,30 @@ impl HideList {
     /// The entries in force.
     pub fn active(&self) -> impl Iterator<Item = &HideEntry> {
         self.entries.iter().filter(|e| e.retracted.is_none())
+    }
+}
+
+/// A checked list's entries in force, to look posts and files up in.
+#[derive(Debug, Clone, Default)]
+pub struct Listed(std::collections::HashSet<(HideKind, [u8; 32])>);
+
+impl Listed {
+    pub fn new(list: &HideList) -> Self {
+        Self(list.active().map(|e| (e.kind, e.h)).collect())
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// Whether the post (or reply) `id` is listed.
+    pub fn post(&self, id: &crate::ObjectId) -> bool {
+        self.0.contains(&(HideKind::Post, post_entry(id)))
+    }
+
+    /// Whether the file `hash` is listed.
+    pub fn file(&self, hash: &BlobHash) -> bool {
+        self.0.contains(&(HideKind::File, file_entry(hash)))
     }
 }
 
@@ -307,5 +341,22 @@ mod tests {
         assert_eq!(list.active().count(), 0);
         assert!(list.add(HideKind::Post, h, "5"));
         assert_eq!(list.active().count(), 1);
+    }
+
+    #[test]
+    fn the_project_key_parses_and_listed_finds_entries_in_force() {
+        project_key();
+        let key = SecretKey::from_bytes(&[3; 32]);
+        let mut list = HideList::new(key.public());
+        let post = crate::ObjectId::from_bytes([1; 32]);
+        let file = BlobHash::from_bytes([2; 32]);
+        list.add(HideKind::Post, post_entry(&post), "2026-11-17T00:00:00Z");
+        list.add(HideKind::File, file_entry(&file), "2026-11-17T00:00:00Z");
+        let listed = Listed::new(&list);
+        assert!(listed.post(&post) && listed.file(&file));
+        // Kinds don't mix: the post's ID as a file isn't listed.
+        assert!(!listed.file(&BlobHash::from_bytes([1; 32])));
+        list.retract(HideKind::Post, post_entry(&post), "2026-11-18T00:00:00Z");
+        assert!(!Listed::new(&list).post(&post));
     }
 }

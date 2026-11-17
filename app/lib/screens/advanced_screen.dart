@@ -25,6 +25,16 @@ class _AdvancedScreenState extends State<AdvancedScreen> {
   void initState() {
     super.initState();
     widget.node.checkStatus();
+    widget.node.loadHideList();
+  }
+
+  Future<void> _change(Future<void> Function() change) async {
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      await change();
+    } catch (e) {
+      messenger.showSnackBar(SnackBar(content: Text(describeError(e))));
+    }
   }
 
   Future<void> _forget() async {
@@ -136,6 +146,52 @@ class _AdvancedScreenState extends State<AdvancedScreen> {
                 _Row('Paired devices', '${s.devices}'),
                 if (s.diskFreeBytes != null)
                   _Row('Free disk space', formatBytes(s.diskFreeBytes!)),
+              ],
+              if (node.hideList case final h?) ...[
+                _Section('Hide list'),
+                SwitchListTile(
+                  title: const Text("Use the project's hide list"),
+                  value: h.inUse,
+                  onChanged: h.hasKey
+                      ? (on) => _change(() => node.setHideList(on))
+                      : null,
+                ),
+                if (!h.inUse)
+                  _Note(
+                    h.asked
+                        ? "The project's list isn't applied: what it holds "
+                              'can show here, and your node fetches and '
+                              'passes it on.'
+                        : "Off: you haven't chosen yet.",
+                  )
+                else ...[
+                  if (h.number case final n?)
+                    _Row(
+                      'List',
+                      'Number $n, ${h.entries ?? 0} entries, signed '
+                          '${h.signed ?? '?'}',
+                    )
+                  else
+                    _Row('List', 'Not fetched yet: it comes once a day'),
+                  if (DateTime.tryParse(h.fetched ?? '') case final at?)
+                    _Row('Fetched', formatAgo(at)),
+                  _Row(
+                    'Checked here',
+                    h.checked
+                        ? "Yes: this app checked the project's signature"
+                        : 'No: not signed with the key this app knows',
+                  ),
+                ],
+                for (final e in h.exceptions)
+                  ListTile(
+                    title: Text(e.name),
+                    subtitle: const Text('Their posts are shown anyway'),
+                    trailing: TextButton(
+                      onPressed: () =>
+                          _change(() => node.hideException(e.identity, false)),
+                      child: const Text('Hide again'),
+                    ),
+                  ),
               ],
               _Section('This phone'),
               _Row('Device ID', '${node.app.deviceId().substring(0, 10)}…'),

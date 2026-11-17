@@ -6,7 +6,8 @@
 import '../frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `activity_item`, `block_target`, `found_person`, `found_resharers`, `invite_for`, `liker`, `node_info`, `path_hop`, `post`, `profile_of`, `progress`, `reply_info`, `report_to`, `run_post`, `sent_reply`, `shared_code`, `trust_entry`, `universe_event`, `universe`
+// These functions are ignored because they are not marked as `pub`: `activity_item`, `block_target`, `found_person`, `found_resharers`, `hides_reply`, `hides`, `invite_for`, `liker`, `node_info`, `one`, `path_hop`, `post`, `profile_of`, `progress`, `reply_info`, `report_to`, `run_post`, `sent_reply`, `shared_code`, `shown`, `trust_entry`, `universe_event`, `universe`
+// These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `Hider`
 // These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`
 
 /// A new device key, as 64 hex digits, for the app to keep in the phone's
@@ -104,6 +105,19 @@ abstract class OspApp implements RustOpaqueInterface {
 
   /// Drops an opened post and its media now: call when the owner leaves it.
   Future<void> forgetOpened({required String postId});
+
+  /// Stops the list hiding `identity`'s posts, or with `except` false
+  /// takes that back. Their listed files may then be fetched for the
+  /// owner, but the node never passes them on.
+  Future<HideListState> hideException({
+    required String identity,
+    required bool except,
+  });
+
+  /// The project's hide list on the node (ADR 0042 §6). Checks the list
+  /// the node applies against the project's key, built into the app, and
+  /// from then on hides what it holds too.
+  Future<HideListState> hideList();
 
   /// Hides a published reply to one of the owner's posts, or shows it again.
   /// Nothing is deleted.
@@ -216,6 +230,10 @@ abstract class OspApp implements RustOpaqueInterface {
 
   /// The owner's replies to others' posts, newest first.
   Future<List<SentReply>> sentReplies();
+
+  /// Answers whether to use the list, or changes the answer. Off, all it
+  /// hid comes back; on, the node fetches it soon.
+  Future<HideListState> setHideList({required bool inUse});
 
   /// Publishes the owner's profile. `photo`, a file on this phone shrunk
   /// to about 1,024 px, becomes the new picture; without one,
@@ -715,6 +733,91 @@ class FoundPerson {
           foundThrough == other.foundThrough &&
           newest == other.newest &&
           regions == other.regions;
+}
+
+class HideExceptionPerson {
+  final String identity;
+
+  /// Their name, or the short form of their identity.
+  final String name;
+
+  const HideExceptionPerson({required this.identity, required this.name});
+
+  @override
+  int get hashCode => identity.hashCode ^ name.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is HideExceptionPerson &&
+          runtimeType == other.runtimeType &&
+          identity == other.identity &&
+          name == other.name;
+}
+
+/// The project's hide list on the node (ADR 0042 §6).
+class HideListState {
+  /// Whether the owner has answered whether to use it. Until then it's off.
+  final bool asked;
+
+  /// Whether it's on: the owner chose to use it.
+  final bool inUse;
+
+  /// Whether the node has a key to check it by.
+  final bool hasKey;
+
+  /// The list applied: its number, when the project signed it (RFC 3339),
+  /// its entries in force, and when the node last fetched it.
+  final int? number;
+  final String? signed;
+  final int? entries;
+  final String? fetched;
+
+  /// Whether this app checked the list against the project's key, and
+  /// hides what it holds too.
+  final bool checked;
+
+  /// People whose posts it doesn't hide, first excepted first.
+  final List<HideExceptionPerson> exceptions;
+
+  const HideListState({
+    required this.asked,
+    required this.inUse,
+    required this.hasKey,
+    this.number,
+    this.signed,
+    this.entries,
+    this.fetched,
+    required this.checked,
+    required this.exceptions,
+  });
+
+  @override
+  int get hashCode =>
+      asked.hashCode ^
+      inUse.hashCode ^
+      hasKey.hashCode ^
+      number.hashCode ^
+      signed.hashCode ^
+      entries.hashCode ^
+      fetched.hashCode ^
+      checked.hashCode ^
+      exceptions.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is HideListState &&
+          runtimeType == other.runtimeType &&
+          asked == other.asked &&
+          inUse == other.inUse &&
+          hasKey == other.hasKey &&
+          number == other.number &&
+          signed == other.signed &&
+          entries == other.entries &&
+          fetched == other.fetched &&
+          checked == other.checked &&
+          exceptions == other.exceptions;
 }
 
 enum HopKind {

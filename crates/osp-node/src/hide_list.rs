@@ -20,10 +20,9 @@ use crate::{
     node::Core,
 };
 
-/// The project's list key, built into official builds; `[lists] hide_key`
-/// overrides it. Its secret is kept offline by the maintainer.
-pub const PROJECT_LIST_KEY: Option<&str> =
-    Some("ebb87603bed700de13ccf6445c2f25dc15c791eb3169955253c5bc38246f2f49");
+/// The project's list key, built into official builds (in `osp-proto`, so
+/// the apps share it); `[lists] hide_key` overrides it.
+pub const PROJECT_LIST_KEY: Option<&str> = Some(osp_proto::lists::PROJECT_KEY);
 
 /// How often the list is fetched.
 const FETCH_EVERY: Duration = Duration::from_secs(24 * 3600);

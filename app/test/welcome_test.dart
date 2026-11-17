@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:osp_app/main.dart';
 import 'package:osp_app/node.dart';
+import 'package:osp_app/screens/hide_list_screen.dart';
 import 'package:osp_app/screens/pair_screen.dart';
 import 'package:osp_app/screens/welcome_screen.dart';
 import 'package:osp_app/src/rust/api/osp.dart';
@@ -12,21 +13,58 @@ import 'package:osp_app/uploads.dart';
 
 import 'plain_words.dart';
 
-/// Nothing on the Rust side is needed before pairing.
+/// Nothing on the Rust side is needed before pairing. After, only the
+/// hide list, as the node has it.
 class FakeApp implements OspApp {
+  HideListState state = hideState(asked: false, inUse: false);
+  final answers = <bool>[];
+
+  @override
+  Future<HideListState> hideList() async => state;
+
+  @override
+  Future<HideListState> setHideList({required bool inUse}) async {
+    answers.add(inUse);
+    return state = hideState(asked: true, inUse: inUse);
+  }
+
+  // Answering refreshes Home: nothing there.
+  @override
+  Future<List<Post>> feed({required int limit}) async => [];
+
+  @override
+  SavedFeed? savedFeed() => null;
+
   @override
   dynamic noSuchMethod(Invocation invocation) =>
       throw UnimplementedError('${invocation.memberName}');
 }
 
+HideListState hideState({required bool asked, required bool inUse}) =>
+    HideListState(
+      asked: asked,
+      inUse: inUse,
+      hasKey: true,
+      checked: inUse,
+      exceptions: const [],
+    );
+
+const alicesNode = NodeInfo(
+  name: 'Alice',
+  identity: 'id-Alice',
+  paired: '2026-11-14T00:00:00Z',
+);
+
 void main() {
   late Directory root;
   late HomeNode node;
+  late FakeApp app;
 
   setUp(() {
+    app = FakeApp();
     root = Directory.systemTemp.createTempSync('welcome_test');
     node = HomeNode.forTests(
-      FakeApp(),
+      app,
       UploadsFolder(
         Directory('${root.path}/uploads'),
         pickerDir: Directory('${root.path}/cache'),
@@ -57,6 +95,17 @@ void main() {
     await tester.tap(find.text('I agree'));
     await tester.pumpAndSettle();
     expect(node.termsDue, isFalse);
+
+    // Then whether to use the project's hide list (ADR 0042 §6).
+    expect(find.byType(HideListScreen), findsOneWidget);
+    expect(find.text('Hide what breaks the rules?'), findsOneWidget);
+    expect(find.text('Use the list'), findsOneWidget);
+    expect(find.text('Not now'), findsOneWidget);
+    expect(find.byType(PairScreen), findsNothing);
+    expectPlainWords(tester);
+    await tester.tap(find.text('Use the list'));
+    await tester.pumpAndSettle();
+    expect(node.hideListDue, isFalse);
     expect(find.byType(PairScreen), findsOneWidget);
   });
 
@@ -72,6 +121,37 @@ void main() {
     expect(find.text('Terms of use'), findsOneWidget);
     await tester.tap(find.text('I agree'));
     expect(node.termsDue, isFalse);
+  });
+
+  test('the answer given before pairing goes to a node not asked yet, '
+      'and a node already asked keeps its own', () async {
+    await node.answerHideList(true);
+    expect(app.answers, isEmpty);
+    node.paired = alicesNode;
+    await node.loadHideList();
+    expect(app.answers, [true]);
+    expect(node.hideList!.inUse, isTrue);
+
+    // Asked at its setup already ("not now"): the node's answer stands.
+    app.answers.clear();
+    app.state = hideState(asked: true, inUse: false);
+    await node.loadHideList();
+    expect(app.answers, isEmpty);
+    expect(node.hideList!.inUse, isFalse);
+  });
+
+  testWidgets('a paired phone whose node was never asked asks once', (
+    tester,
+  ) async {
+    node.agreeToTerms();
+    node.paired = alicesNode;
+    await node.loadHideList();
+    expect(node.hideListDue, isTrue);
+    await tester.pumpWidget(MaterialApp(home: HideListScreen(node: node)));
+    await tester.tap(find.text('Not now'));
+    await tester.pumpAndSettle();
+    expect(app.answers, [false]);
+    expect(node.hideListDue, isFalse);
   });
 
   test('the app shows the same terms as docs/terms.md', () {

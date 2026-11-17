@@ -84,6 +84,41 @@ Future<bool> blockPost(BuildContext context, HomeNode node, String id) async {
   );
 }
 
+/// Asks, then stops the project's hide list hiding a person's posts on
+/// the owner's node (ADR 0042 §6), or with [except] false hides them again.
+/// Returns whether it changed.
+Future<bool> exceptFromHideList(
+  BuildContext context,
+  HomeNode node, {
+  required String identity,
+  required String name,
+  required bool except,
+}) async {
+  final who = shownName(name);
+  if (except &&
+      !await _confirm(
+        context,
+        title: "Don't hide $who's posts?",
+        body:
+            "The project's hide list won't hide $who's posts from you, even "
+            'ones that break the rules. Your node still never passes those '
+            'on to anyone. You can undo it here or under You, Advanced '
+            'details.',
+        yes: "Don't hide",
+      )) {
+    return false;
+  }
+  if (!context.mounted) return false;
+  return _run(
+    context,
+    node,
+    () => node.hideException(identity, except),
+    except
+        ? "$who's posts aren't hidden for you."
+        : "The hide list hides $who's listed posts again.",
+  );
+}
+
 Future<bool> _run(
   BuildContext context,
   HomeNode node,
