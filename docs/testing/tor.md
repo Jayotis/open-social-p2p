@@ -146,10 +146,13 @@ Over real Tor, one of three test nodes, meeting the other two, built **55 circui
 
 ## The hide list
 
-The project's hide list ([ADR 0042 §6](../decisions/0042-content-rules-reports-and-the-project-hide-list.md#6-the-projects-hide-list)) comes through the node's Tor once a day, from `https://osp2p.com/lists/hide.json`. Until the project's key is built in, name a key to test with in `config.toml`, and restart the node:
+The project's hide list ([ADR 0042 §6](../decisions/0042-content-rules-reports-and-the-project-hide-list.md#6-the-projects-hide-list)) comes through the node's Tor once a day, from `https://osp2p.com/lists/hide.json`, signed by the project's key, which is built in. It's off until the owner answers: `osp init` asks, `--hide-list` or `--no-hide-list` answer for scripts, and `osp hide-list on|off` answers later. `osp hide-list` says how it stands.
+
+To test with a list of your own, name your key in `config.toml` instead, and restart the node:
 
 ```toml
 [lists]
+hide = true
 hide_key = "<the public key osp-list keygen printed>"
 ```
 
@@ -157,10 +160,13 @@ Make a list, with a key kept off the node:
 
 ```sh
 osp-list keygen --out /media/stick/list.key
+osp-list new --key /media/stick/list.key --list hide.json
 osp-list add post <a post your node holds> --key /media/stick/list.key --list hide.json
 ```
 
-Then `osp hide-list apply hide.json` applies it as a fetch would: the post leaves Home, search and the Universe, and `osp hide-list` gives the list's number and entries. A list signed by another key is refused. `osp-list retract post <id> …` and applying again bring the post back, if you follow its author; `osp hide-list off` brings back everything the list hid. Your own posts are never hidden on your own node, though a listed file isn't served, yours included.
+Then `osp hide-list apply hide.json` applies it as a fetch would: the post leaves Home, search and the Universe, and `osp hide-list` gives the list's number and entries. A listed reply leaves the threads the node reads and serves. A list signed by another key is refused. `osp-list retract post <id> …` and applying again bring the post back, if you follow its author; `osp hide-list off` brings back everything the list hid. Your own posts are never hidden on your own node, though a listed file isn't served, yours included.
+
+`osp hide-list except <person>` shows that person's posts again on your node, and lets their listed files be fetched for you, though never served on; `osp hide-list unexcept <person>` takes it back.
 
 The site sees a Tor exit, never the node. `osp hide-list` says when the list was last fetched; a fetch that failed is in the log (`journalctl --user -u osp`) and tried again an hour later.
 

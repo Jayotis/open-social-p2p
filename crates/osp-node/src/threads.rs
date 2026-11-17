@@ -124,6 +124,10 @@ impl Core {
                 more = true;
                 break;
             }
+            // Nor is a reply the project's hide list holds passed on (§6).
+            if self.db.hides_reply(&row.reply.id, &row.reply.actor)? {
+                continue;
+            }
             let reply = ThreadReply {
                 seq: row.seq.context("a published reply has no place")?.max(0) as u64,
                 reply: row.reply.signed,
@@ -212,6 +216,8 @@ impl Core {
                             if self
                                 .db
                                 .is_blocked(&BlockTarget::Account { actor: info.actor })? => {}
+                        // Nor one the project's hide list holds (§6).
+                        Ok(info) if self.db.hides_reply(&info.id, &info.actor)? => {}
                         Ok(info) => {
                             if info.actor == me {
                                 self.db.sent_reply_seen_published(&info.id)?;

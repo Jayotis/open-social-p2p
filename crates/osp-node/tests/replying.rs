@@ -1,6 +1,7 @@
 //! Replying to someone else's post, and reading a thread (ADR 0028). Kim
 //! posts. Jimmy follows her, but she doesn't follow him: his reply waits for
-//! her to look. Alice reads the thread without showing who she is.
+//! her to look. Alice reads the thread without showing who she is. A reply
+//! on the project's hide list is left out of the thread, read or served.
 //!
 //! These run on the simulated network, so a node that restarts is reached by
 //! its ID as before, and every packet is noted by sender and receiver.
@@ -13,7 +14,8 @@ use osp_node::{
     simnet::{Link, SimNet},
 };
 use osp_proto::{
-    ObjectId,
+    ObjectId, SecretKey,
+    lists::{HideKind, HideList, SignedList, post_entry},
     rpc::{ClientRequest, ClientResponse, ReplyAnswer, ReplyInfo, SentReplyInfo, SentStatus},
     social::ReplyPolicy,
 };
@@ -42,6 +44,16 @@ async fn start_polling(root: &Path, net: &SimNet, name: &str) -> Node {
     let mut config = Config::local_test(name);
     config.endpoints.enabled = true;
     config.sync.interval_secs = 5;
+    Node::init(&home(root, name), &config).unwrap();
+    restart(root, net, name).await
+}
+
+/// Someone who uses a hide list signed by `list_key`.
+async fn start_listing(root: &Path, net: &SimNet, name: &str, list_key: &SecretKey) -> Node {
+    let mut config = Config::local_test(name);
+    config.endpoints.enabled = true;
+    config.lists.hide = Some(true);
+    config.lists.hide_key = Some(list_key.public());
     Node::init(&home(root, name), &config).unwrap();
     restart(root, net, name).await
 }
@@ -332,6 +344,66 @@ async fn an_answer_ends_the_tries_and_a_reshare_is_answered_at_its_post() {
     assert_eq!(sent(&jimmy).await.len(), 1);
 
     for node in [jimmy, kim] {
+        node.shutdown().await.unwrap();
+    }
+}
+
+fn words(replies: &[ReplyInfo]) -> Vec<&str> {
+    replies.iter().map(|r| r.content.as_str()).collect()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_listed_reply_is_left_out_of_threads_read_and_served() {
+    let dir = tempfile::tempdir().unwrap();
+    let net = SimNet::new(83);
+    let project = SecretKey::from_bytes(&[7; 32]);
+    let kim = start_listing(dir.path(), &net, "Kim", &project).await;
+    let jimmy = start_listing(dir.path(), &net, "Jimmy", &project).await;
+    let alice = start_listing(dir.path(), &net, "Alice", &project).await;
+    let kims = post(&kim, "Kim's post").await;
+    follow(&jimmy, &kim).await;
+    follow(&alice, &kim).await;
+    reply(&kim, kims, "Kim's own reply").await;
+    let jimmys = reply(&jimmy, kims, "Jimmy's reply").await;
+    let publish = ClientRequest::AnswerReply {
+        reply: jimmys.id,
+        answer: ReplyAnswer::Publish,
+    };
+    call(&kim, publish).await;
+    let both = ["Kim's own reply", "Jimmy's reply"];
+    assert_eq!(words(&thread(&alice, kims, 0).await.0), both);
+
+    // The project lists Jimmy's reply. Alice's node leaves it out of what
+    // it reads, though Kim's node still serves it.
+    let mut list = HideList::new(project.public());
+    list.add(
+        HideKind::Post,
+        post_entry(&jimmys.id),
+        "2026-11-17T00:00:00Z",
+    );
+    list.seq = 1;
+    let signed = SignedList::sign(&list, &project).unwrap().to_json();
+    let apply = |list: String| ClientRequest::ApplyHideList { list };
+    call(&alice, apply(signed.clone())).await;
+    assert_eq!(words(&thread(&alice, kims, 0).await.0), ["Kim's own reply"]);
+    assert_eq!(words(&thread(&jimmy, kims, 0).await.0), both);
+
+    // Excepting Jimmy shows it to Alice again.
+    let except = |except: bool| ClientRequest::HideException {
+        actor: jimmy.identity(),
+        except,
+    };
+    call(&alice, except(true)).await;
+    assert_eq!(words(&thread(&alice, kims, 0).await.0), both);
+    call(&alice, except(false)).await;
+
+    // Kim's node applies it too: her own thread leaves it out, and she no
+    // longer serves it, so Jimmy, who wrote it, doesn't get it from her.
+    call(&kim, apply(signed)).await;
+    assert_eq!(words(&thread(&kim, kims, 0).await.0), ["Kim's own reply"]);
+    assert_eq!(words(&thread(&jimmy, kims, 0).await.0), ["Kim's own reply"]);
+
+    for node in [alice, jimmy, kim] {
         node.shutdown().await.unwrap();
     }
 }

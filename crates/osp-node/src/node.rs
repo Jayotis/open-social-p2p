@@ -322,6 +322,8 @@ pub(crate) struct Core {
     /// Whether the project's hide list is applied, as the owner last set it
     /// (ADR 0042 §6).
     pub hide_list_on: std::sync::atomic::AtomicBool,
+    /// Whether the owner answered whether to use it.
+    pub hide_list_asked: std::sync::atomic::AtomicBool,
     /// Wakes the hide list's fetch, when it's turned on.
     pub fetch_hide_list_now: Notify,
     /// Endpoints for fetching found posts' media unseen (ADR 0024).
@@ -615,7 +617,8 @@ impl Node {
         );
 
         let (prefetch_later, later) = mpsc::channel(sync::MAX_WAITING);
-        let hide_on = config.lists.hide;
+        let hide_on = config.lists.hide == Some(true);
+        let hide_asked = config.lists.hide.is_some();
         let core = Arc::new(Core {
             home,
             config,
@@ -669,6 +672,7 @@ impl Node {
             read_directories_now: Notify::new(),
             directories_read_at: Mutex::new(None),
             hide_list_on: std::sync::atomic::AtomicBool::new(hide_on),
+            hide_list_asked: std::sync::atomic::AtomicBool::new(hide_asked),
             fetch_hide_list_now: Notify::new(),
             viewing: Viewing::new(sim.viewing_reuse, sim.viewing_life),
             gathering: tokio::sync::Mutex::new(()),

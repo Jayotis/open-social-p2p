@@ -1,6 +1,6 @@
 # ADR 0042: Content rules, reports and the project's hide list
 
-**Status:** Accepted (2026-11-17), the maintainer's choices on scope, reports and the hide list, and the rest as drafted with them. Part of P11 ([ADR 0030](0030-product-alpha-before-testers.md)), needed before outside testers on either phone. Answers [ADR 0019](0019-taking-posts-and-media-down.md)'s open question of who publishes the first list. Step 1 built (2026-11-17): the terms before pairing and Report. Step 2 built (2026-11-17): `osp block` and Block in the app; unblocking a person puts back their profile as it was, so they can be followed again. Step 3's node side built (2026-11-17): the list's format, `osp-list` to sign it, the node's daily fetch over Tor from `https://osp2p.com/lists/hide.json`, applying it on the node and in a directory's lists, and `osp hide-list on|off` ([how to check it](../testing/tor.md#the-hide-list)). The project's key isn't built in yet, so until it is the list is applied only where `[lists] hide_key` names one. Next: the app.
+**Status:** Accepted (2026-11-17), the maintainer's choices on scope, reports and the hide list, and the rest as drafted with them. Part of P11 ([ADR 0030](0030-product-alpha-before-testers.md)), needed before outside testers on either phone. Answers [ADR 0019](0019-taking-posts-and-media-down.md)'s open question of who publishes the first list. Step 1 built (2026-11-17): the terms before pairing and Report. Step 2 built (2026-11-17): `osp block` and Block in the app; unblocking a person puts back their profile as it was, so they can be followed again. Step 3's node side built (2026-11-17): the list's format, `osp-list` to sign it, the node's daily fetch over Tor from `https://osp2p.com/lists/hide.json`, applying it on the node and in a directory's lists, and `osp hide-list on|off` ([how to check it](../testing/tor.md#the-hide-list)). The project's key is built in (2026-11-17), and the first list, signed and empty, is on the site. Amended (2026-11-17), by the maintainer: the list is asked about at setup, not on by default (§6), and the owner can make exceptions by person. Built on the node: the question in `osp init`, exceptions (`osp hide-list except`), listed replies left out of threads, and the signed list passed to phones. Next: the app's question, Advanced, and its own check.
 
 ## Context
 
@@ -71,13 +71,17 @@ The project publishes the first list, in ADR 0019's form: signed, each entry dat
 
 The project's nodes and directories apply it too: a directory drops a listed post from its listings, and delists an account that exists mainly to post what §2 doesn't permit.
 
-**Official builds subscribe by default.** The node fetches the list once a day over Tor, so fetching tells the project nothing about the node. It then:
+**Asked at setup.** Official software asks the owner whether to use the list when the node is set up: `osp init`, and the app's first start, after the terms and before pairing. "Use the list" is the highlighted answer, "Not now" the other. Until the owner answers, the list is off, on new nodes and on nodes that were running before this was built; the app asks at its next start. *(Amended 2026-11-17; it said "official builds subscribe by default".)*
+
+With the list on, the node fetches it once a day over Tor, so fetching tells the project nothing about the node. It then:
 
 - refuses to fetch or serve a listed file, and drops its copies;
-- leaves listed posts out of Home, the Universe, search and Activity;
+- leaves listed posts out of Home, the Universe, search and Activity, and listed replies out of threads, both those it reads and those it serves;
 - passes the signed list to its paired phones.
 
 The official apps check the list's signature against the project's key, which is built into them, and hide listed posts too. The owner can turn the list off on their own node under Advanced. The app then says, under Advanced, that the project's list isn't applied.
+
+**Exceptions by person.** The owner can tell their node not to hide one person's posts: from that person's profile ("Don't hide their posts"), or `osp hide-list except`. The list then leaves that person's posts, and reshares of them, in view on the owner's node and phones, and their listed files may be fetched for the owner to see. The node still never passes a listed file on to anyone, whoever posted it. Advanced lists the people excepted, to take an exception back. The owner's own posts are never hidden, so they need no exception.
 
 **The key.** The list is signed by a project key kept off every node and off the release machines. It isn't the maintainer's own identity. A new key comes with a new release.
 
@@ -105,7 +109,7 @@ Anyone, the author included, can ask through the same form for an entry to be lo
 
 **Changes to accepted records.**
 
-- ADR 0019's open question (step 3 of "What each owner decides") is answered: the project publishes the first list, and official builds subscribe by default.
+- ADR 0019's open question (step 3 of "What each owner decides") is answered: the project publishes the first list, and official software asks each owner at setup whether to use it.
 - ADR 0019's position, "no central service ... the software reports nothing to the project": official software now fetches one list from the project, and the project runs a report form. The software still sends the project nothing about anyone, and the maintainer still can't change or remove anything on anyone's node.
 - ADR 0019's list gains post entries alongside files.
 - ADR 0019's `osp block` is built here, for accounts as well as posts and files.
