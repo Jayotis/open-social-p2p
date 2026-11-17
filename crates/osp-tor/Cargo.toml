@@ -21,9 +21,12 @@ n0-future.workspace = true
 n0-watcher.workspace = true
 noq-udp.workspace = true
 ring.workspace = true
+rustls.workspace = true
 sha3.workspace = true
 tokio.workspace = true
+tokio-rustls.workspace = true
 tracing.workspace = true
+webpki-roots.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

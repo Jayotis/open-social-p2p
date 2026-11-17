@@ -9,6 +9,7 @@ pub mod binding;
 pub mod code;
 pub mod connected;
 pub mod framing;
+pub mod lists;
 pub mod machine;
 pub mod object;
 pub mod rpc;

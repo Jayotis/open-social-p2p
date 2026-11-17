@@ -19,6 +19,7 @@
 //! [`transport`]: TorTransport
 
 mod control;
+pub mod https;
 pub mod onion;
 mod socks;
 mod tor;
