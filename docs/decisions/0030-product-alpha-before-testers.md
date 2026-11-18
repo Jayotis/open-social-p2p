@@ -48,7 +48,7 @@ Network and protocol work interrupts it only for:
 
 Not built before the Product Alpha:
 
-- **Accepted, not built:** ADR 0017's two hops, ADR 0018's earned direct links, and ADR 0022's earned lists and introductions, which wait for ADR 0016's stage B. ADR 0016's earlier introductions (stage A3) are built, and stay off by default.
+- **Accepted, not built:** ADR 0017's two hops (amended 2026-11-18: built in P11, [ADR 0043](0043-the-media-plane-before-the-alpha.md)), ADR 0018's earned direct links, and ADR 0022's earned lists and introductions, which wait for ADR 0016's stage B. ADR 0016's earlier introductions (stage A3) are built, and stay off by default.
 - **Proposed, not built:** ADR 0023 and ADR 0026. ADR 0027 is built after the first testers.
 
 ### 4. The current app stays as the reference
