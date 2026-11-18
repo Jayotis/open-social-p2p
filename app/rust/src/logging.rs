@@ -27,7 +27,11 @@ pub fn init(dir: &Path) {
     let _ = tracing_subscriber::fmt()
         .with_writer(Mutex::new(file))
         .with_ansi(false)
-        .with_env_filter("osp_client=debug,osp_mobile=debug,iroh=warn,warn")
+        // iroh's network checks warn on every run when the relays see the
+        // phone at different addresses (mobile networks, VPNs, iCloud
+        // Private Relay). It's normal for a phone, nothing anyone can act
+        // on, and it buried everything else in the log.
+        .with_env_filter("osp_client=debug,osp_mobile=debug,iroh=warn,iroh::net_report=error,warn")
         .try_init();
 }
 
