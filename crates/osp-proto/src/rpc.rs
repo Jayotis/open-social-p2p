@@ -165,6 +165,14 @@ pub enum ClientRequest {
     ApplyHideList {
         list: String,
     },
+    /// Except `actor` from the hide list, or with `except` false take that
+    /// back: their posts aren't hidden here, and their listed files may be
+    /// fetched for the owner, though never served on. Answered with
+    /// `HideList`.
+    HideException {
+        actor: PublicKey,
+        except: bool,
+    },
     /// A new device's first request: the secret from a pairing ticket, and a
     /// name to show for the device (`osp/client/0` only).
     Pair {
@@ -1293,6 +1301,25 @@ pub struct HideListInfo {
     pub published: Option<String>,
     pub entries: Option<u64>,
     pub fetched: Option<String>,
+    /// Whether the owner was asked about it yet, at setup or since. Off
+    /// until they answer; the app asks if not.
+    #[serde(default)]
+    pub asked: bool,
+    /// People whose posts it doesn't hide here, first excepted first.
+    #[serde(default)]
+    pub exceptions: Vec<HideException>,
+    /// The list as signed, for the app to check against its own key and
+    /// hide what it holds too.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signed: Option<String>,
+}
+
+/// Someone the owner excepted from the hide list.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HideException {
+    pub actor: PublicKey,
+    /// Their name, if their profile is held.
+    pub name: Option<String>,
 }
 
 /// One block, as `Blocks` lists it.

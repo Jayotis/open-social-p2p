@@ -11,7 +11,7 @@ use anyhow::{Context, Result};
 use iroh::PublicKey;
 use osp_proto::{
     lists::{MAX_LIST_BYTES, SignedList},
-    rpc::HideListInfo,
+    rpc::{HideException, HideListInfo},
 };
 use tracing::{info, warn};
 
@@ -20,10 +20,9 @@ use crate::{
     node::Core,
 };
 
-/// The project's list key, built into official builds; `[lists] hide_key`
-/// overrides it. Its secret is kept offline by the maintainer.
-pub const PROJECT_LIST_KEY: Option<&str> =
-    Some("ebb87603bed700de13ccf6445c2f25dc15c791eb3169955253c5bc38246f2f49");
+/// The project's list key, built into official builds (in `osp-proto`, so
+/// the apps share it); `[lists] hide_key` overrides it.
+pub const PROJECT_LIST_KEY: Option<&str> = Some(osp_proto::lists::PROJECT_KEY);
 
 /// How often the list is fetched.
 const FETCH_EVERY: Duration = Duration::from_secs(24 * 3600);
@@ -80,7 +79,35 @@ impl Core {
             published: state.as_ref().map(|s| s.published.clone()),
             entries: state.as_ref().map(|s| s.entries),
             fetched: state.map(|s| osp_proto::rfc3339_from_ms(s.fetched_ms.max(0) as u64)),
+            asked: self.hide_list_asked.load(Ordering::Relaxed),
+            exceptions: self
+                .db
+                .hide_exceptions()?
+                .into_iter()
+                .map(|(actor, name)| HideException { actor, name })
+                .collect(),
+            signed: self.db.hide_list_signed()?,
         })
+    }
+
+    /// Excepts `actor` from the list, or takes that back; what it hides
+    /// changes at once.
+    pub(crate) async fn set_hide_exception(&self, actor: &PublicKey, except: bool) -> Result<()> {
+        anyhow::ensure!(
+            *actor != self.signer.identity(),
+            "your own posts are never hidden"
+        );
+        if let Some(applied) = self.db.set_hide_exception(actor, except, now_ms())? {
+            self.store.let_go(&applied.files).await;
+            info!(
+                except,
+                hidden = applied.hidden,
+                shown = applied.shown,
+                files = applied.files.len(),
+                "changed a hide list exception"
+            );
+        }
+        Ok(())
     }
 
     /// Turns the list on or off, here and in `config.toml`. Off, all it hid
@@ -91,8 +118,9 @@ impl Core {
             true => crate::config::Config::load(&path)?,
             false => self.config.clone(),
         };
-        config.lists.hide = on;
+        config.lists.hide = Some(on);
         config.save(&path)?;
+        self.hide_list_asked.store(true, Ordering::Relaxed);
         self.hide_list_on.store(on, Ordering::Relaxed);
         if on {
             self.fetch_hide_list_now.notify_one();

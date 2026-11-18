@@ -7,6 +7,10 @@
 //! When an entry is retracted, the posts it hid come back: those of people
 //! the owner follows, and posts they reshared. Others, found through a
 //! directory or opened from a code, come back as they're found again.
+//!
+//! People the owner excepts are treated as the owner is: their posts aren't
+//! hidden, and their listed files may be fetched for the owner to see. No
+//! listed file is ever served on, though, whoever's it is.
 
 use anyhow::{Result, bail};
 use iroh::PublicKey;
@@ -16,7 +20,7 @@ use osp_proto::{
 };
 use rusqlite::{Connection, OptionalExtension, params};
 
-use super::{Db, drop_objects, forget_blob, insert_object};
+use super::{Db, declare_sizes, drop_objects, forget_blob, insert_object};
 
 /// What applying a list did.
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -68,14 +72,33 @@ fn owner(conn: &Connection) -> Result<Option<String>> {
         .optional()?)
 }
 
+fn any_listed(conn: &Connection) -> Result<bool> {
+    Ok(
+        conn.query_row("SELECT EXISTS (SELECT 1 FROM hide_list)", [], |row| {
+            row.get(0)
+        })?,
+    )
+}
+
+/// Whether the list leaves `actor`'s posts alone: the owner, or someone
+/// the owner excepted.
+fn spared(conn: &Connection, actor: &str) -> Result<bool> {
+    if owner(conn)?.is_some_and(|me| me == actor) {
+        return Ok(true);
+    }
+    Ok(conn.query_row(
+        "SELECT EXISTS (SELECT 1 FROM hide_exceptions WHERE actor = ?1)",
+        params![actor],
+        |row| row.get(0),
+    )?)
+}
+
 /// Whether the list hides `payload`, an object with ID `id`: the post
 /// itself, a file it names, or for a reshare the post it points at, listed
-/// or hidden here already. Never one of the owner's own.
+/// or hidden here already. Never one of the owner's own, or of someone the
+/// owner excepted; nor a reshare of such a post.
 pub(super) fn hides_object(conn: &Connection, id: &ObjectId, payload: &Payload) -> Result<bool> {
-    let any: bool = conn.query_row("SELECT EXISTS (SELECT 1 FROM hide_list)", [], |row| {
-        row.get(0)
-    })?;
-    if !any || owner(conn)?.is_some_and(|me| me == payload.actor().to_string()) {
+    if !any_listed(conn)? || spared(conn, &payload.actor().to_string())? {
         return Ok(false);
     }
     if listed(conn, HideKind::Post, &post_entry(id))? {
@@ -90,17 +113,44 @@ pub(super) fn hides_object(conn: &Connection, id: &ObjectId, payload: &Payload) 
             }
             Ok(false)
         }
-        Payload::Announce(a) => Ok(listed(conn, HideKind::Post, &post_entry(&a.object))?
-            || conn
+        Payload::Announce(a) => {
+            let aside = conn
                 .query_row(
                     "SELECT 1 FROM hidden_objects WHERE id = ?1",
                     params![a.object.to_string()],
                     |_| Ok(()),
                 )
                 .optional()?
-                .is_some()),
+                .is_some();
+            if aside {
+                return Ok(true);
+            }
+            if !listed(conn, HideKind::Post, &post_entry(&a.object))? {
+                return Ok(false);
+            }
+            // Listed, but shown here if its author is spared.
+            let author: Option<String> = conn
+                .query_row(
+                    "SELECT actor FROM objects WHERE id = ?1",
+                    params![a.object.to_string()],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            Ok(match author {
+                Some(author) => !spared(conn, &author)?,
+                None => true,
+            })
+        }
         _ => Ok(false),
     }
+}
+
+/// Whether the list hides a reply with ID `id` by `actor`. Replies carry no
+/// files, so only its own entry counts.
+pub(super) fn hides_reply(conn: &Connection, id: &ObjectId, actor: &PublicKey) -> Result<bool> {
+    Ok(any_listed(conn)?
+        && !spared(conn, &actor.to_string())?
+        && listed(conn, HideKind::Post, &post_entry(id))?)
 }
 
 /// Keeps `obj`, which the list hides, aside for a retraction.
@@ -124,9 +174,22 @@ pub(super) fn keep_aside(
     Ok(())
 }
 
-/// Whether the list holds `hash`: it isn't fetched or served.
+/// Whether the list holds `hash`: it isn't served, and isn't fetched
+/// unless a post the list spares names it (see [`Db::may_fetch_listed`]).
 pub(super) fn hides_file(conn: &Connection, hash: &BlobHash) -> Result<bool> {
     listed(conn, HideKind::File, &file_entry(hash))
+}
+
+/// Whether a post by the owner or someone excepted, held here, names `hash`.
+fn named_by_spared(conn: &Connection, hash: &str, me: &str) -> Result<bool> {
+    Ok(conn.query_row(
+        "SELECT EXISTS (SELECT 1 FROM refs JOIN objects ON objects.id = refs.id
+                        WHERE refs.ref = ?1
+                          AND (objects.actor = ?2
+                               OR objects.actor IN (SELECT actor FROM hide_exceptions)))",
+        params![hash, me],
+        |row| row.get(0),
+    )?)
 }
 
 impl Db {
@@ -239,9 +302,87 @@ impl Db {
         .transpose()
     }
 
+    /// The list as last applied, as signed, for phones.
+    pub fn hide_list_signed(&self) -> Result<Option<String>> {
+        Ok(self
+            .conn()
+            .query_row("SELECT signed FROM hide_state", [], |row| row.get(0))
+            .optional()?)
+    }
+
     /// Whether the list holds `hash`.
     pub fn hides_file(&self, hash: &BlobHash) -> Result<bool> {
         hides_file(&self.conn(), hash)
+    }
+
+    /// Whether `hash`, which the list holds, may still be fetched: a post
+    /// by the owner or someone the owner excepted names it.
+    pub fn may_fetch_listed(&self, hash: &BlobHash) -> Result<bool> {
+        let conn = self.conn();
+        let me = owner(&conn)?.unwrap_or_default();
+        named_by_spared(&conn, &hash.to_string(), &me)
+    }
+
+    /// Whether the list hides the reply `id` by `actor`.
+    pub fn hides_reply(&self, id: &ObjectId, actor: &PublicKey) -> Result<bool> {
+        hides_reply(&self.conn(), id, actor)
+    }
+
+    /// The people the owner excepted from the list, first excepted first,
+    /// with their names if their profiles are held.
+    pub fn hide_exceptions(&self) -> Result<Vec<(PublicKey, Option<String>)>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT e.actor, p.name FROM hide_exceptions e
+             LEFT JOIN profiles p ON p.actor = e.actor
+             ORDER BY e.at_ms, e.actor",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+        })?;
+        let mut people = Vec::new();
+        for row in rows {
+            let (actor, name) = row?;
+            if let Ok(key) = actor.parse() {
+                people.push((key, name));
+            }
+        }
+        Ok(people)
+    }
+
+    /// Excepts `actor` from the list, or with `except` false takes that
+    /// back. While a list is applied, what it now hides or spares changes at
+    /// once: the files it lets go come back in `files`. Says nothing changed
+    /// with `None`.
+    pub fn set_hide_exception(
+        &self,
+        actor: &PublicKey,
+        except: bool,
+        now_ms: i64,
+    ) -> Result<Option<Applied>> {
+        let conn = self.conn();
+        let tx = conn.unchecked_transaction()?;
+        let changed = if except {
+            tx.execute(
+                "INSERT OR IGNORE INTO hide_exceptions (actor, at_ms) VALUES (?1, ?2)",
+                params![actor.to_string(), now_ms],
+            )?
+        } else {
+            tx.execute(
+                "DELETE FROM hide_exceptions WHERE actor = ?1",
+                params![actor.to_string()],
+            )?
+        };
+        if changed == 0 {
+            return Ok(None);
+        }
+        let mut applied = Applied::default();
+        if let Some(me) = owner(&tx)? {
+            applied.shown = bring_back(&tx)?;
+            hide_held(&tx, &me, &mut applied)?;
+        }
+        tx.commit()?;
+        Ok(Some(applied))
     }
 }
 
@@ -291,6 +432,10 @@ fn bring_back(tx: &Connection) -> Result<usize> {
             wanted.insert(a.object);
         }
         if insert_object(tx, &obj, &payload, received, None)? {
+            // As when it first came, so its media can be fetched again.
+            if let Payload::Note(note) = &payload {
+                declare_sizes(tx, note, Some(&obj.id()))?;
+            }
             shown += 1;
         }
     }
@@ -332,7 +477,8 @@ fn hide_held(tx: &Connection, me: &str, applied: &mut Applied) -> Result<()> {
     drop_objects(tx, &gone, blobs, &mut applied.files)?;
 
     // Listed files still here, named by nothing hidden: someone's post the
-    // owner keeps, or none. The owner's own posts keep theirs.
+    // owner keeps, or none. The owner's own posts keep theirs, and so do
+    // those of people the owner excepted.
     let held: Vec<String> = {
         let mut stmt = tx.prepare("SELECT hash FROM blobs")?;
         let rows = stmt.query_map([], |row| row.get(0))?;
@@ -345,13 +491,7 @@ fn hide_held(tx: &Connection, me: &str, applied: &mut Applied) -> Result<()> {
         if !hides_file(tx, &hash)? || applied.files.contains(&hash) {
             continue;
         }
-        let own: bool = tx.query_row(
-            "SELECT EXISTS (SELECT 1 FROM refs JOIN objects ON objects.id = refs.id
-                            WHERE refs.ref = ?1 AND objects.actor = ?2)",
-            params![hash_hex, me],
-            |row| row.get(0),
-        )?;
-        if !own {
+        if !named_by_spared(tx, &hash_hex, me)? {
             forget_blob(tx, &hash_hex)?;
             applied.files.push(hash);
         }

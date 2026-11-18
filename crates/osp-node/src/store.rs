@@ -376,9 +376,10 @@ impl ContentStore {
             !self.db.is_blocked(&BlockTarget::File { hash: *hash })?,
             "the owner blocked this file"
         );
-        // The project's hide list holds it (§6), while the list is on.
+        // The project's hide list holds it (§6), while the list is on, and
+        // no post by the owner or someone they excepted names it.
         ensure!(
-            !self.db.hides_file(hash)?,
+            !self.db.hides_file(hash)? || self.db.may_fetch_listed(hash)?,
             "the project's hide list holds this file"
         );
         let h = to_hash(hash);

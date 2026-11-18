@@ -257,6 +257,17 @@ class _ProfileScreenState extends State<ProfileScreen> {
                 await openReport(reportUri(account: profile.identity));
                 return;
               }
+              if (choice == 'except' || choice == 'unexcept') {
+                final changed = await exceptFromHideList(
+                  context,
+                  widget.node,
+                  identity: profile.identity,
+                  name: profile.name,
+                  except: choice == 'except',
+                );
+                if (changed) await _reload();
+                return;
+              }
               final blocked = await blockPerson(
                 context,
                 widget.node,
@@ -265,8 +276,27 @@ class _ProfileScreenState extends State<ProfileScreen> {
               );
               if (blocked && context.mounted) Navigator.of(context).pop();
             },
-            itemBuilder: (_) => const [
-              PopupMenuItem(
+            itemBuilder: (_) => [
+              // Only while the project's hide list is in use (ADR 0042 §6).
+              if (widget.node.hideList case final h? when h.inUse)
+                h.exceptions.any((e) => e.identity == profile.identity)
+                    ? const PopupMenuItem(
+                        value: 'unexcept',
+                        child: ListTile(
+                          leading: Icon(Icons.visibility_off_outlined),
+                          title: Text('Hide listed posts again'),
+                          contentPadding: EdgeInsets.zero,
+                        ),
+                      )
+                    : const PopupMenuItem(
+                        value: 'except',
+                        child: ListTile(
+                          leading: Icon(Icons.visibility_outlined),
+                          title: Text("Don't hide their posts"),
+                          contentPadding: EdgeInsets.zero,
+                        ),
+                      ),
+              const PopupMenuItem(
                 value: 'block',
                 child: ListTile(
                   leading: Icon(Icons.block),
@@ -274,7 +304,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   contentPadding: EdgeInsets.zero,
                 ),
               ),
-              PopupMenuItem(
+              const PopupMenuItem(
                 value: 'report',
                 child: ListTile(
                   leading: Icon(Icons.flag_outlined),

@@ -3,7 +3,9 @@
 //! both leave her view, with Bob's reshare of the post, and the photo's copy
 //! goes. Kim, the author, keeps his own, but won't serve the photo. A list
 //! signed by another key is refused, an older one too; turning the list off,
-//! or retracting the entries, brings the posts back.
+//! or retracting the entries, brings the posts back. Excepting Kim brings
+//! his posts and photo back for Alice alone. Until the owner answers whether
+//! to use the list, it's off.
 //!
 //! All nodes run in this process on loopback with relays and DNS lookup off.
 
@@ -11,7 +13,7 @@ use std::path::Path;
 
 use osp_node::{Config, Node};
 use osp_proto::{
-    BlobHash, ObjectId, SecretKey,
+    BlobHash, ObjectId, PublicKey, SecretKey,
     lists::{HideKind, HideList, SignedList, file_entry, post_entry},
     rpc::{ClientRequest, ClientResponse, HideListInfo},
 };
@@ -20,6 +22,7 @@ async fn start(root: &Path, name: &str, key: Option<&SecretKey>) -> Node {
     let home = root.join(name.to_lowercase());
     let mut config = Config::local_test(name);
     config.lists.hide_key = key.map(|k| k.public());
+    config.lists.hide = Some(true);
     Node::init(&home, &config).unwrap();
     Node::spawn(&home).await.unwrap()
 }
@@ -199,6 +202,8 @@ async fn a_listed_post_and_file_leave_view_and_come_back_when_retracted() {
     let info = apply(&alice, signed(&list, &project)).await;
     assert_eq!((info.seq, info.entries), (Some(2), Some(0)));
     assert_eq!(feed_texts(&alice).await, everything_and_again(&everything));
+    // Its photo opens again.
+    alice.open_blob(&file).await.unwrap();
     let older = alice
         .handle(ClientRequest::ApplyHideList { list: first })
         .await;
@@ -238,4 +243,131 @@ async fn with_no_key_set_the_projects_key_is_used() {
     assert!(info.on && info.seq.is_none());
     assert!(info.key.is_some() && info.key != Some(project.public()));
     alice.shutdown().await.unwrap();
+}
+
+async fn info(node: &Node) -> HideListInfo {
+    match call(node, ClientRequest::HideList).await {
+        ClientResponse::HideList { info } => info,
+        other => panic!("unexpected {other:?}"),
+    }
+}
+
+async fn except(node: &Node, actor: PublicKey, except: bool) -> HideListInfo {
+    match call(node, ClientRequest::HideException { actor, except }).await {
+        ClientResponse::HideList { info } => info,
+        other => panic!("unexpected {other:?}"),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_list_is_off_until_the_owner_answers() {
+    let dir = tempfile::tempdir().unwrap();
+    let project = SecretKey::from_bytes(&[7; 32]);
+    let home = dir.path().join("alice");
+    let mut config = Config::local_test("Alice");
+    config.lists.hide_key = Some(project.public());
+    Node::init(&home, &config).unwrap();
+    let alice = Node::spawn(&home).await.unwrap();
+
+    // Not asked yet: off, and a list isn't applied.
+    let first = info(&alice).await;
+    assert!(!first.asked && !first.on, "{first:?}");
+    let mut list = HideList::new(project.public());
+    list.seq = 1;
+    let refused = alice
+        .handle(ClientRequest::ApplyHideList {
+            list: signed(&list, &project),
+        })
+        .await;
+    assert!(
+        matches!(refused, ClientResponse::Error { .. }),
+        "{refused:?}"
+    );
+
+    // "Not now" is an answer: still off, but asked.
+    call(&alice, ClientRequest::SetHideList { on: false }).await;
+    let no = info(&alice).await;
+    assert!(no.asked && !no.on, "{no:?}");
+    // Then yes: the list is applied, and its signed text kept for phones.
+    call(&alice, ClientRequest::SetHideList { on: true }).await;
+    let yes = apply(&alice, signed(&list, &project)).await;
+    assert!(yes.asked && yes.on, "{yes:?}");
+    assert_eq!(
+        yes.signed.as_deref(),
+        Some(signed(&list, &project).as_str())
+    );
+
+    // The answer is kept in config.toml, through a restart.
+    alice.shutdown().await.unwrap();
+    let alice = Node::spawn(&home).await.unwrap();
+    let again = info(&alice).await;
+    assert!(again.asked && again.on, "{again:?}");
+    alice.shutdown().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_excepted_persons_posts_and_files_come_back_for_the_owner_alone() {
+    let dir = tempfile::tempdir().unwrap();
+    let project = SecretKey::from_bytes(&[7; 32]);
+    let alice = start(dir.path(), "Alice", Some(&project)).await;
+    let kim = start(dir.path(), "Kim", Some(&project)).await;
+    let bob = start(dir.path(), "Bob", Some(&project)).await;
+
+    post(&kim, "fine", vec![]).await;
+    let words = post(&kim, "listed words", vec![]).await;
+    let shot = post(&kim, "listed photo", vec![photo(dir.path()).await]).await;
+    let file = blob_of(&kim, shot).await;
+    follow(&bob, &kim).await;
+    call(&bob, ClientRequest::Sync).await;
+    call(
+        &bob,
+        ClientRequest::Reshare {
+            id: words,
+            host: false,
+        },
+    )
+    .await;
+    follow(&alice, &kim).await;
+    follow(&alice, &bob).await;
+    let everything = feed_texts(&alice).await;
+    assert_eq!(everything.len(), 3, "{everything:?}");
+
+    let mut list = HideList::new(project.public());
+    list.add(HideKind::Post, post_entry(&words), "2026-11-17T00:00:00Z");
+    list.add(HideKind::File, file_entry(&file), "2026-11-17T00:00:00Z");
+    list.seq = 1;
+    apply(&alice, signed(&list, &project)).await;
+    assert_eq!(feed_texts(&alice).await, ["fine"]);
+    assert_eq!(alice.blob_class(&file).unwrap(), None);
+    assert!(alice.open_blob(&file).await.is_err());
+
+    // Alice excepts Kim: his posts are back, Bob's reshare of the words
+    // too, and the photo can be fetched for her again.
+    let kims = kim.identity();
+    let info = except(&alice, kims, true).await;
+    assert_eq!(info.exceptions.len(), 1);
+    assert_eq!(info.exceptions[0].actor, kims);
+    assert_eq!(info.exceptions[0].name.as_deref(), Some("Kim"));
+    assert_eq!(feed_texts(&alice).await, everything);
+    alice.open_blob(&file).await.unwrap();
+    assert!(alice.blob_class(&file).unwrap().is_some());
+
+    // Taking it back hides them again, and the photo's copy goes.
+    let info = except(&alice, kims, false).await;
+    assert!(info.exceptions.is_empty());
+    assert_eq!(feed_texts(&alice).await, ["fine"]);
+    assert_eq!(alice.blob_class(&file).unwrap(), None);
+
+    // The owner's own posts are never hidden, so there's nothing to except.
+    let me = alice
+        .handle(ClientRequest::HideException {
+            actor: alice.identity(),
+            except: true,
+        })
+        .await;
+    assert!(matches!(me, ClientResponse::Error { .. }), "{me:?}");
+
+    for node in [alice, kim, bob] {
+        node.shutdown().await.unwrap();
+    }
 }

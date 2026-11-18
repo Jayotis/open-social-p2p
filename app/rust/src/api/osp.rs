@@ -15,6 +15,7 @@ use osp_client::{
     device_key_from_hex,
     osp_proto::{
         connected,
+        lists::{project_key, Listed, SignedList},
         rpc::{
             ActivityEntry, ActivityPerson, ActivityWhat, BlockTarget, ClientRequest,
             ClientResponse, FeedItem, LikeInfo, ProfileInfo, ProfileItemKind, Reached,
@@ -22,7 +23,7 @@ use osp_client::{
             SentStatus, TrustInfo,
         },
         social::ReplyPolicy,
-        universe, BlobHash, FollowTicket, MediaKind, ObjectId, OspCode, ProfileLink,
+        universe, BlobHash, FollowTicket, MediaKind, ObjectId, OspCode, ProfileLink, PublicKey,
     },
     Client, ClientOptions, NoContact, Pairing, ProfilePicture,
 };
@@ -46,6 +47,64 @@ pub struct OspApp {
     dir: PathBuf,
     /// Stops the post being sent, if any (`discard_post`).
     stop_post: Mutex<Option<oneshot::Sender<()>>>,
+    /// The project's hide list as this app checked it, if the node applies
+    /// one (ADR 0042 §6): set by `hide_list`.
+    hide: Mutex<Option<Hider>>,
+}
+
+/// What the app hides itself, besides what the node leaves out: posts,
+/// files and replies on a list checked against the project's key, unless
+/// by the owner or someone they excepted.
+struct Hider {
+    listed: Listed,
+    spared: std::collections::HashSet<PublicKey>,
+}
+
+impl Hider {
+    fn hides(&self, item: &FeedItem) -> bool {
+        if self.spared.contains(&item.actor) {
+            return false;
+        }
+        self.listed.post(&item.id)
+            || item.attachments.iter().any(|a| {
+                self.listed.file(&a.attachment.blob)
+                    || a.attachment
+                        .thumbnail
+                        .as_ref()
+                        .is_some_and(|t| self.listed.file(&t.blob))
+            })
+    }
+
+    fn hides_reply(&self, reply: &ReplyInfo) -> bool {
+        !self.spared.contains(&reply.actor) && self.listed.post(&reply.id)
+    }
+}
+
+/// The project's hide list on the node (ADR 0042 §6).
+pub struct HideListState {
+    /// Whether the owner has answered whether to use it. Until then it's off.
+    pub asked: bool,
+    /// Whether it's on: the owner chose to use it.
+    pub in_use: bool,
+    /// Whether the node has a key to check it by.
+    pub has_key: bool,
+    /// The list applied: its number, when the project signed it (RFC 3339),
+    /// its entries in force, and when the node last fetched it.
+    pub number: Option<u32>,
+    pub signed: Option<String>,
+    pub entries: Option<u32>,
+    pub fetched: Option<String>,
+    /// Whether this app checked the list against the project's key, and
+    /// hides what it holds too.
+    pub checked: bool,
+    /// People whose posts it doesn't hide, first excepted first.
+    pub exceptions: Vec<HideExceptionPerson>,
+}
+
+pub struct HideExceptionPerson {
+    pub identity: String,
+    /// Their name, or the short form of their identity.
+    pub name: String,
 }
 
 /// The home node this phone is paired with.
@@ -709,6 +768,7 @@ impl OspApp {
             client,
             dir,
             stop_post: Mutex::new(None),
+            hide: Mutex::new(None),
         })
     }
 
@@ -763,14 +823,32 @@ impl OspApp {
         })
     }
 
-    pub async fn feed(&self, limit: u32) -> Result<Vec<Post>> {
-        Ok(self
-            .client
-            .feed(limit)
-            .await?
+    /// `items` as posts, less those the hide list holds.
+    fn shown(&self, items: Vec<FeedItem>) -> Vec<Post> {
+        let hide = self.hide.lock().unwrap();
+        items
             .into_iter()
+            .filter(|i| !hide.as_ref().is_some_and(|h| h.hides(i)))
             .map(post)
-            .collect())
+            .collect()
+    }
+
+    /// One post, unless the hide list holds it.
+    fn one(&self, item: FeedItem) -> Result<Post> {
+        if self
+            .hide
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_some_and(|h| h.hides(&item))
+        {
+            bail!("the project's hide list holds this post");
+        }
+        Ok(post(item))
+    }
+
+    pub async fn feed(&self, limit: u32) -> Result<Vec<Post>> {
+        Ok(self.shown(self.client.feed(limit).await?))
     }
 
     /// Looks through the posts and profiles the node has received. Nothing
@@ -779,7 +857,7 @@ impl OspApp {
         let (people, posts) = self.client.search(&words, limit).await?;
         Ok(Found {
             people: people.into_iter().map(found_person).collect(),
-            posts: posts.into_iter().map(post).collect(),
+            posts: self.shown(posts),
         })
     }
 
@@ -790,7 +868,7 @@ impl OspApp {
         let (people, posts) = self.client.region_items(&region, limit).await?;
         Ok(Found {
             people: people.into_iter().map(found_person).collect(),
-            posts: posts.into_iter().map(post).collect(),
+            posts: self.shown(posts),
         })
     }
 
@@ -935,7 +1013,7 @@ impl OspApp {
             .profile_items(identity.parse()?, kind, before, limit)
             .await?;
         Ok(ProfilePage {
-            posts: items.into_iter().map(post).collect(),
+            posts: self.shown(items),
             next: next.map(|n| n.to_string()),
         })
     }
@@ -975,7 +1053,7 @@ impl OspApp {
     #[frb(sync)]
     pub fn saved_feed(&self) -> Option<SavedFeed> {
         self.client.cached_feed().map(|f| SavedFeed {
-            posts: f.items.into_iter().map(post).collect(),
+            posts: self.shown(f.items),
             saved: f.saved,
         })
     }
@@ -1137,6 +1215,74 @@ impl OspApp {
             .collect())
     }
 
+    /// The project's hide list on the node (ADR 0042 §6). Checks the list
+    /// the node applies against the project's key, built into the app, and
+    /// from then on hides what it holds too.
+    pub async fn hide_list(&self) -> Result<HideListState> {
+        let ClientResponse::HideList { info } =
+            self.client.request(&ClientRequest::HideList).await?
+        else {
+            bail!("unexpected reply to HideList");
+        };
+        let listed = match (&info.signed, info.on) {
+            (Some(signed), true) => match SignedList::from_json(signed.as_bytes())
+                .and_then(|s| s.verify(&project_key()))
+            {
+                Ok(list) => Some(Listed::new(&list)),
+                Err(e) => {
+                    tracing::warn!("the node's hide list didn't check out here: {e:#}");
+                    None
+                }
+            },
+            _ => None,
+        };
+        let checked = listed.is_some();
+        let mut spared: std::collections::HashSet<PublicKey> =
+            info.exceptions.iter().map(|e| e.actor).collect();
+        if let Some(pairing) = self.client.pairing() {
+            spared.insert(pairing.identity);
+        }
+        *self.hide.lock().unwrap() = listed.map(|listed| Hider { listed, spared });
+        Ok(HideListState {
+            asked: info.asked,
+            in_use: info.on,
+            has_key: info.key.is_some(),
+            number: info.seq.map(|n| n.min(u32::MAX as u64) as u32),
+            signed: info.published,
+            entries: info.entries.map(|n| n.min(u32::MAX as u64) as u32),
+            fetched: info.fetched,
+            checked,
+            exceptions: info
+                .exceptions
+                .into_iter()
+                .map(|e| HideExceptionPerson {
+                    identity: e.actor.to_string(),
+                    name: e.name.unwrap_or_else(|| e.actor.fmt_short().to_string()),
+                })
+                .collect(),
+        })
+    }
+
+    /// Answers whether to use the list, or changes the answer. Off, all it
+    /// hid comes back; on, the node fetches it soon.
+    pub async fn set_hide_list(&self, in_use: bool) -> Result<HideListState> {
+        self.client
+            .request(&ClientRequest::SetHideList { on: in_use })
+            .await?;
+        self.hide_list().await
+    }
+
+    /// Stops the list hiding `identity`'s posts, or with `except` false
+    /// takes that back. Their listed files may then be fetched for the
+    /// owner, but the node never passes them on.
+    pub async fn hide_exception(&self, identity: String, except: bool) -> Result<HideListState> {
+        let actor = identity.parse()?;
+        self.client
+            .request(&ClientRequest::HideException { actor, except })
+            .await?;
+        self.hide_list().await
+    }
+
     /// Who the node follows, by name.
     pub async fn following(&self) -> Result<Vec<Followed>> {
         let ClientResponse::Following { follows } =
@@ -1197,7 +1343,14 @@ impl OspApp {
         };
         Ok(Thread {
             policy: policy.as_str().to_string(),
-            replies: replies.into_iter().map(reply_info).collect(),
+            replies: {
+                let hide = self.hide.lock().unwrap();
+                replies
+                    .into_iter()
+                    .filter(|r| !hide.as_ref().is_some_and(|h| h.hides_reply(r)))
+                    .map(reply_info)
+                    .collect()
+            },
             more,
             likes: likes.min(u32::MAX as u64) as u32,
             liked,
@@ -1212,7 +1365,7 @@ impl OspApp {
         else {
             bail!("unexpected reply to Show");
         };
-        Ok(post(item))
+        self.one(item)
     }
 
     /// Opens a post from an OSP code (ADR 0039 §4): as the node holds it,
@@ -1229,7 +1382,7 @@ impl OspApp {
         let ClientResponse::Item { item } = self.client.request(&req).await? else {
             bail!("unexpected reply to OpenPost");
         };
-        Ok(post(item))
+        self.one(item)
     }
 
     /// Drops an opened post and its media now: call when the owner leaves it.
@@ -2130,5 +2283,83 @@ mod tests {
         );
         let three = [by(None, false), by(None, false), by(None, true)];
         assert_eq!(found_resharers(&three), (Some("3 people".into()), false));
+    }
+
+    fn item(id: ObjectId, actor: PublicKey, photo: Option<BlobHash>) -> FeedItem {
+        FeedItem {
+            id,
+            actor,
+            actor_name: None,
+            published: String::new(),
+            content: String::new(),
+            attachments: photo
+                .into_iter()
+                .map(|blob| osp_client::osp_proto::rpc::AttachmentInfo {
+                    attachment: osp_client::osp_proto::Attachment {
+                        kind: MediaKind::Image,
+                        media_type: "image/jpeg".into(),
+                        blob,
+                        size: 1,
+                        width: 1,
+                        height: 1,
+                        duration_ms: None,
+                        name: None,
+                        thumbnail: None,
+                        profile: String::new(),
+                    },
+                    local: false,
+                })
+                .collect(),
+            reshared_by: None,
+            found_through: None,
+            deletable: None,
+            found_reshares: vec![],
+            resharers: None,
+            likes: None,
+            liked: false,
+            opened: false,
+            regions: vec![],
+        }
+    }
+
+    #[test]
+    fn the_app_hides_listed_posts_files_and_replies_but_not_the_spared() {
+        use osp_client::osp_proto::lists::{file_entry, post_entry, HideKind, HideList};
+
+        let key = SecretKey::from_bytes(&[3; 32]);
+        let (kim, me, excepted) = (
+            SecretKey::from_bytes(&[4; 32]).public(),
+            SecretKey::from_bytes(&[5; 32]).public(),
+            SecretKey::from_bytes(&[6; 32]).public(),
+        );
+        let (words, photo) = (ObjectId::of(b"words"), BlobHash::from_bytes([9; 32]));
+        let mut list = HideList::new(key.public());
+        list.add(HideKind::Post, post_entry(&words), "2026-11-17T00:00:00Z");
+        list.add(HideKind::File, file_entry(&photo), "2026-11-17T00:00:00Z");
+        let hider = Hider {
+            listed: Listed::new(&list),
+            spared: [me, excepted].into_iter().collect(),
+        };
+
+        assert!(hider.hides(&item(words, kim, None)));
+        assert!(hider.hides(&item(ObjectId::of(b"other"), kim, Some(photo))));
+        assert!(!hider.hides(&item(ObjectId::of(b"other"), kim, None)));
+        // The owner's own, and someone excepted, aren't hidden.
+        assert!(!hider.hides(&item(words, me, Some(photo))));
+        assert!(!hider.hides(&item(words, excepted, None)));
+
+        let reply = |actor| ReplyInfo {
+            id: words,
+            post: ObjectId::of(b"post"),
+            actor,
+            name: String::new(),
+            content: String::new(),
+            published: String::new(),
+            state: ReplyStatus::Published,
+            why: None,
+            seq: 1,
+        };
+        assert!(hider.hides_reply(&reply(kim)));
+        assert!(!hider.hides_reply(&reply(excepted)));
     }
 }

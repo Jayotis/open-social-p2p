@@ -215,6 +215,66 @@ class HomeNode extends ChangeNotifier with WidgetsBindingObserver {
     notifyListeners();
   }
 
+  /// The answer given on this phone to whether to use the project's hide
+  /// list (ADR 0042 §6), null if none. Kept as a file, as it's asked before
+  /// pairing: once paired, it goes to a node that hasn't been asked.
+  bool? _useHideList;
+  File? _hideListFile;
+
+  /// The hide list as the node has it, null until first read.
+  HideListState? hideList;
+
+  /// Whether to ask about the hide list before going on: on first start,
+  /// after the terms, and on a paired phone whose node hasn't been asked.
+  bool get hideListDue =>
+      _useHideList == null &&
+      (paired == null || (hideList != null && !hideList!.asked));
+
+  /// The owner's answer, from the welcome. A paired phone sends it to the
+  /// node at once.
+  Future<void> answerHideList(bool use) async {
+    _useHideList = use;
+    try {
+      _hideListFile?.writeAsStringSync(use ? 'use' : 'not now');
+    } on FileSystemException catch (e) {
+      debugPrint('Hide list answer not kept: $e');
+    }
+    notifyListeners();
+    if (paired != null) await setHideList(use);
+  }
+
+  /// Turns the list on or off on the node (Advanced).
+  Future<void> setHideList(bool on) async {
+    hideList = await app.setHideList(inUse: on);
+    notifyListeners();
+    unawaited(refresh());
+  }
+
+  /// Stops the list hiding [identity]'s posts, or takes that back.
+  Future<void> hideException(String identity, bool except) async {
+    hideList = await app.hideException(identity: identity, except: except);
+    notifyListeners();
+    unawaited(refresh());
+  }
+
+  /// Reads the hide list from the node, which also lets the app check it
+  /// and hide what it holds. Sends the answer given before pairing, if the
+  /// node wasn't asked. Quiet if the node can't be asked.
+  Future<void> loadHideList() async {
+    if (paired == null) return;
+    try {
+      var state = await app.hideList();
+      final answer = _useHideList;
+      if (!state.asked && answer != null) {
+        state = await app.setHideList(inUse: answer);
+      }
+      hideList = state;
+      notifyListeners();
+    } catch (e) {
+      debugPrint('Hide list not read: $e');
+    }
+  }
+
   Timer? _poll;
   StreamSubscription<List<ConnectivityResult>>? _network;
   final Map<String, Future<String>> _urls = {};
@@ -240,6 +300,16 @@ class HomeNode extends ChangeNotifier with WidgetsBindingObserver {
     node._askedToNotify = File('$dir/asked-to-notify');
     node.zoomHintDue = !node._zoomHintShown!.existsSync();
     node._termsFile = File('$dir/terms-agreed');
+    node._hideListFile = File('$dir/hide-list-answer');
+    try {
+      node._useHideList = switch (node._hideListFile!.readAsStringSync()) {
+        'use' => true,
+        'not now' => false,
+        _ => null,
+      };
+    } on FileSystemException {
+      // Not answered on this phone.
+    }
     try {
       node._termsAgreed =
           int.tryParse(node._termsFile!.readAsStringSync().trim()) ?? 0;
@@ -416,6 +486,8 @@ class HomeNode extends ChangeNotifier with WidgetsBindingObserver {
     }
     try {
       if (sync) await app.sync_();
+      // First, so the app hides what the list holds in what follows.
+      await loadHideList();
       posts = await app.feed(limit: 100);
       savedAt = null;
       _reached();
@@ -682,6 +754,7 @@ class HomeNode extends ChangeNotifier with WidgetsBindingObserver {
     events.clear();
     universeError = null;
     me = null;
+    hideList = null;
     posts = [];
     status = null;
     savedAt = null;

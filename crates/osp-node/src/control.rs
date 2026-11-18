@@ -230,6 +230,12 @@ impl Core {
                 self.set_hide_list(on)?;
                 ClientResponse::Ok
             }
+            ClientRequest::HideException { actor, except } => {
+                self.set_hide_exception(&actor, except).await?;
+                ClientResponse::HideList {
+                    info: self.hide_list_info()?,
+                }
+            }
             ClientRequest::ApplyHideList { list } => {
                 ensure!(
                     local,

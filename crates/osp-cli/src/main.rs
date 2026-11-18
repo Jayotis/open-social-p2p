@@ -120,6 +120,13 @@ enum Command {
         /// Don't ask to be listed. Otherwise you're asked, unless Tor is off
         #[arg(long)]
         no_list_me: bool,
+        /// Use the project's hide list (ADR 0042): posts and files against the project's
+        /// rules aren't shown, fetched or passed on. Otherwise you're asked
+        #[arg(long, conflicts_with = "no_hide_list")]
+        hide_list: bool,
+        /// Don't use it. Otherwise you're asked; with no answer it stays off until you choose
+        #[arg(long)]
+        no_hide_list: bool,
         /// A directory this node reads, by its machine name and public ID, written under
         /// [[directory.known]] in config.toml. Repeat it for more than one. There's no default:
         /// an installer passes the ones to use
@@ -417,6 +424,11 @@ enum HideListCommand {
     /// Apply a signed list from a file, as if fetched. It's checked against
     /// the same key
     Apply { file: PathBuf },
+    /// Don't hide this person's posts here. Their listed files may be
+    /// fetched for you, but your node never passes them on
+    Except { actor: PublicKey },
+    /// Hide this person's listed posts again
+    Unexcept { actor: PublicKey },
 }
 
 #[derive(Subcommand)]
@@ -563,6 +575,8 @@ async fn main() -> Result<()> {
             no_tor,
             list_me,
             no_list_me,
+            hide_list,
+            no_hide_list,
             directory,
         } => {
             let lookup = !no_address_lookup;
@@ -572,6 +586,7 @@ async fn main() -> Result<()> {
             let answers = Answers {
                 share: answered(share, no_share),
                 list_me: answered(list_me, no_list_me),
+                hide_list: answered(hide_list, no_hide_list),
                 ask_name,
             };
             if restore {
@@ -719,6 +734,14 @@ async fn main() -> Result<()> {
             Some(HideListCommand::Apply { file }) => ClientRequest::ApplyHideList {
                 list: std::fs::read_to_string(&file)
                     .with_context(|| format!("reading {}", file.display()))?,
+            },
+            Some(HideListCommand::Except { actor }) => ClientRequest::HideException {
+                actor,
+                except: true,
+            },
+            Some(HideListCommand::Unexcept { actor }) => ClientRequest::HideException {
+                actor,
+                except: false,
             },
         },
         Command::Following => ClientRequest::Following,
@@ -942,6 +965,7 @@ fn known_directories(ids: &[EndpointId]) -> Vec<osp_node::KnownDirectory> {
 struct Answers {
     share: Option<bool>,
     list_me: Option<bool>,
+    hide_list: Option<bool>,
     /// No `--name` was given, so a new node asks for one.
     ask_name: bool,
 }
@@ -962,6 +986,7 @@ async fn init(home: &Path, mut config: Config, check_words: bool, answers: Answe
     }
     config.swarm.share_prefetched = ask_share(answers.share)?;
     config.directory.list_me = ask_list_me(answers.list_me, config.tor.enabled)?;
+    config.lists.hide = ask_hide_list(answers.hide_list)?;
     let words = osp_node::backup::new_identity_words();
     print_words(&words);
     if check_words {
@@ -1039,6 +1064,7 @@ async fn restore_node(
     // A backup doesn't keep the settings, so these are asked again.
     config.swarm.share_prefetched = ask_share(answers.share)?;
     config.directory.list_me = ask_list_me(answers.list_me, config.tor.enabled)?;
+    config.lists.hide = ask_hide_list(answers.hide_list)?;
     let restored = Node::restore(home, &config, &words, backup, old_key)?;
     println!("Restored identity {}", restored.identity);
     println!("on a new node in {}.", home.display());
@@ -1264,6 +1290,40 @@ fn ask_list_me(choice: Option<bool>, tor: bool) -> Result<bool> {
     println!();
     println!("You can change it later: `list_me` under [directory] in config.toml.");
     ask_yes_no("Ask directories to list you?", "--list-me or --no-list-me")
+}
+
+/// Asks whether to use the project's hide list (ADR 0042 §6), unless
+/// `choice` already says. "Use the list" is the answer given by Enter. With
+/// no answer at all (input closed), it's left unasked: off, until the owner
+/// chooses with `osp hide-list` or the app asks.
+fn ask_hide_list(choice: Option<bool>) -> Result<Option<bool>> {
+    if choice.is_some() {
+        return Ok(choice);
+    }
+    println!();
+    println!("The project keeps a short list of posts and files that break its rules, such as");
+    println!("explicit sexual material: https://osp2p.com/terms. If you use the list, your");
+    println!("node doesn't show, fetch or pass on what's on it.");
+    println!("- Your node fetches it once a day through Tor, so the project doesn't learn who");
+    println!("  fetched it. The list is signed, so nobody else can change it.");
+    println!("- Your own posts are never hidden. You can show a person's posts anyway");
+    println!("  (`osp hide-list except`), and turn the list off at any time.");
+    println!();
+    loop {
+        print!("Use the list? [Use the list] / not now: ");
+        std::io::Write::flush(&mut std::io::stdout())?;
+        let mut line = String::new();
+        if std::io::stdin().read_line(&mut line)? == 0 {
+            println!();
+            println!("No answer: the list stays off until you choose (`osp hide-list on|off`).");
+            return Ok(None);
+        }
+        match line.trim().to_lowercase().as_str() {
+            "" | "use" | "use the list" | "yes" | "y" => return Ok(Some(true)),
+            "not now" | "no" | "n" => return Ok(Some(false)),
+            _ => println!("Please press Enter to use the list, or answer \"not now\"."),
+        }
+    }
 }
 
 /// Asks `question` until the answer is yes or no. With no answer at all, nothing
@@ -2041,23 +2101,38 @@ fn print(resp: ClientResponse, json: bool) -> Result<()> {
                 println!("{what}\n    since {}", b.since);
             }
         }
-        ClientResponse::HideList { info } => match (info.on, info.key) {
-            (_, None) => println!(
-                "The project's hide list isn't applied: this build has no key to check it by."
-            ),
-            (false, Some(_)) => println!(
-                "The project's hide list is off: nothing it holds is hidden here. `osp hide-list on` applies it again."
-            ),
-            (true, Some(key)) => {
-                println!("The project's hide list is on (key {}).", key.fmt_short());
-                match (info.seq, info.entries, info.published, info.fetched) {
-                    (Some(seq), Some(entries), Some(published), Some(fetched)) => println!(
-                        "List number {seq}, signed {published}: {entries} entries in force. Last fetched {fetched}."
-                    ),
-                    _ => println!("No list fetched yet: it comes through Tor, once a day."),
+        ClientResponse::HideList { info } => {
+            match (info.on, info.key) {
+                (_, None) => println!(
+                    "The project's hide list isn't applied: this build has no key to check it by."
+                ),
+                (false, Some(_)) if !info.asked => println!(
+                    "The project's hide list is off, as you haven't chosen yet. `osp hide-list on` uses it, `osp hide-list off` says no."
+                ),
+                (false, Some(_)) => println!(
+                    "The project's hide list is off: nothing it holds is hidden here. `osp hide-list on` applies it again."
+                ),
+                (true, Some(key)) => {
+                    println!("The project's hide list is on (key {}).", key.fmt_short());
+                    match (info.seq, info.entries, info.published, info.fetched) {
+                        (Some(seq), Some(entries), Some(published), Some(fetched)) => println!(
+                            "List number {seq}, signed {published}: {entries} entries in force. Last fetched {fetched}."
+                        ),
+                        _ => println!("No list fetched yet: it comes through Tor, once a day."),
+                    }
                 }
             }
-        },
+            if !info.exceptions.is_empty() {
+                println!("Not hidden for you, as you chose (`osp hide-list unexcept` to undo):");
+                for e in &info.exceptions {
+                    println!(
+                        "  {}  {}",
+                        plain(e.name.as_deref().unwrap_or("(name unknown)")),
+                        e.actor
+                    );
+                }
+            }
+        }
         ClientResponse::Posted { id } => println!("Published {id}"),
         ClientResponse::Following { follows } => {
             if follows.is_empty() {

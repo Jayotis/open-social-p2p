@@ -341,6 +341,13 @@ impl Core {
             .db
             .kept_thread(post)?
             .iter()
+            // The project's hide list holds it (ADR 0042 §6).
+            .filter(|row| {
+                !self
+                    .db
+                    .hides_reply(&row.reply.id, &row.reply.actor)
+                    .unwrap_or(true)
+            })
             .map(|row| reply_info(row, None))
             .collect::<Result<_>>()?;
         Ok(ClientResponse::Thread {
@@ -356,6 +363,9 @@ impl Core {
     pub(crate) fn reply_request_list(&self) -> Result<Vec<ReplyInfo>> {
         let mut requests = Vec::new();
         for row in self.db.reply_requests(now_ms())? {
+            if self.db.hides_reply(&row.reply.id, &row.reply.actor)? {
+                continue;
+            }
             let found = self
                 .db
                 .found(&row.reply.id)?

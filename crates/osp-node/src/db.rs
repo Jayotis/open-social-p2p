@@ -639,6 +639,12 @@ const MIGRATIONS: &[&str] = &[
         signed      TEXT NOT NULL,
         received_ms INTEGER NOT NULL
     );",
+    // People the owner excepted from the hide list: their posts aren't
+    // hidden here, though their listed files are never served on.
+    "CREATE TABLE hide_exceptions (
+        actor TEXT PRIMARY KEY,
+        at_ms INTEGER NOT NULL
+    );",
 ];
 
 /// How many days of `served_days` are kept: the summary's 30, and today.
@@ -7127,6 +7133,7 @@ mod tests {
                      DROP TABLE likes; DROP TABLE sent_likes; DROP TABLE activity;
                      DROP TABLE opened_posts; DROP TABLE opened_people; DROP TABLE blocks;
                      DROP TABLE hide_list; DROP TABLE hide_state; DROP TABLE hidden_objects;
+                     DROP TABLE hide_exceptions;
                      PRAGMA user_version = 24;",
                 )
                 .unwrap();

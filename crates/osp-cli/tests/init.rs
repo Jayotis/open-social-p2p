@@ -1,6 +1,8 @@
 //! `osp init` asks whether to share prefetched copies (ADR 0012) and whether
 //! to be listed by directories (ADR 0015), and creates nothing without an
-//! answer. A new node has Tor on unless told otherwise.
+//! answer. It asks whether to use the project's hide list (ADR 0042 §6),
+//! which stays off, unasked, without one. A new node has Tor on unless told
+//! otherwise.
 
 use std::{
     io::Write,
@@ -178,4 +180,47 @@ fn a_new_node_has_tor_on_and_is_asked_about_being_listed() {
     let out = osp_init(&home, &[&new[..], &["--no-tor", "--list-me"]].concat(), "");
     assert!(!out.status.success());
     assert!(!home.exists());
+}
+
+#[test]
+fn init_asks_whether_to_use_the_hide_list() {
+    let dir = tempfile::tempdir().unwrap();
+    let new = [
+        "--skip-word-check",
+        "--no-share",
+        "--no-list-me",
+        "--name",
+        "Kim",
+    ];
+    let hide = |home: &Path| config(home).lists.hide;
+
+    // Enter takes the highlighted answer; something else is asked again.
+    let home = dir.path().join("enter");
+    let out = osp_init(&home, &new, "maybe\n\n");
+    assert!(out.status.success(), "{out:?}");
+    let said = String::from_utf8_lossy(&out.stdout);
+    assert!(said.contains("[Use the list] / not now"), "{said}");
+    assert!(said.contains("Please press Enter"), "{said}");
+    assert_eq!(hide(&home), Some(true));
+
+    let home = dir.path().join("not now");
+    assert!(osp_init(&home, &new, "not now\n").status.success());
+    assert_eq!(hide(&home), Some(false));
+
+    // No answer, as from a script: made, with the list off and unasked.
+    let home = dir.path().join("none");
+    let out = osp_init(&home, &new, "");
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(hide(&home), None);
+    let written = std::fs::read_to_string(Home::new(&home).config()).unwrap();
+    assert!(!written.contains("hide ="), "{written}");
+
+    // A flag answers without asking.
+    for (flag, on) in [("--hide-list", true), ("--no-hide-list", false)] {
+        let home = dir.path().join(flag);
+        let out = osp_init(&home, &[&new[..], &[flag]].concat(), "");
+        assert!(out.status.success(), "{out:?}");
+        assert!(!String::from_utf8_lossy(&out.stdout).contains("Use the list?"));
+        assert_eq!(hide(&home), Some(on));
+    }
 }
