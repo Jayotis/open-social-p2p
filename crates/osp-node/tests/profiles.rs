@@ -73,6 +73,22 @@ async fn post(node: &Node, text: &str, attachments: Vec<PathBuf>) -> ObjectId {
     }
 }
 
+/// The author's picture on each post of the feed, as the node gives it.
+async fn feed_pictures(node: &Node) -> Vec<Option<osp_proto::BlobHash>> {
+    match call(node, ClientRequest::Feed { limit: 50 }).await {
+        ClientResponse::Feed { items } => items.iter().map(|i| i.actor_picture).collect(),
+        other => panic!("unexpected {other:?}"),
+    }
+}
+
+/// Each person's picture in the node's list of people.
+async fn people_pictures(node: &Node) -> Vec<Option<osp_proto::BlobHash>> {
+    match call(node, ClientRequest::People { limit: 50 }).await {
+        ClientResponse::People { people } => people.iter().map(|p| p.picture).collect(),
+        other => panic!("unexpected {other:?}"),
+    }
+}
+
 /// A photo of noise, which compresses worst of all, so the picture has to be
 /// made smaller to fit.
 async fn noisy_photo(dir: &Path) -> PathBuf {
@@ -137,8 +153,15 @@ async fn a_picture_and_links_are_kept_over_a_restart_and_reach_a_follower() {
     let kim = Node::spawn(&dir.path().join("kim")).await.unwrap();
     assert_eq!(kim.profile().id(), signed.id());
 
+    // Her own posts show her picture.
+    post(&kim, "Out on the marsh", vec![]).await;
+    assert_eq!(feed_pictures(&kim).await, vec![Some(icon.blob)]);
+
     follow(&jimmy, &kim).await;
     call(&jimmy, ClientRequest::Sync).await;
+    // So do Jimmy's feed and his list of people, now that his node holds it.
+    assert_eq!(feed_pictures(&jimmy).await, vec![Some(icon.blob)]);
+    assert_eq!(people_pictures(&jimmy).await, vec![Some(icon.blob)]);
     let seen = profile(&jimmy, kim_id).await;
     assert!(seen.followed);
     assert!(!seen.known);
@@ -164,6 +187,8 @@ async fn a_picture_and_links_are_kept_over_a_restart_and_reach_a_follower() {
     let seen = profile(&jimmy, kim_id).await;
     assert_eq!(seen.person.icon, None);
     assert!(seen.person.attachment.is_empty());
+    assert_eq!(feed_pictures(&jimmy).await, vec![None]);
+    assert_eq!(people_pictures(&jimmy).await, vec![None]);
     let own = profile(&kim, kim_id).await;
     assert_eq!(own.followers, Some(1));
 }

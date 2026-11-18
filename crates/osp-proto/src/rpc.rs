@@ -365,6 +365,12 @@ pub enum ClientRequest {
     /// Reads the directories this node knows now, as it does in the background
     /// (local socket only).
     ReadDirectories,
+    /// For a directory: stops listing someone now, rather than after their
+    /// node has been silent for 30 days. Readers forget them at their next
+    /// read. Their node lists them again if it asks (local socket only).
+    DropListed {
+        actor: PublicKey,
+    },
     /// Signs and publishes a new profile for this node's owner (ADR 0032).
     /// Followers get it on their next sync, directories on their next read.
     /// `icon` says what becomes of the picture.
@@ -1362,6 +1368,11 @@ pub struct PersonInfo {
     /// [`FeedItem::regions`].
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub regions: Vec<String>,
+    /// Their profile picture, only when this node already holds it (ADR
+    /// 0032): the owner's own, those of people it follows, and any it
+    /// fetched for an opened profile. A list never makes the node fetch one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub picture: Option<BlobHash>,
 }
 
 /// A person's profile as `Profile` gives it (ADR 0032).
@@ -1432,6 +1443,10 @@ pub struct FeedItem {
     /// shifted right by `32 - l`. The owner has only the top.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub regions: Vec<String>,
+    /// The author's profile picture, only when this node already holds it,
+    /// as [`PersonInfo::picture`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actor_picture: Option<BlobHash>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

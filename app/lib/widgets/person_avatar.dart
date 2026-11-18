@@ -7,8 +7,9 @@ import '../theme.dart';
 /// have none or it can't be fetched.
 ///
 /// Opening a stranger's picture makes the node fetch it without saying who
-/// looks, at most 200 an hour, so it's shown only where a profile is opened,
-/// not in every list.
+/// looks, at most 200 an hour, so it's fetched only where a profile is
+/// opened. Posts and lists pass a picture only when the node already holds
+/// it: the owner's own, those of people they follow, and opened profiles'.
 class PersonAvatar extends StatelessWidget {
   const PersonAvatar({
     super.key,

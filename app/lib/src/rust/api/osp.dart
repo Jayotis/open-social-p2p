@@ -701,6 +701,10 @@ class FoundPerson {
   /// the widest first; or one `sky:32/x/y` in the public sky.
   final List<String> regions;
 
+  /// Their profile picture, for `media_url`, only when the node already
+  /// holds it: never fetched for a list.
+  final String? picture;
+
   const FoundPerson({
     required this.identity,
     required this.name,
@@ -709,6 +713,7 @@ class FoundPerson {
     this.foundThrough,
     this.newest,
     required this.regions,
+    this.picture,
   });
 
   @override
@@ -719,7 +724,8 @@ class FoundPerson {
       followed.hashCode ^
       foundThrough.hashCode ^
       newest.hashCode ^
-      regions.hashCode;
+      regions.hashCode ^
+      picture.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -732,7 +738,8 @@ class FoundPerson {
           followed == other.followed &&
           foundThrough == other.foundThrough &&
           newest == other.newest &&
-          regions == other.regions;
+          regions == other.regions &&
+          picture == other.picture;
 }
 
 class HideExceptionPerson {
@@ -1132,6 +1139,10 @@ class Post {
   /// The author's identity: the owner's own for their posts.
   final String authorIdentity;
 
+  /// The author's profile picture, for `media_url`, only when the node
+  /// already holds it: never fetched for a feed.
+  final String? authorPicture;
+
   /// RFC 3339.
   final String published;
   final String text;
@@ -1173,6 +1184,7 @@ class Post {
     required this.id,
     required this.author,
     required this.authorIdentity,
+    this.authorPicture,
     required this.published,
     required this.text,
     required this.media,
@@ -1192,6 +1204,7 @@ class Post {
       id.hashCode ^
       author.hashCode ^
       authorIdentity.hashCode ^
+      authorPicture.hashCode ^
       published.hashCode ^
       text.hashCode ^
       media.hashCode ^
@@ -1213,6 +1226,7 @@ class Post {
           id == other.id &&
           author == other.author &&
           authorIdentity == other.authorIdentity &&
+          authorPicture == other.authorPicture &&
           published == other.published &&
           text == other.text &&
           media == other.media &&

@@ -670,6 +670,63 @@ async fn someone_who_takes_it_back_is_gone_when_they_ask_or_when_next_read() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_directory_drops_a_gone_node_by_hand_and_readers_forget_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let net = SimNet::new(27);
+    let directory = start_directory(dir.path(), &net, AN_HOUR).await;
+    let alice = start_with(
+        dir.path(),
+        "Alice",
+        &net,
+        config_knowing("Alice", &directory, true),
+    )
+    .await;
+    let actor = alice.identity();
+    post(&alice, "A table of green oak").await;
+    assert!(alice.ask_to_be_listed().await);
+    let listing = wait_for_entry(&net, &directory, 0, listing_of(actor)).await;
+    // Her node is gone, wiped for a new install, say.
+    alice.shutdown().await.unwrap();
+
+    let bob = start_with(
+        dir.path(),
+        "Bob",
+        &net,
+        config_knowing("Bob", &directory, false),
+    )
+    .await;
+    assert_eq!(read_directories(&bob).await, 1);
+
+    // Only a directory drops, and only someone it lists.
+    let req = ClientRequest::DropListed { actor };
+    let ClientResponse::Error { message } = bob.handle(req.clone()).await else {
+        panic!("a node that isn't a directory dropped someone")
+    };
+    assert!(message.contains("isn't a directory"), "{message}");
+    assert!(matches!(
+        call(&directory, req.clone()).await,
+        ClientResponse::Ok
+    ));
+    let ClientResponse::Error { message } = directory.handle(req).await else {
+        panic!("dropped twice")
+    };
+    assert!(message.contains("doesn't list"), "{message}");
+
+    let (entries, _) = read_lists(&net, &directory, listing.seq).await;
+    assert!(
+        entries.iter().any(|e| gone(actor)(e).is_some()),
+        "{entries:?}"
+    );
+    assert_eq!(status(&directory).await.directory.unwrap().people, 0);
+    assert_eq!(read_directories(&bob).await, 0);
+    assert!(found_people(&bob, "Alice").await.is_empty());
+
+    for node in [bob, directory] {
+        node.shutdown().await.unwrap();
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_directory_takes_a_few_new_listings_an_hour() {
     let dir = tempfile::tempdir().unwrap();
     let net = SimNet::new(27);

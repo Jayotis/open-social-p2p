@@ -178,6 +178,7 @@ class PostCard extends StatelessWidget {
                             node: node,
                             name: post.author,
                             identity: post.authorIdentity,
+                            picture: post.authorPicture,
                             radius: 18,
                           ),
                           const SizedBox(width: Space.s + 4),

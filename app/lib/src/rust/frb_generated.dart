@@ -3223,8 +3223,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   FoundPerson dco_decode_found_person(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 7)
-      throw Exception('unexpected arr length: expect 7 but see ${arr.length}');
+    if (arr.length != 8)
+      throw Exception('unexpected arr length: expect 8 but see ${arr.length}');
     return FoundPerson(
       identity: dco_decode_String(arr[0]),
       name: dco_decode_String(arr[1]),
@@ -3233,6 +3233,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       foundThrough: dco_decode_opt_String(arr[4]),
       newest: dco_decode_opt_String(arr[5]),
       regions: dco_decode_list_String(arr[6]),
+      picture: dco_decode_opt_String(arr[7]),
     );
   }
 
@@ -3637,24 +3638,25 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   Post dco_decode_post(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 15)
-      throw Exception('unexpected arr length: expect 15 but see ${arr.length}');
+    if (arr.length != 16)
+      throw Exception('unexpected arr length: expect 16 but see ${arr.length}');
     return Post(
       id: dco_decode_String(arr[0]),
       author: dco_decode_String(arr[1]),
       authorIdentity: dco_decode_String(arr[2]),
-      published: dco_decode_String(arr[3]),
-      text: dco_decode_String(arr[4]),
-      media: dco_decode_list_media(arr[5]),
-      resharedBy: dco_decode_opt_String(arr[6]),
-      resharerHosts: dco_decode_bool(arr[7]),
-      foundThrough: dco_decode_opt_String(arr[8]),
-      deletable: dco_decode_opt_String(arr[9]),
-      resharers: dco_decode_opt_box_autoadd_u_32(arr[10]),
-      likes: dco_decode_opt_box_autoadd_u_32(arr[11]),
-      liked: dco_decode_bool(arr[12]),
-      opened: dco_decode_bool(arr[13]),
-      regions: dco_decode_list_String(arr[14]),
+      authorPicture: dco_decode_opt_String(arr[3]),
+      published: dco_decode_String(arr[4]),
+      text: dco_decode_String(arr[5]),
+      media: dco_decode_list_media(arr[6]),
+      resharedBy: dco_decode_opt_String(arr[7]),
+      resharerHosts: dco_decode_bool(arr[8]),
+      foundThrough: dco_decode_opt_String(arr[9]),
+      deletable: dco_decode_opt_String(arr[10]),
+      resharers: dco_decode_opt_box_autoadd_u_32(arr[11]),
+      likes: dco_decode_opt_box_autoadd_u_32(arr[12]),
+      liked: dco_decode_bool(arr[13]),
+      opened: dco_decode_bool(arr[14]),
+      regions: dco_decode_list_String(arr[15]),
     );
   }
 
@@ -4381,6 +4383,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_foundThrough = sse_decode_opt_String(deserializer);
     var var_newest = sse_decode_opt_String(deserializer);
     var var_regions = sse_decode_list_String(deserializer);
+    var var_picture = sse_decode_opt_String(deserializer);
     return FoundPerson(
       identity: var_identity,
       name: var_name,
@@ -4389,6 +4392,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       foundThrough: var_foundThrough,
       newest: var_newest,
       regions: var_regions,
+      picture: var_picture,
     );
   }
 
@@ -5067,6 +5071,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_id = sse_decode_String(deserializer);
     var var_author = sse_decode_String(deserializer);
     var var_authorIdentity = sse_decode_String(deserializer);
+    var var_authorPicture = sse_decode_opt_String(deserializer);
     var var_published = sse_decode_String(deserializer);
     var var_text = sse_decode_String(deserializer);
     var var_media = sse_decode_list_media(deserializer);
@@ -5083,6 +5088,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       id: var_id,
       author: var_author,
       authorIdentity: var_authorIdentity,
+      authorPicture: var_authorPicture,
       published: var_published,
       text: var_text,
       media: var_media,
@@ -5864,6 +5870,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_opt_String(self.foundThrough, serializer);
     sse_encode_opt_String(self.newest, serializer);
     sse_encode_list_String(self.regions, serializer);
+    sse_encode_opt_String(self.picture, serializer);
   }
 
   @protected
@@ -6441,6 +6448,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_String(self.id, serializer);
     sse_encode_String(self.author, serializer);
     sse_encode_String(self.authorIdentity, serializer);
+    sse_encode_opt_String(self.authorPicture, serializer);
     sse_encode_String(self.published, serializer);
     sse_encode_String(self.text, serializer);
     sse_encode_list_media(self.media, serializer);

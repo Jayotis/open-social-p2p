@@ -22,7 +22,7 @@ use osp_proto::{
         SharedStatus, SideInfo, StatusInfo, VoucherInfo,
     },
     social::SocialRequest,
-    types::{MAX_ATTACHMENTS, MAX_CONTENT_BYTES},
+    types::{BlobHash, MAX_ATTACHMENTS, MAX_CONTENT_BYTES},
 };
 use tokio::{
     net::{UnixListener, UnixStream},
@@ -157,7 +157,7 @@ impl Core {
                 if let Some(read) = self.read_directories_for_use() {
                     let _ = tokio::time::timeout(directory::SEARCH_READ_WAIT, read).await;
                 }
-                self.people(limit.min(500))?
+                self.people(limit.min(500)).await?
             }
             ClientRequest::RegionItems { region, limit } => {
                 self.region_items(&region, limit.min(200)).await?
@@ -295,6 +295,20 @@ impl Core {
                     found: self.db.found_count()?,
                     failed: read.failed,
                 }
+            }
+            ClientRequest::DropListed { actor } => {
+                ensure!(
+                    local,
+                    "a directory's list is only changed on the node itself"
+                );
+                ensure!(self.config.directory.serve, "this node isn't a directory");
+                ensure!(
+                    self.db.drop_listed(&actor)?,
+                    "this directory doesn't list {}",
+                    actor.fmt_short()
+                );
+                info!(actor = %actor.fmt_short(), "dropped someone from the directory by hand");
+                ClientResponse::Ok
             }
             ClientRequest::Followers => self.follower_list()?,
             ClientRequest::RemoveFollower { node } => ClientResponse::FollowerRemoved {
@@ -1003,7 +1017,7 @@ impl Core {
         for obj in self.db.search_profiles(words, limit)? {
             if let Ok(Payload::Person(person)) = obj.verify() {
                 let newest = self.db.newest_ms(&person.actor)?;
-                people.push(self.person_info(person, &followed, newest)?);
+                people.push(self.person_info(person, &followed, newest).await?);
             }
         }
         let mut posts = Vec::new();
@@ -1045,7 +1059,7 @@ impl Core {
             };
             if let Ok(Payload::Person(person)) = obj.verify() {
                 let newest = self.db.newest_ms(actor)?;
-                people.push((newest, self.person_info(person, &followed, newest)?));
+                people.push((newest, self.person_info(person, &followed, newest).await?));
             }
         }
         people.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.name.cmp(&b.1.name)));
@@ -1064,25 +1078,39 @@ impl Core {
     }
 
     /// Everyone this node holds a profile of but its owner (`People`).
-    fn people(&self, limit: u32) -> Result<ClientResponse> {
+    async fn people(&self, limit: u32) -> Result<ClientResponse> {
         let followed: HashSet<_> = self.db.follows()?.iter().map(|f| f.actor).collect();
         let mut people = Vec::new();
         for (obj, newest) in self.db.people(&self.signer.identity(), limit)? {
             if let Ok(Payload::Person(person)) = obj.verify() {
-                people.push(self.person_info(person, &followed, newest)?);
+                people.push(self.person_info(person, &followed, newest).await?);
             }
         }
         Ok(ClientResponse::People { people })
     }
 
-    fn person_info(
+    /// `blob`, a profile's picture, if this node already holds it. Lists and
+    /// feeds show only such pictures: they never make the node fetch one
+    /// (ADR 0032 §2).
+    async fn held_picture(&self, blob: Option<BlobHash>) -> Result<Option<BlobHash>> {
+        Ok(match blob {
+            Some(blob) if self.store.has(&blob).await? => Some(blob),
+            _ => None,
+        })
+    }
+
+    async fn person_info(
         &self,
         person: Person,
         followed: &HashSet<PublicKey>,
         newest_ms: Option<u64>,
     ) -> Result<PersonInfo> {
         let newest = newest_ms.map(osp_proto::rfc3339_from_ms);
+        let picture = self
+            .held_picture(person.icon.as_ref().map(|icon| icon.blob))
+            .await?;
         Ok(PersonInfo {
+            picture,
             actor: person.actor,
             followed: followed.contains(&person.actor),
             found_through: self
@@ -1155,7 +1183,10 @@ impl Core {
             false => None,
         };
         let liked = self.db.sent_like(&id)?.is_some_and(|l| l.liked);
+        let icon = self.db.icon_of(&note.actor)?.map(|(blob, _)| blob);
+        let actor_picture = self.held_picture(icon).await?;
         Ok(Some(FeedItem {
+            actor_picture,
             id,
             actor: note.actor,
             actor_name: self.db.profile_name(&note.actor)?,

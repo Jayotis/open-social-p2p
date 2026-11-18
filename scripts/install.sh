@@ -161,6 +161,13 @@ say "connections, a search may find nobody. Try again a minute later."
 say ""
 case ":$PATH:" in
     *":$BIN:"*) ;;
-    *) say "$BIN isn't on your PATH: run it as $BIN/osp, or add that folder to PATH." ;;
+    *)
+        # Debian, Ubuntu and Raspberry Pi OS add the folder at login once it exists.
+        if grep -qs '\.local/bin' "$HOME/.profile"; then
+            say "To run it as \`osp\`, log out and back in (or start a new SSH session). Until then, run it as $BIN/osp."
+        else
+            say "$BIN isn't on your PATH: run it as $BIN/osp, or add that folder to PATH."
+        fi
+        ;;
 esac
 say "Done. \`osp --help\` lists what it does."

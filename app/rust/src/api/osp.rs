@@ -213,6 +213,9 @@ pub struct FoundPerson {
     /// snapshot names regions, the top (empty) first, then their groups,
     /// the widest first; or one `sky:32/x/y` in the public sky.
     pub regions: Vec<String>,
+    /// Their profile picture, for `media_url`, only when the node already
+    /// holds it: never fetched for a list.
+    pub picture: Option<String>,
 }
 
 pub struct Post {
@@ -220,6 +223,9 @@ pub struct Post {
     pub author: String,
     /// The author's identity: the owner's own for their posts.
     pub author_identity: String,
+    /// The author's profile picture, for `media_url`, only when the node
+    /// already holds it: never fetched for a feed.
+    pub author_picture: Option<String>,
     /// RFC 3339.
     pub published: String,
     pub text: String,
@@ -1926,6 +1932,7 @@ fn post(item: FeedItem) -> Post {
     Post {
         id: item.id.to_string(),
         author_identity: item.actor.to_string(),
+        author_picture: item.actor_picture.map(|blob| blob.to_string()),
         author,
         published: item.published,
         text: item.content,
@@ -2229,6 +2236,7 @@ fn found_person(p: osp_client::osp_proto::rpc::PersonInfo) -> FoundPerson {
         found_through: p.found_through,
         newest: p.newest,
         regions: p.regions,
+        picture: p.picture.map(|blob| blob.to_string()),
     }
 }
 
@@ -2319,6 +2327,7 @@ mod tests {
             liked: false,
             opened: false,
             regions: vec![],
+            actor_picture: None,
         }
     }
 
