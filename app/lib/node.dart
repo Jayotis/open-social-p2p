@@ -434,7 +434,11 @@ class HomeNode extends ChangeNotifier with WidgetsBindingObserver {
         results.contains(ConnectivityResult.mobile) &&
         !results.contains(ConnectivityResult.wifi) &&
         !results.contains(ConnectivityResult.ethernet);
-    phoneOffline = results.every((r) => r == ConnectivityResult.none);
+    // An always-on VPN stays listed with no network under it (seen with
+    // ProtonVPN on a Pixel, P11 part 6), so a VPN alone is offline too.
+    phoneOffline = results.every(
+      (r) => r == ConnectivityResult.none || r == ConnectivityResult.vpn,
+    );
     notifyListeners();
   }
 

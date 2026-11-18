@@ -152,6 +152,18 @@ void main() {
     await settle(tester);
     expect(find.textContaining('Sending to your node: 70%'), findsOne);
 
+    // An always-on VPN left with no network under it is offline too.
+    node.networkChangedForTests([ConnectivityResult.vpn]);
+    await settle(tester);
+    expect(find.textContaining('Waiting for your node… 70%'), findsOne);
+    node.networkChangedForTests([
+      ConnectivityResult.wifi,
+      ConnectivityResult.vpn,
+    ]);
+    app.sending.add(progress(PostStage.sending, sent: 800, total: 1000));
+    await settle(tester);
+    expect(find.textContaining('Sending to your node: 80%'), findsOne);
+
     app.sending.add(progress(PostStage.processing, sent: 1000, total: 1000));
     await settle(tester);
     expect(find.textContaining('is preparing your post'), findsOneWidget);
