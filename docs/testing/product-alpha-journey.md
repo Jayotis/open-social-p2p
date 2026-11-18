@@ -33,3 +33,37 @@ The roadmap's P11 journey, from installing the node to coming back after a resta
 - **Most people a newcomer meets are empty test accounts.** Of the 6 people the directories brought, 4 (two Jimmys, `osptest`, `osptester1`) are test identities with no posts. The Universe looks emptier than the network is. Before outside testers, they should leave the directories or post.
 
 - **PATH note after install.** On Debian the installer ends with "`~/.local/bin` isn't on your PATH: run it as `~/.local/bin/osp`, or add that folder to PATH". Debian's `~/.profile` already adds that folder at login when it exists, so logging in again (a new terminal or SSH session) is enough. The note should say that first.
+
+## Run 2: arm64, `v0.1.0-alpha.7`, 2026-11-18
+
+- **Node:** a fresh Debian 13 (arm64) virtual machine, emulated (no KVM), 4 cores, 2 GB: like a Raspberry Pi 4, only slower. A new user with sudo; no Tor, ffmpeg or OSP before.
+- **Install:** as in Run 1, from the alpha.7 draft's files. Answers: a name, sharing yes, listing **no** (so the test account stays out of the directories), hide list yes.
+- **Phone:** Pixel 4 XL, Android, the release APK (build 436) installed after removing the app and its data.
+- **Network:** the alpha's directories, after Run 1's leftover test identities were dropped and the demo accounts (Kim, Jimmy, A) were given bios and posts.
+
+| # | Step | Expected | Seen | Time |
+|---|------|----------|------|------|
+| 1 | Install the node | as in Run 1 | As expected; `Health: no problems`, Tor at 45% when shown | 3 min 13 s in all, almost all of it apt under emulation; `osp init` with questions a few seconds |
+| 2 | Install the app and pair | welcome, terms, hide list, *Pair with your node* | As expected. Paired with the pasted code; the app asked for notifications, then opened on the Universe | about 3 min after the service started |
+| 3 | Make a profile | | About line set in the app. The picture was set with `osp edit-profile --picture`, to keep the phone's own photos out of the picker; it shows on the profile and on Robin's own posts | |
+| 4 | Enter the Universe | | Opened at once | |
+| 5 | Watch it find people | | The three demo accounts with the lines between them, and "found 3 people, listed by …"; 14 machines heard of | under 4 min from install |
+| 6 | Browse | | Kim's bio and listed posts before following | |
+| 7 | Open a profile | | Kim: bio, Follow, *How are we connected?*, 5 listed posts | |
+| 8 | Follow | | Followed Kim; her profile filled to 12 posts, 5 with media; a 1-minute video streamed and played | |
+| 9 | Home fills | | Kim's posts and Robin's reshare | |
+| 10 | Post | | A text post from the app. A photo and a 5-second video posted from the node with `osp post -a`: transcoded to 720p and shown in the app | photo 12 s, video 33 s (emulated) |
+| 11 | Like | | In Kim's Activity at once | |
+| 12 | Reply | waits for the author's yes | "Waiting for Kim to look at it" in the app; "waiting for you" in Kim's Activity | |
+| 13 | Reshare | | "Share, and help keep it available": the photo (274 KB) fetched and kept; "Reshared by Robin, who hosts a copy" on Home | |
+| 14 | Look at the network | | Own star: *Your node*, phone reaches it, running 10 min, no problems | |
+| 15 | Come back after a restart | | VM rebooted: the service started without a login; app force-closed and reopened: Home at once with everything there | `osp status` answered 77 s after the reboot |
+
+Run 1's findings: own pictures now show on own posts, and the directories bring only the demo accounts.
+
+### Found
+
+- **The hide-list question comes twice.** The installer asks it, then the app asks again before pairing, as it can't know the node's answer yet. The node keeps the installer's answer and the app's goes unused, so someone who answers differently in the app isn't told their answer didn't count. The app could ask after pairing instead, only when the node wasn't asked (it already does for a paired phone).
+- **A reshare doesn't show on its button.** After resharing, the post's reshare icon looks the same; the like heart turns blue when liked.
+- **The letter circle changes colour.** Robin's circle is yellow everywhere but teal on *Edit your profile*.
+- **Not covered:** choosing a photo in the app (picker), for the reason in step 3.
