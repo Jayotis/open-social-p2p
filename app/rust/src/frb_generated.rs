@@ -4306,6 +4306,7 @@ impl SseDecode for crate::api::osp::FoundPerson {
         let mut var_foundThrough = <Option<String>>::sse_decode(deserializer);
         let mut var_newest = <Option<String>>::sse_decode(deserializer);
         let mut var_regions = <Vec<String>>::sse_decode(deserializer);
+        let mut var_picture = <Option<String>>::sse_decode(deserializer);
         return crate::api::osp::FoundPerson {
             identity: var_identity,
             name: var_name,
@@ -4314,6 +4315,7 @@ impl SseDecode for crate::api::osp::FoundPerson {
             found_through: var_foundThrough,
             newest: var_newest,
             regions: var_regions,
+            picture: var_picture,
         };
     }
 }
@@ -5008,6 +5010,7 @@ impl SseDecode for crate::api::osp::Post {
         let mut var_id = <String>::sse_decode(deserializer);
         let mut var_author = <String>::sse_decode(deserializer);
         let mut var_authorIdentity = <String>::sse_decode(deserializer);
+        let mut var_authorPicture = <Option<String>>::sse_decode(deserializer);
         let mut var_published = <String>::sse_decode(deserializer);
         let mut var_text = <String>::sse_decode(deserializer);
         let mut var_media = <Vec<crate::api::osp::Media>>::sse_decode(deserializer);
@@ -5024,6 +5027,7 @@ impl SseDecode for crate::api::osp::Post {
             id: var_id,
             author: var_author,
             author_identity: var_authorIdentity,
+            author_picture: var_authorPicture,
             published: var_published,
             text: var_text,
             media: var_media,
@@ -5959,6 +5963,7 @@ impl flutter_rust_bridge::IntoDart for crate::api::osp::FoundPerson {
             self.found_through.into_into_dart().into_dart(),
             self.newest.into_into_dart().into_dart(),
             self.regions.into_into_dart().into_dart(),
+            self.picture.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
@@ -6213,6 +6218,7 @@ impl flutter_rust_bridge::IntoDart for crate::api::osp::Post {
             self.id.into_into_dart().into_dart(),
             self.author.into_into_dart().into_dart(),
             self.author_identity.into_into_dart().into_dart(),
+            self.author_picture.into_into_dart().into_dart(),
             self.published.into_into_dart().into_dart(),
             self.text.into_into_dart().into_dart(),
             self.media.into_into_dart().into_dart(),
@@ -7006,6 +7012,7 @@ impl SseEncode for crate::api::osp::FoundPerson {
         <Option<String>>::sse_encode(self.found_through, serializer);
         <Option<String>>::sse_encode(self.newest, serializer);
         <Vec<String>>::sse_encode(self.regions, serializer);
+        <Option<String>>::sse_encode(self.picture, serializer);
     }
 }
 
@@ -7571,6 +7578,7 @@ impl SseEncode for crate::api::osp::Post {
         <String>::sse_encode(self.id, serializer);
         <String>::sse_encode(self.author, serializer);
         <String>::sse_encode(self.author_identity, serializer);
+        <Option<String>>::sse_encode(self.author_picture, serializer);
         <String>::sse_encode(self.published, serializer);
         <String>::sse_encode(self.text, serializer);
         <Vec<crate::api::osp::Media>>::sse_encode(self.media, serializer);

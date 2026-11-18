@@ -446,6 +446,13 @@ enum DirectoryCommand {
     /// Read the directories under [directory] in config.toml now, rather than
     /// waiting for the next read in the background
     Read,
+    /// On a directory: stop listing someone now, such as a node that's gone,
+    /// rather than after 30 days without an answer. Readers forget them at
+    /// their next read. A node that's still there is listed again when it asks
+    Drop {
+        /// Their identity, in full
+        identity: PublicKey,
+    },
 }
 
 /// A follower is given by name, where your node knows whose node it is, or by
@@ -705,6 +712,9 @@ async fn main() -> Result<()> {
             ClientRequest::MachineHello { machine }
         }
         Command::Directory(DirectoryCommand::Read) => ClientRequest::ReadDirectories,
+        Command::Directory(DirectoryCommand::Drop { identity }) => {
+            ClientRequest::DropListed { actor: identity }
+        }
         Command::Followers(FollowersCommand::List) => ClientRequest::Followers,
         Command::Followers(FollowersCommand::Remove { who }) => ClientRequest::RemoveFollower {
             node: find_follower(&home, &who, false).await?,
@@ -3036,6 +3046,7 @@ mod tests {
             likes: None,
             liked: false,
             opened: false,
+            actor_picture: None,
             found_reshares: vec![ResharedBy {
                 actor,
                 name: Some(format!("Jimmy{escape}")),

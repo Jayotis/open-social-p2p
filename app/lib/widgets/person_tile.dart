@@ -67,7 +67,12 @@ class _PersonTileState extends State<PersonTile> {
       if (person.foundThrough != null) listedBy(person.foundThrough!),
     ];
     return ListTile(
-      leading: InitialAvatar(name: person.name, seed: person.identity),
+      leading: PersonAvatar(
+        node: widget.node,
+        name: person.name,
+        identity: person.identity,
+        picture: person.picture,
+      ),
       title: Text(person.name),
       subtitle: about.isEmpty ? null : Text(about.join('\n')),
       trailing: trailing,
