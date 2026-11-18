@@ -55,16 +55,17 @@ class _HideListScreenState extends State<HideListScreen> {
                     ),
                     const SizedBox(height: Space.m),
                     Text(
-                      'Hide what breaks the rules?',
+                      'Hide the worst material?',
                       style: theme.textTheme.headlineSmall,
                       textAlign: TextAlign.center,
                     ),
                     const SizedBox(height: Space.m),
                     const Text(
                       'The project keeps a short list of posts and files '
-                      'that break the terms, such as explicit sexual '
-                      "material. If you use it, you don't see them, and your "
-                      "node doesn't download them or pass them on.",
+                      'with the worst material, such as sexual material '
+                      'involving children, or intimate images shared '
+                      "without consent. If you use it, you don't see them, "
+                      "and your node doesn't download them or pass them on.",
                     ),
                     const SizedBox(height: Space.m),
                     const _Point(
