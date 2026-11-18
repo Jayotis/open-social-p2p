@@ -74,6 +74,25 @@ String describeError(Object error) {
   return parts.isEmpty ? text : parts.join(': ');
 }
 
+/// Plain words for a file the node couldn't get because neither [who]'s
+/// node nor anyone with a copy answered, as when their computer is off.
+/// Null for any other error, which is shown as it is.
+String? noCopyWords(Object error, String who) =>
+    describeError(error).contains('no provider could send it')
+    ? "$who's node isn't answering, and nobody else with a copy did. "
+          'It may be switched off: try again later.'
+    : null;
+
+/// Plain words for a thread the node couldn't read from [who]'s node,
+/// which didn't answer. Null for any other error.
+String? threadUnreachableWords(Object error, String who) =>
+    describeError(
+      error,
+    ).contains("couldn't be read without showing who you are")
+    ? "$who's node isn't answering, so the replies can't be shown now. "
+          'Try again later.'
+    : null;
+
 /// [text] without network addresses or long IDs: IPv4 and IPv6 addresses,
 /// onion addresses, and runs of 20 or more letters and digits such as
 /// endpoint IDs and keys. For text a person may paste somewhere public.

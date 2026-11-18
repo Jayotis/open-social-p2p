@@ -30,9 +30,12 @@ class FakeApp implements OspApp {
   final choices = <(String, String?)>[];
   final answers = <(String, String)>[];
 
+  /// Set when the creator's node doesn't answer.
+  Exception? threadError;
+
   @override
   Future<Thread> thread({required String postId, required int after}) async =>
-      kept;
+      threadError == null ? kept : throw threadError!;
 
   @override
   Future<List<SentReply>> sentReplies() async => sent;
@@ -341,6 +344,37 @@ void main() {
     expect(app.replied, [('post-Ann', 'Thanks for this')]);
     expect(find.textContaining('Waiting for Ann to look at it'), findsWidgets);
     expect(find.text('Thanks for this'), findsOne);
+  });
+
+  testWidgets("with the creator's node off, a reply sent still shows", (
+    tester,
+  ) async {
+    // As Robin's node words it when Ann's computer is off.
+    app.threadError = Exception(
+      "its replies couldn't be read without showing who you are; try again "
+      "later: its creator's media endpoint didn't answer in time",
+    );
+    app.sent = [sentReply('Sent while she was off', 'sending')];
+    await open(tester, ThreadScreen(node: node, post: post('Ann')));
+
+    expect(
+      find.text(
+        "Ann's node isn't answering, so the replies can't be shown now. "
+        'Try again later.',
+      ),
+      findsOne,
+    );
+    expect(find.textContaining('endpoint'), findsNothing);
+    // Her node keeps the count: none is shown rather than a wrong one.
+    expect(find.text('No likes yet'), findsNothing);
+    expect(find.text('Your replies'), findsOne);
+    expect(find.text('Sent while she was off'), findsOne);
+
+    await tester.enterText(find.byType(TextField), 'One more');
+    await tester.pump();
+    await tester.tap(find.widgetWithIcon(IconButton, Icons.send));
+    await tester.pumpAndSettle();
+    expect(find.text('One more'), findsOne);
   });
 
   testWidgets('a waiting reply says why and is published or blocked', (
