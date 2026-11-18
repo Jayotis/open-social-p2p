@@ -96,9 +96,10 @@ pub(crate) const GREETINGS_WAITING: usize = 64;
 /// A machine on the map not heard from for this long is taken off it. Machines
 /// check in far more often than this.
 const MAP_SILENCE: Duration = Duration::from_secs(30 * 24 * 60 * 60);
-/// A node asks to be listed once a while after it starts, at a time of its own,
-/// up to this long, so it isn't at the moment it greets a machine.
-pub(crate) const ASK_LISTING_WAIT: Duration = Duration::from_secs(60 * 60);
+/// A node asks to be listed once Tor is ready, after a wait of its own up to
+/// this long, so it isn't at the moment it greets a machine, and a newcomer is
+/// found within minutes (it was up to an hour before 2026-11-18).
+pub(crate) const ASK_LISTING_WAIT: Duration = Duration::from_secs(5 * 60);
 /// Then about this often, so a directory that lost it lists it again, and one
 /// on a new node is read there.
 const ASK_LISTING_AGAIN: Duration = Duration::from_secs(24 * 60 * 60);
@@ -1110,9 +1111,13 @@ pub(crate) async fn greet_back_loop(core: Arc<Core>, mut greeted: mpsc::Receiver
     }
 }
 
-/// A node asking to be listed: at a time of its own after it starts, then now
-/// and then. Its profile says it may be, so a directory can check.
+/// A node asking to be listed: at a time of its own once Tor is ready, then
+/// now and then. Its profile says it may be, so a directory can check.
 pub(crate) async fn ask_listing_loop(core: Arc<Core>) {
+    // Waiting for Tor first, so a slow Tor start doesn't add to the wait.
+    if let Some(tor) = &core.tor {
+        tor.ready().await;
+    }
     let mut wait = core.sim.ask_listing_wait.mul_f64(random_fraction());
     loop {
         tokio::time::sleep(wait).await;

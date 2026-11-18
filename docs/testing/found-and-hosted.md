@@ -52,7 +52,7 @@ The step's gate: B8 with a few hundred newcomers arriving over hours who find ra
 
 - **A directory** lists Kim. She asks to be listed once she has posted, so its first read of her, within a minute, lists the post.
 - **Once the followers and latecomers are done, 200 newcomers arrive,** evenly over 3 hours, following nobody. Each reads the directory as it arrives and opens the video through a viewing endpoint ([ADR 0024](../decisions/0024-watching-found-posts-without-your-identity.md)). It tries the hosts the directory lists first, one at a time, then those Kim's media endpoint names, and Kim's own last.
-- **Every fifth newcomer, the first included, shares the video with hosting,** 40 in all, and asks to be listed at once. A real node asks within the hour. The directory lists a new node at its next read, within a minute, and reads it hourly after that. Kim's node checks a sharer's copy within seconds and names it.
+- **Every fifth newcomer, the first included, shares the video with hosting,** 40 in all, and asks to be listed at once. A real node asks within 5 minutes of Tor being ready. The directory lists a new node at its next read, within a minute, and reads it hourly after that. Kim's node checks a sharer's copy within seconds and names it.
 - **Every other timing is a real node's.** Uploads are 5, 10 and 20 Mbit/s in turn, as for followers.
 
 ```sh
