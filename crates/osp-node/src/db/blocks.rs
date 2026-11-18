@@ -152,6 +152,17 @@ impl Db {
                 }
             }
         }
+        // A person's posts come back by following them again; a post's or a
+        // file's are asked for again if the block is undone.
+        if !matches!(target, BlockTarget::Account { .. }) {
+            for id in &gone {
+                tx.execute(
+                    "INSERT OR IGNORE INTO block_dropped (kind, target, id, actor, received_ms)
+                     SELECT ?1, ?2, id, actor, received_ms FROM objects WHERE id = ?3",
+                    params![kind, hex, id],
+                )?;
+            }
+        }
         let mut dropped = Dropped {
             posts: gone.len(),
             files: Vec::new(),
@@ -213,6 +224,17 @@ impl Db {
             .optional()?;
         let n = tx.execute(
             "DELETE FROM blocks WHERE kind = ?1 AND target = ?2",
+            params![kind, hex],
+        )?;
+        // What it dropped is asked for again at the next sync with each
+        // author's node, as after a revocation (ADR 0010).
+        tx.execute(
+            "INSERT OR IGNORE INTO refetch (id, actor, received_ms)
+             SELECT id, actor, received_ms FROM block_dropped WHERE kind = ?1 AND target = ?2",
+            params![kind, hex],
+        )?;
+        tx.execute(
+            "DELETE FROM block_dropped WHERE kind = ?1 AND target = ?2",
             params![kind, hex],
         )?;
         if n > 0 && kind == "account" {

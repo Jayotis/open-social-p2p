@@ -38,6 +38,7 @@ class _ThreadScreenState extends State<ThreadScreen> {
   List<SentReply> _sent = [];
   bool _more = false;
   int _likes = 0;
+  bool _likesKnown = false;
   bool? _liked;
   bool _loading = true;
   bool _busy = false;
@@ -107,16 +108,30 @@ class _ThreadScreenState extends State<ThreadScreen> {
     if (over.isNotEmpty) _load();
   }
 
-  /// Loads the first page again, and the owner's replies to this post.
+  /// Loads the first page again, and the owner's replies to this post. Those
+  /// are on the owner's node, so they show even when the creator's doesn't
+  /// answer, as when Kim's computer is off.
   Future<void> _load() async {
     setState(() => _loading = true);
+    await Future.wait([_loadSent(), _loadThread()]);
+    if (mounted) setState(() => _loading = false);
+  }
+
+  Future<void> _loadSent() async {
+    if (_own) return;
+    try {
+      final sent = (await _app.sentReplies())
+          .where((s) => s.post == widget.post.id)
+          .toList();
+      if (mounted) setState(() => _sent = sent);
+    } catch (_) {
+      // The thread's own error says what's wrong with the node.
+    }
+  }
+
+  Future<void> _loadThread() async {
     try {
       final thread = await _app.thread(postId: widget.post.id, after: 0);
-      final sent = _own
-          ? <SentReply>[]
-          : (await _app.sentReplies())
-                .where((s) => s.post == widget.post.id)
-                .toList();
       if (!mounted) return;
       setState(() {
         _policy = _own ? thread.policy : null;
@@ -124,15 +139,17 @@ class _ThreadScreenState extends State<ThreadScreen> {
         _more = thread.more;
         _likes = thread.likes;
         _liked = thread.liked;
-        _sent = sent;
+        _likesKnown = true;
         _error = null;
       });
     } catch (e) {
-      if (mounted) setState(() => _error = describeError(e));
-    } finally {
-      if (mounted) setState(() => _loading = false);
+      if (mounted) setState(() => _error = _threadError(e));
     }
   }
+
+  String _threadError(Object e) =>
+      threadUnreachableWords(e, shownName(widget.post.author)) ??
+      "Couldn't load the replies: ${describeError(e)}";
 
   Future<void> _loadMore() async {
     if (_replies.isEmpty) return;
@@ -148,7 +165,7 @@ class _ThreadScreenState extends State<ThreadScreen> {
         _more = thread.more;
       });
     } catch (e) {
-      if (mounted) setState(() => _error = describeError(e));
+      if (mounted) setState(() => _error = _threadError(e));
     } finally {
       if (mounted) setState(() => _loading = false);
     }
@@ -285,6 +302,7 @@ class _ThreadScreenState extends State<ThreadScreen> {
                       own: _own,
                       likes: _likes,
                       liked: _liked,
+                      countKnown: _likesKnown,
                       // The count is the creator's node's; the owner's own
                       // choice shows at once.
                       onChanged: (liked) => setState(() {
@@ -310,7 +328,7 @@ class _ThreadScreenState extends State<ThreadScreen> {
                     Padding(
                       padding: const EdgeInsets.only(top: 16),
                       child: Text(
-                        "Couldn't load the replies: $error",
+                        error,
                         style: TextStyle(color: theme.colorScheme.error),
                       ),
                     ),
@@ -442,12 +460,16 @@ class _LikesRow extends StatelessWidget {
     required this.likes,
     required this.liked,
     required this.onChanged,
+    this.countKnown = true,
   });
 
   final HomeNode node;
   final Post post;
   final bool own;
   final int likes;
+
+  /// False until the creator's node has answered: its count isn't known.
+  final bool countKnown;
   final bool? liked;
   final void Function(bool liked) onChanged;
 
@@ -472,7 +494,7 @@ class _LikesRow extends StatelessWidget {
             label: Text(likes == 0 ? 'No likes yet' : likesLine(likes)),
           )
         else ...[
-          count,
+          if (countKnown) count,
           const Spacer(),
           LikeButton(
             node: node,

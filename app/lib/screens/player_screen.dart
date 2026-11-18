@@ -4,6 +4,7 @@ import 'package:video_player/video_player.dart';
 import '../format.dart';
 import '../node.dart';
 import '../src/rust/api/osp.dart';
+import 'trust_screen.dart' show shownName;
 
 /// Ask before playing a video larger than this on mobile data.
 const _mobileDataWarnBytes = 10 << 20;
@@ -75,8 +76,21 @@ class _PlayerScreenState extends State<PlayerScreen> {
       await controller.play();
       if (mounted) setState(() {});
     } catch (e) {
-      if (mounted) setState(() => _error = describeError(e));
+      if (!mounted) return;
+      setState(
+        () => _error =
+            noCopyWords(e, shownName(widget.post.author)) ??
+            "Can't play this video: ${describeError(e)}",
+      );
     }
+  }
+
+  void _retry() {
+    setState(() {
+      _error = null;
+      _stage = 'Loading…';
+    });
+    _start();
   }
 
   Future<bool> _confirmMobileData() async {
@@ -106,6 +120,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
   Widget build(BuildContext context) {
     final controller = _controller;
     final ready = controller != null && controller.value.isInitialized;
+    final error = _error;
     return Scaffold(
       backgroundColor: Colors.black,
       appBar: AppBar(
@@ -114,12 +129,23 @@ class _PlayerScreenState extends State<PlayerScreen> {
         title: Text(widget.post.author),
       ),
       body: Center(
-        child: _error != null
+        child: error != null
             ? Padding(
                 padding: const EdgeInsets.all(24),
-                child: Text(
-                  "Can't play this video: $_error",
-                  style: const TextStyle(color: Colors.white),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      error,
+                      style: const TextStyle(color: Colors.white),
+                      textAlign: TextAlign.center,
+                    ),
+                    const SizedBox(height: 16),
+                    OutlinedButton(
+                      onPressed: _retry,
+                      child: const Text('Try again'),
+                    ),
+                  ],
                 ),
               )
             : !ready

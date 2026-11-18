@@ -594,7 +594,7 @@ impl Core {
                 }
             }
             self.db.refetch_done(&ids)?;
-            info!(%actor, asked = ids.len(), restored, "fetched posts again after a revocation");
+            info!(%actor, asked = ids.len(), restored, "fetched posts again after a revocation or an unblock");
         }
     }
 

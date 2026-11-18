@@ -10,6 +10,10 @@ use crate::{config::RelayChoice, db::BlobClass, keys::Signer, node::Core};
 /// Warn when less than this is free on the node's disk.
 pub(crate) const LOW_DISK_BYTES: u64 = 2 << 30;
 
+/// Fewest people followed for a sync that reached none of them to count as
+/// this node's own connection failing. With fewer, they may simply be off.
+const MIN_FOLLOWS_FOR_SYNC_PROBLEM: usize = 3;
+
 /// Space available to the node's user on the filesystem holding `path`.
 pub(crate) fn disk_free(path: &Path) -> Option<u64> {
     let stat = rustix::fs::statvfs(path).ok()?;
@@ -30,9 +34,12 @@ impl Core {
                     .to_string(),
             );
         }
-        // Some followed nodes being offline is normal; all of them suggests our network is down.
+        // Some followed nodes being offline is normal; all of several suggests
+        // our network is down. One or two may just be switched off.
         let follows = self.db.follow_infos()?;
-        if !follows.is_empty() && follows.iter().all(|f| f.last_error.is_some()) {
+        if follows.len() >= MIN_FOLLOWS_FOR_SYNC_PROBLEM
+            && follows.iter().all(|f| f.last_error.is_some())
+        {
             problems.push(format!(
                 "the last sync couldn't reach any of the {} people you follow; check this node's internet connection",
                 follows.len()

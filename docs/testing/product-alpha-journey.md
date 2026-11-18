@@ -1,4 +1,4 @@
-# Product Alpha journey on clean installs (P11 part 5)
+# Product Alpha journey on clean installs (P11 parts 5 and 6)
 
 The roadmap's P11 journey, from installing the node to coming back after a restart, run on a computer that has never had OSP and a phone with the app freshly installed. Each step records what should happen, what was seen, and how long it took.
 
@@ -67,3 +67,29 @@ Run 1's findings: own pictures now show on own posts, and the directories bring 
 - **A reshare doesn't show on its button.** After resharing, the post's reshare icon looks the same; the like heart turns blue when liked.
 - **The letter circle changes colour.** Robin's circle is yellow everywhere but teal on *Edit your profile*.
 - **Not covered:** choosing a photo in the app (picker), for the reason in step 3.
+
+## Failures (P11 part 6), 2026-11-18
+
+The journey again, with something going wrong in each case. The creator is Kim (a demo node), the reader Robin (Run 2's arm64 node) with the Pixel 4 XL, build 436 (alpha.7). The empty and growing network cases use three fresh nodes in the x86_64 machine: a directory that lists nobody, a reader (Empty) paired to the phone after its app data was cleared, and a newcomer (Newbie) who joins later and asks to be listed.
+
+| Case | What was done | Seen |
+|------|---------------|------|
+| Node restart | Robin's service restarted with the app open on Home; a post 18 s later | Posted at once, "Posted."; no error, nothing to reopen |
+| Creator off | Kim's node stopped; on Robin: her profile, posts, media, a like, a reply | Profile, posts and every video Robin had a copy of open and play. A video it had no copy of failed after under 40 s, in protocol words with no way to retry (fixed, below). The reply's thread failed in protocol words and hid the reply just sent (fixed). The reply was kept and arrived by itself 5 min after Kim's node came back. Robin's health blamed its own internet connection (fixed) |
+| Tor restart | Robin's Tor killed | The node started it again: ready in 22 s, onion service in 42 s; a directory read right after answered. Health stayed "no problems" |
+| Media cut, phone to node | Robin restarted 6 s into a 1-minute video | Played to the end from what the phone had buffered |
+| Media cut, creator | Kim's node stopped 3 s into a 2-minute video (9.3 MB) Robin didn't have | Robin had the whole file within those 3 s, so nothing was cut. A real cut needs a larger file or a slower link: not yet tested |
+| App force-stopped | The app killed right after tapping *Post* | The post is on the node once, and on Home when the app opens again |
+| Empty network | A fresh node reading a directory that lists nobody | The Universe shows only your star and "Your node is looking for people. It checks every few minutes. Or paste someone's invite code"; it opens *Invite and follow*. Home says you follow nobody and points to the Universe. The card says the same after the directory has answered with nobody |
+| Growing network | Newbie installed and posted while Empty's app was open on the Universe | Newbie asks to be listed at a moment of its own, up to an hour after it starts, and Empty reads again at its own time: Empty found Newbie 21 min after Newbie started. The card turned to "Your node found 1 person: Newbie" by itself. Newbie isn't drawn on the map: someone with no public lines stays in the unplaced field (ADR 0034) |
+| Upload cut | — | Not yet tested: needs choosing a file in the phone's picker |
+| Mobile data | — | Not yet tested: the test phones have no SIM |
+
+### Fixed
+
+- **A video nobody could send** now says, in the player, "Kim's node isn't answering, and nobody else with a copy did. It may be switched off: try again later.", with *Try again*. It said "download of 073f9bb43c failed: no provider could send it".
+- **A thread whose creator is off** now says "Kim's node isn't answering, so the replies can't be shown now. Try again later." It said "its replies couldn't be read without showing who you are; try again later: its creator's media endpoint didn't answer in time". Your own replies to it are on your node and show anyway, with where each stands; before, a reply just sent seemed to vanish. The like count, which only the creator's node has, isn't shown until it answers, instead of "No likes yet" beside your own like.
+- **One or two people off isn't your connection.** The node said "the last sync couldn't reach any of the 1 people you follow; check this node's internet connection", and the app showed "Your node reports a problem", whenever everyone followed was off, even one person. It now says so only when at least 3 people are followed.
+- **Unblocking a file or a post brings back what it dropped.** Blocking a file drops the posts that name it; unblocking said they'd come back "as it's fetched again", but sync asks only for newer posts, so they never did. The node now remembers which posts a post or file block dropped, and on unblock asks their authors' nodes for them again at the next sync, as after a key revocation. Checked on real nodes: the post, and its media, came back at the next sync.
+
+Checked again with the fixes, on the x86_64 nodes and the phone (Newbie off, the video not on Empty): the player's and the thread's new words, *Your replies* with "Not delivered yet: Newbie's node didn't answer", health "no problems" with the one followed node off, and the unblocked post back after one sync.

@@ -52,6 +52,20 @@ void main() {
     );
   });
 
+  test("a file nobody could send is said in plain words, others aren't", () {
+    // As the node words it when Kim's computer is off.
+    final off = AnyhowException(
+      'download of 073f9bb43c failed\n\nCaused by:\n    no provider could send it',
+    );
+    expect(
+      noCopyWords(off, 'Kim'),
+      "Kim's node isn't answering, and nobody else with a copy did. "
+      'It may be switched off: try again later.',
+    );
+    expect(noCopyWords(AnyhowException('disk full'), 'Kim'), isNull);
+    expect(threadUnreachableWords(off, 'Kim'), isNull);
+  });
+
   test('scrubAddresses removes addresses and long IDs, nothing else', () {
     expect(
       scrubAddresses(

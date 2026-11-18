@@ -645,6 +645,16 @@ const MIGRATIONS: &[&str] = &[
         actor TEXT PRIMARY KEY,
         at_ms INTEGER NOT NULL
     );",
+    // The posts a block of a post or a file dropped, by ID only, so undoing
+    // it asks their authors' nodes for them again (through `refetch`).
+    "CREATE TABLE block_dropped (
+        kind        TEXT NOT NULL,
+        target      TEXT NOT NULL,
+        id          TEXT NOT NULL,
+        actor       TEXT NOT NULL,
+        received_ms INTEGER NOT NULL,
+        PRIMARY KEY (kind, target, id)
+    );",
 ];
 
 /// How many days of `served_days` are kept: the summary's 30, and today.
@@ -5912,6 +5922,48 @@ mod tests {
     }
 
     #[test]
+    fn unblocking_a_post_or_a_file_asks_for_what_it_dropped_again() {
+        use osp_proto::rpc::BlockTarget;
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(&dir.path().join("t.db")).unwrap();
+        let (alice, kim) = (SecretKey::generate(), SecretKey::generate());
+        let me = alice.public();
+
+        // Kim's post with a file; Alice blocks the file, then unblocks it.
+        let file = BlobHash::from_bytes([7; 32]);
+        let (post, payload) = note_with_media(&kim, &[(file, 10)]);
+        db.insert_object(&post, &payload).unwrap();
+        let target = BlockTarget::File { hash: file };
+        assert_eq!(db.block(&target, &me).unwrap().posts, 1);
+        assert!(db.refetch_due(&kim.public(), 10).unwrap().is_empty());
+        assert!(db.unblock(&target).unwrap());
+        let due = db.refetch_due(&kim.public(), 10).unwrap();
+        assert_eq!(due.len(), 1);
+        assert_eq!(due[0].0, post.id());
+        // Kim's node sends it back, and it's kept.
+        assert!(db.insert_object(&post, &payload).unwrap());
+        db.refetch_done(&[post.id()]).unwrap();
+
+        // Blocked twice over, by itself and by its file: undoing one block
+        // leaves the other keeping it out if a copy comes.
+        db.block(&BlockTarget::Post { id: post.id() }, &me).unwrap();
+        db.block(&target, &me).unwrap();
+        assert!(db.unblock(&target).unwrap());
+        assert!(!db.insert_object(&post, &payload).unwrap());
+
+        // A person's block asks for nothing again: following them does.
+        let other = store_note(&db, &kim, "ash", EARLIER);
+        db.refetch_done(&[post.id()]).unwrap();
+        let account = BlockTarget::Account {
+            actor: kim.public(),
+        };
+        db.block(&account, &me).unwrap();
+        assert!(db.unblock(&account).unwrap());
+        assert!(db.refetch_due(&kim.public(), 10).unwrap().is_empty());
+        assert_eq!(db.get_object(&other).unwrap(), None);
+    }
+
+    #[test]
     fn only_a_posts_author_can_delete_it_and_a_reshares_only_the_resharer() {
         let dir = tempfile::tempdir().unwrap();
         let db = Db::open(&dir.path().join("t.db")).unwrap();
@@ -7133,7 +7185,7 @@ mod tests {
                      DROP TABLE likes; DROP TABLE sent_likes; DROP TABLE activity;
                      DROP TABLE opened_posts; DROP TABLE opened_people; DROP TABLE blocks;
                      DROP TABLE hide_list; DROP TABLE hide_state; DROP TABLE hidden_objects;
-                     DROP TABLE hide_exceptions;
+                     DROP TABLE hide_exceptions; DROP TABLE block_dropped;
                      PRAGMA user_version = 24;",
                 )
                 .unwrap();
