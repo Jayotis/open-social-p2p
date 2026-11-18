@@ -101,8 +101,8 @@ Future<bool> exceptFromHideList(
         title: "Don't hide $who's posts?",
         body:
             "The project's hide list won't hide $who's posts from you, even "
-            'ones that break the rules. Your node still never passes those '
-            'on to anyone. You can undo it here or under You, Advanced '
+            'ones on the list. Your node still never passes those on to '
+            'anyone. You can undo it here or under You, Advanced '
             'details.',
         yes: "Don't hide",
       )) {

@@ -1301,9 +1301,10 @@ fn ask_hide_list(choice: Option<bool>) -> Result<Option<bool>> {
         return Ok(choice);
     }
     println!();
-    println!("The project keeps a short list of posts and files that break its rules, such as");
-    println!("explicit sexual material: https://osp2p.com/terms. If you use the list, your");
-    println!("node doesn't show, fetch or pass on what's on it.");
+    println!("The project keeps a short list of posts and files with the worst material, such");
+    println!("as sexual material involving children, or intimate images shared without");
+    println!("consent. If you use the list, your node doesn't show, fetch or pass on what's");
+    println!("on it.");
     println!("- Your node fetches it once a day through Tor, so the project doesn't learn who");
     println!("  fetched it. The list is signed, so nobody else can change it.");
     println!("- Your own posts are never hidden. You can show a person's posts anyway");

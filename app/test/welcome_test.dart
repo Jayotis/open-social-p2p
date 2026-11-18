@@ -98,7 +98,9 @@ void main() {
 
     // Then whether to use the project's hide list (ADR 0042 §6).
     expect(find.byType(HideListScreen), findsOneWidget);
-    expect(find.text('Hide what breaks the rules?'), findsOneWidget);
+    expect(find.text('Hide the worst material?'), findsOneWidget);
+    // The list is only for the worst kinds, not adult material (ADR 0042 §6).
+    expect(find.textContaining('involving children'), findsOneWidget);
     expect(find.text('Use the list'), findsOneWidget);
     expect(find.text('Not now'), findsOneWidget);
     expect(find.byType(PairScreen), findsNothing);

@@ -17,8 +17,8 @@ const termsOfUse = [
       'images shared without the consent of the person in them; credible '
       'threats of violence against a person, and material made to incite it.',
   'Anyone can report a post or person from the app. The project reviews '
-      'every report, and official OSP software hides what breaks these '
-      'rules.',
+      'every report and acts on what breaks these rules, and the worst of it '
+      "goes on the project's hide list.",
   'Your node is yours. There\'s no account with the project, and the '
       'project can\'t change what\'s on your node.',
 ];
