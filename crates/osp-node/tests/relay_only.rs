@@ -232,3 +232,108 @@ async fn relay_only_needs_relays_and_no_bind_address() {
         assert!(format!("{err:#}").contains(expected), "{err:#}");
     }
 }
+
+/// Lets in only nodes that bring the token, and records the rest.
+#[derive(Debug, Clone, Default)]
+struct TokenGate(Arc<Mutex<Vec<EndpointId>>>);
+
+const TOKEN: &str = "the project's token";
+
+impl AccessControl for TokenGate {
+    async fn on_connect(&self, request: &RelayRequest) -> Access {
+        if request.auth_token().as_deref() == Some(TOKEN) {
+            Access::Allow
+        } else {
+            self.0.lock().unwrap().push(request.endpoint_id());
+            Access::Deny { reason: None }
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_relay_that_asks_for_a_token_lets_in_only_nodes_that_have_it() {
+    let refused = TokenGate::default();
+    let mut relay = RelayConfig::new((Ipv4Addr::LOCALHOST, 0));
+    relay.access = Arc::new(refused.clone());
+    let mut server = ServerConfig::default();
+    server.relay = Some(relay);
+    let _relay = Server::spawn(server).await.unwrap();
+    let url: RelayUrl = format!("http://{}", _relay.http_addr().unwrap())
+        .parse()
+        .unwrap();
+
+    let with_token = |name, relay_only| {
+        let mut config = config(name, &url, relay_only);
+        config.network.relay_token = Some(TOKEN.into());
+        config
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let pia = start(dir.path(), with_token("Pia", true)).await;
+    let quin = start(dir.path(), with_token("Quin", false)).await;
+    // The same relay, but no token.
+    let ruth = start(dir.path(), config("Ruth", &url, true)).await;
+
+    // Pia can only be reached through the relay, and Quin gets her posts.
+    call(
+        &pia,
+        ClientRequest::Post {
+            content: "past the token".into(),
+            attachments: vec![],
+            uploads: vec![],
+            upload: None,
+        },
+    )
+    .await;
+    call(
+        &quin,
+        ClientRequest::Follow {
+            ticket: invite(&pia).await.to_string(),
+        },
+    )
+    .await;
+    tokio::time::timeout(Duration::from_secs(60), call(&quin, ClientRequest::Sync))
+        .await
+        .expect("sync finishes");
+    let ClientResponse::Feed { items } = call(&quin, ClientRequest::Feed { limit: 10 }).await
+    else {
+        panic!("no feed");
+    };
+    assert!(items.iter().any(|i| i.content == "past the token"));
+    assert_eq!(path_to(&quin, &pia).await, "relay");
+
+    // Ruth is turned away.
+    let turned_away = || refused.0.lock().unwrap().contains(&ruth.node_id());
+    tokio::time::timeout(Duration::from_secs(30), async {
+        while !turned_away() {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .expect("the relay refuses a node without the token");
+    let turned_away = refused.0.lock().unwrap().clone();
+    assert!(!turned_away.contains(&pia.node_id()) && !turned_away.contains(&quin.node_id()));
+
+    pia.shutdown().await.unwrap();
+    quin.shutdown().await.unwrap();
+    ruth.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn the_relay_token_is_never_sent_to_relays_that_arent_your_own() {
+    let dir = tempfile::tempdir().unwrap();
+    for (name, relay) in [
+        ("Uma", RelayChoice::Default),
+        ("Val", RelayChoice::Disabled),
+    ] {
+        let mut config = Config::local_test(name);
+        config.network.relay = relay;
+        config.network.relay_token = Some(TOKEN.into());
+        let home = dir.path().join(name.to_lowercase());
+        Node::init(&home, &config).unwrap();
+        let err = Node::spawn(&home).await.err().expect("refused");
+        assert!(
+            format!("{err:#}").contains("only for your own relays"),
+            "{err:#}"
+        );
+    }
+}

@@ -52,6 +52,10 @@ pub struct NetworkConfig {
     /// operator still sees it. Slower, and every byte passes through the
     /// relay (ADR 0007).
     pub relay_only: bool,
+    /// The token the project's relays ask for (ADR 0044), sent to every
+    /// relay in `relay`. Only with your own relays, so it never goes to
+    /// n0's.
+    pub relay_token: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -352,6 +356,7 @@ impl Default for NetworkConfig {
             address_lookup: true,
             bind: None,
             relay_only: false,
+            relay_token: None,
         }
     }
 }
@@ -402,6 +407,7 @@ impl Config {
                 address_lookup: false,
                 bind: Some("127.0.0.1:0".parse().expect("valid address")),
                 relay_only: false,
+                relay_token: None,
             },
             sync: SyncConfig {
                 interval_secs: 3600,
