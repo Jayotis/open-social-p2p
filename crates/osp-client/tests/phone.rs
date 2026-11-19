@@ -314,6 +314,7 @@ async fn phone_pairs_posts_plays_and_is_revoked() {
         identity: node.identity(),
         name: "Alice".into(),
         paired: osp_proto::now_rfc3339(),
+        relays: None,
     };
     std::fs::write(
         stranger_dir.join("pairing.json"),

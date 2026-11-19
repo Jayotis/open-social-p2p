@@ -25,7 +25,9 @@ pub use binding::{BoundEndpoint, EndpointBinding, EndpointKind};
 pub use code::{CodeError, OspCode};
 pub use iroh_base::{EndpointAddr, EndpointId, PublicKey, SecretKey};
 pub use object::{CertifiedKey, ObjectId, SignedObject};
-pub use ticket::{FollowTicket, PairingTicket, pairing_pass_hash};
+pub use ticket::{
+    FollowTicket, PairingRelays, PairingTicket, is_pairing_ticket, pairing_pass_hash,
+};
 pub use types::{
     Announce, Attachment, BlobHash, BlobRef, Delete, EarlierKeys, ForwardDelete, FoundEarly, Key,
     Like, MediaKind, Note, Payload, Person, ProfileLink, Undo,

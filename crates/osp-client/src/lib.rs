@@ -8,6 +8,7 @@
 //! secure storage (`open_with_key`).
 
 mod media;
+mod relays;
 
 use std::{
     fs::OpenOptions,
@@ -21,12 +22,12 @@ use std::{
 
 use anyhow::{Context, Result, bail, ensure};
 use iroh::{
-    Endpoint, EndpointAddr, PublicKey, RelayMode,
+    Endpoint, EndpointAddr, PublicKey,
     address_lookup::{DnsAddressLookup, MemoryLookup, PkarrResolver},
     endpoint::{ConnectOptions, Connection, RecvStream, SendStream, presets},
 };
 use osp_proto::{
-    BlobHash, CLIENT_ALPN, ObjectId, PairingTicket, connected,
+    BlobHash, CLIENT_ALPN, ObjectId, PairingRelays, PairingTicket, connected,
     framing::{read_frame, write_frame},
     rpc::{
         ClientRequest, ClientResponse, FeedItem, IconChange, PersonInfo, ProfileInfo,
@@ -102,7 +103,8 @@ impl std::fmt::Display for NoContact {
 /// How the client reaches the network.
 #[derive(Debug, Clone)]
 pub struct ClientOptions {
-    /// Use n0's public relays, so the node can be reached from anywhere.
+    /// Use relays, so the node can be reached from anywhere: n0's public
+    /// ones, or the node's own if its pairing code names them (ADR 0044).
     pub relays: bool,
     /// Look the node up by its ID (n0's DNS service) if its relay changes
     /// after pairing. The client never publishes its own address.
@@ -149,6 +151,10 @@ pub struct Pairing {
     pub name: String,
     /// When pairing happened (RFC 3339).
     pub paired: String,
+    /// The node's own relays and their token, used instead of n0's (ADR
+    /// 0044). Absent from pairings made before them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub relays: Option<PairingRelays>,
 }
 
 /// The feed as last fetched, for when the home node can't be reached.
@@ -296,6 +302,7 @@ pub struct ConnectionInfo {
 pub struct Client {
     dir: PathBuf,
     endpoint: Endpoint,
+    relays: relays::Relays,
     lookup: MemoryLookup,
     pairing: Mutex<Option<Pairing>>,
     /// The open connection to the home node, if any. Held across a connect
@@ -330,6 +337,7 @@ impl Client {
         std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
         let pairing: Option<Pairing> = read_json(&dir.join("pairing.json"))?;
 
+        let own_relays = pairing.as_ref().and_then(|p| p.relays.as_ref());
         let lookup = MemoryLookup::new();
         if let Some(p) = &pairing {
             lookup.add_endpoint_info(p.node.clone());
@@ -337,11 +345,7 @@ impl Client {
         let mut builder = Endpoint::builder(presets::Minimal)
             .secret_key(key)
             .address_lookup(lookup.clone())
-            .relay_mode(if options.relays {
-                RelayMode::Default
-            } else {
-                RelayMode::Disabled
-            });
+            .relay_mode(relays::initial_mode(options.relays, own_relays)?);
         if options.address_lookup {
             builder = builder
                 .address_lookup(PkarrResolver::n0_dns())
@@ -351,10 +355,12 @@ impl Client {
             builder = builder.clear_ip_transports().bind_addr(addr)?;
         }
         let endpoint = builder.bind().await.context("starting network endpoint")?;
+        let relays = relays::Relays::new(endpoint.clone(), options.relays, own_relays)?;
 
         Ok(Arc::new(Self {
             dir: dir.to_path_buf(),
             endpoint,
+            relays,
             lookup,
             pairing: Mutex::new(pairing),
             conn: tokio::sync::Mutex::new(None),
@@ -379,6 +385,38 @@ impl Client {
         let ticket: PairingTicket = ticket.parse()?;
         self.disconnect().await;
         self.lookup.add_endpoint_info(ticket.node.clone());
+        // The node's relays may let in only those with its token: switch to
+        // them before dialing, and back if pairing fails.
+        self.relays.set(ticket.relays.as_ref()).await?;
+        let (identity, name, conn) = match self.pair_on(&ticket, device_name).await {
+            Ok(paired) => paired,
+            Err(e) => {
+                let before = self.pairing().and_then(|p| p.relays);
+                if let Err(e) = self.relays.set(before.as_ref()).await {
+                    debug!("couldn't go back to the relays from before: {e:#}");
+                }
+                return Err(e);
+            }
+        };
+        let pairing = Pairing {
+            node: ticket.node,
+            identity,
+            name,
+            paired: osp_proto::now_rfc3339(),
+            relays: ticket.relays,
+        };
+        write_json(&self.dir.join("pairing.json"), &pairing)?;
+        *self.lock_pairing() = Some(pairing.clone());
+        *self.conn.lock().await = Some(conn);
+        Ok(pairing)
+    }
+
+    /// Dials the node in `ticket` and pairs: the node's identity and name.
+    async fn pair_on(
+        &self,
+        ticket: &PairingTicket,
+        device_name: &str,
+    ) -> Result<(PublicKey, String, Connection)> {
         let conn = self.dial(&ticket.node, Some(ticket.pass())).await?;
         let req = ClientRequest::Pair {
             secret: data_encoding::HEXLOWER.encode(&ticket.secret),
@@ -388,16 +426,7 @@ impl Client {
         let ClientResponse::Paired { identity, name } = check(resp)? else {
             bail!("unexpected reply to Pair");
         };
-        let pairing = Pairing {
-            node: ticket.node,
-            identity,
-            name,
-            paired: osp_proto::now_rfc3339(),
-        };
-        write_json(&self.dir.join("pairing.json"), &pairing)?;
-        *self.lock_pairing() = Some(pairing.clone());
-        *self.conn.lock().await = Some(conn);
-        Ok(pairing)
+        Ok((identity, name, conn))
     }
 
     /// Forgets the home node and everything saved from it. The device key
@@ -408,6 +437,7 @@ impl Client {
         *self.lock_pairing() = None;
         self.stop_dial.notify_waiters();
         self.disconnect().await;
+        self.relays.set(None).await?;
         for file in ["pairing.json", "feed.json", UNIVERSE, PENDING_POST] {
             match std::fs::remove_file(self.dir.join(file)) {
                 Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.into()),

@@ -11,6 +11,10 @@ use serde::{Deserialize, Serialize};
 /// Uppercase base32 keeps QR codes in their compact alphanumeric mode.
 const FOLLOW_PREFIX: &str = "OSP1";
 const PAIRING_PREFIX: &str = "OSPPAIR1";
+/// A pairing ticket that also carries the node's relays and their token
+/// (ADR 0044). An older app doesn't read it, so a node gives one out only
+/// when it has a token to pass on.
+const PAIRING_RELAYS_PREFIX: &str = "OSPPAIR2";
 /// Starts the pairing pass (`PairingTicket::pass`).
 const PAIRING_PASS_PREFIX: &[u8] = b"osp-pair/";
 
@@ -37,6 +41,36 @@ pub struct FollowTicket {
 pub struct PairingTicket {
     pub node: EndpointAddr,
     pub secret: [u8; 16],
+    /// The node's own relays, for the phone to use as its own: they let in
+    /// only those with the token (ADR 0044). `None` for a node without a
+    /// token, whose ticket an older app can still read.
+    pub relays: Option<PairingRelays>,
+}
+
+/// The relays a node passes on to its phone (ADR 0044).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PairingRelays {
+    /// Relay URLs, as in the node's config.
+    pub urls: Vec<String>,
+    /// The token they ask for.
+    pub token: String,
+    /// Use n0's relays while none of `urls` lets the phone in, as the node
+    /// does with `relay_fallback = "default"`.
+    pub fallback: bool,
+}
+
+/// The tickets as encoded: an `OSPPAIR1` ticket has no relays.
+#[derive(Serialize, Deserialize)]
+struct PairingV1 {
+    node: EndpointAddr,
+    secret: [u8; 16],
+}
+
+#[derive(Serialize, Deserialize)]
+struct PairingV2 {
+    node: EndpointAddr,
+    secret: [u8; 16],
+    relays: PairingRelays,
 }
 
 impl PairingTicket {
@@ -77,8 +111,24 @@ impl FromStr for FollowTicket {
 
 impl fmt::Display for PairingTicket {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let bytes = postcard::to_stdvec(self).map_err(|_| fmt::Error)?;
-        write!(f, "{PAIRING_PREFIX}{}", BASE32_NOPAD.encode(&bytes))
+        let (node, secret) = (self.node.clone(), self.secret);
+        let (prefix, bytes) = match &self.relays {
+            None => (
+                PAIRING_PREFIX,
+                postcard::to_stdvec(&PairingV1 { node, secret }),
+            ),
+            Some(relays) => {
+                let relays = relays.clone();
+                let v2 = PairingV2 {
+                    node,
+                    secret,
+                    relays,
+                };
+                (PAIRING_RELAYS_PREFIX, postcard::to_stdvec(&v2))
+            }
+        };
+        let bytes = bytes.map_err(|_| fmt::Error)?;
+        write!(f, "{prefix}{}", BASE32_NOPAD.encode(&bytes))
     }
 }
 
@@ -86,9 +136,34 @@ impl FromStr for PairingTicket {
     type Err = anyhow::Error;
 
     fn from_str(s: &str) -> Result<Self> {
+        let malformed = "ticket contents are malformed";
+        if let Ok(bytes) = decode(PAIRING_RELAYS_PREFIX, s) {
+            let PairingV2 {
+                node,
+                secret,
+                relays,
+            } = postcard::from_bytes(&bytes).context(malformed)?;
+            return Ok(Self {
+                node,
+                secret,
+                relays: Some(relays),
+            });
+        }
         let bytes = decode(PAIRING_PREFIX, s).context("not an osp pairing ticket")?;
-        postcard::from_bytes(&bytes).context("ticket contents are malformed")
+        let PairingV1 { node, secret } = postcard::from_bytes(&bytes).context(malformed)?;
+        Ok(Self {
+            node,
+            secret,
+            relays: None,
+        })
     }
+}
+
+/// Whether `s` looks like a pairing ticket, before it's decoded: for an app
+/// telling a pairing code from a follow code.
+pub fn is_pairing_ticket(s: &str) -> bool {
+    let s = s.trim().to_ascii_uppercase();
+    s.starts_with(PAIRING_PREFIX) || s.starts_with(PAIRING_RELAYS_PREFIX)
 }
 
 /// Strips the prefix and decodes the base32 body. Accepts lowercase too.
@@ -126,6 +201,7 @@ mod tests {
                 .with_ip_addr("172.16.5.20:4433".parse().unwrap())
                 .with_ip_addr("[fd00::20]:4433".parse().unwrap()),
             secret: [7; 16],
+            relays: None,
         };
         let s = pairing.to_string();
         assert!(s.starts_with(PAIRING_PREFIX));
@@ -140,5 +216,34 @@ mod tests {
             node: EndpointAddr::new(SecretKey::generate().public()),
         };
         assert!(follow.to_string().parse::<PairingTicket>().is_err());
+        assert!(is_pairing_ticket(&s.to_lowercase()));
+        assert!(!is_pairing_ticket(&follow.to_string()));
+    }
+
+    /// A node with a relay token gives out `OSPPAIR2`, which carries it
+    /// (ADR 0044). The project's token is 32 characters.
+    #[test]
+    fn pairing_ticket_carries_relays_and_token() {
+        let url = "https://relay1.example.com";
+        let pairing = PairingTicket {
+            node: EndpointAddr::new(SecretKey::generate().public())
+                .with_relay_url(url.parse().unwrap())
+                .with_ip_addr("172.16.5.20:4433".parse().unwrap())
+                .with_ip_addr("[fd00::20]:4433".parse().unwrap()),
+            secret: [7; 16],
+            relays: Some(PairingRelays {
+                urls: vec![url.into()],
+                token: "t".repeat(32),
+                fallback: true,
+            }),
+        };
+        let s = pairing.to_string();
+        assert!(s.starts_with(PAIRING_RELAYS_PREFIX));
+        assert!(is_pairing_ticket(&s));
+        // Still a QR code that fits in a terminal (version 10, 57 modules).
+        assert!(s.len() < 390, "{} characters", s.len());
+        assert_eq!(s.parse::<PairingTicket>().unwrap(), pairing);
+        // The token's case survives the base32 body being uppercased.
+        assert_eq!(s.to_lowercase().parse::<PairingTicket>().unwrap(), pairing);
     }
 }
