@@ -1,6 +1,6 @@
 # ADR 0044: Project relays as bootstrap and fallback while carrying is built
 
-**Status:** Proposed (2026-11-19), drafted at the maintainer's request and revised after the maintainer's review, for review again. Amends [ADR 0043](0043-the-media-plane-before-the-alpha.md) without changing its timing: carrying is still built in P11, before the Product Alpha. This record adds relays the project runs, as the network's starting point and fallback while carrying grows. Carries out [ADR 0007](0007-transport-privacy-defaults.md#consequences)'s "project or community relays are needed before a public release". Not built.
+**Status:** Accepted (2026-11-19), the maintainer's decision after review. Amends [ADR 0043](0043-the-media-plane-before-the-alpha.md) without changing its timing: carrying is still built in P11, before the Product Alpha. This record adds relays the project runs, as the network's starting point and fallback while carrying grows. Carries out [ADR 0007](0007-transport-privacy-defaults.md#consequences)'s "project or community relays are needed before a public release". Not built.
 
 ## Context
 

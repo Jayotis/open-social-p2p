@@ -47,7 +47,7 @@ Each record captures one significant decision: the problem, the options consider
 | [0041](0041-public-communities-and-stewards.md) | Public communities, one owner and accepted co-moderators | Proposed 2026-11-16; post-Product-Alpha; first community prototype only, with shared governance left for later |
 | [0042](0042-content-rules-reports-and-the-project-hide-list.md) | Content rules, reports and the project's hide list | Accepted 2026-11-17; P11, before outside testers; answers 0019's open question on the first list |
 | [0043](0043-the-media-plane-before-the-alpha.md) | OSP's own media plane, built before the alpha | Accepted 2026-11-18; P11; amends 0017 (seed carriers, built now) and 0030 §3 |
-| [0044](0044-project-relays-for-the-alpha.md) | Project relays as bootstrap and fallback while carrying is built | Proposed 2026-11-19; P11; amends 0043 without changing its timing |
+| [0044](0044-project-relays-for-the-alpha.md) | Project relays as bootstrap and fallback while carrying is built | Accepted 2026-11-19; P11; amends 0043 without changing its timing |
 
 Proposals under review that may become ADRs: [peer reciprocity and recognition](../12-peer-reciprocity-and-recognition.md) (its first phase, measuring, is ADR 0011) and [hosting roles and the follower swarm](../13-hosting-roles-and-follower-swarm.md) (its first phase is accepted, and whether to share copies is asked at setup, ADR 0012). See the [critical review](../reviews/2026-10-21-review-of-docs-12-and-13.md) for what blocks them.
 
