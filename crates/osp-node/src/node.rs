@@ -11,7 +11,7 @@ use std::{
 
 use anyhow::{Context, Result, bail, ensure};
 use iroh::{
-    Endpoint, EndpointAddr, EndpointId, PublicKey, RelayMode, SecretKey,
+    Endpoint, EndpointAddr, EndpointId, PublicKey, RelayMap, RelayMode, SecretKey,
     address_lookup::{DnsAddressLookup, MemoryLookup, PkarrPublisher, PkarrResolver},
     endpoint::{Builder, Connection, QuicTransportConfig, presets},
     protocol::{AcceptError, ProtocolHandler, Router},
@@ -1324,6 +1324,10 @@ fn check_network_config(config: &Config) -> Result<()> {
         !config.tor.enabled || config.endpoints.enabled,
         "tor needs endpoints: media and phones can't go over Tor, so set enabled = true under [endpoints] too"
     );
+    ensure!(
+        net.relay_token.is_none() || matches!(net.relay, RelayChoice::Custom(_)),
+        "relay_token is only for your own relays: list them under relay in config.toml, or remove the token"
+    );
     if net.relay_only {
         ensure!(
             net.relay != RelayChoice::Disabled,
@@ -1395,7 +1399,11 @@ fn builder_publishing(
         RelayChoice::Default => builder,
         RelayChoice::Disabled => builder.relay_mode(RelayMode::Disabled),
         RelayChoice::Custom(_) => {
-            builder.relay_mode(RelayMode::custom(relays::own_relays(&net.relay)?))
+            let mut map = RelayMap::from_iter(relays::own_relays(&net.relay)?);
+            if let Some(token) = &net.relay_token {
+                map = map.with_auth_token(token);
+            }
+            builder.relay_mode(RelayMode::Custom(map))
         }
     };
     Ok(builder)
