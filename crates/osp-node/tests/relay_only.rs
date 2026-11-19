@@ -337,3 +337,109 @@ async fn the_relay_token_is_never_sent_to_relays_that_arent_your_own() {
         );
     }
 }
+
+/// A plain relay on loopback at `addr`, port 0 for any.
+async fn relay_at(addr: std::net::SocketAddr) -> (Server, RelayUrl) {
+    let mut config = ServerConfig::default();
+    config.relay = Some(RelayConfig::new(addr));
+    let server = Server::spawn(config).await.unwrap();
+    let url = format!("http://{}", server.http_addr().unwrap())
+        .parse()
+        .unwrap();
+    (server, url)
+}
+
+/// Waits until `node`'s home relay is `url`.
+async fn homes_on(node: &Node, url: &RelayUrl, why: &str) {
+    let want = url.to_string();
+    tokio::time::timeout(Duration::from_secs(60), async {
+        while status(node).await.relay.as_deref() != Some(want.as_str()) {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("{why}: home relay {:?}", want));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn nodes_use_the_fallback_relays_only_while_their_own_lets_nobody_in() {
+    let (own, own_url) = relay_at((Ipv4Addr::LOCALHOST, 0).into()).await;
+    let own_addr = own.http_addr().unwrap();
+    let (_fallback, fallback_url) = relay_at((Ipv4Addr::LOCALHOST, 0).into()).await;
+    let sim = osp_node::SimSettings {
+        relay_fallback_after: Duration::from_secs(2),
+        relay_probe_every: Duration::from_secs(1),
+        ..osp_node::SimSettings::default()
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let mut nodes = Vec::new();
+    for name in ["Pia", "Quin"] {
+        let mut config = config(name, &own_url, true);
+        config.network.relay_fallback = RelayChoice::Custom(vec![fallback_url.to_string()]);
+        let home = dir.path().join(name.to_lowercase());
+        Node::init(&home, &config).unwrap();
+        nodes.push(Node::spawn_sim(&home, sim.clone()).await.unwrap());
+    }
+    let [pia, quin] = &nodes[..] else {
+        unreachable!()
+    };
+    // Their own relay lets them in, so the fallback is never touched.
+    homes_on(pia, &own_url, "own relay first").await;
+    homes_on(quin, &own_url, "own relay first").await;
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    assert_eq!(status(pia).await.relay, Some(own_url.to_string()));
+
+    // The own relay stops: both turn to the fallback, and a relay-only
+    // node follows another through it.
+    own.shutdown().await.unwrap();
+    homes_on(pia, &fallback_url, "fallback while own is down").await;
+    homes_on(quin, &fallback_url, "fallback while own is down").await;
+    let ticket = invite(pia).await;
+    assert!(only_relay(&ticket.node, &fallback_url), "{:?}", ticket.node);
+    call(
+        pia,
+        ClientRequest::Post {
+            content: "through the fallback".into(),
+            attachments: vec![],
+            uploads: vec![],
+            upload: None,
+        },
+    )
+    .await;
+    call(
+        quin,
+        ClientRequest::Follow {
+            ticket: ticket.to_string(),
+        },
+    )
+    .await;
+    tokio::time::timeout(Duration::from_secs(60), call(quin, ClientRequest::Sync))
+        .await
+        .expect("sync finishes");
+    let ClientResponse::Feed { items } = call(quin, ClientRequest::Feed { limit: 10 }).await else {
+        panic!("no feed");
+    };
+    assert!(items.iter().any(|i| i.content == "through the fallback"));
+
+    // The own relay is back on the same address: both return to it.
+    let (_own, back_url) = relay_at(own_addr).await;
+    assert_eq!(back_url, own_url);
+    homes_on(pia, &own_url, "back on own relay").await;
+    homes_on(quin, &own_url, "back on own relay").await;
+
+    for node in nodes {
+        node.shutdown().await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn the_fallback_relays_are_only_for_your_own_failing() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut config = Config::local_test("Wyn");
+    config.network.relay = RelayChoice::Default;
+    config.network.relay_fallback = RelayChoice::Default;
+    let home = dir.path().join("wyn");
+    Node::init(&home, &config).unwrap();
+    let err = Node::spawn(&home).await.err().expect("refused");
+    assert!(format!("{err:#}").contains("relay_fallback"), "{err:#}");
+}

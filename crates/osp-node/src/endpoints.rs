@@ -43,7 +43,7 @@ use crate::{
     keys,
     network::ConnTracker,
     node::{Core, SimSettings, check_addr, endpoint_builder, on_simulated_network, remember},
-    relays::{self, RelayPolicy},
+    relays::RelayPolicy,
     store::Source,
 };
 
@@ -90,7 +90,7 @@ impl OwnEndpoints {
             let (key, binding) = own_key(public, &home.media_key(), EndpointKind::Media)?;
             // Its address gives away only which relay it uses, so looking
             // it up by ID is fine, and it can't go anywhere else.
-            let relays = RelayPolicy::new(relays::own_relays(&net.relay)?, true);
+            let relays = relays.relay_only();
             let builder = endpoint_builder(net, lookup, &relays)?
                 .hooks(tracker.with_relays(relays))
                 .clear_ip_transports();

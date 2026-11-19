@@ -56,6 +56,10 @@ pub struct NetworkConfig {
     /// relay in `relay`. Only with your own relays, so it never goes to
     /// n0's.
     pub relay_token: Option<String>,
+    /// Relays used only while none of `relay` lets the node in, never
+    /// alongside them (ADR 0044): "default" for n0's, or a list. Off
+    /// ("disabled") unless set. They aren't sent the token.
+    pub relay_fallback: RelayChoice,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -357,6 +361,7 @@ impl Default for NetworkConfig {
             bind: None,
             relay_only: false,
             relay_token: None,
+            relay_fallback: RelayChoice::Disabled,
         }
     }
 }
@@ -408,6 +413,7 @@ impl Config {
                 bind: Some("127.0.0.1:0".parse().expect("valid address")),
                 relay_only: false,
                 relay_token: None,
+                relay_fallback: RelayChoice::Disabled,
             },
             sync: SyncConfig {
                 interval_secs: 3600,
