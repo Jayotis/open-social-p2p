@@ -328,6 +328,7 @@ async fn a_phone_pairs_through_a_relay_with_its_tickets_pass_and_then_needs_none
     let forged = PairingTicket {
         node: addr.clone(),
         secret: [9; 16],
+        relays: None,
     };
     let options = ConnectOptions::new().with_additional_alpns(vec![forged.pass()]);
     let forger = stranger(&url).await;

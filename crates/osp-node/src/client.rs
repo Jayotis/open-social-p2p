@@ -20,7 +20,7 @@ use iroh::{
     protocol::{AcceptError, ProtocolHandler},
 };
 use osp_proto::{
-    BlobHash, PairingTicket,
+    BlobHash, PairingRelays, PairingTicket,
     framing::{UPDATE_YOUR_NODE, is_unknown_message, read_frame_max, write_frame},
     rpc::{
         ClientRequest, ClientResponse, DeviceInfo, IconChange, MAX_PAIR_REQUEST_LEN,
@@ -261,6 +261,7 @@ impl Core {
         let ticket = PairingTicket {
             node: pairing_addr(self.full_addr_of(endpoint).await, relays),
             secret,
+            relays: phone_relays(&self.config.network),
         };
         Ok(ClientResponse::Pairing {
             ticket: ticket.to_string(),
@@ -431,6 +432,20 @@ impl Core {
     ) -> std::sync::MutexGuard<'_, HashMap<BlobHash, watch::Receiver<Download>>> {
         self.opening.lock().unwrap_or_else(|e| e.into_inner())
     }
+}
+
+/// The node's own relays and their token, for a phone to use as its own
+/// (ADR 0044): only with a token, as without one the phone reaches the
+/// node's relays like any other. A fallback other than n0's isn't passed on.
+fn phone_relays(net: &crate::config::NetworkConfig) -> Option<PairingRelays> {
+    let (RelayChoice::Custom(urls), Some(token)) = (&net.relay, &net.relay_token) else {
+        return None;
+    };
+    Some(PairingRelays {
+        urls: urls.clone(),
+        token: token.clone(),
+        fallback: net.relay_fallback == RelayChoice::Default,
+    })
 }
 
 /// The addresses that go in a pairing ticket: the relay, plus addresses on

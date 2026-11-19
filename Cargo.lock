@@ -2953,6 +2953,7 @@ dependencies = [
  "data-encoding",
  "getrandom 0.4.3",
  "iroh",
+ "iroh-relay",
  "osp-node",
  "osp-proto",
  "serde",

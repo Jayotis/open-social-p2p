@@ -21,6 +21,8 @@ tracing.workspace = true
 
 [dev-dependencies]
 clap.workspace = true
+# A relay that asks for a token, on loopback (ADR 0044).
+iroh-relay = { workspace = true, features = ["server"] }
 # The tests use `Node::spawn_sim` for messages as slow as Tor's.
 osp-node = { workspace = true, features = ["sim"] }
 tempfile.workspace = true

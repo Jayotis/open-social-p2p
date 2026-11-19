@@ -25,8 +25,8 @@ class _PairScreenState extends State<PairScreen> {
     if (ticket == null || ticket.isEmpty) return;
     if (!isPairingTicket(text: ticket)) {
       setState(
-        () => _error =
-            "That isn't a pairing code. It should start with OSPPAIR1.",
+        () =>
+            _error = "That isn't a pairing code. It should start with OSPPAIR.",
       );
       return;
     }

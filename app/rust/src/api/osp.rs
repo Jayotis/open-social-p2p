@@ -1990,10 +1990,11 @@ pub fn new_device_key() -> String {
     osp_client::new_device_key()
 }
 
-/// Makes sure a ticket looks like a pairing ticket before trying to pair.
+/// Makes sure a ticket looks like a pairing ticket before trying to pair:
+/// `OSPPAIR1`, or `OSPPAIR2` from a node with its own relays (ADR 0044).
 #[frb(sync)]
 pub fn is_pairing_ticket(text: String) -> bool {
-    text.trim().to_ascii_uppercase().starts_with("OSPPAIR1")
+    osp_client::osp_proto::is_pairing_ticket(&text)
 }
 
 /// Whether text looks like a follow ticket.
