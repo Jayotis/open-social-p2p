@@ -34,7 +34,6 @@ use tracing::{debug, info};
 use crate::{
     db::BlobClass,
     node::{Core, endpoint_builder_unpublished, on_simulated_network},
-    relays::{self, RelayPolicy},
     store::{self, Source, Sources},
     sync::random_fraction,
 };
@@ -453,15 +452,20 @@ impl Core {
             bail!("viewing endpoints need a relay, and relays are off");
         }
         let key = SecretKey::generate();
-        let relays = RelayPolicy::new(relays::own_relays(&net.relay)?, true);
+        let relays = self.tracker.relays().relay_only();
+        let fallback = relays.fallback().cloned();
         let builder = endpoint_builder_unpublished(net, &self.lookup, &relays)?
             .hooks(self.tracker.with_relays(relays))
             .clear_ip_transports();
-        crate::endpoints::sim_network(builder, &self.sim, &key, true)
+        let endpoint = crate::endpoints::sim_network(builder, &self.sim, &key, true)
             .secret_key(key)
             .bind()
             .await
-            .context("starting a viewing endpoint")
+            .context("starting a viewing endpoint")?;
+        if let Some(fallback) = fallback {
+            fallback.follow(&endpoint);
+        }
+        Ok(endpoint)
     }
 }
 

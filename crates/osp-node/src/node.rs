@@ -108,6 +108,12 @@ pub struct SimSettings {
     /// Soonest a search or the feed starts another read of directories.
     /// Tests shorten it.
     pub use_read_gap: Duration,
+    /// How long none of the node's own relays may fail to let it in before
+    /// it turns to its fallback relays. Tests shorten it.
+    pub relay_fallback_after: Duration,
+    /// How often a node on its fallback relays checks its own. Tests
+    /// shorten it.
+    pub relay_probe_every: Duration,
     /// Below this much free disk, a node holds nobody from directories. Tests
     /// raise it.
     pub found_needs_free: u64,
@@ -164,6 +170,8 @@ impl Default for SimSettings {
             first_read_wait: directory::FIRST_READ_WAIT,
             read_every: directory::READ_EVERY,
             use_read_gap: directory::USE_READ_GAP,
+            relay_fallback_after: relays::FALLBACK_AFTER,
+            relay_probe_every: relays::PROBE_EVERY,
             found_needs_free: health::LOW_DISK_BYTES,
             max_found_people: directory::MAX_FOUND_PEOPLE,
             greets_back_per_hour: directory::MAX_GREETS_BACK_PER_HOUR,
@@ -557,6 +565,29 @@ impl Node {
                 bind_endpoint(&config, node_key, &lookup, &relays, tracker.clone(), &sim).await?
             }
         };
+        if let Some(fallback) = relays.fallback() {
+            // Off Tor, the node's own endpoint uses the relays; on Tor,
+            // the direct endpoint is the one that always runs.
+            let main = match &endpoints {
+                Some(own) if tor.is_some() => &own.direct.endpoint,
+                _ => &endpoint,
+            };
+            if tor.is_none() {
+                fallback.follow(&endpoint);
+            }
+            if let Some(own) = &endpoints {
+                fallback.follow(&own.direct.endpoint);
+                if let Some(media) = &own.media {
+                    fallback.follow(&media.endpoint);
+                }
+            }
+            fallback.watch(
+                main,
+                own_relay_map(&config.network)?,
+                sim.relay_fallback_after,
+                sim.relay_probe_every,
+            );
+        }
         for follow in db.follows()? {
             remember(&lookup, &follow.addr);
         }
@@ -1328,6 +1359,10 @@ fn check_network_config(config: &Config) -> Result<()> {
         net.relay_token.is_none() || matches!(net.relay, RelayChoice::Custom(_)),
         "relay_token is only for your own relays: list them under relay in config.toml, or remove the token"
     );
+    ensure!(
+        net.relay_fallback == RelayChoice::Disabled || matches!(net.relay, RelayChoice::Custom(_)),
+        "relay_fallback is for when your own relays fail: list them under relay in config.toml, or remove relay_fallback"
+    );
     if net.relay_only {
         ensure!(
             net.relay != RelayChoice::Disabled,
@@ -1398,15 +1433,18 @@ fn builder_publishing(
     builder = match &net.relay {
         RelayChoice::Default => builder,
         RelayChoice::Disabled => builder.relay_mode(RelayMode::Disabled),
-        RelayChoice::Custom(_) => {
-            let mut map = RelayMap::from_iter(relays::own_relays(&net.relay)?);
-            if let Some(token) = &net.relay_token {
-                map = map.with_auth_token(token);
-            }
-            builder.relay_mode(RelayMode::Custom(map))
-        }
+        RelayChoice::Custom(_) => builder.relay_mode(RelayMode::Custom(own_relay_map(net)?)),
     };
     Ok(builder)
+}
+
+/// The node's own relays, each with the token if it has one.
+pub(crate) fn own_relay_map(net: &NetworkConfig) -> Result<RelayMap> {
+    let map = RelayMap::from_iter(relays::own_relays(&net.relay)?);
+    Ok(match &net.relay_token {
+        Some(token) => map.with_auth_token(token),
+        None => map,
+    })
 }
 
 async fn bind_endpoint(

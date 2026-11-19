@@ -55,6 +55,10 @@ impl ConnTracker {
     }
 
     /// The same record of connections, for an endpoint with its own relays.
+    pub fn relays(&self) -> &RelayPolicy {
+        &self.relays
+    }
+
     pub fn with_relays(&self, relays: RelayPolicy) -> Self {
         Self {
             conns: self.conns.clone(),
