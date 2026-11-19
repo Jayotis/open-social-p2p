@@ -42,6 +42,12 @@ fn sim(net: &SimNet) -> SimSettings {
             round: Duration::from_secs(1_000 * 24 * 60 * 60),
             ..MeetingTimes::default()
         },
+        // The same for a node asking to be listed and its first read of its
+        // directories, also at times of their own: an ask from Kim's public
+        // endpoint to the directory's fell in the window once (2026-11-19).
+        // The tests ask and read when they need to.
+        ask_listing_wait: Duration::from_secs(1_000 * 24 * 60 * 60),
+        first_read_wait: Duration::from_secs(1_000 * 24 * 60 * 60),
         ..SimSettings::default()
     }
 }
@@ -555,6 +561,17 @@ async fn the_universe_holds_no_address_and_opening_it_sends_nothing() {
     // Nor did it ask anyone who vouched for them (ADR 0037 §2).
     assert_eq!(who_vouched(), who_vouched_before);
     assert_eq!(kim.throwaways_made(), 0);
+    // And the check sees a send it doesn't expect: the same ask to be listed,
+    // made in a window of its own, is caught.
+    let ask = sent_from(&net, &own, Duration::from_secs(3), async {
+        assert!(kim.ask_to_be_listed().await);
+    })
+    .await;
+    let to_directory = (public, directory.node_id());
+    assert!(
+        ask.contains(&to_directory) && !connected.contains(&to_directory.1),
+        "the check missed an ask to be listed: {ask:?}"
+    );
 
     // Kim asks how she's connected to Alice. Her node holds Jimmy's reshare
     // of Alice, and asks Alice's node who vouched for her, once, from a
