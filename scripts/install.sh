@@ -9,15 +9,20 @@
 # Run it again to update `osp` to this release: an existing node and its
 # config.toml are left as they are.
 #
+# The project's relays (ADR 0044) are locked by a token that isn't in the
+# release: the person who invited you gives it to you. Set OSP_RELAY_TOKEN, or
+# paste it when asked. Without it the node uses n0's public relays.
+#
 # For tests: OSP_VERSION, OSP_BASE (where the release's files are), OSP_HOME,
-# and OSP_INIT_FLAGS (answers to `osp init`'s questions).
+# OSP_INIT_FLAGS (answers to `osp init`'s questions) and OSP_RELAY_TOKEN.
 #
 # For Linux on x86_64 or arm64 (64-bit Raspberry Pi OS and other SBCs), with
 # systemd. Packages are installed with apt (Debian, Ubuntu, Raspberry Pi OS);
 # elsewhere it says what to install.
 #
-# The directories come from the release's directories.txt, never from the
-# program: `osp` has no built-in directory (ADR 0015).
+# The directories come from the release's directories.txt, and the relays from
+# its relays.txt, never from the program: `osp` has no built-in directory or
+# relay (ADRs 0015 and 0044).
 set -euo pipefail
 
 # The release job writes its tag here.
@@ -87,6 +92,8 @@ tarball="osp-linux-$ARCH.tar.gz"
 fetch "$tarball"
 fetch SHA256SUMS
 fetch directories.txt
+# Optional: a release without it leaves the node on n0's relays.
+curl -fsSL --retry 3 -o "$work/relays.txt" "$BASE/relays.txt" 2>/dev/null || rm -f "$work/relays.txt"
 # This catches a damaged download, not a changed release: the sums come from
 # the same place as the program.
 (cd "$work" && grep " $tarball\$" SHA256SUMS | sha256sum -c --quiet -) || stop "$tarball doesn't match SHA256SUMS"
@@ -123,6 +130,30 @@ else
         directories+=(--directory "$machine" "$node")
     done < "$work/directories.txt"
     ((${#directories[@]})) || stop "directories.txt names no directories"
+    # Each line: a relay URL. # starts a comment.
+    relays=()
+    if [[ -e "$work/relays.txt" ]]; then
+        while read -r url _; do
+            [[ -z "$url" || "$url" == \#* ]] && continue
+            relays+=(--relay "$url")
+        done < "$work/relays.txt"
+    fi
+    token="${OSP_RELAY_TOKEN:-}"
+    if ((${#relays[@]})) && [[ -z "$token" && -z "${OSP_INIT_FLAGS:-}" ]]; then
+        say ""
+        say "Paste the relay token from the person who invited you (it isn't shown),"
+        say "or press Enter to go without: video is then slower."
+        read -rs token < /dev/tty || token=""
+        say ""
+    fi
+    if ((${#relays[@]})) && [[ -n "$token" ]]; then
+        # n0's relays only while the project's let nobody in.
+        relays+=(--relay-fallback default)
+    else
+        ((${#relays[@]})) && say "No relay token: the node uses n0's public relays."
+        relays=()
+        token=""
+    fi
     say ""
     say "Creating your node. It asks your name and two questions, shows your recovery"
     say "words, then asks for some of them back. Have paper and a pen ready."
@@ -131,9 +162,11 @@ else
     # OSP_INSTALLING: init says this script starts the node, not to start it.
     if [[ -n "${OSP_INIT_FLAGS:-}" ]]; then
         # shellcheck disable=SC2086 # several flags
-        OSP_INSTALLING=1 "$BIN/osp" --home "$NODE_HOME" init "${directories[@]}" $OSP_INIT_FLAGS
+        OSP_INSTALLING=1 OSP_RELAY_TOKEN="$token" "$BIN/osp" --home "$NODE_HOME" init \
+            "${directories[@]}" "${relays[@]}" $OSP_INIT_FLAGS
     else
-        OSP_INSTALLING=1 "$BIN/osp" --home "$NODE_HOME" init "${directories[@]}" < /dev/tty
+        OSP_INSTALLING=1 OSP_RELAY_TOKEN="$token" "$BIN/osp" --home "$NODE_HOME" init \
+            "${directories[@]}" "${relays[@]}" < /dev/tty
     fi
     created=true
 fi

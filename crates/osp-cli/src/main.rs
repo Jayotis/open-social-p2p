@@ -76,9 +76,17 @@ enum Command {
         /// Display name for your profile [default: Anonymous, or the name in the backup]
         #[arg(long)]
         name: Option<String>,
-        /// Relays: "default" (n0's public relays), "disabled", or your own relay URL
+        /// Relays: "default" (n0's public relays), "disabled", or your own relay URL.
+        /// Repeat it for more than one URL
         #[arg(long, default_value = "default")]
-        relay: String,
+        relay: Vec<String>,
+        /// The token your own relays ask for (ADR 0044). Only with relay URLs
+        #[arg(long, env = "OSP_RELAY_TOKEN", hide_env_values = true)]
+        relay_token: Option<String>,
+        /// Relays used only while none of yours lets the node in: "default" (n0's),
+        /// "disabled", or a URL. Only with relay URLs
+        #[arg(long, default_value = "disabled")]
+        relay_fallback: String,
         /// Bind to this address only, e.g. 127.0.0.1:0
         #[arg(long)]
         bind: Option<SocketAddr>,
@@ -570,6 +578,8 @@ async fn main() -> Result<()> {
         Command::Init {
             name,
             relay,
+            relay_token,
+            relay_fallback,
             bind,
             no_address_lookup,
             restore,
@@ -589,6 +599,7 @@ async fn main() -> Result<()> {
             let lookup = !no_address_lookup;
             let ask_name = name.is_none();
             let mut config = init_config(name, &relay, bind, lookup, backup.is_some(), !no_tor);
+            set_relay_token(&mut config, relay_token, &relay_fallback)?;
             config.directory.known = known_directories(&directory);
             let answers = Answers {
                 share: answered(share, no_share),
@@ -935,7 +946,7 @@ fn default_home() -> PathBuf {
 /// A new node's config, from the options of `osp init`.
 fn init_config(
     name: Option<String>,
-    relay: &str,
+    relay: &[String],
     bind: Option<SocketAddr>,
     address_lookup: bool,
     from_backup: bool,
@@ -947,11 +958,7 @@ fn init_config(
     } else if from_backup {
         config.name = String::new(); // Take the name in the backup.
     }
-    config.network.relay = match relay {
-        "default" => RelayChoice::Default,
-        "disabled" => RelayChoice::Disabled,
-        url => RelayChoice::Custom(vec![url.to_string()]),
-    };
+    config.network.relay = relay_choice(relay);
     config.network.bind = bind;
     config.network.address_lookup = address_lookup;
     // On for new nodes only: a config without them keeps them off, as a node
@@ -959,6 +966,31 @@ fn init_config(
     config.tor.enabled = tor;
     config.endpoints.enabled = tor;
     config
+}
+
+/// `--relay`'s values: "default" or "disabled" alone, otherwise relay URLs.
+/// A word mixed in with URLs is taken as a URL, and the node refuses it at start.
+fn relay_choice(relay: &[String]) -> RelayChoice {
+    match relay {
+        [only] if only == "default" => RelayChoice::Default,
+        [only] if only == "disabled" => RelayChoice::Disabled,
+        urls => RelayChoice::Custom(urls.to_vec()),
+    }
+}
+
+/// `--relay-token` and `--relay-fallback` (ADR 0044). Both only make sense with
+/// your own relays: the token must never go to n0's, and a fallback for n0's
+/// relays is n0's relays.
+fn set_relay_token(config: &mut Config, token: Option<String>, fallback: &str) -> Result<()> {
+    let fallback = relay_choice(&[fallback.to_string()]);
+    let token = token.filter(|t| !t.is_empty());
+    let own = matches!(config.network.relay, RelayChoice::Custom(_));
+    if !own && (token.is_some() || fallback != RelayChoice::Disabled) {
+        bail!("--relay-token and --relay-fallback need --relay with your own relay URLs");
+    }
+    config.network.relay_token = token;
+    config.network.relay_fallback = fallback;
+    Ok(())
 }
 
 /// The directories given by `--directory MACHINE NODE`, which clap hands over
@@ -3021,6 +3053,61 @@ mod tests {
         // Half a pair, or one with Tor off, isn't taken.
         assert!(Cli::try_parse_from(["osp", "init", "--directory", &m1]).is_err());
         assert!(Cli::try_parse_from(["osp", "init", "--no-tor", "--directory", &m1, &n1]).is_err());
+    }
+
+    /// What install.sh passes for the project's relays (ADR 0044 step 4).
+    #[test]
+    fn init_writes_own_relays_token_and_fallback() {
+        let config = |args: &[&str]| -> Result<Config> {
+            let cli = Cli::try_parse_from(["osp", "init"].iter().chain(args)).unwrap();
+            let Command::Init {
+                relay,
+                relay_token,
+                relay_fallback,
+                ..
+            } = cli.command
+            else {
+                panic!("not init");
+            };
+            let mut config = init_config(None, &relay, None, true, false, true);
+            set_relay_token(&mut config, relay_token, &relay_fallback)?;
+            Ok(config)
+        };
+        let (a, b) = ("https://a.example", "https://b.example");
+        let ours = config(&[
+            "--relay",
+            a,
+            "--relay",
+            b,
+            "--relay-token",
+            "t0k",
+            "--relay-fallback",
+            "default",
+        ])
+        .unwrap();
+        assert_eq!(
+            ours.network.relay,
+            RelayChoice::Custom(vec![a.into(), b.into()])
+        );
+        assert_eq!(ours.network.relay_token.as_deref(), Some("t0k"));
+        assert_eq!(ours.network.relay_fallback, RelayChoice::Default);
+
+        // Without flags: n0's relays, no token, no fallback.
+        let plain = config(&[]).unwrap();
+        assert_eq!(plain.network.relay, RelayChoice::Default);
+        assert_eq!(plain.network.relay_token, None);
+        assert_eq!(plain.network.relay_fallback, RelayChoice::Disabled);
+
+        // The token never goes with n0's relays, and an empty one is none.
+        assert!(config(&["--relay-token", "t0k"]).is_err());
+        assert!(config(&["--relay-fallback", "default"]).is_err());
+        assert_eq!(
+            config(&["--relay", a, "--relay-token", ""])
+                .unwrap()
+                .network
+                .relay_token,
+            None
+        );
     }
 
     #[test]
