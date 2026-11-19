@@ -1,0 +1,62 @@
+name: Sync GitHub to Codefloe
+
+on:
+  push:
+    branches: [main]
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: codefloe-mirror
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out full history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Push main and release tags safely to Codefloe
+        env:
+          CODEFLOE_TOKEN: ${{ secrets.CODEFLOE_TOKEN }}
+          CODEFLOE_USER: Jayotis
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "${CODEFLOE_TOKEN}" ]]; then
+            echo "::error::CODEFLOE_TOKEN repository secret is missing"
+            exit 1
+          fi
+
+          # Credentials supplied only through Git's askpass protocol.
+          # Never place the token in the remote URL or logs.
+          askpass="$(mktemp)"
+          trap 'rm -f "$askpass"' EXIT
+          cat > "$askpass" <<'EOF'
+          #!/usr/bin/env bash
+          case "$1" in
+            *Username*) printf '%s\n' "$CODEFLOE_USER" ;;
+            *Password*) printf '%s\n' "$CODEFLOE_TOKEN" ;;
+            *) exit 1 ;;
+          esac
+          EOF
+          chmod 700 "$askpass"
+          export GIT_ASKPASS="$askpass" GIT_TERMINAL_PROMPT=0
+
+          git remote add codefloe https://codefloe.com/Jayotis/open-social-p2p.git
+          git fetch origin main
+          # An ordinary push rejects divergent history; never force or delete refs.
+          git push codefloe refs/remotes/origin/main:refs/heads/main
+
+          # Publish only release tags (v*), without rewriting existing tags.
+          while IFS= read -r tag; do
+            git push codefloe "refs/tags/$tag:refs/tags/$tag"
+          done < <(git tag --list 'v*')
