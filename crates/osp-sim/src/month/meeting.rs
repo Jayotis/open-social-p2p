@@ -126,6 +126,9 @@ pub struct MeetCounts {
 pub struct Meeting {
     who: Who,
     tables: Vec<BTreeMap<usize, Entry>>,
+    /// (v, m): when `m` first entered `v`'s table, kept if it leaves and
+    /// comes back.
+    entered: HashMap<(usize, usize), f64>,
     /// Machines each has dialled (greeted).
     dialled: Vec<HashSet<usize>>,
     /// Machines that greeted the directory, in that order.
@@ -163,6 +166,7 @@ impl Meeting {
         Meeting {
             who,
             tables: vec![BTreeMap::new(); n],
+            entered: HashMap::new(),
             dialled: vec![HashSet::new(); n],
             map: Vec::new(),
             on_map: vec![false; n],
@@ -245,6 +249,7 @@ impl Meeting {
             }
         }
         self.tables[v].insert(m, Entry { src, since: t });
+        self.entered.entry((v, m)).or_insert(t);
         true
     }
 
@@ -568,6 +573,15 @@ impl Meeting {
                 }
             }
         }
+    }
+
+    /// Machines in `v`'s table that first entered it at `from` or later,
+    /// and when.
+    pub fn entered_since(&self, v: usize, from: f64) -> impl Iterator<Item = (usize, f64)> + '_ {
+        self.tables[v].keys().filter_map(move |&m| {
+            let at = self.entered[&(v, m)];
+            (at >= from).then_some((m, at))
+        })
     }
 
     /// Machines in `v`'s table, in order.

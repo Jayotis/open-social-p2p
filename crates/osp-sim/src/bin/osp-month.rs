@@ -522,7 +522,7 @@ fn print_sizing(r: &sizing::Report) {
         }
     }
     println!(
-        "\nseed carriers | share | jobs | newcomer rate | 1 speed: no later / worst / B8 late | 2 relayed vs project | 3 newcomers dir (mid7, st28) / given | 4 operator both vs 2p² | all [seeds meeting all]"
+        "\nseed carriers | share | jobs | newcomer rate | 1 speed: within a tenth / worst / B8 late | 2 relayed vs project | 3 newcomers dir (mid7, st28) / given | 4 operator both vs 2p² | all [seeds meeting all]"
     );
     for (s, runs) in &r.carriers {
         let (f, m) = &runs[0];
@@ -537,7 +537,7 @@ fn print_sizing(r: &sizing::Report) {
             s.jobs,
             100.0 * s.newcomer_rate,
             verdict(Some(m.speed)),
-            m.no_later,
+            m.within_tenth,
             m.posts,
             m.worst,
             f.late_b8,
@@ -561,7 +561,7 @@ fn print_sizing(r: &sizing::Report) {
         );
     }
     println!(
-        "\nrecorded, seed {}: seed carriers | share | jobs | rate | through carriers late | relay peak Mbit/s | hops 0/1/2/3 | one seed both ends / seeds both | home carried MB a day median, most | seed GB each | circuits from one neighbour home/seed | a minute home/seed | newcomers median days to middle, standing (dir; given) | honest seen by operator",
+        "\nrecorded, seed {}: seed carriers | share | jobs | rate | through carriers late | relay peak Mbit/s | hops 0/1/2/3 | one seed both ends / the project's seeds both | viewer had no earned hop | probationers, graduated | offers sent/taken/used | fresh turns, first jobs | relay said no / no room | home carried MB a day median, most | seed GB each | circuits from one neighbour home/seed | a minute home/seed | newcomers median days to middle, standing (dir; given) | honest seen by operator",
         r.seeds[0]
     );
     for (s, runs) in &r.carriers {
@@ -569,7 +569,7 @@ fn print_sizing(r: &sizing::Report) {
         let c = &f.carrying;
         let days = |x: Option<f64>| x.map_or("-".into(), |x| format!("{x:.0}"));
         println!(
-            "{} | {:.0}% | {} | {:.0}% | {:.0}% | {:.0} | {:?} | {:.0}% / {:.0}% | {:.0}, {:.0} | {} | {}/{} | {}/{} | {}, {}; {}, {} | {} of {}",
+            "{} | {:.0}% | {} | {:.0}% | {:.0}% | {:.0} | {:?} | {:.0}% / {:.0}% | {:.0}% | {}, {} | {}/{}/{} | {}, {} | {:.0}% / {:.0}% | {:.0}, {:.0} | {} | {}/{} | {}/{} | {}, {}; {}, {} | {} of {}",
             s.seeds,
             100.0 * s.share,
             s.jobs,
@@ -579,6 +579,16 @@ fn print_sizing(r: &sizing::Report) {
             f.hops_taken,
             100.0 * f.seed_single_share,
             100.0 * f.seed_both_share,
+            100.0 * f.no_earned_share,
+            f.probationers,
+            f.graduated,
+            f.offers_sent,
+            f.offers_taken,
+            f.offers_used,
+            f.fresh_turns,
+            f.fresh_first_jobs,
+            100.0 * f.relayed_said_no / (f.relayed_said_no + f.relayed_no_room).max(1.0),
+            100.0 * f.relayed_no_room / (f.relayed_said_no + f.relayed_no_room).max(1.0),
             c.median_a_day / 1e6,
             c.most_a_day / 1e6,
             c.seed_bytes
@@ -598,14 +608,22 @@ fn print_sizing(r: &sizing::Report) {
             f.honest,
         );
     }
-    // The plan's choice: 2 seed carriers, all marks on seed 1, smallest
-    // share, then fewest jobs, then lowest rate (settings() is in that order).
-    let chosen = r
-        .carriers
-        .iter()
-        .find(|(s, runs)| s.seeds == 2 && runs[0].1.all());
-    match chosen {
-        Some((s, runs)) => {
+    for (s, runs) in &r.carriers {
+        if s.seeds == 2 && s.share == 0.5 && s.jobs == 2 && s.newcomer_rate == 0.1 {
+            let w = &runs[0].0.fresh_by_week;
+            println!(
+                "fresh turns by week at 50%, 2 jobs, 10%, seed {} (Z's newcomers / others): {}",
+                r.seeds[0],
+                w.iter()
+                    .map(|[a, b]| format!("{a}/{b}"))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            );
+        }
+    }
+    match sizing::chosen(&r.carriers) {
+        Some(s) => {
+            let runs = &r.carriers.iter().find(|(x, _)| *x == s).unwrap().1;
             let from = runs
                 .iter()
                 .map(|(f, _)| f.carrying.most_from_neighbour)
@@ -616,17 +634,81 @@ fn print_sizing(r: &sizing::Report) {
                 .map(|(f, _)| f.carrying.most_a_minute)
                 .max()
                 .unwrap_or(0);
+            let seed_from = runs
+                .iter()
+                .map(|(f, _)| f.carrying.seed_most_from_neighbour)
+                .max()
+                .unwrap_or(0);
+            let seed_minute = runs
+                .iter()
+                .map(|(f, _)| f.carrying.seed_most_a_minute)
+                .max()
+                .unwrap_or(0);
             println!(
-                "\nset: upload share {:.0}%, {} jobs at once, newcomer rate {:.0}%; circuits from one neighbour {} (2 x {from}), new circuits a minute {} (2 x {minute})",
+                "\nset: upload share {:.0}%, {} jobs at once, newcomer rate {:.0}%; a home's circuits from one neighbour {} (2 x {from}), new circuits a minute {} (2 x {minute}); a seed carrier's {} (2 x {seed_from}) and {} (2 x {seed_minute})",
                 100.0 * s.share,
                 s.jobs,
                 100.0 * s.newcomer_rate,
                 2 * from,
                 2 * minute,
+                2 * seed_from,
+                2 * seed_minute,
             );
         }
         None => println!("\nno setting with 2 seed carriers meets every mark: nothing is set"),
     }
+    println!(
+        "\nthe relay's demand with ends saying no (weeks 10-13, against the project relay's; busiest second):"
+    );
+    for (s, runs) in &r.demand {
+        println!(
+            "  {:.0}% saying no, at {:.0}%, {} jobs, {:.0}%, {} seed carriers: {} | busiest {}",
+            100.0 * s.no_rate,
+            100.0 * s.share,
+            s.jobs,
+            100.0 * s.newcomer_rate,
+            s.seeds,
+            runs.iter()
+                .map(|(_, x)| format!("{:.0}%", 100.0 * x))
+                .collect::<Vec<_>>()
+                .join(" "),
+            runs.iter()
+                .map(|(f, _)| format!("{:.0}", f.relay_peak_mbps))
+                .collect::<Vec<_>>()
+                .join(" "),
+        );
+    }
+    println!(
+        "\nseed carriers at the setting chosen: marks 1 and 2 on the first seed [seeds meeting both]"
+    );
+    for (s, runs) in &r.seed_count {
+        let both = runs.iter().filter(|(_, m)| m.speed && m.relay).count();
+        let m = &runs[0].1;
+        println!(
+            "  {}: 1 {} {}/{} {:.2}x | 2 {} {:.0}% [{both}/{}]",
+            s.seeds,
+            verdict(Some(m.speed)),
+            m.within_tenth,
+            m.posts,
+            m.worst,
+            verdict(Some(m.relay)),
+            100.0 * m.relayed_ratio,
+            runs.len(),
+        );
+    }
+    let count = r
+        .seed_count
+        .iter()
+        .filter(|(_, runs)| runs[0].1.speed && runs[0].1.relay)
+        .map(|(s, _)| s.seeds)
+        .min();
+    println!(
+        "seed carriers set: {}",
+        count.map_or(
+            "none of 1, 2 and 4 meets marks 1 and 2".into(),
+            |n| format!("{n}")
+        )
+    );
     let fewest = r
         .carriers
         .iter()
@@ -635,7 +717,7 @@ fn print_sizing(r: &sizing::Report) {
         .map(|(s, _)| s.seeds)
         .min();
     println!(
-        "seed carriers meeting marks 1 and 2 at 50%, 4 jobs, 10%: {}",
+        "seed carriers meeting marks 1 and 2 at 50%, 4 jobs, 10% (until the sixth run): {}",
         fewest.map_or("none of 1, 2 and 4".into(), |n| format!("fewest {n}"))
     );
 }
