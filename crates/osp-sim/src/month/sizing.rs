@@ -258,6 +258,9 @@ pub struct Report {
     /// 2026-11-20): each seed's figures, and its relayed bytes in weeks 10
     /// to 13 against the project relay's.
     pub demand: Vec<(Sizing, Vec<(Figures, f64)>)>,
+    /// The seed-carrier count (amended 2026-11-20, after the sixth run): 1,
+    /// 2 and 4 seed carriers at the setting chosen, if one is.
+    pub seed_count: Vec<(Sizing, Vec<(Figures, Marks)>)>,
 }
 
 /// Runs `jobs`, `threads` at a time, in their order.
@@ -379,6 +382,15 @@ pub fn run(seeds: &[u64], threads: usize) -> Report {
                 .map(move |&seed| (Way::Carriers, Sizing { no_rate, ..base }, seed))
         })
         .collect();
+    let picked = chosen(&carriers);
+    let mut demand_jobs = demand_jobs;
+    for n in [1, 4] {
+        if let Some(c) = picked {
+            for &seed in seeds {
+                demand_jobs.push((Way::Carriers, Sizing { seeds: n, ..c }, seed));
+            }
+        }
+    }
     let more = run_jobs(&demand_jobs, threads);
     let demand = rates
         .iter()
@@ -395,12 +407,39 @@ pub fn run(seeds: &[u64], threads: usize) -> Report {
             (s, runs)
         })
         .collect();
+    let seed_count = picked
+        .map(|c| {
+            [1, 2, 4]
+                .iter()
+                .map(|&n| {
+                    let s = Sizing { seeds: n, ..c };
+                    let runs = seeds
+                        .iter()
+                        .map(|&seed| {
+                            let f = if n == 2 {
+                                find(Way::Carriers, &s, seed, true)
+                            } else {
+                                more.iter()
+                                    .find(|f| f.sizing == s && f.seed == seed)
+                                    .cloned()
+                                    .unwrap()
+                            };
+                            let marks = judge(&f, &find(Way::ProjectRelays, &s, seed, false));
+                            (f, marks)
+                        })
+                        .collect();
+                    (s, runs)
+                })
+                .collect()
+        })
+        .unwrap_or_default();
     Report {
         seeds: seeds.to_vec(),
         project: compared(Way::ProjectRelays),
         n0: compared(Way::Relays),
         carriers,
         demand,
+        seed_count,
     }
 }
 

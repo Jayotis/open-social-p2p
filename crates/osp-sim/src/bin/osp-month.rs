@@ -634,13 +634,25 @@ fn print_sizing(r: &sizing::Report) {
                 .map(|(f, _)| f.carrying.most_a_minute)
                 .max()
                 .unwrap_or(0);
+            let seed_from = runs
+                .iter()
+                .map(|(f, _)| f.carrying.seed_most_from_neighbour)
+                .max()
+                .unwrap_or(0);
+            let seed_minute = runs
+                .iter()
+                .map(|(f, _)| f.carrying.seed_most_a_minute)
+                .max()
+                .unwrap_or(0);
             println!(
-                "\nset: upload share {:.0}%, {} jobs at once, newcomer rate {:.0}%; circuits from one neighbour {} (2 x {from}), new circuits a minute {} (2 x {minute})",
+                "\nset: upload share {:.0}%, {} jobs at once, newcomer rate {:.0}%; a home's circuits from one neighbour {} (2 x {from}), new circuits a minute {} (2 x {minute}); a seed carrier's {} (2 x {seed_from}) and {} (2 x {seed_minute})",
                 100.0 * s.share,
                 s.jobs,
                 100.0 * s.newcomer_rate,
                 2 * from,
                 2 * minute,
+                2 * seed_from,
+                2 * seed_minute,
             );
         }
         None => println!("\nno setting with 2 seed carriers meets every mark: nothing is set"),
@@ -666,6 +678,37 @@ fn print_sizing(r: &sizing::Report) {
                 .join(" "),
         );
     }
+    println!(
+        "\nseed carriers at the setting chosen: marks 1 and 2 on the first seed [seeds meeting both]"
+    );
+    for (s, runs) in &r.seed_count {
+        let both = runs.iter().filter(|(_, m)| m.speed && m.relay).count();
+        let m = &runs[0].1;
+        println!(
+            "  {}: 1 {} {}/{} {:.2}x | 2 {} {:.0}% [{both}/{}]",
+            s.seeds,
+            verdict(Some(m.speed)),
+            m.within_tenth,
+            m.posts,
+            m.worst,
+            verdict(Some(m.relay)),
+            100.0 * m.relayed_ratio,
+            runs.len(),
+        );
+    }
+    let count = r
+        .seed_count
+        .iter()
+        .filter(|(_, runs)| runs[0].1.speed && runs[0].1.relay)
+        .map(|(s, _)| s.seeds)
+        .min();
+    println!(
+        "seed carriers set: {}",
+        count.map_or(
+            "none of 1, 2 and 4 meets marks 1 and 2".into(),
+            |n| format!("{n}")
+        )
+    );
     let fewest = r
         .carriers
         .iter()
@@ -674,7 +717,7 @@ fn print_sizing(r: &sizing::Report) {
         .map(|(s, _)| s.seeds)
         .min();
     println!(
-        "seed carriers meeting marks 1 and 2 at 50%, 4 jobs, 10%: {}",
+        "seed carriers meeting marks 1 and 2 at 50%, 4 jobs, 10% (until the sixth run): {}",
         fewest.map_or("none of 1, 2 and 4".into(), |n| format!("fewest {n}"))
     );
 }

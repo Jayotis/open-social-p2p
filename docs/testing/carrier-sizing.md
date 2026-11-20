@@ -1,6 +1,6 @@
 # Sizing carriers: limits and the newcomer rate, in a model
 
-**Status:** Run six times on 2026-11-20 ([results](#results)). The sixth run sets a 50% upload share, 2 jobs at once and a 5% newcomer rate, with circuit limits of 4 from one neighbour and 14 new a minute; the margins are thin (3 of 5 seeds meet every mark). Plan fixed on 2026-11-20, before any code or run. [ADR 0043](../decisions/0043-the-media-plane-before-the-alpha.md)'s sizing stage: carrying is built in P11 whatever this shows, so the run doesn't decide whether to build. It sets the starting values: a node's upload share for carrying, its jobs at once, its limits on circuits from one neighbour and new circuits a minute, and how often a transfer gives a newcomer a middle turn. Changing a pass mark later needs a dated note here saying what changed and why.
+**Status:** Run six times on 2026-11-20 ([results](#results)). Sizing is closed: the sixth run sets a 50% upload share, 2 jobs at once, a 5% newcomer rate and 2 seed carriers; a home carrier's limits of 4 circuits from one neighbour and 14 new a minute, and a seed carrier's of 36 and 160. The marks are judged on seed 1, as planned; the margins are thin (3 of 5 seeds meet every mark), which stages B to D test on real nodes. Plan fixed on 2026-11-20, before any code or run. [ADR 0043](../decisions/0043-the-media-plane-before-the-alpha.md)'s sizing stage: carrying is built in P11 whatever this shows, so the run doesn't decide whether to build. It sets the starting values: a node's upload share for carrying, its jobs at once, its limits on circuits from one neighbour and new circuits a minute, and how often a transfer gives a newcomer a middle turn. Changing a pass mark later needs a dated note here saying what changed and why.
 
 **Amended 2026-11-20, after the first run, before the second (the maintainer):** the first run's results stand below as run. Three changes for the second run, with the same settings and seeds:
 
@@ -39,6 +39,8 @@ Also recorded: the relay's bytes on way 4's transfers by why (an end said no to 
 - **For the build (stage B).** For a machine key, `started_at` can't change once a viewer has seen it: a later record can't move it forward to be new again. A time materially in the future is ignored, or bounded to allow for ordinary clock skew.
 - **Why a lie is acceptable.** A machine can lie about its start, but it gains one first-job chance per viewer, never standing, and a new machine key already gets the same. So the claim gives no stronger Sybil capability than the network has. Stage C tests an established machine falsely claiming to be new, many newly minted keys claiming to be new, and a burst of them competing with honest newcomers.
 - **In the model,** every machine's `started_at` is when it arrived: nobody lies, as in the other marks.
+
+**Amended a sixth time 2026-11-20, after the sixth run (the maintainer):** the sixth run is accepted and the carrier rules stop changing; the thin margin over seeds is recorded, not tuned for, as the marks are judged on seed 1. Two parts of what the plan sets were read wrongly, and are fixed without a new design: the seed-carrier count is compared at the setting chosen, not at 50%, 4 jobs and 10%, where no count met marks 1 and 2 by then; and the circuit limits are set apart for home and seed carriers, as the rule says *any carrier* and the seeds saw far more. The sixth run's other figures are unchanged, as each run is the same for its setting and seed.
 
 ## The model
 
@@ -80,8 +82,8 @@ Fixed on 2026-11-20, before the model is built.
 ## What it sets
 
 - **Upload share, jobs at once and the newcomer rate:** the setting with 2 seed carriers that meets marks 1 to 4 with the smallest upload share, then the fewest jobs at once, then the lowest newcomer rate. If none meets them all, nothing is set, and the figures go to the maintainer.
-- **Circuits from one neighbour, and new circuits a minute:** twice the most any carrier saw from honest use at that setting over the 5 seeds, rounded up. The model's operator behaves as an honest follower here, so its machines count as honest use. Stage C tests the limits against a machine that opens circuits as fast as it can.
-- **Seed carriers:** the fewest of 1, 2 and 4 that meet marks 1 and 2 at 50%, 4 jobs and 10%. That's a count for the maintainer to plan, not a value in the software.
+- **Circuits from one neighbour, and new circuits a minute:** twice the most any carrier saw from honest use at that setting over the 5 seeds, rounded up, set apart for home carriers and seed carriers (amended 2026-11-20, after the sixth run: a seed carrier is a server with 40 jobs at once, and a home's limits would choke it). The model's operator behaves as an honest follower here, so its machines count as honest use. Stage C tests the limits against a machine that opens circuits as fast as it can.
+- **Seed carriers:** the fewest of 1, 2 and 4 that meet marks 1 and 2 at the setting chosen, on the same 5 seeds (amended 2026-11-20, after the sixth run; until then at 50%, 4 jobs and 10%, a setting chosen before the sweep that the results left behind). That's a count for the maintainer to plan, not a value in the software.
 
 ## Recorded too
 
@@ -232,9 +234,16 @@ At 50%, 2 jobs and 5%, seed 1, against the third and fifth runs (both at 10%, th
 
 **The relay's demand with ends saying no,** at the setting chosen: 47 to 49% of the project relay's bytes with 10% saying no, 55 to 57% with 25%, 75 to 76% with 50%; the busiest second 550 to 710 Mbit/s.
 
-**Circuits,** at the setting chosen over the 5 seeds: a home held at most 2 from one neighbour at once and opened at most 7 in a minute, so by the plan's rule the limits are **4 circuits from one neighbour and 14 new circuits a minute.** A seed carrier held at most 18 from one neighbour and took at most 80 a minute; the limits are for homes, and a seed carrier needs its own. Stage C tests the limits against a machine opening circuits as fast as it can.
+**Circuits,** at the setting chosen over the 5 seeds, by the plan's rule (twice the most seen):
 
-**Seed carriers:** none of 1, 2 and 4 meets marks 1 and 2 at 50%, 4 jobs and 10%, the plan's fixed setting for that count; at the setting chosen, 2 meet them.
+| Carrier | Most from one neighbour at once | Most new in a minute | Limits set |
+| --- | --- | --- | --- |
+| Home | 2 | 7 | 4 from one neighbour, 14 a minute |
+| Seed carrier | 18 | 80 | 36 from one neighbour, 160 a minute |
+
+Stage C tests both against a machine opening circuits as fast as it can.
+
+**Seed carriers,** at the setting chosen (amended a sixth time): **2 are set.** On seed 1, 1 seed carrier meets mark 1 (43 of 45 within a tenth, worst 1.18x) but misses mark 2 (69% of the project relay's bytes) [0/5 meet both]; 2 meet both (44 of 45, 1.11x; 44%) [4/5]; 4 meet both (42 of 45, 1.13x; 14%) [3/5]. At 50%, 4 jobs and 10%, the count's old setting, none of 1, 2 and 4 meets marks 1 and 2.
 
 ## Not modelled
 
