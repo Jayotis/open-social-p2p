@@ -150,6 +150,7 @@ pub fn run(percent: usize, seed: u64) -> Run {
         tell_delay: TELL_DELAY,
         bytes: VIDEO_BYTES,
         until: 3600.0,
+        relay: super::spread::RelayLimits::N0,
     }
     .run(&mut swarm, &fetches, &[]);
     let followers = &out.held[1..=FOLLOWERS];
@@ -169,6 +170,7 @@ pub fn run(percent: usize, seed: u64) -> Run {
             tell_delay: TELL_DELAY,
             bytes: VIDEO_BYTES,
             until: 3600.0,
+            relay: super::spread::RelayLimits::N0,
         }
         .run(&mut swarm, &[Fetch { node, wakes: 0.0 }], &holding);
         creator_bytes += late.served[creator];

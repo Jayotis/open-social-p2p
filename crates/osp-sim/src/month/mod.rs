@@ -9,4 +9,5 @@ pub mod meeting;
 pub mod months;
 pub mod records;
 pub mod rng;
+pub mod sizing;
 pub mod spread;
