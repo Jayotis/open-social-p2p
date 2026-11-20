@@ -53,6 +53,15 @@ pub struct MachineInfo {
     pub offers: Vec<String>,
     /// RFC 3339.
     pub published: String,
+    /// Unix seconds: when this machine key started. A reader takes the first
+    /// it sees for a key and never a later one, so a machine can't make itself
+    /// new again (the carrier sizing's signed start).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<u64>,
+    /// Its carrier's signed descriptor (ADR 0043), as unpadded base64url of
+    /// the descriptor's bytes, for the carrier crate to read and check.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub carrier: Option<String>,
 }
 
 /// A machine's signed statement about itself. Only its own key signs it, so
@@ -70,12 +79,25 @@ pub struct MachineRecord {
 
 impl MachineRecord {
     pub fn new(key: &SecretKey, offers: Vec<String>, published: String) -> Result<Self> {
-        let info = MachineInfo {
-            machine: key.public(),
-            offers,
-            published,
-        };
-        let payload = serde_json::to_vec(&info)?;
+        Self::sign(
+            key,
+            &MachineInfo {
+                machine: key.public(),
+                offers,
+                published,
+                started_at: None,
+                carrier: None,
+            },
+        )
+    }
+
+    /// Signs what `info` says, which must be of `key`'s own machine.
+    pub fn sign(key: &SecretKey, info: &MachineInfo) -> Result<Self> {
+        ensure!(
+            info.machine == key.public(),
+            "a machine signs only its own record"
+        );
+        let payload = serde_json::to_vec(info)?;
         ensure!(
             payload.len() <= MAX_RECORD_BYTES,
             "a machine record is larger than {MAX_RECORD_BYTES} bytes"
@@ -389,6 +411,8 @@ mod tests {
             machine: key(2).public(),
             offers: vec![],
             published: DATE.into(),
+            started_at: None,
+            carrier: None,
         };
         let payload = serde_json::to_vec(&info).unwrap();
         let why = signed_payload(&key(1), payload).verify().unwrap_err();
@@ -406,6 +430,28 @@ mod tests {
         .unwrap();
         let info = signed_payload(&key(1), payload).verify().unwrap();
         assert_eq!(info.offers, ["directory", "something-new"]);
+    }
+
+    #[test]
+    fn a_record_carries_its_start_and_the_largest_carrier_descriptor() {
+        // The carrier crate's largest descriptor: 512 bytes signed, a 64-byte
+        // signature and postcard's two length prefixes.
+        let carrier = data_encoding::BASE64URL_NOPAD.encode(&[7; 512 + 64 + 4]);
+        let info = MachineInfo {
+            machine: key(1).public(),
+            offers: vec!["directory".into()],
+            published: DATE.into(),
+            started_at: Some(1_795_000_000),
+            carrier: Some(carrier),
+        };
+        let record = MachineRecord::sign(&key(1), &info).unwrap();
+        assert_eq!(record.verify().unwrap(), info);
+        // An older record, without them, still reads.
+        let old = MachineRecord::new(&key(1), vec![], DATE.into()).unwrap();
+        let read = old.verify().unwrap();
+        assert_eq!((read.started_at, read.carrier), (None, None));
+        // Nobody signs another machine's.
+        MachineRecord::sign(&key(2), &info).unwrap_err();
     }
 
     #[test]

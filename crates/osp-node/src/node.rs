@@ -37,6 +37,7 @@ const MAX_ADDRS: usize = 16;
 
 use crate::{
     backup,
+    carrier::CarrierSide,
     client::ClientProtocol,
     config::{Config, NetworkConfig, RelayChoice},
     control::{self, Origin},
@@ -316,6 +317,8 @@ pub(crate) struct Core {
     pub endpoints: Option<OwnEndpoints>,
     /// The node's machine name, when it's on (ADR 0015).
     pub machine: Option<MachineSide>,
+    /// The node's carrier, when it carries (ADR 0043).
+    pub carrier: Option<CarrierSide>,
     /// Wakes a directory's reading of listed nodes, for someone new.
     pub listed_now: Notify,
     /// The day a directory last picked its listed posts' hosts (ADR 0025).
@@ -492,12 +495,11 @@ impl Node {
             bail!("no node in {}; run `osp init` first", home.root().display());
         }
         let _lock = lock_home(&home)?;
-        match std::fs::remove_file(home.machine_key()) {
-            Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
-                Err(e).with_context(|| format!("removing {}", home.machine_key().display()))
-            }
-            _ => Ok(()),
-        }
+        // Its start and its carrier's key go with it, so nothing ties the
+        // new name to the old.
+        crate::machine::remove_if_there(&home.machine_key())?;
+        crate::machine::remove_if_there(&home.machine_started())?;
+        crate::machine::remove_if_there(&home.carrier_key())
     }
 
     /// Starts the node stored in `home`.
@@ -546,6 +548,16 @@ impl Node {
             !config.directory.serve || machine.is_some(),
             "a directory needs a machine name: set enabled = true under [tor] and under [machine] in config.toml"
         );
+        // Carrying never stops the node starting.
+        let carrier = match &machine {
+            Some(machine) => CarrierSide::start(&home, &config, machine, &relays)
+                .await
+                .unwrap_or_else(|e| {
+                    warn!("not carrying for other nodes: {e:#}");
+                    None
+                }),
+            None => None,
+        };
         let pairings = Pairings::default();
         let endpoints = match config.endpoints.enabled {
             true => {
@@ -697,6 +709,7 @@ impl Node {
             tor,
             endpoints,
             machine,
+            carrier,
             listed_now: Notify::new(),
             hosts_picked_day: std::sync::atomic::AtomicI64::new(-1),
             reading_directories: tokio::sync::Mutex::new(HashSet::new()),
@@ -1155,6 +1168,9 @@ impl Node {
             task.abort();
         }
         self.core.viewing.close_all().await;
+        if let Some(carrier) = &self.core.carrier {
+            carrier.endpoint.close().await;
+        }
         self.router
             .shutdown()
             .await

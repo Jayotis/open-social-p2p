@@ -311,11 +311,35 @@ pub(crate) enum Heard {
     Turn,
 }
 
+/// When a machine started, as this node holds it: the earliest its records
+/// said, and never later than when it was first seen. A record saying a
+/// later time, or one in the future, can't make the machine new again.
+///
+/// Say Kim's node has been around for months, and Jimmy's node meets it
+/// today. Its record says it started in March, so it gets no newcomer's
+/// fresh turn from Jimmy's node. If it then signs a record saying it started
+/// today, Jimmy's node still holds March. A machine forgotten for a month
+/// can start again as new here, as a new key could anyway.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Start {
+    pub machine: EndpointId,
+    pub started_ms: i64,
+    pub first_seen_ms: i64,
+}
+
+/// A machine's start is forgotten this long after it was first seen, once
+/// it's out of the table.
+const START_KEPT_MS: i64 = 30 * 24 * 60 * 60 * 1000;
+/// Most starts held, those in the table included.
+const MAX_STARTS: usize = 4 * MAX_MACHINES;
+
 /// Rows to write after a change.
 #[derive(Debug, Default)]
 pub(crate) struct Changes {
     pub put: Vec<Entry>,
     pub removed: Vec<EndpointId>,
+    pub starts: Vec<Start>,
+    pub starts_removed: Vec<EndpointId>,
     /// The hour's dials, when they changed.
     pub dials: Option<Vec<Dial>>,
 }
@@ -332,7 +356,11 @@ pub(crate) struct Dial {
 
 impl Changes {
     pub fn is_empty(&self) -> bool {
-        self.put.is_empty() && self.removed.is_empty() && self.dials.is_none()
+        self.put.is_empty()
+            && self.removed.is_empty()
+            && self.starts.is_empty()
+            && self.starts_removed.is_empty()
+            && self.dials.is_none()
     }
 }
 
@@ -359,6 +387,10 @@ pub(crate) struct Table {
     changed: HashSet<EndpointId>,
     removed: HashSet<EndpointId>,
     dials_changed: bool,
+    /// When machines started, by what their records said (`Start`).
+    starts: HashMap<EndpointId, Start>,
+    starts_changed: HashSet<EndpointId>,
+    starts_removed: HashSet<EndpointId>,
     /// Introductions (ADR 0016), kept in memory only: after a restart a
     /// machine may ask a little longer, and its limits start afresh.
     intro: Introductions,
@@ -431,6 +463,9 @@ impl Table {
             changed: HashSet::new(),
             removed: HashSet::new(),
             dials_changed: false,
+            starts: HashMap::new(),
+            starts_changed: HashSet::new(),
+            starts_removed: HashSet::new(),
             intro: Introductions::default(),
             told_answering: HashSet::new(),
         }
@@ -595,13 +630,29 @@ impl Table {
         if self.apart.contains(&machine) {
             return Ok(Heard::Apart);
         }
+        let heard = self.place(record, machine, published, source, now);
+        if self.entries.contains_key(&machine) {
+            self.note_start(machine, info.started_at, now);
+        }
+        Ok(heard)
+    }
+
+    /// Finds `machine` a place in the table, if there's one for it.
+    fn place(
+        &mut self,
+        record: &MachineRecord,
+        machine: EndpointId,
+        published: i64,
+        source: Source,
+        now: i64,
+    ) -> Heard {
         if let Some(entry) = self.entries.get_mut(&machine) {
             if published > entry.published_ms {
                 entry.record = record.clone();
                 entry.published_ms = published;
                 self.changed.insert(machine);
             }
-            return Ok(Heard::Already);
+            return Heard::Already;
         }
         let source = self.counted_as(source, now);
         // Mostly there's room, and the source is nowhere near its share.
@@ -612,17 +663,17 @@ impl Table {
             .count();
         if from_source < PER_SOURCE && self.entries.len() < MAX_MACHINES {
             self.insert(record, machine, published, source, now);
-            return Ok(Heard::Added);
+            return Heard::Added;
         }
         let protected = self.protected(now);
         let shares = self.shares(&protected);
         let share = shares.get(&source.share()).copied().unwrap_or(0);
         if share >= PER_SOURCE {
             // Only a machine that greeted gets in, not those it passes on.
-            return Ok(match source.greets() {
+            return match source.greets() {
                 true => self.greeter_in(record, machine, published, source, &protected, now),
                 false => Heard::SourceFull,
-            });
+            };
         }
         if self.entries.len() >= MAX_MACHINES {
             // Only a machine never met gives up its place, so a crowd of
@@ -639,13 +690,13 @@ impl Table {
             match given_up {
                 Some(other) => self.remove(&other),
                 None if source.greets() => {
-                    return Ok(self.greeter_in(record, machine, published, source, &protected, now));
+                    return self.greeter_in(record, machine, published, source, &protected, now);
                 }
-                None => return Ok(Heard::Full),
+                None => return Heard::Full,
             }
         }
         self.insert(record, machine, published, source, now);
-        Ok(Heard::Added)
+        Heard::Added
     }
 
     /// A machine that greeted this one, with no place for it otherwise, takes
@@ -744,6 +795,78 @@ impl Table {
             },
         );
         self.changed.insert(machine);
+    }
+
+    /// Notes when `machine` says it started, `started_at` in unix seconds:
+    /// only ever moved earlier, and never past when it was first seen.
+    fn note_start(&mut self, machine: EndpointId, started_at: Option<u64>, now: i64) {
+        let said = started_at
+            .and_then(|secs| i64::try_from(secs).ok())
+            .map_or(now, |secs| secs.saturating_mul(1000));
+        match self.starts.get_mut(&machine) {
+            Some(start) => {
+                let started_ms = said.min(start.first_seen_ms);
+                if started_ms < start.started_ms {
+                    start.started_ms = started_ms;
+                    self.starts_changed.insert(machine);
+                }
+            }
+            None => {
+                let start = Start {
+                    machine,
+                    started_ms: said.min(now),
+                    first_seen_ms: now,
+                };
+                self.starts.insert(machine, start);
+                self.starts_changed.insert(machine);
+            }
+        }
+    }
+
+    /// When `machine` started, as held here, if it's been seen.
+    #[cfg_attr(not(test), allow(dead_code))] // for newcomers' turns, in part 4d
+    pub fn start(&self, machine: &EndpointId) -> Option<Start> {
+        self.starts.get(machine).copied()
+    }
+
+    /// Takes in the starts stored.
+    pub fn load_starts(&mut self, starts: Vec<Start>) {
+        self.starts = starts.into_iter().map(|s| (s.machine, s)).collect();
+    }
+
+    /// Forgets the starts of machines out of the table for a month, and the
+    /// oldest beyond `MAX_STARTS`.
+    fn sweep_starts(&mut self, now: i64) {
+        let old = now - START_KEPT_MS;
+        let gone: Vec<EndpointId> = self
+            .starts
+            .values()
+            .filter(|s| s.first_seen_ms < old && !self.entries.contains_key(&s.machine))
+            .map(|s| s.machine)
+            .collect();
+        for machine in gone {
+            self.forget_start(&machine);
+        }
+        if self.starts.len() > MAX_STARTS {
+            let mut outside: Vec<Start> = self
+                .starts
+                .values()
+                .filter(|s| !self.entries.contains_key(&s.machine))
+                .copied()
+                .collect();
+            outside.sort_by_key(|s| s.first_seen_ms);
+            let over = self.starts.len() - MAX_STARTS;
+            for s in outside.into_iter().take(over) {
+                self.forget_start(&s.machine);
+            }
+        }
+    }
+
+    fn forget_start(&mut self, machine: &EndpointId) {
+        if self.starts.remove(machine).is_some() {
+            self.starts_changed.remove(machine);
+            self.starts_removed.insert(*machine);
+        }
     }
 
     /// Picks this round's dials and check-ins, and notes them as tried, so
@@ -1186,6 +1309,7 @@ impl Table {
         for machine in gone {
             self.remove(&machine);
         }
+        self.sweep_starts(now);
     }
 
     fn remove(&mut self, machine: &EndpointId) {
@@ -1203,9 +1327,16 @@ impl Table {
             .filter_map(|machine| self.entries.get(&machine).cloned())
             .collect();
         let dials = std::mem::take(&mut self.dials_changed).then(|| self.dials.clone());
+        let starts = self
+            .starts_changed
+            .drain()
+            .filter_map(|machine| self.starts.get(&machine).copied())
+            .collect();
         Changes {
             put,
             removed: self.removed.drain().collect(),
+            starts,
+            starts_removed: self.starts_removed.drain().collect(),
             dials,
         }
     }
@@ -1326,6 +1457,7 @@ impl Acquaintances {
     pub fn load(db: Arc<Db>, apart: HashSet<EndpointId>, times: MeetingTimes) -> Result<Self> {
         let (stored, dials) = db.machines()?;
         let mut table = Table::load(stored, dials, apart, times, now_ms());
+        table.load_starts(db.machine_starts()?);
         db.save_machines(&table.take_changes())?;
         Ok(Self {
             table: Mutex::new(table),
@@ -2523,5 +2655,89 @@ mod tests {
         assert!(t.get(&met).is_some(), "met, and silent only six days");
         t.plan(now + ms(times().forget_silent) + 1);
         assert!(t.get(&met).is_none());
+    }
+
+    /// A record of `key`'s machine that says it started at `started_ms`.
+    fn started(key: &SecretKey, at: i64, started_ms: i64) -> MachineRecord {
+        let info = osp_proto::machine::MachineInfo {
+            machine: key.public(),
+            offers: vec![],
+            published: date(at),
+            started_at: Some((started_ms / 1000) as u64),
+            carrier: None,
+        };
+        MachineRecord::sign(key, &info).unwrap()
+    }
+
+    #[test]
+    fn a_machines_start_only_moves_earlier_and_never_past_first_seen() {
+        let now = start();
+        let day = 24 * HOUR_MS;
+        let mut t = table();
+        // Kim's node has been around for months.
+        let kim = SecretKey::generate();
+        t.hear(&started(&kim, now, now - 90 * day), Source::Greeted, now)
+            .unwrap();
+        let held = t.start(&kim.public()).unwrap();
+        assert_eq!(held.first_seen_ms, now);
+        assert_eq!(held.started_ms / 1000, (now - 90 * day) / 1000);
+        // A later record saying it started today doesn't make it new again.
+        let later = now + HOUR_MS;
+        t.hear(&started(&kim, later, later), Source::Greeted, later)
+            .unwrap();
+        assert_eq!(t.start(&kim.public()).unwrap(), held);
+
+        // A new machine that says it starts next week started when it was
+        // first seen, at the latest.
+        let new = SecretKey::generate();
+        t.hear(&started(&new, now, now + 7 * day), Source::Greeted, now)
+            .unwrap();
+        assert_eq!(t.start(&new.public()).unwrap().started_ms, now);
+        // One with no start in its record, from an older version, too; and
+        // a later record saying it started earlier moves it back.
+        let old = SecretKey::generate();
+        t.hear(&record_at(&old, now), Source::Greeted, now).unwrap();
+        assert_eq!(t.start(&old.public()).unwrap().started_ms, now);
+        t.hear(&started(&old, later, now - 3 * day), Source::Greeted, later)
+            .unwrap();
+        assert_eq!(
+            t.start(&old.public()).unwrap().started_ms / 1000,
+            (now - 3 * day) / 1000
+        );
+
+        // A machine kept apart, or with no place, isn't noted.
+        let me = SecretKey::generate();
+        let mut apart = Table::new(HashSet::from([me.public()]), times());
+        apart
+            .hear(&started(&me, now, now), Source::Greeted, now)
+            .unwrap();
+        assert_eq!(apart.start(&me.public()), None);
+    }
+
+    #[test]
+    fn starts_are_written_read_back_and_forgotten_a_month_after_the_machine_goes() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Arc::new(Db::open(&dir.path().join("t.db")).unwrap());
+        let now = start();
+        let kim = SecretKey::generate();
+        let mut t = table();
+        t.hear(
+            &started(&kim, now, now - 40 * 24 * HOUR_MS),
+            Source::Greeted,
+            now,
+        )
+        .unwrap();
+        db.save_machines(&t.take_changes()).unwrap();
+        let held = t.start(&kim.public()).unwrap();
+        assert_eq!(db.machine_starts().unwrap(), [held]);
+
+        // Out of the table, it's kept a month from when it was first seen.
+        t.remove(&kim.public());
+        t.sweep_starts(now + START_KEPT_MS - 1);
+        assert_eq!(t.start(&kim.public()), Some(held));
+        t.sweep_starts(now + START_KEPT_MS + 1);
+        assert_eq!(t.start(&kim.public()), None);
+        db.save_machines(&t.take_changes()).unwrap();
+        assert!(db.machine_starts().unwrap().is_empty());
     }
 }

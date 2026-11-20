@@ -32,6 +32,7 @@ pub struct Config {
     pub endpoints: EndpointsConfig,
     pub machine: MachineConfig,
     pub directory: DirectoryConfig,
+    pub carrier: CarrierConfig,
     pub replies: RepliesConfig,
     pub lists: ListsConfig,
 }
@@ -256,6 +257,38 @@ pub struct KnownDirectory {
     pub node: EndpointId,
 }
 
+/// Carrying other nodes' encrypted media (ADR 0043): every node carries, from
+/// the middle of a path, under its machine name. It needs a machine name and
+/// a relay.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CarrierConfig {
+    pub enabled: bool,
+    /// Carry with a seed carrier's limits, for a server on the release's
+    /// `carriers.txt`, not a home node's.
+    pub seed: bool,
+    /// The seed carriers this node knows, from the release's `carriers.txt`
+    /// (ADR 0043 §6), by machine ID. Never built into the program.
+    pub known: Vec<SeedCarrier>,
+}
+
+impl Default for CarrierConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            seed: false,
+            known: Vec::new(),
+        }
+    }
+}
+
+/// A seed carrier, by its machine name. Its descriptor comes from its machine
+/// record, as its circuit key changes every day.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SeedCarrier {
+    pub machine: EndpointId,
+}
+
 /// The node's media and direct endpoints (ADR 0014), being built. With it on,
 /// media and phones move onto them, and the node's main endpoint carries only
 /// messages between nodes. Phones paired before must pair again. Its address
@@ -347,6 +380,7 @@ impl Default for Config {
             endpoints: EndpointsConfig::default(),
             machine: MachineConfig::default(),
             directory: DirectoryConfig::default(),
+            carrier: CarrierConfig::default(),
             replies: RepliesConfig::default(),
             lists: ListsConfig::default(),
         }
@@ -430,6 +464,7 @@ impl Config {
             endpoints: EndpointsConfig::default(),
             machine: MachineConfig::default(),
             directory: DirectoryConfig::default(),
+            carrier: CarrierConfig::default(),
             replies: RepliesConfig::default(),
             lists: ListsConfig::default(),
         }

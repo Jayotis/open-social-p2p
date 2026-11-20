@@ -231,6 +231,15 @@ impl Carrier {
         rx.await.map_err(|_| anyhow!("the carrier stopped"))
     }
 
+    /// Names another relay in its descriptors from now on: the carrier
+    /// endpoint's home relay moved, say to the fallback.
+    pub async fn set_relay(&self, relay: String) -> Result<()> {
+        self.tx
+            .send(Event::Relay(relay))
+            .await
+            .map_err(|_| anyhow!("the carrier stopped"))
+    }
+
     pub async fn stats(&self) -> Result<Stats> {
         let (tx, rx) = oneshot::channel();
         self.tx
@@ -251,6 +260,7 @@ enum Event {
     Dialed(EndpointId, Result<Connection>),
     Slot(LinkId, oneshot::Sender<Option<Slot>>),
     Descriptor(oneshot::Sender<Descriptor>),
+    Relay(String),
     Stats(oneshot::Sender<Stats>),
 }
 
@@ -399,6 +409,7 @@ impl State {
                     let _ = reply.send(d);
                 }
             }
+            Event::Relay(relay) => self.relay = relay,
             Event::Stats(reply) => {
                 let mut s = self.stats.clone();
                 s.circuits = self.circuits.len();

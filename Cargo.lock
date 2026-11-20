@@ -3086,6 +3086,7 @@ dependencies = [
  "n0-future",
  "n0-watcher",
  "noq-udp",
+ "osp-carrier",
  "osp-node",
  "osp-proto",
  "osp-tor",

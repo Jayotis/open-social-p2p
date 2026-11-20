@@ -140,6 +140,11 @@ enum Command {
         /// an installer passes the ones to use
         #[arg(long, num_args = 2, value_names = ["MACHINE", "NODE"], conflicts_with = "no_tor")]
         directory: Vec<EndpointId>,
+        /// A seed carrier (ADR 0043), by its machine name, written under [[carrier.known]]
+        /// in config.toml. Repeat it for more than one. There's no default: an installer
+        /// passes the ones to use
+        #[arg(long, value_name = "MACHINE", conflicts_with = "no_tor")]
+        carrier: Vec<EndpointId>,
     },
     /// Run the node in the foreground (Ctrl-C to stop)
     Daemon,
@@ -595,12 +600,17 @@ async fn main() -> Result<()> {
             hide_list,
             no_hide_list,
             directory,
+            carrier,
         } => {
             let lookup = !no_address_lookup;
             let ask_name = name.is_none();
             let mut config = init_config(name, &relay, bind, lookup, backup.is_some(), !no_tor);
             set_relay_token(&mut config, relay_token, &relay_fallback)?;
             config.directory.known = known_directories(&directory);
+            config.carrier.known = carrier
+                .into_iter()
+                .map(|machine| osp_node::SeedCarrier { machine })
+                .collect();
             let answers = Answers {
                 share: answered(share, no_share),
                 list_me: answered(list_me, no_list_me),
@@ -3053,6 +3063,20 @@ mod tests {
         // Half a pair, or one with Tor off, isn't taken.
         assert!(Cli::try_parse_from(["osp", "init", "--directory", &m1]).is_err());
         assert!(Cli::try_parse_from(["osp", "init", "--no-tor", "--directory", &m1, &n1]).is_err());
+    }
+
+    #[test]
+    fn init_takes_seed_carriers_by_machine_name() {
+        let id = || osp_proto::SecretKey::generate().public().to_string();
+        let (m1, m2) = (id(), id());
+        let cli = Cli::try_parse_from(["osp", "init", "--carrier", &m1, "--carrier", &m2]).unwrap();
+        let Command::Init { carrier, .. } = cli.command else {
+            panic!("not init");
+        };
+        let shown: Vec<String> = carrier.iter().map(|c| c.to_string()).collect();
+        assert_eq!(shown, [m1.clone(), m2]);
+        // With Tor off there's no machine name to carry under.
+        assert!(Cli::try_parse_from(["osp", "init", "--no-tor", "--carrier", &m1]).is_err());
     }
 
     /// What install.sh passes for the project's relays (ADR 0044 step 4).

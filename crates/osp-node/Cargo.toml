@@ -15,6 +15,7 @@ sim = ["iroh/unstable-custom-transports", "dep:iroh-base", "dep:n0-watcher", "de
 [dependencies]
 osp-proto.workspace = true
 osp-tor.workspace = true
+osp-carrier.workspace = true
 anyhow.workspace = true
 bip39.workspace = true
 blake3.workspace = true

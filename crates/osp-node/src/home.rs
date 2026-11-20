@@ -66,6 +66,16 @@ impl Home {
         self.root.join("machine.key")
     }
 
+    /// When the machine key started, in unix seconds, for its record.
+    pub fn machine_started(&self) -> PathBuf {
+        self.root.join("machine.started")
+    }
+
+    /// The carrier endpoint's key (ADR 0043), published nowhere.
+    pub fn carrier_key(&self) -> PathBuf {
+        self.root.join("carrier.key")
+    }
+
     pub fn db(&self) -> PathBuf {
         self.root.join("osp.db")
     }

@@ -69,8 +69,8 @@ const CLOSE_DONE: u32 = 0;
 
 pub(crate) struct MachineSide {
     key: SecretKey,
-    /// What its record says it offers other machines.
-    offers: Vec<String>,
+    /// What its record says.
+    own: OwnRecord,
     /// Which parts of introductions it takes part in.
     introductions: IntroductionsConfig,
     pub endpoint: Endpoint,
@@ -102,6 +102,10 @@ impl MachineSide {
             true => keys::load(&path),
             false => {
                 db.forget_machines()?;
+                // A new name gets a new start, and a carrier endpoint the
+                // old name's records never named.
+                remove_if_there(&home.carrier_key())?;
+                remove_if_there(&home.machine_started())?;
                 keys::create(&path)
             }
         };
@@ -137,6 +141,7 @@ impl MachineSide {
         let Some((key, endpoint, transport)) = started else {
             return Ok(None);
         };
+        let started_at = started_at(home)?;
         // This machine and the directories it was told of are kept apart from
         // the machines it meets (ADR 0016).
         let apart: HashSet<EndpointId> = config
@@ -149,8 +154,13 @@ impl MachineSide {
         let acquaintances = Acquaintances::load(db.clone(), apart, sim.meeting)?;
         info!("the machine name is on");
         Ok(Some(Self {
+            own: OwnRecord {
+                key: key.clone(),
+                offers,
+                started_at,
+                carrier: Published::default(),
+            },
             key,
-            offers,
             introductions: config.machine.introductions,
             endpoint,
             acquaintances: Arc::new(acquaintances),
@@ -164,11 +174,21 @@ impl MachineSide {
         self.key.public()
     }
 
+    /// Its key, which signs its carrier's descriptors too.
+    pub fn key(&self) -> &SecretKey {
+        &self.key
+    }
+
+    /// Where its carrier's descriptor goes for its record.
+    pub fn published(&self) -> Published {
+        self.own.carrier.clone()
+    }
+
     /// With `lists`, it serves as a directory too.
     pub fn protocol(&self, lists: Option<DirectoryLists>) -> MachineProtocol {
         MachineProtocol {
             key: self.key.clone(),
-            offers: self.offers.clone(),
+            own: self.own.clone(),
             introductions: self.introductions,
             connections: Arc::new(Semaphore::new(MAX_CONNECTIONS)),
             lists,
@@ -308,14 +328,8 @@ impl MachineSide {
             std::time::SystemTime::now() + Duration::from_secs(MAX_INTRODUCE_LIFETIME_SECS),
         )
         .to_string();
-        let request = IntroduceRequest::new(
-            &self.key,
-            id,
-            via,
-            target,
-            expires,
-            own_record(&self.key, &self.offers)?,
-        )?;
+        let request =
+            IntroduceRequest::new(&self.key, id, via, target, expires, self.own.record()?)?;
         match self
             .ask(conn, via, &MachineRequest::Introduce { request })
             .await?
@@ -339,7 +353,7 @@ impl MachineSide {
 
     async fn ask_hello(&self, conn: &Connection, machine: EndpointId) -> Result<MachineRecord> {
         let request = MachineRequest::Hello {
-            record: own_record(&self.key, &self.offers)?,
+            record: self.own.record()?,
         };
         match self.ask(conn, machine, &request).await? {
             MachineResponse::Hello { record } => Ok(record),
@@ -403,9 +417,90 @@ pub(crate) struct Greeting {
     pub asked: Duration,
 }
 
-/// This machine's record, freshly dated.
-fn own_record(key: &SecretKey, offers: &[String]) -> Result<MachineRecord> {
-    MachineRecord::new(key, offers.to_vec(), osp_proto::now_rfc3339())
+/// What this machine's records say of it.
+#[derive(Clone)]
+pub(crate) struct OwnRecord {
+    key: SecretKey,
+    offers: Vec<String>,
+    /// Unix seconds: when its key started.
+    started_at: u64,
+    /// Its carrier's latest descriptor, once the carrier is running.
+    pub carrier: Published,
+}
+
+impl OwnRecord {
+    /// Its record, freshly dated.
+    fn record(&self) -> Result<MachineRecord> {
+        MachineRecord::sign(
+            &self.key,
+            &MachineInfo {
+                machine: self.key.public(),
+                offers: self.offers.clone(),
+                published: osp_proto::now_rfc3339(),
+                started_at: Some(self.started_at),
+                carrier: self.carrier.get(),
+            },
+        )
+    }
+}
+
+/// A carrier's descriptor as its machine record carries it, kept fresh by
+/// the carrier as its circuit key and relay change.
+#[derive(Clone, Default)]
+pub(crate) struct Published(Arc<std::sync::RwLock<Option<String>>>);
+
+impl Published {
+    pub fn set(&self, descriptor: &osp_carrier::Descriptor) {
+        let text = data_encoding::BASE64URL_NOPAD.encode(&descriptor.to_bytes());
+        *self.0.write().unwrap_or_else(|e| e.into_inner()) = Some(text);
+    }
+
+    fn get(&self) -> Option<String> {
+        self.0.read().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+}
+
+/// The carrier descriptor a machine's record names, checked: signed by that
+/// machine, its circuit key valid at `now` (unix seconds). None if it names
+/// none, or one that doesn't check out. Viewers pick hops by it from part 4c.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn carrier_of(info: &MachineInfo, now: u64) -> Option<osp_carrier::Descriptor> {
+    let bytes = data_encoding::BASE64URL_NOPAD
+        .decode(info.carrier.as_ref()?.as_bytes())
+        .ok()?;
+    let descriptor = osp_carrier::Descriptor::from_bytes(&bytes).ok()?;
+    let carrier = descriptor.verify(now).ok()?;
+    (carrier.machine == info.machine).then_some(descriptor)
+}
+
+/// When this node's machine key started, in unix seconds: written when the
+/// key is made, and for a key from before that, when its file was.
+fn started_at(home: &Home) -> Result<u64> {
+    let path = home.machine_started();
+    if let Ok(text) = std::fs::read_to_string(&path)
+        && let Ok(secs) = text.trim().parse()
+    {
+        return Ok(secs);
+    }
+    let made = std::fs::metadata(home.machine_key())
+        .and_then(|m| m.modified())
+        .unwrap_or_else(|_| std::time::SystemTime::now());
+    let secs = made
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    std::fs::write(&path, format!("{secs}\n"))
+        .with_context(|| format!("writing {}", path.display()))?;
+    Ok(secs)
+}
+
+pub(crate) fn remove_if_there(path: &std::path::Path) -> Result<()> {
+    match std::fs::remove_file(path) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+            Err(e).with_context(|| format!("removing {}", path.display()))
+        }
+        _ => Ok(()),
+    }
 }
 
 /// Checks the record of the machine at the other end of a connection.
@@ -423,7 +518,7 @@ fn checked(record: &MachineRecord, from: EndpointId) -> Result<MachineInfo> {
 #[derive(Clone)]
 pub(crate) struct MachineProtocol {
     key: SecretKey,
-    offers: Vec<String>,
+    own: OwnRecord,
     introductions: IntroductionsConfig,
     connections: Arc<Semaphore>,
     /// A directory's lists, on a machine that is one.
@@ -485,7 +580,7 @@ impl MachineProtocol {
                     }
                     self.acquaintances.greeted(&remote, &record);
                     MachineResponse::Hello {
-                        record: own_record(&self.key, &self.offers)?,
+                        record: self.own.record()?,
                     }
                 }
                 Err(e) => MachineResponse::Error {
@@ -600,10 +695,18 @@ mod tests {
     fn a_record_has_to_be_the_machine_connecteds_and_sensibly_dated() {
         let key = SecretKey::from_bytes(&[7; 32]);
         let me = key.public();
-        checked(&own_record(&key, &[]).unwrap(), me).unwrap();
+        checked(
+            &MachineRecord::new(&key, vec![], osp_proto::now_rfc3339()).unwrap(),
+            me,
+        )
+        .unwrap();
 
         let other = SecretKey::from_bytes(&[8; 32]).public();
-        let why = checked(&own_record(&key, &[]).unwrap(), other).unwrap_err();
+        let why = checked(
+            &MachineRecord::new(&key, vec![], osp_proto::now_rfc3339()).unwrap(),
+            other,
+        )
+        .unwrap_err();
         assert!(why.to_string().contains("another machine"), "{why:#}");
 
         let ahead = humantime::format_rfc3339_seconds(
@@ -615,5 +718,55 @@ mod tests {
 
         let undated = MachineRecord::new(&key, vec![], "soon".into()).unwrap();
         checked(&undated, me).unwrap_err();
+    }
+
+    #[test]
+    fn a_machine_key_keeps_its_start() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = Home::new(dir.path());
+        keys::create(&home.machine_key()).unwrap();
+        let first = started_at(&home).unwrap();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        assert!(first.abs_diff(now) < 60, "{first} {now}");
+        std::fs::write(home.machine_started(), "1700000000\n").unwrap();
+        assert_eq!(started_at(&home).unwrap(), 1_700_000_000);
+    }
+
+    #[test]
+    fn a_records_carrier_is_taken_only_signed_by_its_own_machine_and_current() {
+        let key = SecretKey::from_bytes(&[7; 32]);
+        let now = 1_795_000_000;
+        let circuit = osp_carrier::CircuitKey::new(now);
+        let info = |machine: EndpointId| osp_carrier::CarrierInfo {
+            version: osp_carrier::VERSION,
+            machine,
+            endpoint: SecretKey::from_bytes(&[9; 32]).public(),
+            relay: "https://relay.example/".into(),
+            circuit_key: circuit.public(),
+            valid_from: circuit.valid_from(),
+            valid_until: circuit.valid_until(),
+            offers: vec![],
+        };
+        let descriptor = osp_carrier::Descriptor::new(&key, &info(key.public())).unwrap();
+        let published = Published::default();
+        published.set(&descriptor);
+        let record = |machine: &SecretKey, carrier| MachineInfo {
+            machine: machine.public(),
+            offers: vec![],
+            published: osp_proto::now_rfc3339(),
+            started_at: Some(now),
+            carrier,
+        };
+        let own = record(&key, published.get());
+        assert_eq!(carrier_of(&own, now), Some(descriptor.clone()));
+        // Expired, another machine's, or not a descriptor at all.
+        assert_eq!(carrier_of(&own, circuit.valid_until() + 24 * 60 * 60), None);
+        let other = SecretKey::from_bytes(&[8; 32]);
+        assert_eq!(carrier_of(&record(&other, published.get()), now), None);
+        assert_eq!(carrier_of(&record(&key, Some("not-one".into())), now), None);
+        assert_eq!(carrier_of(&record(&key, None), now), None);
     }
 }
