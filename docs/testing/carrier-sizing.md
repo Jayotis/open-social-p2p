@@ -1,6 +1,6 @@
 # Sizing carriers: limits and the newcomer rate, in a model
 
-**Status:** Run twice on 2026-11-20 ([results](#results)): in neither run does a setting meet every mark, so nothing is set, and the figures go to the maintainer. Plan fixed on 2026-11-20, before any code or run. [ADR 0043](../decisions/0043-the-media-plane-before-the-alpha.md)'s sizing stage: carrying is built in P11 whatever this shows, so the run doesn't decide whether to build. It sets the starting values: a node's upload share for carrying, its jobs at once, its limits on circuits from one neighbour and new circuits a minute, and how often a transfer gives a newcomer a middle turn. Changing a pass mark later needs a dated note here saying what changed and why.
+**Status:** Run three times on 2026-11-20 ([results](#results)): in no run does a setting meet every mark, so nothing is set, and the figures go to the maintainer. Plan fixed on 2026-11-20, before any code or run. [ADR 0043](../decisions/0043-the-media-plane-before-the-alpha.md)'s sizing stage: carrying is built in P11 whatever this shows, so the run doesn't decide whether to build. It sets the starting values: a node's upload share for carrying, its jobs at once, its limits on circuits from one neighbour and new circuits a minute, and how often a transfer gives a newcomer a middle turn. Changing a pass mark later needs a dated note here saying what changed and why.
 
 **Amended 2026-11-20, after the first run, before the second (the maintainer):** the first run's results stand below as run. Three changes for the second run, with the same settings and seeds:
 
@@ -9,6 +9,13 @@
 - **Mark 1** now asks whether carriers are materially slower, not slower at all. An extra hop costs a little, and the first run missed the old mark on 2 to 7% differences while meeting B8 on every late post. The first run would have met the new mark (its worst post was 7% later). Stage D measures the time to build a circuit on real nodes.
 
 Also recorded: the relay's bytes on way 4's transfers by why (an end said no to its own address being seen, or no hop had room); how often the viewer's hop was an ordinary node it earned; probationers taken on, and how many earned standing.
+
+**Amended again 2026-11-20, after the second run, before the third (the maintainer):** both runs' results stand below as run. For the third run, with the same settings and seeds:
+
+- **Mark 2 measures the carriers, not the privacy choice.** An end that says no to its own address being seen keeps its leg on the relay, as it asked: that's the network doing what the choice requires, not a carrier failing. So every mark is judged on runs where no end says no, where every transfer could use carriers, and the carriers carry the most. Nobody knows yet how many will say no, which the Product Alpha's testers will show, so the relay's bytes are reported for the setting chosen (or 50%, 2 jobs and 10% if none is) with 10%, 25% and 50% saying no, for the relay's capacity and cost. They pass or fail nothing.
+- **Two probation places, each with its own job.** Continuity: a machine that has finished a job for the viewer, given a middle job each day it fetches until it earns standing, or 30 days pass. Exploration: a machine the viewer has never finished a job with, taken at the newcomer rate, given a middle job each day too. When the continuity place empties, the exploration machine moves into it. The bar for standing stays: jobs on 3 different days in 30, checked by the viewer.
+- **Work offers.** When a machine finishes its first middle job for a viewer, that viewer offers it to up to 2 viewers it has been the earned hop for on its own record. A viewer takes an offer only from a machine it holds at standing, at most one a day from each, and keeps at most 2 for 30 days. An offered machine goes first when its exploration place fills. An offer gives a machine a chance to work, never standing: it isn't one of [ADR 0022](../decisions/0022-lists-and-introductions-are-earned.md)'s introductions, and nothing in ADR 0018's records counts it. Stage C tries flooding offers.
+- **Also recorded:** the offers sent, taken and used, and the share of transfers through hops where the viewer had no earned hop to pick, which sets how often the project's seed carriers hold both ends until ADR 0018 gives hosts hops of their own.
 
 ## The model
 
@@ -34,6 +41,7 @@ Also recorded: the relay's bytes on way 4's transfers by why (an end said no to 
 | Its jobs at once | 2, 4 |
 | The newcomer rate | 5%, 10%, 20% of transfers through hops |
 | Seed carriers | 2 in all of the above; 1 and 4 at 50%, 4 jobs and 10% |
+| Ends saying no to their own address | none, for every mark (amended 2026-11-20); 10%, 25% and 50% at one setting, for the relay's demand |
 
 That's 14 settings and the 2 to compare against, each with seeds 1 to 5. Each mark is judged on seed 1, as in the hops model, and the brackets give how many of the 5 seeds meet it.
 
@@ -117,6 +125,27 @@ Again nothing is set by the plan's rule.
 **Newcomers still start too slowly.** Probation places go mostly to machines that are in many tables already: the established ones. A directory newcomer took a median 21 to 31 days to standing, and newcomers given one machine almost never got a middle turn: they're in very few tables.
 
 **Circuits,** in every setting: a home held at most 4 from one neighbour at once and opened at most 10 in a minute; a seed carrier at most 21 from one neighbour.
+
+### Third run
+
+With two probation places, work offers, and every mark judged with no end saying no (amended again 2026-11-20).
+
+| Mark | Result | Seed 1 |
+| --- | --- | --- |
+| 1, speed | met at 50% with 2 jobs [5/5 at each rate]; missed elsewhere | at 50%, 2 jobs and 10%: 44 of 45 posts within a tenth, worst 1.11x, B8 met on all 13 late posts. At 25%, worst 1.26 to 2.31x, and B8 met on as few as none |
+| 2, off the relay | met at 50% with 2 jobs [5/5], and with 4 seed carriers [5/5]; missed elsewhere | 43 to 48% of the project relay's bytes at 50% with 2 jobs; 20% with 4 seed carriers; 74% with 1 |
+| 3, newcomers | missed in every setting [0/5] | at 50%, 2 jobs and 10%: a middle turn within 7 days for 7 of 50 directory newcomers and none given one machine; standing within 28 days for 17 and none |
+| 4, the operator | met in every setting | no transfer with both ends' hops all its own |
+
+Nothing is set: mark 3 is missed everywhere.
+
+**What works.** At 50% and 2 jobs, carriers take enough off the relay and aren't materially slower. Viewers took on 2,422 probationers and 2,179 earned standing; 2,919 work offers were sent, 1,764 taken and 1,185 used. The viewer had no earned hop on 24% of transfers through hops; one seed carrier was next to both ends on 7% of transfers with a hop at both ends, and the project's seed carriers on 34%. Homes carried a median 16 MB a day, at most 62.
+
+**What doesn't: a newcomer's first job.** Probation places and offers all start from a first finished middle job, and a newcomer rarely gets one. A viewer's exploration draw picks among every machine in its table it hasn't worked with, and a newcomer is one of many there. A newcomer given one machine is in almost no tables: none got a middle turn within 7 days in any setting or seed. Offers spread a newcomer only after that first job.
+
+**The relay's demand with ends saying no,** at 50%, 2 jobs, 10% and 2 seed carriers, in weeks 10 to 13 against the project relay's bytes: 47 to 50% with 10% saying no, 55 to 58% with 25%, 73 to 76% with 50%. The relay's busiest second was 550 to 730 Mbit/s.
+
+**Circuits,** at 50% and 2 jobs: a home held at most 2 from one neighbour at once and opened at most 7 in a minute, over every rate and seed; in any setting, at most 4 and 9.
 
 ## Not modelled
 

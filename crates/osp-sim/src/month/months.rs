@@ -66,7 +66,7 @@ impl Way {
 }
 
 /// The sizing stage's settings (docs/testing/carrier-sizing.md).
-#[derive(Clone, Copy, Debug, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
 pub struct Sizing {
     /// A node's upload share for carrying, and its jobs at once.
     pub share: f64,
@@ -75,6 +75,8 @@ pub struct Sizing {
     pub newcomer_rate: f64,
     /// Seed carriers.
     pub seeds: usize,
+    /// The share of honest ends saying no to their own address being seen.
+    pub no_rate: f64,
 }
 
 /// A seed carrier: an always-on server.
@@ -308,9 +310,16 @@ struct Probation {
     last_day: Option<usize>,
 }
 
-/// Probationary carriers a viewer keeps at once.
+/// A viewer's probation places (amended again 2026-11-20): the first for
+/// continuity, the second for exploration, only for a machine it had never
+/// finished a job with. When the first empties, the second moves up.
 const PROBATION_PLACES: usize = 2;
 const PROBATION_DAYS: f64 = 30.0;
+/// Work offers: viewers a machine's first job is offered to, offers a
+/// viewer keeps, and how long.
+const OFFER_TO: usize = 2;
+const OFFERS_KEPT: usize = 2;
+const OFFER_DAYS: f64 = 30.0;
 
 /// What decides each transfer's path, and what the nodes write down.
 struct Media {
@@ -387,6 +396,15 @@ struct Media {
     /// viewer's side, which opened it; start; end), in seconds from the start.
     circuits: Vec<(usize, usize, f64, f64)>,
     probation: Vec<Vec<Probation>>,
+    /// (viewer, machine) pairs with a finished job.
+    worked: std::collections::HashSet<(usize, usize)>,
+    /// Each viewer's work offers: (machine, from, until).
+    offers: Vec<Vec<(usize, usize, f64)>>,
+    /// The day each viewer last took an offer from each introducer.
+    offer_day: HashMap<(usize, usize), usize>,
+    /// For each machine, the viewers it's an earned hop for, this post.
+    earned_for: Vec<Vec<usize>>,
+    offer_rng: Rng,
 }
 
 /// The figures the experiments' plan records, beyond each post's.
@@ -473,6 +491,11 @@ pub struct HopCounts {
     pub earned_viewer_hops: usize,
     pub probationers: usize,
     pub graduated: usize,
+    /// Work offers sent, taken by the viewer offered to, and used to fill
+    /// an exploration place.
+    pub offers_sent: usize,
+    pub offers_taken: usize,
+    pub offers_used: usize,
     /// Bytes on the wire through the relay on way 4's transfers, by why:
     /// that end said no to its own address being seen, or no hop had room.
     pub relayed_said_no: f64,
@@ -571,10 +594,19 @@ impl Media {
         for leg in part.legs.iter().filter(|l| l.carried) {
             let m = leg.from;
             let middle = !self.seed[m] && !self.earned_hops[v].contains(&m);
-            if !middle || self.probation[v].iter().any(|pr| pr.machine == m) {
+            if !middle {
                 continue;
             }
-            if self.probation[v].len() < PROBATION_PLACES {
+            let first = self.worked.insert((v, m));
+            if first {
+                self.offer(v, m, t);
+            }
+            if self.probation[v].iter().any(|pr| pr.machine == m) {
+                continue;
+            }
+            // The continuity place takes any; exploration only a first job.
+            let places = self.probation[v].len();
+            if places < PROBATION_PLACES && (places == 0 || first) {
                 self.probation[v].push(Probation {
                     machine: m,
                     since: t,
@@ -598,6 +630,53 @@ impl Media {
                 }
             }
         }
+    }
+
+    /// `m` finished its first job for `v`: `v` offers it to up to 2 viewers
+    /// it has been the earned hop for. Each takes it only from a machine it
+    /// holds at standing (`v` is), one a day from each, keeping at most 2.
+    fn offer(&mut self, v: usize, m: usize, t: f64) {
+        let mut to = self.earned_for[v].clone();
+        self.offer_rng.shuffle(&mut to);
+        let day = (t / DAY) as usize;
+        for b in to.into_iter().filter(|&b| b != m).take(OFFER_TO) {
+            self.hops.offers_sent += 1;
+            let holds = self.earned_hops[b].contains(&v);
+            let today = self.offer_day.get(&(b, v)) == Some(&day);
+            self.offers[b].retain(|o| o.2 > t);
+            let known = self.worked.contains(&(b, m)) || self.offers[b].iter().any(|o| o.0 == m);
+            if holds && !today && !known && self.offers[b].len() < OFFERS_KEPT {
+                self.offers[b].push((m, v, t + OFFER_DAYS * DAY));
+                self.offer_day.insert((b, v), day);
+                self.hops.offers_taken += 1;
+            }
+        }
+    }
+
+    /// Way 4's random draw for the middle: a machine offered to `v` first,
+    /// then one `v` never finished a job with, then any with no standing.
+    fn explore(&mut self, v: usize, taken: &[usize], load: &Load) -> Option<usize> {
+        let t = self.post_at + load.now;
+        self.offers[v].retain(|o| o.2 > t);
+        let ok = |m: usize| {
+            !taken.contains(&m)
+                && !self.seed[m]
+                && self.can_hop(m, load)
+                && !self.has_standing(v, m)
+        };
+        if let Some(k) = self.offers[v].iter().position(|o| ok(o.0)) {
+            self.hops.offers_used += 1;
+            return Some(self.offers[v].remove(k).0);
+        }
+        let fresh: Vec<usize> = self
+            .meeting
+            .table(v)
+            .filter(|&m| ok(m) && !self.worked.contains(&(v, m)))
+            .collect();
+        if !fresh.is_empty() {
+            return Some(fresh[self.hop_rng.below(fresh.len())]);
+        }
+        self.middle(v, taken, load)
     }
 
     /// `m` has standing with `v`: jobs for it on 3 days, or under A, as the
@@ -750,7 +829,13 @@ impl Media {
         // Way 4: a probationary carrier gets the middle first, once a day.
         let m = match self.probation_turn(v, &taken, load) {
             Some(m) => Some(m),
-            None if self.hop_rng.chance(rate) => self.middle(v, &taken, load),
+            None if self.hop_rng.chance(rate) => {
+                if self.way == Way::Carriers {
+                    self.explore(v, &taken, load)
+                } else {
+                    self.middle(v, &taken, load)
+                }
+            }
             None => None,
         };
         if let Some(m) = m {
@@ -1683,11 +1768,25 @@ pub fn run(
         },
         failed_to: Vec::new(),
         seed: seed_carrier.clone(),
-        addr_yes: yes.clone(),
+        addr_yes: match sizing {
+            Some(sz) => {
+                let mut r = Rng::new(seed.wrapping_add(10));
+                members
+                    .iter()
+                    .map(|m| m.kind == Kind::Operator || !r.chance(sz.no_rate))
+                    .collect()
+            }
+            None => yes.clone(),
+        },
         sizing,
         earned_hops: vec![Vec::new(); members.len()],
         circuits: Vec::new(),
         probation: vec![Vec::new(); members.len()],
+        worked: std::collections::HashSet::new(),
+        offers: vec![Vec::new(); members.len()],
+        offer_day: HashMap::new(),
+        earned_for: vec![Vec::new(); members.len()],
+        offer_rng: Rng::new(seed.wrapping_add(11)),
     };
     rules.records.one_way = exp.one_way;
     let mut kim_rng = Rng::new(seed.wrapping_add(9));
@@ -1798,7 +1897,14 @@ pub fn run(
             for (v, m) in rules.carried.at_least(2) {
                 earned[v].push(m);
             }
+            let mut earned_for = vec![Vec::new(); peers.len()];
+            for (v, list) in earned.iter().enumerate() {
+                for &m in list {
+                    earned_for[m].push(v);
+                }
+            }
             rules.earned_hops = earned;
+            rules.earned_for = earned_for;
             rules.review_probation(at);
         }
         for (n, &d) in rules

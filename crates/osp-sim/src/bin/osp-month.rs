@@ -561,7 +561,7 @@ fn print_sizing(r: &sizing::Report) {
         );
     }
     println!(
-        "\nrecorded, seed {}: seed carriers | share | jobs | rate | through carriers late | relay peak Mbit/s | hops 0/1/2/3 | one seed both ends / the project's seeds both | viewer's hop earned (transfers) | probationers, graduated | relay said no / no room | home carried MB a day median, most | seed GB each | circuits from one neighbour home/seed | a minute home/seed | newcomers median days to middle, standing (dir; given) | honest seen by operator",
+        "\nrecorded, seed {}: seed carriers | share | jobs | rate | through carriers late | relay peak Mbit/s | hops 0/1/2/3 | one seed both ends / the project's seeds both | viewer had no earned hop | probationers, graduated | offers sent/taken/used | relay said no / no room | home carried MB a day median, most | seed GB each | circuits from one neighbour home/seed | a minute home/seed | newcomers median days to middle, standing (dir; given) | honest seen by operator",
         r.seeds[0]
     );
     for (s, runs) in &r.carriers {
@@ -569,7 +569,7 @@ fn print_sizing(r: &sizing::Report) {
         let c = &f.carrying;
         let days = |x: Option<f64>| x.map_or("-".into(), |x| format!("{x:.0}"));
         println!(
-            "{} | {:.0}% | {} | {:.0}% | {:.0}% | {:.0} | {:?} | {:.0}% / {:.0}% | {} | {}, {} | {:.0}% / {:.0}% | {:.0}, {:.0} | {} | {}/{} | {}/{} | {}, {}; {}, {} | {} of {}",
+            "{} | {:.0}% | {} | {:.0}% | {:.0}% | {:.0} | {:?} | {:.0}% / {:.0}% | {:.0}% | {}, {} | {}/{}/{} | {:.0}% / {:.0}% | {:.0}, {:.0} | {} | {}/{} | {}/{} | {}, {}; {}, {} | {} of {}",
             s.seeds,
             100.0 * s.share,
             s.jobs,
@@ -579,9 +579,12 @@ fn print_sizing(r: &sizing::Report) {
             f.hops_taken,
             100.0 * f.seed_single_share,
             100.0 * f.seed_both_share,
-            f.earned_viewer_hops,
+            100.0 * f.no_earned_share,
             f.probationers,
             f.graduated,
+            f.offers_sent,
+            f.offers_taken,
+            f.offers_used,
             100.0 * f.relayed_said_no / (f.relayed_said_no + f.relayed_no_room).max(1.0),
             100.0 * f.relayed_no_room / (f.relayed_said_no + f.relayed_no_room).max(1.0),
             c.median_a_day / 1e6,
@@ -603,14 +606,9 @@ fn print_sizing(r: &sizing::Report) {
             f.honest,
         );
     }
-    // The plan's choice: 2 seed carriers, all marks on seed 1, smallest
-    // share, then fewest jobs, then lowest rate (settings() is in that order).
-    let chosen = r
-        .carriers
-        .iter()
-        .find(|(s, runs)| s.seeds == 2 && runs[0].1.all());
-    match chosen {
-        Some((s, runs)) => {
+    match sizing::chosen(&r.carriers) {
+        Some(s) => {
+            let runs = &r.carriers.iter().find(|(x, _)| *x == s).unwrap().1;
             let from = runs
                 .iter()
                 .map(|(f, _)| f.carrying.most_from_neighbour)
@@ -631,6 +629,27 @@ fn print_sizing(r: &sizing::Report) {
             );
         }
         None => println!("\nno setting with 2 seed carriers meets every mark: nothing is set"),
+    }
+    println!(
+        "\nthe relay's demand with ends saying no (weeks 10-13, against the project relay's; busiest second):"
+    );
+    for (s, runs) in &r.demand {
+        println!(
+            "  {:.0}% saying no, at {:.0}%, {} jobs, {:.0}%, {} seed carriers: {} | busiest {}",
+            100.0 * s.no_rate,
+            100.0 * s.share,
+            s.jobs,
+            100.0 * s.newcomer_rate,
+            s.seeds,
+            runs.iter()
+                .map(|(_, x)| format!("{:.0}%", 100.0 * x))
+                .collect::<Vec<_>>()
+                .join(" "),
+            runs.iter()
+                .map(|(f, _)| format!("{:.0}", f.relay_peak_mbps))
+                .collect::<Vec<_>>()
+                .join(" "),
+        );
     }
     let fewest = r
         .carriers

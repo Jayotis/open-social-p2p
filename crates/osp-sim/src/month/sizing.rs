@@ -24,6 +24,7 @@ pub fn settings() -> Vec<Sizing> {
                     jobs,
                     newcomer_rate,
                     seeds: 2,
+                    no_rate: 0.0,
                 });
             }
         }
@@ -34,6 +35,7 @@ pub fn settings() -> Vec<Sizing> {
             jobs: 4,
             newcomer_rate: 0.10,
             seeds,
+            no_rate: 0.0,
         });
     }
     v
@@ -77,6 +79,13 @@ pub struct Figures {
     pub graduated: usize,
     pub relayed_said_no: f64,
     pub relayed_no_room: f64,
+    /// Work offers sent, taken and used; transfers through hops, and the
+    /// share of them where the viewer had no earned hop of its own.
+    pub offers_sent: usize,
+    pub offers_taken: usize,
+    pub offers_used: usize,
+    pub with_hops: usize,
+    pub no_earned_share: f64,
     pub carrying: Carrying,
     pub exposed_operator: usize,
     pub honest: usize,
@@ -149,6 +158,11 @@ pub fn figures(m: &Months) -> Figures {
         graduated: h.graduated,
         relayed_said_no: h.relayed_said_no,
         relayed_no_room: h.relayed_no_room,
+        offers_sent: h.offers_sent,
+        offers_taken: h.offers_taken,
+        offers_used: h.offers_used,
+        with_hops: h.with_hops,
+        no_earned_share: 1.0 - h.earned_viewer_hops as f64 / h.with_hops.max(1) as f64,
         carrying: m.carrying.clone(),
         exposed_operator: m.extra.exposed_operator,
         honest: m.extra.honest,
@@ -234,6 +248,46 @@ pub struct Report {
     pub n0: Vec<(usize, Vec<Figures>)>,
     /// For each setting, each seed's figures and marks.
     pub carriers: Vec<(Sizing, Vec<(Figures, Marks)>)>,
+    /// The relay's demand at one setting with ends saying no (amended
+    /// 2026-11-20): each seed's figures, and its relayed bytes in weeks 10
+    /// to 13 against the project relay's.
+    pub demand: Vec<(Sizing, Vec<(Figures, f64)>)>,
+}
+
+/// Runs `jobs`, `threads` at a time, in their order.
+fn run_jobs(jobs: &[(Way, Sizing, u64)], threads: usize) -> Vec<Figures> {
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let done = std::sync::Mutex::new(vec![None; jobs.len()]);
+    std::thread::scope(|scope| {
+        for _ in 0..threads.max(1) {
+            scope.spawn(|| {
+                loop {
+                    let k = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    let Some(&(way, s, seed)) = jobs.get(k) else {
+                        break;
+                    };
+                    let f = one(way, s, seed);
+                    eprintln!("{way:?} {s:?} seed {seed}: done");
+                    done.lock().unwrap()[k] = Some(f);
+                }
+            });
+        }
+    });
+    done.into_inner()
+        .unwrap()
+        .into_iter()
+        .map(Option::unwrap)
+        .collect()
+}
+
+/// The plan's choice: 2 seed carriers, every mark met on the first seed,
+/// the smallest share, then fewest jobs, then lowest rate (`settings()` is
+/// in that order).
+pub fn chosen(carriers: &[(Sizing, Vec<(Figures, Marks)>)]) -> Option<Sizing> {
+    carriers
+        .iter()
+        .find(|(s, runs)| s.seeds == 2 && runs[0].1.all())
+        .map(|(s, _)| *s)
 }
 
 /// Every run the plan names, `threads` at a time.
@@ -242,8 +296,8 @@ pub fn run(seeds: &[u64], threads: usize) -> Report {
     let mut counts: Vec<usize> = sets.iter().map(|s| s.seeds).collect();
     counts.sort_unstable();
     counts.dedup();
-    // The jobs: (way, setting, seed). The ways compared against are the
-    // same for every setting with the same seed carriers, which sit idle.
+    // The ways compared against are the same for every setting with the
+    // same seed carriers, which sit idle.
     let mut jobs: Vec<(Way, Sizing, u64)> = Vec::new();
     for &n in &counts {
         let s = sets.iter().find(|s| s.seeds == n).copied().unwrap();
@@ -257,64 +311,79 @@ pub fn run(seeds: &[u64], threads: usize) -> Report {
             jobs.push((Way::Carriers, s, seed));
         }
     }
-    let next = std::sync::atomic::AtomicUsize::new(0);
-    let done = std::sync::Mutex::new(vec![None; jobs.len()]);
-    std::thread::scope(|scope| {
-        for _ in 0..threads.max(1) {
-            scope.spawn(|| {
-                loop {
-                    let k = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    let Some(&(way, s, seed)) = jobs.get(k) else {
-                        break;
-                    };
-                    let f = one(way, s, seed);
-                    eprintln!(
-                        "{:?} seeds {} share {} jobs {} rate {} seed {seed}: done",
-                        way, s.seeds, s.share, s.jobs, s.newcomer_rate
-                    );
-                    done.lock().unwrap()[k] = Some(f);
-                }
-            });
-        }
-    });
-    let done: Vec<Figures> = done
-        .into_inner()
-        .unwrap()
-        .into_iter()
-        .map(Option::unwrap)
-        .collect();
-    let find = |way: Way, n: usize, seed: u64| -> Figures {
+    let done = run_jobs(&jobs, threads);
+    let find = |way: Way, s: &Sizing, seed: u64, exact: bool| -> Figures {
         done.iter()
-            .find(|f| f.way == way && f.sizing.seeds == n && f.seed == seed)
+            .find(|f| {
+                f.way == way
+                    && f.seed == seed
+                    && if exact {
+                        f.sizing == *s
+                    } else {
+                        f.sizing.seeds == s.seeds
+                    }
+            })
             .cloned()
             .unwrap()
     };
     let compared = |way: Way| -> Vec<(usize, Vec<Figures>)> {
         counts
             .iter()
-            .map(|&n| (n, seeds.iter().map(|&s| find(way, n, s)).collect()))
+            .map(|&n| {
+                let s = sets.iter().find(|s| s.seeds == n).unwrap();
+                (
+                    n,
+                    seeds
+                        .iter()
+                        .map(|&seed| find(way, s, seed, false))
+                        .collect(),
+                )
+            })
             .collect()
     };
-    let carriers = sets
+    let carriers: Vec<(Sizing, Vec<(Figures, Marks)>)> = sets
         .iter()
-        .map(|&s| {
+        .map(|s| {
             let runs = seeds
                 .iter()
                 .map(|&seed| {
-                    let f = done
-                        .iter()
-                        .find(|f| {
-                            f.way == Way::Carriers
-                                && f.seed == seed
-                                && f.sizing.seeds == s.seeds
-                                && f.sizing.share == s.share
-                                && f.sizing.jobs == s.jobs
-                                && f.sizing.newcomer_rate == s.newcomer_rate
-                        })
-                        .cloned()
-                        .unwrap();
-                    let marks = judge(&f, &find(Way::ProjectRelays, s.seeds, seed));
+                    let f = find(Way::Carriers, s, seed, true);
+                    let marks = judge(&f, &find(Way::ProjectRelays, s, seed, false));
                     (f, marks)
+                })
+                .collect();
+            (*s, runs)
+        })
+        .collect();
+    // The relay's demand with ends saying no, at the setting chosen, or at
+    // 50%, 2 jobs and 10% if none is.
+    let base = chosen(&carriers).unwrap_or(Sizing {
+        share: 0.5,
+        jobs: 2,
+        newcomer_rate: 0.10,
+        seeds: 2,
+        no_rate: 0.0,
+    });
+    let rates = [0.10, 0.25, 0.50];
+    let demand_jobs: Vec<(Way, Sizing, u64)> = rates
+        .iter()
+        .flat_map(|&no_rate| {
+            seeds
+                .iter()
+                .map(move |&seed| (Way::Carriers, Sizing { no_rate, ..base }, seed))
+        })
+        .collect();
+    let more = run_jobs(&demand_jobs, threads);
+    let demand = rates
+        .iter()
+        .map(|&no_rate| {
+            let s = Sizing { no_rate, ..base };
+            let runs = more
+                .iter()
+                .filter(|f| f.sizing == s)
+                .map(|f| {
+                    let p = find(Way::ProjectRelays, &s, f.seed, false);
+                    (f.clone(), f.late_relayed / p.late_relayed.max(1.0))
                 })
                 .collect();
             (s, runs)
@@ -325,6 +394,7 @@ pub fn run(seeds: &[u64], threads: usize) -> Report {
         project: compared(Way::ProjectRelays),
         n0: compared(Way::Relays),
         carriers,
+        demand,
     }
 }
 
