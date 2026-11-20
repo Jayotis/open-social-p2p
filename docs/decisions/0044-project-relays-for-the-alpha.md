@@ -45,7 +45,7 @@ So the project's relay solves the empty network and gives a dependable fallback 
 
    The exact thresholds are set when it's deployed.
 
-9. **The directory may move to the same server.** The first directory runs on a home machine that also does other work, and its fallback isn't always on. The relay's server is always on. Moving the first directory there is an option, decided on its own, not part of this record.
+9. **The directory may move to the same server.** The first directory runs on a home machine that also does other work, and its fallback isn't always on. The relay's server is always on. Moving the first directory there is an option, decided on its own, not part of this record. *Done 2026-11-20:* the first directory now runs there as its own node, which serves the directory and nothing else, and the earlier one on a home machine is its fallback. It stays as temporary as before: its names come from the release's `directories.txt`, never from the program.
 
 ### Who sees what
 
