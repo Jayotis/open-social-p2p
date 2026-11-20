@@ -310,16 +310,19 @@ struct Probation {
     last_day: Option<usize>,
 }
 
-/// A viewer's continuity place (amended a third time 2026-11-20): one
-/// machine that finished a job for it, given a middle job each day until it
-/// earns standing or 30 days pass. Its other place is the newcomer turn.
-const PROBATION_PLACES: usize = 1;
+/// A viewer's probation places (amended again 2026-11-20): the first for
+/// continuity, the second for exploration, only for a machine it had never
+/// finished a job with. When the first empties, the second moves up.
+const PROBATION_PLACES: usize = 2;
 const PROBATION_DAYS: f64 = 30.0;
 /// Work offers: viewers a machine's first job is offered to, offers a
 /// viewer keeps, and how long.
 const OFFER_TO: usize = 2;
 const OFFERS_KEPT: usize = 2;
 const OFFER_DAYS: f64 = 30.0;
+/// The fresh turn (amended a fourth time 2026-11-20): a machine is fresh to
+/// a viewer for this long after it first entered the viewer's table.
+const FRESH_DAYS: f64 = 7.0;
 
 /// What decides each transfer's path, and what the nodes write down.
 struct Media {
@@ -405,10 +408,9 @@ struct Media {
     /// For each machine, the viewers it's an earned hop for, this post.
     earned_for: Vec<Vec<usize>>,
     offer_rng: Rng,
-    /// The newcomer turn: the day each viewer last gave one, and when a
-    /// candidate it couldn't use went to the back of its queue.
-    newcomer_day: HashMap<usize, usize>,
-    to_back: HashMap<(usize, usize), f64>,
+    /// The day each viewer last gave a fresh turn, and the pairs given one.
+    fresh_day: HashMap<usize, usize>,
+    fresh_tried: std::collections::HashSet<(usize, usize)>,
 }
 
 /// The figures the experiments' plan records, beyond each post's.
@@ -500,6 +502,12 @@ pub struct HopCounts {
     pub offers_sent: usize,
     pub offers_taken: usize,
     pub offers_used: usize,
+    /// Fresh turns given, and the machines whose first job for that viewer
+    /// came from one.
+    pub fresh_turns: usize,
+    pub fresh_first_jobs: usize,
+    /// Fresh turns by week: to Z's newcomers, to every other machine.
+    pub fresh_by_week: Vec<[usize; 2]>,
     /// Bytes on the wire through the relay on way 4's transfers, by why:
     /// that end said no to its own address being seen, or no hop had room.
     pub relayed_said_no: f64,
@@ -603,12 +611,15 @@ impl Media {
             }
             let first = self.worked.insert((v, m));
             if first {
+                self.hops.fresh_first_jobs += self.fresh_tried.contains(&(v, m)) as usize;
                 self.offer(v, m, t);
             }
             if self.probation[v].iter().any(|pr| pr.machine == m) {
                 continue;
             }
-            if self.probation[v].len() < PROBATION_PLACES {
+            // The continuity place takes any; exploration only a first job.
+            let places = self.probation[v].len();
+            if places < PROBATION_PLACES && (places == 0 || first) {
                 self.probation[v].push(Probation {
                     machine: m,
                     since: t,
@@ -655,62 +666,49 @@ impl Media {
         }
     }
 
-    /// Way 4's newcomer turn, once a day: the machines in `v`'s places for
-    /// those who greet, and those offered to it, that it never finished a
-    /// job with, in the order they came; one it can't use now goes to the
-    /// back. A later arrival never goes ahead of one waiting.
-    fn newcomer_turn(&mut self, v: usize, taken: &[usize], load: &Load) -> Option<usize> {
+    /// Way 4's fresh turn, at most one a day for each viewer: the oldest of
+    /// the machines that first entered `v`'s table in the last 7 days and
+    /// that it never finished a job with, by when each came in. One it can't
+    /// use now is passed over, and stays fresh only until its own 7 days run
+    /// out. With none fresh, no turn and no extra hop.
+    fn fresh_turn(&mut self, v: usize, taken: &[usize], load: &Load) -> Option<usize> {
         if self.way != Way::Carriers {
             return None;
         }
         let t = self.post_at + load.now;
         let day = (t / DAY) as usize;
-        if self.newcomer_day.get(&v) == Some(&day) {
+        if self.fresh_day.get(&v) == Some(&day) {
             return None;
         }
-        self.offers[v].retain(|o| o.2 > t);
-        let mut queue: Vec<(f64, usize, bool)> = self
+        let mut queue: Vec<(f64, usize)> = self
             .meeting
-            .greeters(v)
-            .map(|(m, since)| (since, m, false))
-            .chain(
-                self.offers[v]
-                    .iter()
-                    .map(|o| (o.2 - OFFER_DAYS * DAY, o.0, true)),
-            )
-            .filter(|&(_, m, _)| {
-                !self.seed[m]
-                    && m != v
-                    && !self.worked.contains(&(v, m))
-                    && !self.has_standing(v, m)
+            .entered_since(v, t - FRESH_DAYS * DAY)
+            .filter(|&(m, _)| {
+                !self.seed[m] && !self.worked.contains(&(v, m)) && !self.has_standing(v, m)
             })
-            .map(|(since, m, offered)| {
-                let back = self.to_back.get(&(v, m)).copied().unwrap_or(0.0);
-                (since.max(back), m, offered)
-            })
+            .map(|(m, at)| (at, m))
             .collect();
-        queue.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
-        queue.dedup_by_key(|q| q.1);
-        for (_, m, offered) in queue {
-            if taken.contains(&m) {
-                continue;
-            }
-            if !self.can_hop(m, load) {
-                self.to_back.insert((v, m), t);
-                continue;
-            }
-            self.newcomer_day.insert(v, day);
-            if offered {
-                self.hops.offers_used += 1;
-                self.offers[v].retain(|o| o.0 != m);
-            }
-            return Some(m);
+        // Machines that came in at the same moment (the network's first
+        // hour) in a random order, not always the same few first.
+        self.hop_rng.shuffle(&mut queue);
+        queue.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let m = queue
+            .into_iter()
+            .map(|q| q.1)
+            .find(|&m| !taken.contains(&m) && self.can_hop(m, load))?;
+        self.fresh_day.insert(v, day);
+        self.fresh_tried.insert((v, m));
+        self.hops.fresh_turns += 1;
+        let week = day / 7;
+        if self.hops.fresh_by_week.len() <= week {
+            self.hops.fresh_by_week.resize(week + 1, [0; 2]);
         }
-        None
+        self.hops.fresh_by_week[week][!self.newcomer[m] as usize] += 1;
+        Some(m)
     }
 
-    /// Way 4's random draw for the middle: one `v` never finished a job
-    /// with, then any with no standing.
+    /// Way 4's random draw for the middle: a machine offered to `v` first,
+    /// then one `v` never finished a job with, then any with no standing.
     fn explore(&mut self, v: usize, taken: &[usize], load: &Load) -> Option<usize> {
         let t = self.post_at + load.now;
         self.offers[v].retain(|o| o.2 > t);
@@ -720,6 +718,10 @@ impl Media {
                 && self.can_hop(m, load)
                 && !self.has_standing(v, m)
         };
+        if let Some(k) = self.offers[v].iter().position(|o| ok(o.0)) {
+            self.hops.offers_used += 1;
+            return Some(self.offers[v].remove(k).0);
+        }
         let fresh: Vec<usize> = self
             .meeting
             .table(v)
@@ -878,10 +880,11 @@ impl Media {
         taken.extend(p);
         taken.extend(q);
         let rate = self.sizing.map_or(MIDDLE_EVERY, |s| s.newcomer_rate);
-        // Way 4: a probationary carrier gets the middle first, once a day.
+        // Way 4: a probationary carrier gets the middle first, once a day,
+        // then a fresh machine, once a day.
         let m = match self
             .probation_turn(v, &taken, load)
-            .or_else(|| self.newcomer_turn(v, &taken, load))
+            .or_else(|| self.fresh_turn(v, &taken, load))
         {
             Some(m) => Some(m),
             None if self.hop_rng.chance(rate) => {
@@ -1842,8 +1845,8 @@ pub fn run(
         offer_day: HashMap::new(),
         earned_for: vec![Vec::new(); members.len()],
         offer_rng: Rng::new(seed.wrapping_add(11)),
-        newcomer_day: HashMap::new(),
-        to_back: HashMap::new(),
+        fresh_day: HashMap::new(),
+        fresh_tried: Default::default(),
     };
     rules.records.one_way = exp.one_way;
     let mut kim_rng = Rng::new(seed.wrapping_add(9));

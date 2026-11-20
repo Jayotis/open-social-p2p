@@ -561,7 +561,7 @@ fn print_sizing(r: &sizing::Report) {
         );
     }
     println!(
-        "\nrecorded, seed {}: seed carriers | share | jobs | rate | through carriers late | relay peak Mbit/s | hops 0/1/2/3 | one seed both ends / the project's seeds both | viewer had no earned hop | probationers, graduated | offers sent/taken/used | relay said no / no room | home carried MB a day median, most | seed GB each | circuits from one neighbour home/seed | a minute home/seed | newcomers median days to middle, standing (dir; given) | honest seen by operator",
+        "\nrecorded, seed {}: seed carriers | share | jobs | rate | through carriers late | relay peak Mbit/s | hops 0/1/2/3 | one seed both ends / the project's seeds both | viewer had no earned hop | probationers, graduated | offers sent/taken/used | fresh turns, first jobs | relay said no / no room | home carried MB a day median, most | seed GB each | circuits from one neighbour home/seed | a minute home/seed | newcomers median days to middle, standing (dir; given) | honest seen by operator",
         r.seeds[0]
     );
     for (s, runs) in &r.carriers {
@@ -569,7 +569,7 @@ fn print_sizing(r: &sizing::Report) {
         let c = &f.carrying;
         let days = |x: Option<f64>| x.map_or("-".into(), |x| format!("{x:.0}"));
         println!(
-            "{} | {:.0}% | {} | {:.0}% | {:.0}% | {:.0} | {:?} | {:.0}% / {:.0}% | {:.0}% | {}, {} | {}/{}/{} | {:.0}% / {:.0}% | {:.0}, {:.0} | {} | {}/{} | {}/{} | {}, {}; {}, {} | {} of {}",
+            "{} | {:.0}% | {} | {:.0}% | {:.0}% | {:.0} | {:?} | {:.0}% / {:.0}% | {:.0}% | {}, {} | {}/{}/{} | {}, {} | {:.0}% / {:.0}% | {:.0}, {:.0} | {} | {}/{} | {}/{} | {}, {}; {}, {} | {} of {}",
             s.seeds,
             100.0 * s.share,
             s.jobs,
@@ -585,6 +585,8 @@ fn print_sizing(r: &sizing::Report) {
             f.offers_sent,
             f.offers_taken,
             f.offers_used,
+            f.fresh_turns,
+            f.fresh_first_jobs,
             100.0 * f.relayed_said_no / (f.relayed_said_no + f.relayed_no_room).max(1.0),
             100.0 * f.relayed_no_room / (f.relayed_said_no + f.relayed_no_room).max(1.0),
             c.median_a_day / 1e6,
@@ -605,6 +607,19 @@ fn print_sizing(r: &sizing::Report) {
             f.exposed_operator,
             f.honest,
         );
+    }
+    for (s, runs) in &r.carriers {
+        if s.seeds == 2 && s.share == 0.5 && s.jobs == 2 && s.newcomer_rate == 0.1 {
+            let w = &runs[0].0.fresh_by_week;
+            println!(
+                "fresh turns by week at 50%, 2 jobs, 10%, seed {} (Z's newcomers / others): {}",
+                r.seeds[0],
+                w.iter()
+                    .map(|[a, b]| format!("{a}/{b}"))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            );
+        }
     }
     match sizing::chosen(&r.carriers) {
         Some(s) => {

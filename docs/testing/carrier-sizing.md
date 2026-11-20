@@ -1,6 +1,6 @@
 # Sizing carriers: limits and the newcomer rate, in a model
 
-**Status:** Run four times on 2026-11-20 ([results](#results)): in no run does a setting meet every mark, so nothing is set, and the figures go to the maintainer. Plan fixed on 2026-11-20, before any code or run. [ADR 0043](../decisions/0043-the-media-plane-before-the-alpha.md)'s sizing stage: carrying is built in P11 whatever this shows, so the run doesn't decide whether to build. It sets the starting values: a node's upload share for carrying, its jobs at once, its limits on circuits from one neighbour and new circuits a minute, and how often a transfer gives a newcomer a middle turn. Changing a pass mark later needs a dated note here saying what changed and why.
+**Status:** Run five times on 2026-11-20 ([results](#results)): in no run does a setting meet every mark, so nothing is set, and the figures go to the maintainer. Plan fixed on 2026-11-20, before any code or run. [ADR 0043](../decisions/0043-the-media-plane-before-the-alpha.md)'s sizing stage: carrying is built in P11 whatever this shows, so the run doesn't decide whether to build. It sets the starting values: a node's upload share for carrying, its jobs at once, its limits on circuits from one neighbour and new circuits a minute, and how often a transfer gives a newcomer a middle turn. Changing a pass mark later needs a dated note here saying what changed and why.
 
 **Amended 2026-11-20, after the first run, before the second (the maintainer):** the first run's results stand below as run. Three changes for the second run, with the same settings and seeds:
 
@@ -23,6 +23,14 @@ Also recorded: the relay's bytes on way 4's transfers by why (an end said no to 
 - **Offers** join the queue, in the order they came, rather than going first.
 - **The newcomer rate** now sets the other middle turns: drawn at random among machines the viewer never finished a job with.
 - **The circuit limits** come from this run, as the queue may change how circuits bunch.
+
+**Amended a fourth time 2026-11-20, after the fourth run, before the fifth (the maintainer):** the earlier results stand as run. The fourth run's queue held machines that weren't new, and its daily turn ran whether or not anyone new was waiting. The third run's rules come back unchanged (two probation places, continuity after a first finished job, work offers after it, the newcomer rate's draw, 50% upload share, 2 jobs, 2 seed carriers). Only how a machine the viewer never worked with gets its first chance changes:
+
+- **Fresh machines.** A machine is fresh to a viewer if the viewer has never finished a job with it and it first entered the viewer's table within the last 7 days, mark 3's own window. A machine that was in the table before doesn't become fresh when the rule starts, and leaving and coming back doesn't make it fresh again: the time counts from when it first came in.
+- **A fresh turn.** At most once a day, a viewer gives the middle of a transfer through hops to the oldest of its fresh machines, after its probationers. A later arrival never goes ahead of an older one still fresh, so the one closest to its 7 days goes first, and a name minted later waits behind a real newcomer. One that's busy, gone or already on the path is passed over for the next, and stays fresh only until its own 7 days run out. With no fresh machine, there's no turn, so a settled network adds no third hop.
+- **After a first job,** a fresh machine leaves the fresh list and goes through the third run's probation and offers. It still needs jobs on 3 different days in 30 for standing.
+- **Offers** are as in the third run: they follow a real first job and give a chance to work, never standing.
+- **The circuit limits** come from this run.
 
 ## The model
 
@@ -171,6 +179,30 @@ With the newcomer queue (amended a third time 2026-11-20). Every mark is missed 
 **The queue is full of machines that aren't new.** A viewer's places for those who greet fill from day 0 with established machines it hasn't worked with yet. A newcomer arriving on day 35 waits behind them, at one turn a day, and a viewer fetches about every second day. So the queue graduates many established pairs, and reaches newcomers weeks late.
 
 **A turn every day costs the others.** It puts a third hop on many more transfers, through homes carrying within half their upload, so posts take longer, carriers have less room, and more goes through the relay.
+
+### Fifth run
+
+With fresh turns (amended a fourth time 2026-11-20). Machines that came into a table in the same hour are taken in a random order, not by their number in the model: by number, the newest machines, numbered last, always lost a tie, and on the first post every viewer reached for the same few machines.
+
+Every setting misses [0/5]. Directory newcomers now meet mark 3 everywhere, at 50% and 2 jobs on all 5 seeds; newcomers given one machine get much closer; marks 1 and 2, met in the third run, are missed. At 50%, 2 jobs and 10%, seed 1:
+
+| | Third run | Fifth run |
+| --- | --- | --- |
+| Mark 1: posts within a tenth; worst | 44 of 45; 1.11x | 20 of 45; 1.22x |
+| Mark 2: relayed against the project relay | 46% | 55% |
+| Mark 3: directory newcomers with a middle turn within 7 days; standing within 28 | 7; 17 of 50 | 49; 50 of 50 |
+| Newcomers given one machine: either | none | 36; 26 of 50 (27 to 41; 21 to 31 over the seeds) |
+| Probationers taken on, earned standing | 2,422, 2,179 | 5,877, 5,188 |
+| Transfers through three hops | 4,942 | 11,461 |
+| Homes carried a day, median | 16 MB | 41 MB |
+
+**Fresh to a viewer isn't new to the network.** Of 8,141 fresh turns, 2,315 went to Z's newcomers and 5,826 to machines already there that had just come into one more viewer's table, mostly by greeting it: 200 to 700 a week, falling to about 200 by week 13. A viewer can't tell the two apart from its own table, as both come in the same way.
+
+**That costs both sides.** The other machines' turns are the extra third hops that slow posts (mark 1) and fill carriers (mark 2). And they fill the fresh lists: a median of 10 machines were fresh to a viewer at once, so a newcomer given one machine, arriving on days 57 to 63, often waits past its 7 days behind machines that aren't new, at one turn a day from a viewer that fetches about every second day. It isn't a lack of reach: 49 of the 50 were fresh to some viewer, 458 pairs in all, about 9 viewers each.
+
+**The relay's demand with ends saying no,** at 50%, 2 jobs, 10% and 2 seed carriers: 57 to 59% with 10% saying no, 62 to 64% with 25%, 74 to 76% with 50%; the busiest second 560 to 700 Mbit/s.
+
+**Circuits,** at 50% and 2 jobs over every rate and seed: a home held at most 2 from one neighbour at once and opened at most 6 in a minute, so the plan's rule would give 4 and 12; a seed carrier at most 18 from one neighbour and 81 a minute. Nothing is set, as no setting meets every mark.
 
 ## Not modelled
 
