@@ -40,7 +40,7 @@ Each mark is set before its run.
 
 | Stage | Work | Gate |
 | --- | --- | --- |
-| Design | A short note picking the layer construction from a reviewed design, the wire format, and how a hop checks it is on an OSP path and not a general proxy | Note reviewed; nothing built before |
+| Design | A short note picking the layer construction from a reviewed design, the wire format, and how a hop checks it is on an OSP path and not a general proxy: [carrier circuits](0043-design-note-carrier-circuits.md), proposed 2026-11-20 | Note reviewed; nothing built before |
 | Sizing | `osp-sim`: B8 with seed carriers, newcomers and n0 as fallback, from zero standing | Limits and the newcomer rate set from it |
 | B | Seed list, picking hops, newcomers' middle turns, the layers, carrying with limits, busy and pause, credit for finished jobs, both setup questions, fallback to n0 | On the lab nodes, a video goes H → Q → P → V and on a newcomer's turn through four hops. In a packet capture, neither end learns the other's address, the viewer's hop learns no account, and a newcomer learns neither end's address. A skipped hop breaks the transfer |
 | C | ADR 0017's hostile tests: loops, floods, dropping, skipping a hop, naming a host that didn't pick it, asking for addresses, a newcomer trying to get next to an end | No open proxy, no amplification, no stranger gets an address, failures fall back to n0 |
@@ -53,7 +53,7 @@ Each mark is set before its run.
 - **Seed carriers' operators** answer for what their connection sends, as every carrier does, and see the addresses of the ends that pick them.
 - **A machine that carries shows its address** under its machine name to the machines next to it ([ADR 0017](0017-one-hop-forwarding.md#consequences), changing ADR 0015).
 - **ADR 0022** follows carrying as the roadmap says. When strangers' `Known` lists close is decided once stage C passes.
-- **Licensing:** no new dependency chosen yet. The design note names any.
+- **Licensing:** the design note names the `hpke` crate (MIT or Apache-2.0), pinned when building starts.
 
 ## Revisit when
 
