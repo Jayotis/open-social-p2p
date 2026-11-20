@@ -570,6 +570,15 @@ impl Meeting {
         }
     }
 
+    /// Machines in `v`'s places for those who greet (ADR 0015's 40), and
+    /// when each came in.
+    pub fn greeters(&self, v: usize) -> impl Iterator<Item = (usize, f64)> + '_ {
+        self.tables[v]
+            .iter()
+            .filter(|(_, e)| e.src.greeter())
+            .map(|(&m, e)| (m, e.since))
+    }
+
     /// Machines in `v`'s table, in order.
     pub fn table(&self, v: usize) -> impl Iterator<Item = usize> + '_ {
         self.tables[v].keys().copied()

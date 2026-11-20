@@ -1,6 +1,6 @@
 # Sizing carriers: limits and the newcomer rate, in a model
 
-**Status:** Run three times on 2026-11-20 ([results](#results)): in no run does a setting meet every mark, so nothing is set, and the figures go to the maintainer. Plan fixed on 2026-11-20, before any code or run. [ADR 0043](../decisions/0043-the-media-plane-before-the-alpha.md)'s sizing stage: carrying is built in P11 whatever this shows, so the run doesn't decide whether to build. It sets the starting values: a node's upload share for carrying, its jobs at once, its limits on circuits from one neighbour and new circuits a minute, and how often a transfer gives a newcomer a middle turn. Changing a pass mark later needs a dated note here saying what changed and why.
+**Status:** Run four times on 2026-11-20 ([results](#results)): in no run does a setting meet every mark, so nothing is set, and the figures go to the maintainer. Plan fixed on 2026-11-20, before any code or run. [ADR 0043](../decisions/0043-the-media-plane-before-the-alpha.md)'s sizing stage: carrying is built in P11 whatever this shows, so the run doesn't decide whether to build. It sets the starting values: a node's upload share for carrying, its jobs at once, its limits on circuits from one neighbour and new circuits a minute, and how often a transfer gives a newcomer a middle turn. Changing a pass mark later needs a dated note here saying what changed and why.
 
 **Amended 2026-11-20, after the first run, before the second (the maintainer):** the first run's results stand below as run. Three changes for the second run, with the same settings and seeds:
 
@@ -16,6 +16,13 @@ Also recorded: the relay's bytes on way 4's transfers by why (an end said no to 
 - **Two probation places, each with its own job.** Continuity: a machine that has finished a job for the viewer, given a middle job each day it fetches until it earns standing, or 30 days pass. Exploration: a machine the viewer has never finished a job with, taken at the newcomer rate, given a middle job each day too. When the continuity place empties, the exploration machine moves into it. The bar for standing stays: jobs on 3 different days in 30, checked by the viewer.
 - **Work offers.** When a machine finishes its first middle job for a viewer, that viewer offers it to up to 2 viewers it has been the earned hop for on its own record. A viewer takes an offer only from a machine it holds at standing, at most one a day from each, and keeps at most 2 for 30 days. An offered machine goes first when its exploration place fills. An offer gives a machine a chance to work, never standing: it isn't one of [ADR 0022](../decisions/0022-lists-and-introductions-are-earned.md)'s introductions, and nothing in ADR 0018's records counts it. Stage C tries flooding offers.
 - **Also recorded:** the offers sent, taken and used, and the share of transfers through hops where the viewer had no earned hop to pick, which sets how often the project's seed carriers hold both ends until ADR 0018 gives hosts hops of their own.
+
+**Amended a third time 2026-11-20, after the third run, before the fourth (the maintainer):** the earlier results stand as run. Everything else worked once a machine had its first job, so only a newcomer's first job changes:
+
+- **A continuity place and a newcomer turn.** The continuity place is as before: one machine that finished a job for the viewer, given a middle job each day until it earns standing or 30 days pass. The newcomer turn, once a day, goes to a machine the viewer has never finished a job with, from a queue: the machines in its places for those who greet ([ADR 0015](../decisions/0015-nodes-meet-first.md)'s 40, with its limits on one source), and those offered to it, in the order they came. A later arrival never goes ahead of one waiting, so minting new names doesn't jump the queue: ranking by newest was considered and rejected for that reason. A machine the viewer can't use when its turn comes (busy or gone) goes to the back. After one finished job it leaves the queue, takes the continuity place if it's free, and is offered on as before.
+- **Offers** join the queue, in the order they came, rather than going first.
+- **The newcomer rate** now sets the other middle turns: drawn at random among machines the viewer never finished a job with.
+- **The circuit limits** come from this run, as the queue may change how circuits bunch.
 
 ## The model
 
@@ -146,6 +153,24 @@ Nothing is set: mark 3 is missed everywhere.
 **The relay's demand with ends saying no,** at 50%, 2 jobs, 10% and 2 seed carriers, in weeks 10 to 13 against the project relay's bytes: 47 to 50% with 10% saying no, 55 to 58% with 25%, 73 to 76% with 50%. The relay's busiest second was 550 to 730 Mbit/s.
 
 **Circuits,** at 50% and 2 jobs: a home held at most 2 from one neighbour at once and opened at most 7 in a minute, over every rate and seed; in any setting, at most 4 and 9.
+
+### Fourth run
+
+With the newcomer queue (amended a third time 2026-11-20). Every mark is missed in every setting [0/5], and marks 1 and 2, met in the third run, are missed again. At 50%, 2 jobs and 10%, seed 1, against the third run:
+
+| | Third run | Fourth run |
+| --- | --- | --- |
+| Mark 1: posts within a tenth; worst | 44 of 45; 1.11x | 31 of 45; 1.24x |
+| Mark 2: relayed against the project relay | 46% | 54% |
+| Mark 3: directory newcomers with a middle turn within 7 days; standing within 28 | 7; 17 of 50 | 5; 20 of 50 |
+| Newcomers given one machine: either | none | none |
+| Pairs that earned standing | 2,179 | 3,895 |
+| Transfers through three hops | 4,942 | 12,174 |
+| Homes carried a day, median | 16 MB | 37 MB |
+
+**The queue is full of machines that aren't new.** A viewer's places for those who greet fill from day 0 with established machines it hasn't worked with yet. A newcomer arriving on day 35 waits behind them, at one turn a day, and a viewer fetches about every second day. So the queue graduates many established pairs, and reaches newcomers weeks late.
+
+**A turn every day costs the others.** It puts a third hop on many more transfers, through homes carrying within half their upload, so posts take longer, carriers have less room, and more goes through the relay.
 
 ## Not modelled
 
