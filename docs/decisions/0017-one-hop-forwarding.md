@@ -1,12 +1,12 @@
 # ADR 0017: Two hops for pairs without a direct link
 
-**Status:** Accepted (2026-11-08), proposed 2026-11-04. Not built. Amended 2026-11-18 by [ADR 0043](0043-the-media-plane-before-the-alpha.md), the maintainer's decision: built in P11, before the Product Alpha, with stage A sizing the limits instead of deciding whether to build; seed carriers from a list the installer passes may sit next to an end from the start; asking to use hops no longer waits for ADR 0018. The rest of this record stands. Originally: Stage A, measuring only, comes before the invited alpha; the rest is built only if stage A says it's worth it. Until then, [ADR 0014](0014-finding-people-and-private-messages.md)'s media rules stand: media between nodes without a direct connection goes through relays.
+**Status:** Accepted (2026-11-08), proposed 2026-11-04. Not built. Amended 2026-11-18 by [ADR 0043](0043-the-media-plane-before-the-alpha.md), the maintainer's decision: built in P11, before the Product Alpha, with stage A sizing the limits instead of deciding whether to build; seed carriers from a list the installer passes may sit next to an end from the start; asking to use hops no longer waits for ADR 0018. Amended again 2026-11-20, the maintainer's decision while reviewing [ADR 0043's design note](0043-design-note-carrier-circuits.md): **every node carries, from the middle, by default,** and nobody is asked; the owner controls its resources, not whether it takes part. OSP keeps a node's address apart from its owner's identity, not hidden from the machines next to it (Context). The rest of this record stands. Originally: Stage A, measuring only, comes before the invited alpha; the rest is built only if stage A says it's worth it. Until then, [ADR 0014](0014-finding-people-and-private-messages.md)'s media rules stand: media between nodes without a direct connection goes through relays.
 
 Revised 2026-11-07. The first draft had one forwarder, between nodes that had each earned a direct link with it ([ADR 0018](0018-earned-direct-connections.md)). That left out the pairs that need it most: newcomers and casual viewers have no earned peers, and with media's default at `nobody`, that's nearly every pair. This draft uses two hops of volunteer nodes, each end picking the one next to it, and carrying now earns standing, credited by the node that received the bytes ([ADR 0016](0016-machine-acquaintances.md#the-local-record)). The first draft's one hop remains, as the case where both ends pick the same node. The machine next to an end sees its address, so a host's end picks only its direct peers, as its hop learns what a direct link would, and a viewer's end also machines that finished jobs for it, both only with the owner's yes to [ADR 0018's question](0018-earned-direct-connections.md#asked-at-setup); newcomers start in the middle, where they see neither end. Credit is for finished jobs, not bytes, and a layer of encryption for each hop proves which hops a transfer went through.
 
 ## Context
 
-OSP keeps a home address hidden from strangers. It doesn't promise anonymity, and public posts are public. People who want more can use an alias, a VPN, or a node away from home.
+OSP keeps a home address apart from its owner's identity: no profile, post, follow, hosted file or listing ties the two, and machine names are tied to no person ([ADR 0015](0015-nodes-meet-first.md)). It doesn't hide a node's address from the machines it exchanges packets with, which see a pseudonymous machine, not a person. It doesn't promise anonymity, and public posts are public. People who want more can use an alias, a VPN, or a node away from home. (Until 2026-11-20 this said OSP keeps a home address hidden from strangers.)
 
 **Media's default stays `nobody`,** so media between nodes goes through relays: n0's public relays for now, which are meant for development and hobby use. [Measured](../testing/network-conditions.md#media-through-relays) with a relay at their limits, a 52 MB video to 300 followers, all behind the relay, put 19.3 GB through it, about one copy for each follower, and the swarm took over twice as long, missing two of B8's marks. Copies save the creator's upload ([B8](../testing/b8-creator-upload.md)), not the relay's.
 
@@ -26,7 +26,7 @@ Questions to settle:
 - **Video over Tor.** [ADR 0014](0014-finding-people-and-private-messages.md) measured 1 MB taking between 3.4 and 150 s. Rejected.
 - **Relays only.** Simple, but one party pays for everything, and a relay sees both ends of everything it carries. Relays stay as the fallback, and for hole punches. Volunteer relays that anyone can run would make that view cheap to get. Community relays are a decision of their own.
 - **One hop, between nodes that have each earned a link with it** (the first draft). The hop holds both ends' addresses with their consent, so a pair needs an earned peer in common. Newcomers and casual viewers have none. Kept as a case of the option chosen.
-- **Every node carrying by default.** Rejected. A home address would be seen sending video its owner never chose. [ADR 0012](0012-sharing-prefetched-copies.md) asks at setup for less.
+- **Every node carrying by default.** First rejected, as a home address would be seen sending video its owner never chose. Chosen 2026-11-20 for the middle: a network that waits for people to opt in has nobody to carry, and a carrier's address is seen as a machine's, never a person's. The owner is told at setup and controls the resources it uses.
 - **The hop fetching the file and serving it.** It could check the hash, but it would hold a file it never chose, which is what [the review](../reviews/2026-10-21-review-of-docs-12-and-13.md) dropped blind hosting over. Rejected.
 - **Three hops on every transfer, as Tor builds circuits,** with a middle hop that sees no address. Four uploads for each byte. On a public network where each end decides who sees its address, the middle hop protects nothing either end hadn't chosen to show. Rejected. A middle hop is used only on newcomers' turns, below, as a place where a machine that has done nothing yet can carry without seeing either end.
 - **Newcomers next to the viewer,** a share of viewers' picks kept for machines with no standing, so they could start. That machine, which had done nothing yet, would see the viewer's address, and a home address isn't given for nothing. Rejected for the middle.
@@ -43,7 +43,7 @@ Questions to settle:
 | Hosting | Whole verified copies, follower and resharer swarms | Sources; the creator is spared uploads |
 | Downloading in parts | iroh-blobs ranges from up to 3 sources | Speed. Parts hide no address |
 | Earned link | ADR 0018's direct connection | Cheap bytes between two nodes that see each other's address |
-| Two hops | Volunteer nodes passing encrypted traffic, one picked by each end, and a newcomer between them on its turns | Bytes off relays, each end's address seen only by the hop it picked, never by a newcomer |
+| Two hops | Nodes passing encrypted traffic, one picked by each end, and a newcomer between them on its turns | Bytes off relays, each end's address seen only by the hop it picked, never by a newcomer |
 | Relays | As today | Hole punches; the fallback |
 
 A hop need not hold the video. A host need not carry.
@@ -77,7 +77,7 @@ Each end picks the hop next to it only with its owner's yes to earned links ("As
 
 Nobody picks anything by hand. Approving a friend's node only adds one more peer.
 
-**Newcomers carry in the middle.** On 1 transfer in 10 that goes through hops (a starting value), V puts a machine with no standing between them, one from its own table of machines ([ADR 0016](0016-machine-acquaintances.md#meeting-more-machines)). It sees only what's next to it, hops that said yes to being seen as carriers or a relay, and neither end. It does a real job, so V credits it, and once it has finished jobs for V on enough days, V may pick it next to itself. A reference V counts ([ADR 0016](0016-machine-acquaintances.md#references)) gets a machine one of these turns sooner, never a place next to an end. Those transfers take a fourth home upload, about 3.1 for each byte on average.
+**Newcomers carry in the middle.** On 1 transfer in 10 that goes through hops (a starting value), V puts a machine with no standing between them, one from its own table of machines ([ADR 0016](0016-machine-acquaintances.md#meeting-more-machines)). It sees only the carriers or relay next to it, and neither end. It does a real job, so V credits it, and once it has finished jobs for V on enough days, V may pick it next to itself. A reference V counts ([ADR 0016](0016-machine-acquaintances.md#references)) gets a machine one of these turns sooner, never a place next to an end. Those transfers take a fourth home upload, about 3.1 for each byte on average.
 
 **Starting from nothing.** A new network, with nobody approving anything, has no hops, so transfers go through relays, as today. Earned links come from downloads nodes make anyway, and from creators' spot checks of the followers who host their posts (ADR 0018); each earned peer can be a hop; hops give newcomers middle turns; and middle turns build standing at viewers' ends. A small group whose owners approve one another by hand, as the first testers may, gives it a quicker start, but must never be needed: nobody has to know anyone to join. Whether it grows with nobody acting, how fast, and whether it carries on once the first nodes leave, is stage A's first question.
 
@@ -95,22 +95,22 @@ What counts is whether a machine did what it was asked.
 
 This replaces the first draft's "it earns nothing", whose reason was that a forwarder had already earned its place, so nothing would tempt anyone to make fake traffic. Hops now include newcomers, who need a way to start, and the only traffic that earns anything is what honest nodes chose to send through them.
 
-### Asked at setup
+### Told at setup
 
-**Two questions, each off without a yes,** as in ADR 0012, and offered with yes recommended.
+**Carrying is on, and setup says so** (amended 2026-11-20; it was a question, off without a yes). Every node carries from the middle, and is placed next to an end only once it has earned that, as above. Setup and the install guide say:
 
-**Carrying.** Setup says:
+> Your node carries encrypted video between other nodes, under its machine name, within the limits you set. This uses some of your upload, and builds your node's standing with the nodes it helps, which can get it direct links and quicker service. You can't see what's inside. The nodes next to yours see your internet address sending it, never who you are, and you answer for what your connection sends, as with anything else you do online. You can pause it under Advanced.
 
-> Your node can carry encrypted video between other nodes, under its machine name. This uses some of your upload, and builds your node's standing with the nodes it helps, which can get it direct links and quicker service. You can't see what's inside. The nodes next to yours see your internet address sending it, and you answer for what your connection sends, as with anything else you do online.
+**Letting machines that worked for the node see its address,** as the hop next to it or as a direct link, is a separate consent and stays a question: [ADR 0018's](0018-earned-direct-connections.md#asked-at-setup), which sets `direct = "earned"`. It was to be offered once ADR 0018's tests pass; [ADR 0043](0043-the-media-plane-before-the-alpha.md) §8 asks it for hops now. `nobody` keeps its meaning, and a node that hasn't said yes keeps its own leg on relays, as today. Nothing else is asked: no peers, relays or hops are picked by hand.
 
-**Letting machines that worked for the node see its address,** as the hop next to it or as a direct link, is one consent, so it's one question: [ADR 0018's](0018-earned-direct-connections.md#asked-at-setup), which sets `direct = "earned"`. It's offered once ADR 0018's tests pass, so using hops waits for those too. `nobody` keeps its meaning, and a node that hasn't said yes keeps its own leg on relays, as today. Nothing else is asked: no peers, relays or hops are picked by hand.
+What the owner controls is the resources carrying uses, not whether the node takes part:
 
-For carrying:
-
-- **Limits:** a share of `max_upload_mbps`, behind everything else the node does, and paused by the owner at any time or on a metered connection.
+- **Bounded, and the owner's traffic first:** a share of `max_upload_mbps` and a number of jobs at once, always behind everything else the node does.
+- **Metered connections:** carrying stops on one.
+- **A pause under Advanced,** for troubleshooting.
 - **A refusal is normal.** A hop at its limit says busy, and V tries another hop or a relay.
 - Limits are set from the simulator.
-- **A node that doesn't carry** still gets every public post and video, through hops or relays.
+- **A paused node** still gets every public post and video, through hops or relays.
 
 ### What it carries
 
@@ -124,11 +124,12 @@ For carrying:
 - **Some pairs, and some hops, can't connect** because of their routers. Those stay on relays.
 - **Viewers with earned peers** may often find a host among them, which needs no hop.
 - **An operator holding a share p of the hops** picked at both ends sees both ends of about p² of transfers, 1% at 10%, if picks were independent. They aren't quite: ends that know the same few machines pick from the same few. Ends pick only machines with standing, so it has to earn that first, by finishing real jobs. This can't be ruled out, only priced, and stage A measures it rather than assuming p².
+- **Matching a machine to its owner's node by address.** A node and its machine share a home address, and anyone can put a machine in a circuit next to its own and see that machine's address. A machine that also sees a node's address and whose node it is, a host's hop, an earned direct peer, or anyone for a creator who chose to be public, can match the two. Each of those had to earn its place or was chosen, so the address goes to machines that worked for it ([ADR 0018](0018-earned-direct-connections.md)). Nobody can get from a person to an address without such a place.
 - **A host with no direct peers,** such as a new creator, has no hop of its own until it earns links. Its leg stays on relays meanwhile, unless it chooses to be public.
 
 ## Consequences
 
-**Privacy.** With its owner's yes to earned links, each end's address is seen by the hop it picked: at a host, a direct peer, which sees it anyway; at a viewer, also a machine that finished jobs for it. Never by a machine new to it. A viewer's hop sees which host an address fetches from, as a relay does. A machine that carries shows its address under its machine name to the machines next to it, newcomers in the middle included, so anyone who also sees its owner's node's address, such as an earned peer, can match the two. That changes [ADR 0015](0015-nodes-meet-first.md)'s machine name, which until now has shown no address. A node that neither carries nor uses hops is unchanged.
+**Privacy.** With its owner's yes to earned links, each end's address is seen by the hop it picked: at a host, a direct peer, which sees it anyway; at a viewer, also a machine that finished jobs for it. Never by a machine new to it. A viewer's hop sees which host an address fetches from, as a relay does. Every node carries, so every machine shows its address under its machine name to the machines next to it, newcomers in the middle included, and anyone who also sees its owner's node's address, such as an earned peer, can match the two ("What it doesn't solve"). That changes [ADR 0015](0015-nodes-meet-first.md)'s machine name, which until now has shown no address; a machine name still ties to no person. A paused node that uses no hops is unchanged.
 
 **Responsibility.** Anyone next to a hop sees its address sending, and it can't tell what it carries. Each owner answers for what their node sends, and no document may claim otherwise ([doc 13](../13-hosting-roles-and-follower-swarm.md)).
 
@@ -162,4 +163,4 @@ Stage A reports, for each way and each simulated week: the bytes going direct, t
 
 A packet capture and tests that no public reply gives anyone an address; a hop at its limit doesn't harm its owner's connection; nothing reaches a loopback or local address; forged requests are refused. Every test counts each hop's bytes, and keeps creator upload apart from relay bytes. ADR 0018's price check includes an attacker carrying traffic: what share of viewers' and hosts' addresses it learns, and what it carried to get them.
 
-**Revisit** if stage A misses its mark, if carrying proves harmful on ordinary home connections, if people turn it down at setup, or if an operator sees both ends of more transfers than its share of hops suggests.
+**Revisit** if stage A misses its mark, if carrying materially harms ordinary home connections or people often need to pause it for troubleshooting, or if an operator sees both ends of more transfers than its share of hops suggests.

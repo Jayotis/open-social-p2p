@@ -1,6 +1,6 @@
 # ADR 0043 design note: carrier circuits
 
-**Status:** Proposed (2026-11-20), for the maintainer's review. ADR 0043's design stage: nothing of carrying is built before this note is accepted. It picks the layer construction, the wire format, and how a hop checks it is on an OSP path and not a general proxy. Who may carry, how standing is earned, how often newcomers get a middle turn, the limits' values and the fallback stay with [ADR 0017](0017-one-hop-forwarding.md) and [ADR 0043](0043-the-media-plane-before-the-alpha.md).
+**Status:** Proposed (2026-11-20), for the maintainer's review. ADR 0043's design stage: nothing of carrying is built before this note is accepted. It picks the layer construction, the wire format, and how a hop checks it is on an OSP path and not a general proxy. Every node carries from the middle by default ([ADR 0017](0017-one-hop-forwarding.md) as amended 2026-11-20). Who may sit next to an end, how standing is earned, how often newcomers get a middle turn, the limits' values and the fallback stay with [ADR 0017](0017-one-hop-forwarding.md) and [ADR 0043](0043-the-media-plane-before-the-alpha.md).
 
 ## The path
 
@@ -41,7 +41,7 @@ DHKEM(X25519, HKDF-SHA256), HKDF-SHA256, ChaCha20-Poly1305
 
 ## A carrier's descriptor
 
-A machine that carries publishes, signed by its machine key:
+Every node carries, so every machine publishes, signed by its machine key:
 
 ```text
 version · machine ID · carrier endpoint ID · relay URL of the carrier endpoint
@@ -51,6 +51,8 @@ circuit key · its validity · what it offers · signature
 No person's identity, and no IP address. Descriptors come from the machine layer, or from `carriers.txt` for seed carriers (ADR 0043 §6).
 
 A carrier's endpoint is an iroh endpoint with a relay, **published nowhere** (no DNS or pkarr record). A neighbour reaches it by its endpoint ID through the relay in its descriptor, and iroh's hole punch then shows each the other's address, which is what ADR 0017 says a carrier shows the machines next to it. So addresses are seen only by neighbours, never listed.
+
+**A carrier's address is a machine's, not a person's.** Anyone can build a circuit through a machine it names and see that machine's address next to its machine ID. That's accepted ([ADR 0017](0017-one-hop-forwarding.md#context)): nothing in a descriptor, a frame or a carrier link ties a machine to a person, and the separation ADR 0015 tests stays the protection. No relay hides one carrier from another, and a newcomer in the middle shows its address to both neighbours. A carrier's limit on circuits from one neighbour and on new circuits a minute bounds how fast one machine can make others work for it.
 
 ## Building a circuit
 
@@ -99,9 +101,9 @@ A carrier that goes, refuses, times out or fails a check ends the circuit with `
 
 | Machine | Sees | Doesn't see |
 | --- | --- | --- |
-| P | V's address, its next hop, timing, bytes | V's account, H's address, the contents |
-| M | its two neighbours, timing, bytes | either end's address or account, the contents |
-| Q | H's address and slot, its previous hop, timing, bytes | V's address or account, the contents |
+| P | V's address, its next hop's machine ID and address, timing, bytes | V's account, H's address, the contents |
+| M | its two neighbours' machine IDs and addresses, timing, bytes | either end's address or account, the contents |
+| Q | H's address and slot, so whose node it is; its previous hop's machine ID and address; timing, bytes | V's address or account, the contents |
 | V | the hops it picked, Q's descriptor | H's address |
 | H | Q, its own media endpoint | V's address |
 
@@ -124,7 +126,7 @@ Carriers working together learn more, and someone watching the traffic at severa
 
 9. No request makes a carrier dial an IP address, DNS name, local or loopback address, or port.
 10. A made-up or expired host slot, or another host's, is refused.
-11. A carrier at its limit says `BUSY` and its owner's own traffic is unharmed.
+11. A carrier at its limit says `BUSY` and its owner's own traffic is unharmed; one machine opening circuits as fast as it can is held to the per-neighbour and per-minute limits.
 12. Killing M, P or Q ends the circuit, with a fallback to relays and never a direct connection.
 
 **Stage D:** the 108.5 MB P11 video through a circuit against the project relay and n0, on marks set before the run.
