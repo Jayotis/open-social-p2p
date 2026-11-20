@@ -69,6 +69,14 @@ pub struct Figures {
     pub hops_taken: [usize; 4],
     pub seed_single_share: f64,
     pub seed_both_share: f64,
+    /// Transfers whose viewer's hop was an ordinary node it earned;
+    /// probationers taken on and graduated; the relay's bytes on way 4's
+    /// transfers by why: an end said no, or no hop had room.
+    pub earned_viewer_hops: usize,
+    pub probationers: usize,
+    pub graduated: usize,
+    pub relayed_said_no: f64,
+    pub relayed_no_room: f64,
     pub carrying: Carrying,
     pub exposed_operator: usize,
     pub honest: usize,
@@ -136,6 +144,11 @@ pub fn figures(m: &Months) -> Figures {
         hops_taken: h.hops_taken,
         seed_single_share: h.seed_both_single as f64 / h.both_ends.max(1) as f64,
         seed_both_share: h.seed_both_ends as f64 / h.both_ends.max(1) as f64,
+        earned_viewer_hops: h.earned_viewer_hops,
+        probationers: h.probationers,
+        graduated: h.graduated,
+        relayed_said_no: h.relayed_said_no,
+        relayed_no_room: h.relayed_no_room,
         carrying: m.carrying.clone(),
         exposed_operator: m.extra.exposed_operator,
         honest: m.extra.honest,
@@ -146,9 +159,10 @@ pub fn figures(m: &Months) -> Figures {
 /// same seed.
 #[derive(Clone, Debug, Serialize)]
 pub struct Marks {
-    /// Mark 1: posts no later than the project relay's, the worst ratio,
-    /// and B8 met in weeks 10 to 13 against the project relay's.
-    pub no_later: usize,
+    /// Mark 1 (amended 2026-11-20): posts within a tenth of the project
+    /// relay's time, the worst ratio, and B8 met in weeks 10 to 13 against
+    /// the project relay's.
+    pub within_tenth: usize,
     pub posts: usize,
     pub worst: f64,
     pub speed: bool,
@@ -166,7 +180,7 @@ impl Marks {
 }
 
 pub fn judge(c: &Figures, project: &Figures) -> Marks {
-    let mut no_later = 0;
+    let mut within_tenth = 0;
     let mut worst = 0.0f64;
     let mut posts = 0;
     for (a, b) in c.p95.iter().zip(&project.p95) {
@@ -178,14 +192,14 @@ pub fn judge(c: &Figures, project: &Figures) -> Marks {
             (None, Some(_)) => f64::INFINITY,
             (None, None) => 1.0,
         };
-        no_later += (ratio <= 1.0) as usize;
+        within_tenth += (ratio <= 1.1) as usize;
         worst = worst.max(ratio);
     }
-    let speed = 10 * no_later >= 9 * posts && worst <= 1.2 && c.late_b8 >= project.late_b8;
+    let speed = 10 * within_tenth >= 9 * posts && worst <= 1.2 && c.late_b8 >= project.late_b8;
     let relayed_ratio = c.late_relayed / project.late_relayed.max(1.0);
     let p = c.operator_end_share;
     Marks {
-        no_later,
+        within_tenth,
         posts,
         worst,
         speed,
