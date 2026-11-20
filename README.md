@@ -132,6 +132,7 @@ Code lives primarily in:
 | [`crates/osp-cli`](crates/osp-cli/) | `osp` command, daemon/service, setup and administration |
 | [`crates/osp-client`](crates/osp-client/) | Client protocol used by paired phones |
 | [`crates/osp-tor`](crates/osp-tor/) | OSP's Tor transport/control-plane integration |
+| [`crates/osp-carrier`](crates/osp-carrier/) | Carrier circuits' descriptors, frames and layers (ADR 0043) |
 | [`crates/osp-sim`](crates/osp-sim/) | Repeatable multi-node simulation harnesses |
 | [`app/`](app/) | Flutter mobile application |
 

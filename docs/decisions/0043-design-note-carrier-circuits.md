@@ -86,8 +86,10 @@ version · circuit ID · direction · packet number · payload
 - **Towards the viewer,** each hop adds its layer, and V removes them all.
 - Each layer is ChaCha20-Poly1305 with its nonce taken from the packet number, and authenticates the version, direction, packet number and circuit context with the payload. A hop skipped, repeated or reordered, or a byte changed, fails the check and the packet is dropped.
 - Packet numbers only go up. A repeat, or one outside a window, is dropped. A circuit near its packet or byte limit is replaced, never wraps.
+- **Added when building (2026-11-20).** Under the last hop's layer, one byte says what the cell asks of it (`EXTEND`, `CONNECT_HOST`, `DATA`, or from it `EXTENDED`, `CONNECTED`, `BUSY`), so a hop in the middle can't tell a packet from a setup. `CREATE`, `CREATED`, `DATA`, `BUSY` and `DESTROY` are frames on a link; the rest travel under the layers. `DATA`'s kind says its direction, which keeps the frame at 14 bytes.
+- **Packet numbers towards the viewer** are given by the circuit's last hop. Each layer remembers the numbers it has used, sealing or opening, so no key seals twice with one nonce; a hop that extends the circuit tells the next where to start (`CREATE`'s backward start), past the numbers it still uses itself.
 
-**Packet size.** QUIC needs packets of at least 1200 bytes, so the ends' packets can't shrink to make room. Three layers add 48 bytes of tags and the frame 14, so a link between carriers must carry about 1350-byte packets once QUIC's and the network's headers are added. Most home links do, and a link through a relay always does. Stage B measures it on the lab nodes first, and a carrier that can't carry that size between two neighbours isn't used between them. Nothing relies on IP fragmentation.
+**Packet size.** QUIC needs packets of at least 1200 bytes, so the ends' packets can't shrink to make room. Three layers add 48 bytes of tags, the frame 14 and a command byte under the layers 1 (63 in all), so a link between carriers must carry about 1350-byte packets once QUIC's and the network's headers are added. Most home links do, and a link through a relay always does. Stage B measures it on the lab nodes first, and a carrier that can't carry that size between two neighbours isn't used between them. Nothing relies on IP fragmentation.
 
 ## Limits
 
