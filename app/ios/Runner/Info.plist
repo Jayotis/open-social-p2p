@@ -33,6 +33,8 @@
 	<true/>
 	<!-- The video player gets media from the app's own server on 127.0.0.1
 	     (osp-client's media.rs), which iOS 17 and later refuse otherwise. -->
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<true/>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsLocalNetworking</key>
