@@ -266,6 +266,7 @@ pub fn run(share_percent: f64, same_order: bool, seed: u64) -> Run {
                 tell_delay: TELL_DELAY,
                 bytes: VIDEO_BYTES,
                 until: (DAYS + 1.0) * DAY,
+                relay: super::spread::RelayLimits::N0,
             }
             .run(&mut swarm, &fetches, &[]);
             let order: Vec<usize> = viewers[v].iter().map(|&(_, node)| node).collect();

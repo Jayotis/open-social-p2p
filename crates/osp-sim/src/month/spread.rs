@@ -54,6 +54,29 @@ pub const OVERHEAD: f64 = 1.05;
 pub const RELAY_BURST: f64 = 2.7e6;
 pub const RELAY_RATE: f64 = 1.0e6;
 
+/// What each endpoint may send through a relay: a burst, then a steady rate,
+/// in bytes and bytes a second.
+#[derive(Clone, Copy, Debug)]
+pub struct RelayLimits {
+    pub burst: f64,
+    pub rate: f64,
+}
+
+impl RelayLimits {
+    /// n0's public relays, as measured.
+    pub const N0: RelayLimits = RelayLimits {
+        burst: RELAY_BURST,
+        rate: RELAY_RATE,
+    };
+    /// The project's relays ([ADR 0044] §7): 4 MB/s after an 8 MB burst.
+    ///
+    /// [ADR 0044]: ../../../docs/decisions/0044-project-relays-for-the-alpha.md
+    pub const PROJECT: RelayLimits = RelayLimits {
+        burst: 8e6,
+        rate: 4e6,
+    };
+}
+
 /// Transfers a node serves at once, having measured `mbps`.
 pub fn transfer_places(mbps: f64) -> usize {
     ((mbps / MBPS_PER_TRANSFER) as usize).clamp(MIN_TRANSFERS, MAX_TRANSFERS)
@@ -277,6 +300,8 @@ pub struct Outcome {
     pub carried: Vec<f64>,
     /// Bytes on the wire through the relay, once for each relayed leg.
     pub relayed: f64,
+    /// The most bytes on the wire through the relay in one second.
+    pub relay_peak: f64,
     /// Bytes of the file delivered, and of those, with no leg through the
     /// relay, and through hops.
     pub delivered: f64,
@@ -309,6 +334,7 @@ pub struct Spread<'a, R: Rules> {
     pub bytes: f64,
     /// Give up on the post this long after it.
     pub until: f64,
+    pub relay: RelayLimits,
 }
 
 /// Resources a stream uses: each node's upload, what it sends through the
@@ -359,7 +385,8 @@ impl<R: Rules> Spread<'_, R> {
             live.holds[h] = true;
             out.held[h] = Some(0.0);
         }
-        let mut tokens = vec![RELAY_BURST; n];
+        let relay = self.relay;
+        let mut tokens = vec![relay.burst; n];
         let mut downloads: Vec<Download> = fetches
             .iter()
             .map(|f| Download {
@@ -459,7 +486,7 @@ impl<R: Rules> Spread<'_, R> {
                 if !next.is_finite() {
                     break;
                 }
-                tokens.iter_mut().for_each(|tk| *tk = RELAY_BURST);
+                tokens.iter_mut().for_each(|tk| *tk = relay.burst);
                 for w in live.window.iter_mut() {
                     *w = [0.0; MEASURE_OVER];
                 }
@@ -470,7 +497,7 @@ impl<R: Rules> Spread<'_, R> {
             // Each resource's capacity this second, in bytes of media.
             let mut cap = vec![0.0f64; 4 * n];
             for (i, p) in self.peers.iter().enumerate() {
-                tokens[i] = (tokens[i] + RELAY_RATE * dt).min(RELAY_BURST);
+                tokens[i] = (tokens[i] + relay.rate * dt).min(relay.burst);
                 cap[res(Res::Up, i)] = p.up / OVERHEAD;
                 cap[res(Res::Relay, i)] = tokens[i] / dt / OVERHEAD;
                 cap[res(Res::Carry, i)] = p.up * p.carry_share / OVERHEAD;
@@ -481,6 +508,7 @@ impl<R: Rules> Spread<'_, R> {
             let mut sent_now = vec![0.0f64; n];
             let mut part_ends: Vec<usize> = Vec::new();
             let mut failing: Vec<usize> = Vec::new();
+            let relayed_before = out.relayed;
             for &s in &ids {
                 let st = live.streams[s].as_mut().unwrap();
                 let moved = st.rate * dt;
@@ -521,6 +549,7 @@ impl<R: Rules> Spread<'_, R> {
                     failing.push(s);
                 }
             }
+            out.relay_peak = out.relay_peak.max((out.relayed - relayed_before) / dt);
             t += dt;
             for s in failing {
                 self.hop_fails(s, &downloads, &mut live, &mut out, t);
@@ -982,6 +1011,7 @@ mod tests {
             tell_delay: 0.0,
             bytes: 10e6,
             until: 3600.0,
+            relay: RelayLimits::N0,
         }
         .run(
             &mut Swarm::new(3),

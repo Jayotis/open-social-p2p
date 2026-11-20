@@ -5,7 +5,7 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use osp_sim::month::{calibrate, found, months};
+use osp_sim::month::{calibrate, found, months, sizing};
 
 #[derive(Parser)]
 #[command(version)]
@@ -44,6 +44,22 @@ enum Command {
         /// amendment, rather than each in its own.
         #[arg(long)]
         same_order: bool,
+        /// Also write every run's figures here, as JSON.
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
+    /// ADR 0043's sizing stage (docs/testing/carrier-sizing.md): every
+    /// setting swept, and the ways compared against, on each seed.
+    Sizing {
+        /// The first seed; the marks are judged on it.
+        #[arg(long, default_value_t = 1)]
+        seed: u64,
+        /// How many seeds, one after another from `--seed`, for context.
+        #[arg(long, default_value_t = 5)]
+        seeds: u64,
+        /// Runs at once.
+        #[arg(long, default_value_t = 6)]
+        threads: usize,
         /// Also write every run's figures here, as JSON.
         #[arg(long)]
         out: Option<PathBuf>,
@@ -163,6 +179,19 @@ fn main() -> Result<()> {
                 std::fs::write(path, serde_json::to_string_pretty(&runs)?)?;
             }
         }
+        Command::Sizing {
+            seed,
+            seeds,
+            threads,
+            out,
+        } => {
+            let seeds: Vec<u64> = (seed..seed + seeds.max(1)).collect();
+            let report = sizing::run(&seeds, threads);
+            print_sizing(&report);
+            if let Some(path) = out {
+                std::fs::write(path, serde_json::to_string_pretty(&report)?)?;
+            }
+        }
         Command::Run {
             start,
             way,
@@ -174,7 +203,9 @@ fn main() -> Result<()> {
             seed,
             out,
         } => {
-            let m = months::run(start, way, rules, days, bytes, lists, experiment, seed);
+            let m = months::run(
+                start, way, rules, days, bytes, lists, experiment, seed, None,
+            );
             print_months(&m);
             if let Some(path) = out {
                 std::fs::write(path, serde_json::to_string_pretty(&m)?)?;
@@ -466,5 +497,145 @@ fn print_found(runs: &[found::Run]) {
         "one resharer served over half a video's bytes: {} ({} of {n} seeds)",
         if m.one_resharer_most { "yes" } else { "no" },
         count(|m| m.one_resharer_most),
+    );
+}
+
+fn print_sizing(r: &sizing::Report) {
+    let first = |v: &[sizing::Figures]| v[0].clone();
+    println!("compared against (seed {}):", r.seeds[0]);
+    for (name, runs) in [("project relay", &r.project), ("n0", &r.n0)] {
+        for (n, v) in runs {
+            let f = first(v);
+            let late_p95: Vec<f64> = f.p95.iter().flatten().copied().collect();
+            println!(
+                "  {name}, {n} seed carriers idle: weeks 10-13 B8 met on {} of {}, relayed {:.0} copies; 95% of followers in a median {:.0} s; busiest relay second {:.0} Mbit/s",
+                f.late_b8,
+                f.late_posts,
+                sizing::copies(f.late_relayed),
+                {
+                    let mut x = late_p95.clone();
+                    x.sort_by(f64::total_cmp);
+                    x.get(x.len() / 2).copied().unwrap_or(f64::NAN)
+                },
+                f.relay_peak_mbps,
+            );
+        }
+    }
+    println!(
+        "\nseed carriers | share | jobs | newcomer rate | 1 speed: no later / worst / B8 late | 2 relayed vs project | 3 newcomers dir (mid7, st28) / given | 4 operator both vs 2p² | all [seeds meeting all]"
+    );
+    for (s, runs) in &r.carriers {
+        let (f, m) = &runs[0];
+        let all = runs.iter().filter(|(_, m)| m.all()).count();
+        let d = &f.directory_newcomers;
+        let g = &f.given_newcomers;
+        let p = f.operator_end_share;
+        println!(
+            "{} | {:.0}% | {} | {:.0}% | {} {}/{} {:.2}x B8 {} | {} {:.0}% | {} {}/{} {}/{} / {}/{} {}/{} | {} {:.1}% vs {:.1}% | {} [{}/{}]",
+            s.seeds,
+            100.0 * s.share,
+            s.jobs,
+            100.0 * s.newcomer_rate,
+            verdict(Some(m.speed)),
+            m.no_later,
+            m.posts,
+            m.worst,
+            f.late_b8,
+            verdict(Some(m.relay)),
+            100.0 * m.relayed_ratio,
+            verdict(Some(m.newcomers)),
+            d.middle_7,
+            d.size,
+            d.standing_28,
+            d.size,
+            g.middle_7,
+            g.size,
+            g.standing_28,
+            g.size,
+            verdict(Some(m.operator)),
+            100.0 * f.operator_both_share,
+            200.0 * p * p,
+            verdict(Some(m.all())),
+            all,
+            runs.len(),
+        );
+    }
+    println!(
+        "\nrecorded, seed {}: seed carriers | share | jobs | rate | through carriers late | relay peak Mbit/s | hops 0/1/2/3 | one seed both ends / seeds both | home carried MB a day median, most | seed GB each | circuits from one neighbour home/seed | a minute home/seed | newcomers median days to middle, standing (dir; given) | honest seen by operator",
+        r.seeds[0]
+    );
+    for (s, runs) in &r.carriers {
+        let (f, _) = &runs[0];
+        let c = &f.carrying;
+        let days = |x: Option<f64>| x.map_or("-".into(), |x| format!("{x:.0}"));
+        println!(
+            "{} | {:.0}% | {} | {:.0}% | {:.0}% | {:.0} | {:?} | {:.0}% / {:.0}% | {:.0}, {:.0} | {} | {}/{} | {}/{} | {}, {}; {}, {} | {} of {}",
+            s.seeds,
+            100.0 * s.share,
+            s.jobs,
+            100.0 * s.newcomer_rate,
+            100.0 * f.late_through_hops,
+            f.relay_peak_mbps,
+            f.hops_taken,
+            100.0 * f.seed_single_share,
+            100.0 * f.seed_both_share,
+            c.median_a_day / 1e6,
+            c.most_a_day / 1e6,
+            c.seed_bytes
+                .iter()
+                .map(|b| format!("{:.0}", b / 1e9))
+                .collect::<Vec<_>>()
+                .join("/"),
+            c.most_from_neighbour,
+            c.seed_most_from_neighbour,
+            c.most_a_minute,
+            c.seed_most_a_minute,
+            days(f.directory_newcomers.median_middle),
+            days(f.directory_newcomers.median_standing),
+            days(f.given_newcomers.median_middle),
+            days(f.given_newcomers.median_standing),
+            f.exposed_operator,
+            f.honest,
+        );
+    }
+    // The plan's choice: 2 seed carriers, all marks on seed 1, smallest
+    // share, then fewest jobs, then lowest rate (settings() is in that order).
+    let chosen = r
+        .carriers
+        .iter()
+        .find(|(s, runs)| s.seeds == 2 && runs[0].1.all());
+    match chosen {
+        Some((s, runs)) => {
+            let from = runs
+                .iter()
+                .map(|(f, _)| f.carrying.most_from_neighbour)
+                .max()
+                .unwrap_or(0);
+            let minute = runs
+                .iter()
+                .map(|(f, _)| f.carrying.most_a_minute)
+                .max()
+                .unwrap_or(0);
+            println!(
+                "\nset: upload share {:.0}%, {} jobs at once, newcomer rate {:.0}%; circuits from one neighbour {} (2 x {from}), new circuits a minute {} (2 x {minute})",
+                100.0 * s.share,
+                s.jobs,
+                100.0 * s.newcomer_rate,
+                2 * from,
+                2 * minute,
+            );
+        }
+        None => println!("\nno setting with 2 seed carriers meets every mark: nothing is set"),
+    }
+    let fewest = r
+        .carriers
+        .iter()
+        .filter(|(s, _)| s.share == 0.5 && s.jobs == 4 && s.newcomer_rate == 0.10)
+        .filter(|(_, runs)| runs[0].1.speed && runs[0].1.relay)
+        .map(|(s, _)| s.seeds)
+        .min();
+    println!(
+        "seed carriers meeting marks 1 and 2 at 50%, 4 jobs, 10%: {}",
+        fewest.map_or("none of 1, 2 and 4".into(), |n| format!("fewest {n}"))
     );
 }

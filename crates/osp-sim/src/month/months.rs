@@ -15,8 +15,8 @@ use super::meeting::{Asking, MeetCounts, Meeting, Standing, Who};
 use super::records::{Block, BytesRule, DayRule, Records};
 use super::rng::Rng;
 use super::spread::{
-    Fetch, Leg, Load, OVERHEAD, Part, Peer, Rules, SWARM_SAMPLE, Sources, Spread, Swarm,
-    VIDEO_BYTES, transfer_places,
+    Fetch, Leg, Load, OVERHEAD, Part, Peer, RelayLimits, Rules, SWARM_SAMPLE, Sources, Spread,
+    Swarm, VIDEO_BYTES, transfer_places,
 };
 
 use super::records::DAY;
@@ -50,7 +50,36 @@ pub enum Way {
     /// 3: as 2; otherwise through hops where an end has one (ADR 0017),
     /// any leg without one through the relay.
     Hops,
+    /// Sizing: every transfer through the project's relays (ADR 0044).
+    ProjectRelays,
+    /// Sizing: ADR 0043 as amended 2026-11-20. Every node carries from the
+    /// middle, seed carriers sit next to ends, no earned direct links, and
+    /// any leg without a hop goes through the project's relays.
+    Carriers,
 }
+
+impl Way {
+    /// No earned direct links: ADR 0018 isn't built.
+    fn no_direct(self) -> bool {
+        matches!(self, Way::ProjectRelays | Way::Carriers)
+    }
+}
+
+/// The sizing stage's settings (docs/testing/carrier-sizing.md).
+#[derive(Clone, Copy, Debug, Serialize)]
+pub struct Sizing {
+    /// A node's upload share for carrying, and its jobs at once.
+    pub share: f64,
+    pub jobs: usize,
+    /// The share of transfers through hops that give a middle turn.
+    pub newcomer_rate: f64,
+    /// Seed carriers.
+    pub seeds: usize,
+}
+
+/// A seed carrier: an always-on server.
+const SEED_MBPS: f64 = 200.0;
+const SEED_JOBS: usize = 40;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 pub enum Kind {
@@ -63,6 +92,8 @@ pub enum Kind {
     NewcomerDirectory,
     /// Told of one established machine, the directory off (Z, days 57 to 63).
     NewcomerGiven,
+    /// A seed carrier (sizing): fetches nothing, follows nobody.
+    Seed,
 }
 
 #[derive(Clone, Debug)]
@@ -332,6 +363,15 @@ struct Media {
     extra: Extra,
     /// Downloads whose transfer had a failed job this post.
     failed_to: Vec<usize>,
+    /// Sizing: seed carriers; who said yes to the question on their own
+    /// address; the settings; each viewer's earned hops, this post.
+    seed: Vec<bool>,
+    addr_yes: Vec<bool>,
+    sizing: Option<Sizing>,
+    earned_hops: Vec<Vec<usize>>,
+    /// Each circuit through a carrier: (carrier, the neighbour on the
+    /// viewer's side, which opened it; start; end), in seconds from the start.
+    circuits: Vec<(usize, usize, f64, f64)>,
 }
 
 /// The figures the experiments' plan records, beyond each post's.
@@ -406,6 +446,13 @@ pub struct HopCounts {
     /// Also those from Kim's node, apart.
     pub available: [usize; 4],
     pub available_from_creator: [usize; 4],
+    /// Sizing: transfers by the hops they took (0 to 3); hops next to an
+    /// end that were seed carriers; transfers where one seed carrier was
+    /// next to both ends, and where seed carriers were next to both.
+    pub hops_taken: [usize; 4],
+    pub seed_end_hops: usize,
+    pub seed_both_single: usize,
+    pub seed_both_ends: usize,
 }
 
 /// ADR 0017's starting value: a middle turn on 1 transfer in 10 through hops.
@@ -452,6 +499,31 @@ impl Media {
         c
     }
 
+    /// Way 4's hops: the viewer's are the machines that finished jobs for it
+    /// on 3 days, or if none, seed carriers; the host's are seed carriers.
+    /// Each only if that end said yes to its own address being seen.
+    fn carrier_hops(&self, h: usize, v: usize, load: &Load) -> (Vec<usize>, Vec<usize>) {
+        let seeds: Vec<usize> = (0..self.seed.len())
+            .filter(|&m| self.seed[m] && self.can_hop(m, load))
+            .collect();
+        let ps = if self.addr_yes[v] {
+            let earned: Vec<usize> = self.earned_hops[v]
+                .iter()
+                .copied()
+                .filter(|&m| m != h && m != v && !self.seed[m] && self.can_hop(m, load))
+                .collect();
+            if earned.is_empty() {
+                seeds.clone()
+            } else {
+                earned
+            }
+        } else {
+            Vec::new()
+        };
+        let qs = if self.addr_yes[h] { seeds } else { Vec::new() };
+        (ps, qs)
+    }
+
     /// `m` has standing with `v`: jobs for it on 3 days, or under A, as the
     /// binding counts them from the first, downloads on 3 days.
     fn has_standing(&self, v: usize, m: usize) -> bool {
@@ -476,6 +548,7 @@ impl Media {
             .table(v)
             .filter(|&m| {
                 !taken.contains(&m)
+                    && !self.seed[m]
                     && self.can_hop(m, load)
                     && !self.has_standing(v, m)
                     && !self.records.direct(v, m)
@@ -551,8 +624,11 @@ impl Media {
     /// Way 3's path from host `h` to viewer `v`: H → Q → (M) → P → V.
     fn hop_path(&mut self, h: usize, v: usize, load: &Load) -> Vec<Leg> {
         let t = self.post_at;
-        let ps = self.viewer_hops(v, h, load);
-        let qs = self.host_hops(h, v, load);
+        let (ps, qs) = if self.way == Way::Carriers {
+            self.carrier_hops(h, v, load)
+        } else {
+            (self.viewer_hops(v, h, load), self.host_hops(h, v, load))
+        };
         let k = match (qs.is_empty(), ps.is_empty()) {
             (false, false) => 0,
             (false, true) => 1,
@@ -576,6 +652,7 @@ impl Media {
             q = None;
         }
         if p.is_none() && q.is_none() {
+            self.hops.hops_taken[0] += 1;
             return vec![Leg {
                 from: h,
                 relayed: true,
@@ -585,7 +662,8 @@ impl Media {
         let mut taken = vec![h, v];
         taken.extend(p);
         taken.extend(q);
-        let m = if self.hop_rng.chance(MIDDLE_EVERY) {
+        let rate = self.sizing.map_or(MIDDLE_EVERY, |s| s.newcomer_rate);
+        let m = if self.hop_rng.chance(rate) {
             self.middle(v, &taken, load)
         } else {
             None
@@ -600,12 +678,18 @@ impl Media {
         self.hops.with_hops += 1;
         self.hops.end_hops += ends.len();
         self.hops.end_hops_operator += ends.iter().filter(|&&e| self.operator[e]).count();
+        self.hops.seed_end_hops += ends.iter().filter(|&&e| self.seed[e]).count();
         if single || (p.is_some() && q.is_some()) {
             self.hops.both_ends += 1;
             if ends.iter().all(|&e| self.operator[e]) {
                 self.hops.operator_both_ends += 1;
             }
+            if ends.iter().all(|&e| self.seed[e]) {
+                self.hops.seed_both_ends += 1;
+                self.hops.seed_both_single += single as usize;
+            }
         }
+        self.hops.hops_taken[ends.len() + m.is_some() as usize] += 1;
         // An end with no hop of its own reaches the next through the relay;
         // hops reach one another, and the ends they serve, directly.
         let mut chain = vec![h];
@@ -696,12 +780,12 @@ impl Rules for Media {
 
     fn path(&mut self, source: usize, to: usize, load: &Load, _rng: &mut Rng) -> Vec<Leg> {
         self.last_b = false;
-        let direct = self.records.direct(source, to);
+        let direct = !self.way.no_direct() && self.records.direct(source, to);
         let mut legs = match self.way {
-            Way::Hops if !direct => self.hop_path(source, to, load),
+            Way::Hops | Way::Carriers if !direct => self.hop_path(source, to, load),
             _ => vec![Leg {
                 from: source,
-                relayed: self.way == Way::Relays || !direct,
+                relayed: matches!(self.way, Way::Relays | Way::ProjectRelays) || !direct,
                 carried: false,
             }],
         };
@@ -810,6 +894,13 @@ impl Rules for Media {
                     self.b_known.work(part.legs[1].from, part.to, part.bytes, t);
                 }
             }
+            // Each carrier's circuit, opened by its neighbour on the viewer's
+            // side.
+            for (k, leg) in part.legs.iter().enumerate().filter(|(_, l)| l.carried) {
+                let from = part.legs.get(k + 1).map_or(part.to, |l| l.from);
+                self.circuits
+                    .push((leg.from, from, self.post_at + part.started, t));
+            }
             // The hop next to the viewer knows which machine it carried for.
             if let Some(last) = part.legs.last().filter(|l| l.carried && !l.relayed) {
                 self.near_viewer.work(last.from, part.to, part.bytes, t);
@@ -859,6 +950,8 @@ pub struct Post {
     /// and by Kim's.
     pub home_up: f64,
     pub kim_up: f64,
+    /// The most bytes on the wire through the relay in one second.
+    pub relay_peak: f64,
 }
 
 #[derive(Debug, Serialize)]
@@ -906,6 +999,97 @@ pub struct Months {
     pub operator_up: f64,
     /// The experiments' figures.
     pub extra: Extra,
+    /// The sizing stage's settings and figures.
+    pub sizing: Option<Sizing>,
+    pub carrying: Carrying,
+}
+
+/// What carrying cost and how carriers were used (sizing).
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct Carrying {
+    /// Bytes on the wire an honest home carried a day while present: the
+    /// median and the most, over honest nodes (Kim among them).
+    pub median_a_day: f64,
+    pub most_a_day: f64,
+    /// Bytes on the wire each seed carrier carried over the run.
+    pub seed_bytes: Vec<f64>,
+    /// The most circuits one carrier held at once from one neighbour, and
+    /// opened in one minute: homes (the operator's among them), and seeds.
+    pub most_from_neighbour: usize,
+    pub most_a_minute: usize,
+    pub seed_most_from_neighbour: usize,
+    pub seed_most_a_minute: usize,
+}
+
+/// The most of `spans` (start, end) open at once.
+fn most_at_once(spans: &mut [(f64, f64)]) -> usize {
+    let mut events: Vec<(f64, i32)> = spans.iter().flat_map(|&(a, b)| [(a, 1), (b, -1)]).collect();
+    // Ends before starts at the same moment.
+    events.sort_by(|x, y| x.0.total_cmp(&y.0).then(x.1.cmp(&y.1)));
+    let (mut now, mut most) = (0i32, 0i32);
+    for (_, d) in events {
+        now += d;
+        most = most.max(now);
+    }
+    most as usize
+}
+
+/// The most of `starts` within any 60 s.
+fn most_a_minute(starts: &mut [f64]) -> usize {
+    starts.sort_by(f64::total_cmp);
+    let mut most = 0;
+    let mut first = 0;
+    for k in 0..starts.len() {
+        while starts[k] - starts[first] >= 60.0 {
+            first += 1;
+        }
+        most = most.max(k + 1 - first);
+    }
+    most
+}
+
+fn carrying_figures(rules: &Media, members: &[Member], carried: &[f64], end: f64) -> Carrying {
+    let mut c = Carrying::default();
+    let mut a_day: Vec<f64> = (0..members.len())
+        .filter(|&i| !rules.operator[i] && !rules.seed[i])
+        .map(|i| {
+            let m = &members[i];
+            let days = (m.leaves.unwrap_or(end).min(end) - m.arrives).max(DAY) / DAY;
+            carried[i] / days
+        })
+        .collect();
+    a_day.sort_by(f64::total_cmp);
+    c.median_a_day = a_day.get(a_day.len() / 2).copied().unwrap_or(0.0);
+    c.most_a_day = a_day.last().copied().unwrap_or(0.0);
+    c.seed_bytes = (0..members.len())
+        .filter(|&i| rules.seed[i])
+        .map(|i| carried[i])
+        .collect();
+    let mut spans: HashMap<(usize, usize), Vec<(f64, f64)>> = HashMap::new();
+    let mut starts: HashMap<usize, Vec<f64>> = HashMap::new();
+    for &(m, from, a, b) in &rules.circuits {
+        spans.entry((m, from)).or_default().push((a, b));
+        starts.entry(m).or_default().push(a);
+    }
+    for ((m, _), mut v) in spans {
+        let most = most_at_once(&mut v);
+        let slot = if rules.seed[m] {
+            &mut c.seed_most_from_neighbour
+        } else {
+            &mut c.most_from_neighbour
+        };
+        *slot = (*slot).max(most);
+    }
+    for (m, mut v) in starts {
+        let most = most_a_minute(&mut v);
+        let slot = if rules.seed[m] {
+            &mut c.seed_most_a_minute
+        } else {
+            &mut c.most_a_minute
+        };
+        *slot = (*slot).max(most);
+    }
+    c
 }
 
 /// Bytes each side of a partner pair served the other over the run.
@@ -1229,12 +1413,25 @@ pub fn run(
     asking: Asking,
     experiment: Experiment,
     seed: u64,
+    sizing: Option<Sizing>,
 ) -> Months {
     let exp = experiment.settings();
     // What's the same in every way: who's there, who says yes, when each
     // post goes out and when each follower wakes for it.
     let mut plan = Rng::new(seed);
-    let (members, mut peers) = population(start);
+    let (mut members, mut peers) = population(start);
+    // Sizing: the seed carriers, after everyone else, in every way compared.
+    if let Some(sz) = sizing {
+        for _ in 0..sz.seeds {
+            members.push(Member {
+                kind: Kind::Seed,
+                arrives: 0.0,
+                leaves: None,
+            });
+            peers.push(Peer::new(SEED_MBPS, SEED_MBPS));
+        }
+    }
+    let seed_carrier: Vec<bool> = members.iter().map(|m| m.kind == Kind::Seed).collect();
     let creator = 0;
     let yes: Vec<bool> = members
         .iter()
@@ -1251,6 +1448,23 @@ pub fn run(
             _ => carry_plan.chance(YES_TO_CARRYING),
         })
         .collect();
+    // Way 4: every node carries, Kim's too.
+    let carries: Vec<bool> = if way == Way::Carriers {
+        vec![true; members.len()]
+    } else {
+        carries
+    };
+    if let (Way::Carriers, Some(sz)) = (way, sizing) {
+        for (i, p) in peers.iter_mut().enumerate() {
+            if seed_carrier[i] {
+                p.carry_share = 1.0;
+                p.carry_places = SEED_JOBS;
+            } else {
+                p.carry_share = sz.share;
+                p.carry_places = sz.jobs;
+            }
+        }
+    }
     if way == Way::Hops {
         for (i, p) in peers.iter_mut().enumerate() {
             if carries[i] {
@@ -1263,7 +1477,7 @@ pub fn run(
         .map(|index| {
             let at = (index as f64 * POST_EVERY_DAYS) * DAY + plan.range(0.0, DAY);
             let fetches = (1..members.len())
-                .filter(|&i| members[i].present(at))
+                .filter(|&i| members[i].present(at) && !seed_carrier[i])
                 .map(|node| Fetch {
                     node,
                     wakes: if members[node].kind == Kind::Operator {
@@ -1284,8 +1498,18 @@ pub fn run(
     let established: Vec<usize> = (0..members.len())
         .filter(|&i| members[i].kind == Kind::Follower)
         .collect();
+    // Seed carriers take no part in meeting: they come from `carriers.txt`.
     let who = Who {
-        arrives: members.iter().map(|m| m.arrives).collect(),
+        arrives: members
+            .iter()
+            .map(|m| {
+                if m.kind == Kind::Seed {
+                    f64::INFINITY
+                } else {
+                    m.arrives
+                }
+            })
+            .collect(),
         leaves: members.iter().map(|m| m.leaves).collect(),
         operator: members.iter().map(|m| m.kind == Kind::Operator).collect(),
         given: members
@@ -1313,7 +1537,15 @@ pub fn run(
         from_operator: 0.0,
         operator: members.iter().map(|m| m.kind == Kind::Operator).collect(),
         post_at: 0.0,
-        records: Records::new(yes.clone(), days, bytes_rule),
+        records: Records::new(
+            if way.no_direct() {
+                vec![false; yes.len()]
+            } else {
+                yes.clone()
+            },
+            days,
+            bytes_rule,
+        ),
         carries: carries.clone(),
         present: vec![false; peers.len()],
         carried: Records::new(vec![true; peers.len()], days, bytes_rule),
@@ -1345,10 +1577,16 @@ pub fn run(
             ..Default::default()
         },
         failed_to: Vec::new(),
+        seed: seed_carrier.clone(),
+        addr_yes: yes.clone(),
+        sizing,
+        earned_hops: vec![Vec::new(); members.len()],
+        circuits: Vec::new(),
     };
     rules.records.one_way = exp.one_way;
     let mut kim_rng = Rng::new(seed.wrapping_add(9));
     let mut served_total = vec![0.0f64; peers.len()];
+    let mut carried_total = vec![0.0f64; peers.len()];
     let mut links: HashMap<(usize, usize), bool> = HashMap::new();
     let mut best_same_viewer = vec![0usize; peers.len()];
     // S: the 10 approved by hand to one another are direct peers.
@@ -1444,7 +1682,18 @@ pub fn run(
         for &i in &present {
             rules.present[i] = true;
         }
+        // Seed carriers are always on.
+        for (i, &s) in seed_carrier.iter().enumerate() {
+            rules.present[i] |= s;
+        }
         rules.carried.sweep(at);
+        if way == Way::Carriers {
+            let mut earned = vec![Vec::new(); peers.len()];
+            for (v, m) in rules.carried.at_least(2) {
+                earned[v].push(m);
+            }
+            rules.earned_hops = earned;
+        }
         for (n, &d) in rules
             .carried
             .best_window_days(peers.len())
@@ -1520,8 +1769,16 @@ pub fn run(
             tell_delay: TELL_DELAY,
             bytes: VIDEO_BYTES,
             until: POST_UNTIL,
+            relay: if matches!(way, Way::ProjectRelays | Way::Carriers) {
+                RelayLimits::PROJECT
+            } else {
+                RelayLimits::N0
+            },
         }
         .run(&mut swarm, &fetches, &[]);
+        for (i, c) in out.carried.iter().enumerate() {
+            carried_total[i] += c;
+        }
         let mut home_up = 0.0;
         for &i in &present {
             hosts[i] |= out.held[i].is_some();
@@ -1571,6 +1828,7 @@ pub fn run(
             most_days: rules.records.most_without(creator).1,
             home_up,
             kim_up: out.sent[creator],
+            relay_peak: out.relay_peak,
         });
     }
     let end = posts.last().map_or(0.0, |p| p.at) + POST_UNTIL;
@@ -1619,7 +1877,7 @@ pub fn run(
     }
     // Fairness among honest followers, newcomers among them.
     let mut served: Vec<f64> = (0..members.len())
-        .filter(|&i| !matches!(members[i].kind, Kind::Creator | Kind::Operator))
+        .filter(|&i| !matches!(members[i].kind, Kind::Creator | Kind::Operator | Kind::Seed))
         .map(|i| served_total[i])
         .collect();
     served.sort_by(|a, b| b.total_cmp(a));
@@ -1627,7 +1885,9 @@ pub fn run(
     let top = served.len().div_ceil(10);
     rules.extra.top10_share = served[..top].iter().sum::<f64>() / total.max(1.0);
     rules.extra.gini = gini(&served);
-    let honest: Vec<usize> = (0..members.len()).filter(|&i| !rules.operator[i]).collect();
+    let honest: Vec<usize> = (0..members.len())
+        .filter(|&i| !rules.operator[i] && !seed_carrier[i])
+        .collect();
     rules.extra.honest = honest.len();
     rules.extra.exposed_any = honest.iter().filter(|&&i| rules.exposed_any[i]).count();
     rules.extra.exposed_operator = honest
@@ -1671,7 +1931,10 @@ pub fn run(
                 .any(|&p| rules.operator[p])
         })
         .count();
+    let carrying = carrying_figures(&rules, &members, &carried_total, end);
     Months {
+        sizing,
+        carrying,
         reciprocity_honest: reciprocity(&rules, creator, false),
         reciprocity_operator: reciprocity(&rules, creator, true),
         present_end: at_end.len(),
@@ -1709,6 +1972,16 @@ mod tests {
     fn present(start: Start, day: f64) -> usize {
         let (members, _) = population(start);
         members[1..].iter().filter(|m| m.present(day * DAY)).count()
+    }
+
+    #[test]
+    fn circuits_at_once_and_a_minute() {
+        // Two overlap, the third starts as the first ends.
+        let mut spans = [(0.0, 10.0), (5.0, 20.0), (10.0, 30.0)];
+        assert_eq!(most_at_once(&mut spans), 2);
+        // Three within a minute, the fourth 60 s after the first.
+        let mut starts = [0.0, 20.0, 59.0, 60.0, 200.0];
+        assert_eq!(most_a_minute(&mut starts), 3);
     }
 
     #[test]
