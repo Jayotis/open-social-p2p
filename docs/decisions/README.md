@@ -20,7 +20,7 @@ Each record captures one significant decision: the problem, the options consider
 | [0014](0014-finding-people-and-private-messages.md) | Finding people and content, with messages between nodes over Tor | Accepted; how directories are used and step 4 changed by 0015, and who may connect directly by 0018 once built |
 | [0015](0015-nodes-meet-first.md) | Nodes meet first: machine names, and what they may say | Accepted; detail added and limits changed by 0016 to 0018; `Known` changed by 0022 |
 | [0016](0016-machine-acquaintances.md) | Machine acquaintances, reciprocity and referrals | Accepted 2026-11-08; stages A, A2 and A3 built, A2's gate missed and merged all the same, A3's missed and merged with introductions off by default; introductions and references replaced by 0022; where a machine introduced counts, and who may introduce, changed by 0021 |
-| [0017](0017-one-hop-forwarding.md) | Two hops for pairs without a direct link | Accepted 2026-11-08; not built; built in P11 since 0043 |
+| [0017](0017-one-hop-forwarding.md) | Two hops for pairs without a direct link | Accepted 2026-11-08; not built; built in P11 since 0043; carrying on by default for every node since 2026-11-20 |
 | [0018](0018-earned-direct-connections.md) | Earned direct connections | Accepted 2026-11-08; not built |
 | [0019](0019-taking-posts-and-media-down.md) | Taking posts and media down | Accepted |
 | [0020](0020-sharing-media-you-open.md) | Sharing media you open, with peers that worked for you | Superseded by 0025 (2026-11-09) before it was built |
@@ -46,7 +46,7 @@ Each record captures one significant decision: the problem, the options consider
 | [0040](0040-the-night-sky-look.md) | The night sky look | Accepted 2026-11-16; P9; night first, Inter, icons with counts on posts, pictures of the look in tests |
 | [0041](0041-public-communities-and-stewards.md) | Public communities, one owner and accepted co-moderators | Proposed 2026-11-16; post-Product-Alpha; first community prototype only, with shared governance left for later |
 | [0042](0042-content-rules-reports-and-the-project-hide-list.md) | Content rules, reports and the project's hide list | Accepted 2026-11-17; P11, before outside testers; answers 0019's open question on the first list |
-| [0043](0043-the-media-plane-before-the-alpha.md) | OSP's own media plane, built before the alpha | Accepted 2026-11-18; P11; amends 0017 (seed carriers, built now) and 0030 §3 |
+| [0043](0043-the-media-plane-before-the-alpha.md) | OSP's own media plane, built before the alpha | Accepted 2026-11-18; P11; amends 0017 (seed carriers, built now) and 0030 §3; amended 2026-11-20 (every node carries from the middle, relay fallback order); [design note](0043-design-note-carrier-circuits.md) accepted |
 | [0044](0044-project-relays-for-the-alpha.md) | Project relays as bootstrap and fallback while carrying is built | Accepted 2026-11-19; P11; amends 0043 without changing its timing |
 
 Proposals under review that may become ADRs: [peer reciprocity and recognition](../12-peer-reciprocity-and-recognition.md) (its first phase, measuring, is ADR 0011) and [hosting roles and the follower swarm](../13-hosting-roles-and-follower-swarm.md) (its first phase is accepted, and whether to share copies is asked at setup, ADR 0012). See the [critical review](../reviews/2026-10-21-review-of-docs-12-and-13.md) for what blocks them.
