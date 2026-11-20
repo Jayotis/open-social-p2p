@@ -411,6 +411,9 @@ struct Media {
     /// The day each viewer last gave a fresh turn, and the pairs given one.
     fresh_day: HashMap<usize, usize>,
     fresh_tried: std::collections::HashSet<(usize, usize)>,
+    /// Each machine's signed `started_at` (amended a fifth time
+    /// 2026-11-20): honest here, when it arrived.
+    started_at: Vec<f64>,
 }
 
 /// The figures the experiments' plan records, beyond each post's.
@@ -667,8 +670,9 @@ impl Media {
     }
 
     /// Way 4's fresh turn, at most one a day for each viewer: the oldest of
-    /// the machines that first entered `v`'s table in the last 7 days and
-    /// that it never finished a job with, by when each came in. One it can't
+    /// the machines that first entered `v`'s table in the last 7 days, whose
+    /// own `started_at` says they're in their first 7 days, and that it never
+    /// finished a job with, by when each came in. One it can't
     /// use now is passed over, and stays fresh only until its own 7 days run
     /// out. With none fresh, no turn and no extra hop.
     fn fresh_turn(&mut self, v: usize, taken: &[usize], load: &Load) -> Option<usize> {
@@ -684,7 +688,10 @@ impl Media {
             .meeting
             .entered_since(v, t - FRESH_DAYS * DAY)
             .filter(|&(m, _)| {
-                !self.seed[m] && !self.worked.contains(&(v, m)) && !self.has_standing(v, m)
+                !self.seed[m]
+                    && t - self.started_at[m] <= FRESH_DAYS * DAY
+                    && !self.worked.contains(&(v, m))
+                    && !self.has_standing(v, m)
             })
             .map(|(m, at)| (at, m))
             .collect();
@@ -1847,6 +1854,7 @@ pub fn run(
         offer_rng: Rng::new(seed.wrapping_add(11)),
         fresh_day: HashMap::new(),
         fresh_tried: Default::default(),
+        started_at: members.iter().map(|m| m.arrives).collect(),
     };
     rules.records.one_way = exp.one_way;
     let mut kim_rng = Rng::new(seed.wrapping_add(9));

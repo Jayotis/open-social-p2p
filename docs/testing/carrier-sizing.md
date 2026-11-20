@@ -1,6 +1,6 @@
 # Sizing carriers: limits and the newcomer rate, in a model
 
-**Status:** Run five times on 2026-11-20 ([results](#results)): in no run does a setting meet every mark, so nothing is set, and the figures go to the maintainer. Plan fixed on 2026-11-20, before any code or run. [ADR 0043](../decisions/0043-the-media-plane-before-the-alpha.md)'s sizing stage: carrying is built in P11 whatever this shows, so the run doesn't decide whether to build. It sets the starting values: a node's upload share for carrying, its jobs at once, its limits on circuits from one neighbour and new circuits a minute, and how often a transfer gives a newcomer a middle turn. Changing a pass mark later needs a dated note here saying what changed and why.
+**Status:** Run six times on 2026-11-20 ([results](#results)). The sixth run sets a 50% upload share, 2 jobs at once and a 5% newcomer rate, with circuit limits of 4 from one neighbour and 14 new a minute; the margins are thin (3 of 5 seeds meet every mark). Plan fixed on 2026-11-20, before any code or run. [ADR 0043](../decisions/0043-the-media-plane-before-the-alpha.md)'s sizing stage: carrying is built in P11 whatever this shows, so the run doesn't decide whether to build. It sets the starting values: a node's upload share for carrying, its jobs at once, its limits on circuits from one neighbour and new circuits a minute, and how often a transfer gives a newcomer a middle turn. Changing a pass mark later needs a dated note here saying what changed and why.
 
 **Amended 2026-11-20, after the first run, before the second (the maintainer):** the first run's results stand below as run. Three changes for the second run, with the same settings and seeds:
 
@@ -31,6 +31,14 @@ Also recorded: the relay's bytes on way 4's transfers by why (an end said no to 
 - **After a first job,** a fresh machine leaves the fresh list and goes through the third run's probation and offers. It still needs jobs on 3 different days in 30 for standing.
 - **Offers** are as in the third run: they follow a real first job and give a chance to work, never standing.
 - **The circuit limits** come from this run.
+
+**Amended a fifth time 2026-11-20, after the fifth run, before the sixth (the maintainer):** the earlier results stand as run. Most of the fifth run's fresh machines were established ones new to one viewer, which it couldn't tell apart from newcomers. Everything stays as in the fifth run except who may have a fresh turn:
+
+- **A signed start.** A machine publishes a signed `started_at` time in its machine record. It may have a fresh turn only if it first entered the viewer's table within the last 7 days *and* its `started_at` says it's within its own first 7 days.
+- **What the claim is worth.** Nothing checks it, and it's never reputation: it gives one chance at a middle job for that viewer. After one finished job the machine isn't fresh to that viewer, and it goes through probation and continuity as before; standing still takes jobs on 3 different days for that viewer.
+- **For the build (stage B).** For a machine key, `started_at` can't change once a viewer has seen it: a later record can't move it forward to be new again. A time materially in the future is ignored, or bounded to allow for ordinary clock skew.
+- **Why a lie is acceptable.** A machine can lie about its start, but it gains one first-job chance per viewer, never standing, and a new machine key already gets the same. So the claim gives no stronger Sybil capability than the network has. Stage C tests an established machine falsely claiming to be new, many newly minted keys claiming to be new, and a burst of them competing with honest newcomers.
+- **In the model,** every machine's `started_at` is when it arrived: nobody lies, as in the other marks.
 
 ## The model
 
@@ -203,6 +211,30 @@ Every setting misses [0/5]. Directory newcomers now meet mark 3 everywhere, at 5
 **The relay's demand with ends saying no,** at 50%, 2 jobs, 10% and 2 seed carriers: 57 to 59% with 10% saying no, 62 to 64% with 25%, 74 to 76% with 50%; the busiest second 560 to 700 Mbit/s.
 
 **Circuits,** at 50% and 2 jobs over every rate and seed: a home held at most 2 from one neighbour at once and opened at most 6 in a minute, so the plan's rule would give 4 and 12; a seed carrier at most 18 from one neighbour and 81 a minute. Nothing is set, as no setting meets every mark.
+
+### Sixth run
+
+With the signed start (amended a fifth time 2026-11-20). For the first time a setting meets every mark: **50% upload share, 2 jobs at once, a 5% newcomer rate,** with 2 seed carriers, on seed 1 and on 3 of the 5 seeds. Seed 3 misses mark 1 (38 of 45 posts within a tenth, needs 41) and seed 4 mark 3 (44 of 50 newcomers given one machine with standing within 28 days, needs 45). At 10%, 2 of 5 seeds meet them all; at 20%, none; at 25% or with 4 jobs, mark 1 and 2 are missed as before.
+
+At 50%, 2 jobs and 5%, seed 1, against the third and fifth runs (both at 10%, their leading rate):
+
+| | Third run | Fifth run | Sixth run |
+| --- | --- | --- | --- |
+| Mark 1: posts within a tenth; worst | 44 of 45; 1.11x | 20 of 45; 1.22x | 44 of 45; 1.11x |
+| Mark 2: relayed against the project relay | 46% | 55% | 44% |
+| Mark 3: directory newcomers with a middle turn within 7 days; standing within 28 | 7; 17 of 50 | 49; 50 of 50 | 50; 50 of 50 |
+| Newcomers given one machine: either | none | 36; 26 of 50 | 50; 49 of 50 (49 or 50; 44 to 49 over the seeds) |
+| Fresh turns | - | 8,141 | 1,734 |
+| Transfers through three hops | 4,942 | 11,461 | 5,504 |
+| Homes carried a day, median; most | 16; 62 MB | 41; 132 MB | 21; 150 MB |
+
+**Fresh turns go to newcomers now.** After the network's first week, when every machine is new, all 1,167 went to Z's newcomers (567 more in the first week), in the weeks they arrived; established machines got none. The third hops are back near the third run's, and a newcomer given one machine no longer waits behind machines that aren't new. Viewers took on 2,387 probationers and 2,240 earned standing; 3,480 offers were sent, 1,443 taken and 539 used.
+
+**The relay's demand with ends saying no,** at the setting chosen: 47 to 49% of the project relay's bytes with 10% saying no, 55 to 57% with 25%, 75 to 76% with 50%; the busiest second 550 to 710 Mbit/s.
+
+**Circuits,** at the setting chosen over the 5 seeds: a home held at most 2 from one neighbour at once and opened at most 7 in a minute, so by the plan's rule the limits are **4 circuits from one neighbour and 14 new circuits a minute.** A seed carrier held at most 18 from one neighbour and took at most 80 a minute; the limits are for homes, and a seed carrier needs its own. Stage C tests the limits against a machine opening circuits as fast as it can.
+
+**Seed carriers:** none of 1, 2 and 4 meets marks 1 and 2 at 50%, 4 jobs and 10%, the plan's fixed setting for that count; at the setting chosen, 2 meet them.
 
 ## Not modelled
 
