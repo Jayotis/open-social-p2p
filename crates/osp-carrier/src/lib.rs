@@ -26,9 +26,10 @@ mod ends;
 mod frame;
 mod layer;
 mod service;
+mod transport;
 
 pub use descriptor::{CarrierInfo, Descriptor, MAX_DESCRIPTOR_BYTES};
-pub use ends::{HostEvent, HostLink, ViewerCircuit};
+pub use ends::{HostEvent, HostLink, HostSender, ViewerCircuit, ViewerSender};
 pub use frame::{CircuitId, DestroyReason, Frame, Relay, SLOT_LEN, Slot};
 pub use layer::{
     CarrierKeys, CircuitKey, Direction, Layer, MAX_PACKETS, Onion, SETUP_LEN, Setup, WINDOW,
@@ -37,6 +38,7 @@ pub use service::{
     ALPN, Carrier, Config, Dial, LINK_DATAGRAM, Limits, SETUP_TIMEOUT, SLOT_LIFETIME, Stats,
     relay_dial, request_slot, wait_for_room,
 };
+pub use transport::{TRANSPORT_ID, host_endpoint, viewer_endpoint};
 
 /// The protocol's name, which binds every key and signature to it.
 pub const PROTOCOL: &[u8] = b"osp/carrier/1";

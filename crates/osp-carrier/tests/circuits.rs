@@ -298,3 +298,100 @@ async fn the_production_dial_refuses_relays_the_node_doesnt_use() {
     info.relay = "not a url".into();
     assert!(dial(info).await.is_err());
 }
+
+/// Bytes that differ in every block, so a part sent wrong can't pass.
+fn video(len: usize) -> Vec<u8> {
+    let mut x: u64 = 0x9e37_79b9_7f4a_7c15;
+    (0..len)
+        .map(|_| {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x as u8
+        })
+        .collect()
+}
+
+/// Every path a connection has: only the circuit, never an IP address or
+/// a relay.
+fn only_the_circuit(conn: &iroh::endpoint::Connection) {
+    let paths = conn.paths();
+    assert!(!paths.is_empty());
+    for path in paths.iter() {
+        assert!(
+            !path.is_ip() && !path.is_relay(),
+            "{:?}",
+            path.remote_addr()
+        );
+        assert!(
+            matches!(path.remote_addr(), iroh::TransportAddr::Custom(a) if a.id() == osp_carrier::TRANSPORT_ID),
+            "{:?}",
+            path.remote_addr()
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_video_goes_over_circuits_and_passes_its_hash_check() {
+    use iroh_blobs::{BlobsProtocol, store::mem::MemStore};
+
+    let book = Book::default();
+    let p = carrier(&book, Limits::home()).await;
+    let m = carrier(&book, Limits::home()).await;
+    let q = carrier(&book, Limits::seed()).await;
+
+    // Alice's node: her video, and her circuit endpoint on a link to Q.
+    let alice = SecretKey::generate();
+    let store = MemStore::new();
+    let data = video(4 << 20);
+    let hash = store.add_bytes(data.clone()).await.unwrap().hash;
+    let (_h, link) = host(&q).await;
+    let slot = link.slot();
+    let circuit_endpoint =
+        osp_carrier::host_endpoint(link, alice.clone(), vec![iroh_blobs::ALPN.to_vec()])
+            .await
+            .unwrap();
+    for a in circuit_endpoint.addr().addrs.iter() {
+        assert!(matches!(a, iroh::TransportAddr::Custom(_)), "{a:?}");
+    }
+    let _router = iroh::protocol::Router::builder(circuit_endpoint)
+        .accept(iroh_blobs::ALPN, BlobsProtocol::new(&store, None))
+        .spawn();
+
+    // Jimmy fetches it through P, M and Q; Robin at the same time through
+    // P and Q.
+    let mut fetches = Vec::new();
+    for path in [vec![&p, &m, &q], vec![&p, &q]] {
+        let (link_endpoint, circuit) = viewer(&path, slot).await.unwrap();
+        let ends = osp_carrier::viewer_endpoint(circuit, alice.public())
+            .await
+            .unwrap();
+        for a in ends.addr().addrs.iter() {
+            assert!(matches!(a, iroh::TransportAddr::Custom(_)), "{a:?}");
+        }
+        let data = data.clone();
+        let alice = alice.public();
+        fetches.push(tokio::spawn(async move {
+            let conn = ends
+                .connect(EndpointAddr::new(alice), iroh_blobs::ALPN)
+                .await
+                .unwrap();
+            assert_eq!(conn.remote_id(), alice);
+            let mine = MemStore::new();
+            timeout(
+                Duration::from_secs(60),
+                mine.remote().fetch(conn.clone(), hash),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            assert_eq!(mine.get_bytes(hash).await.unwrap(), data);
+            only_the_circuit(&conn);
+            drop(link_endpoint);
+        }));
+    }
+    for f in fetches {
+        f.await.unwrap();
+    }
+    assert!(m.carrier.stats().await.unwrap().bytes >= 4 << 20);
+}

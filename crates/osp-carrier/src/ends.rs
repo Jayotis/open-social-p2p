@@ -36,10 +36,17 @@ pub enum HostEvent {
 /// A host's link to its hop Q: the slots Q gave it, and the circuits Q
 /// joined to it.
 pub struct HostLink {
+    sender: HostSender,
+    events: mpsc::Receiver<HostEvent>,
+}
+
+/// The sending half of a [`HostLink`], with its slot. The link lasts while
+/// it's held.
+#[derive(Clone)]
+pub struct HostSender {
     conn: Connection,
     slot: Arc<Mutex<Slot>>,
-    events: mpsc::Receiver<HostEvent>,
-    _tasks: JoinSet<()>,
+    _tasks: Arc<JoinSet<()>>,
 }
 
 impl HostLink {
@@ -92,13 +99,38 @@ impl HostLink {
             }
         });
         Ok(Self {
-            conn,
-            slot,
+            sender: HostSender {
+                conn,
+                slot,
+                _tasks: Arc::new(tasks),
+            },
             events,
-            _tasks: tasks,
         })
     }
 
+    pub fn slot(&self) -> Slot {
+        self.sender.slot()
+    }
+
+    pub fn send(&self, circuit: CircuitId, packet: Vec<u8>) -> Result<()> {
+        self.sender.send(circuit, packet)
+    }
+
+    pub fn close(&self, circuit: CircuitId) {
+        self.sender.close(circuit)
+    }
+
+    pub async fn recv(&mut self) -> Option<HostEvent> {
+        self.events.recv().await
+    }
+
+    /// The sending half, and what comes over the link.
+    pub fn split(self) -> (HostSender, mpsc::Receiver<HostEvent>) {
+        (self.sender, self.events)
+    }
+}
+
+impl HostSender {
     /// The slot to hand a viewer now, with Q's descriptor.
     pub fn slot(&self) -> Slot {
         *self.slot.lock().expect("slot lock")
@@ -123,18 +155,20 @@ impl HostLink {
         };
         let _ = self.conn.send_datagram(Bytes::from(frame.encode()));
     }
-
-    pub async fn recv(&mut self) -> Option<HostEvent> {
-        self.events.recv().await
-    }
 }
 
 /// A viewer's circuit, built through the hops it picked to the host's slot.
 pub struct ViewerCircuit {
+    sender: ViewerSender,
+    packets: mpsc::Receiver<Vec<u8>>,
+}
+
+/// The sending half of a [`ViewerCircuit`]. The circuit lasts while it's
+/// held.
+pub struct ViewerSender {
     conn: Connection,
     id: CircuitId,
     onion: Arc<Mutex<Onion>>,
-    packets: mpsc::Receiver<Vec<u8>>,
     _tasks: JoinSet<()>,
 }
 
@@ -265,14 +299,37 @@ impl ViewerCircuit {
             }
         });
         Ok(Self {
-            conn,
-            id,
-            onion,
+            sender: ViewerSender {
+                conn,
+                id,
+                onion,
+                _tasks: tasks,
+            },
             packets,
-            _tasks: tasks,
         })
     }
 
+    /// Sends a packet to the host.
+    pub fn send(&self, packet: Vec<u8>) -> Result<()> {
+        self.sender.send(packet)
+    }
+
+    /// The next packet from the host; `None` once the circuit has ended.
+    pub async fn recv(&mut self) -> Option<Vec<u8>> {
+        self.packets.recv().await
+    }
+
+    pub fn close(&self) {
+        self.sender.close()
+    }
+
+    /// The sending half, and the packets from the host.
+    pub fn split(self) -> (ViewerSender, mpsc::Receiver<Vec<u8>>) {
+        (self.sender, self.packets)
+    }
+}
+
+impl ViewerSender {
     /// Sends a packet to the host.
     pub fn send(&self, packet: Vec<u8>) -> Result<()> {
         let (pn, payload) = self
@@ -288,11 +345,6 @@ impl ViewerCircuit {
         };
         self.conn.send_datagram(Bytes::from(frame.encode()))?;
         Ok(())
-    }
-
-    /// The next packet from the host; `None` once the circuit has ended.
-    pub async fn recv(&mut self) -> Option<Vec<u8>> {
-        self.packets.recv().await
     }
 
     pub fn close(&self) {
