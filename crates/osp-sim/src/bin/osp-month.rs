@@ -522,7 +522,7 @@ fn print_sizing(r: &sizing::Report) {
         }
     }
     println!(
-        "\nseed carriers | share | jobs | newcomer rate | 1 speed: no later / worst / B8 late | 2 relayed vs project | 3 newcomers dir (mid7, st28) / given | 4 operator both vs 2p² | all [seeds meeting all]"
+        "\nseed carriers | share | jobs | newcomer rate | 1 speed: within a tenth / worst / B8 late | 2 relayed vs project | 3 newcomers dir (mid7, st28) / given | 4 operator both vs 2p² | all [seeds meeting all]"
     );
     for (s, runs) in &r.carriers {
         let (f, m) = &runs[0];
@@ -537,7 +537,7 @@ fn print_sizing(r: &sizing::Report) {
             s.jobs,
             100.0 * s.newcomer_rate,
             verdict(Some(m.speed)),
-            m.no_later,
+            m.within_tenth,
             m.posts,
             m.worst,
             f.late_b8,
@@ -561,7 +561,7 @@ fn print_sizing(r: &sizing::Report) {
         );
     }
     println!(
-        "\nrecorded, seed {}: seed carriers | share | jobs | rate | through carriers late | relay peak Mbit/s | hops 0/1/2/3 | one seed both ends / seeds both | home carried MB a day median, most | seed GB each | circuits from one neighbour home/seed | a minute home/seed | newcomers median days to middle, standing (dir; given) | honest seen by operator",
+        "\nrecorded, seed {}: seed carriers | share | jobs | rate | through carriers late | relay peak Mbit/s | hops 0/1/2/3 | one seed both ends / the project's seeds both | viewer's hop earned (transfers) | probationers, graduated | relay said no / no room | home carried MB a day median, most | seed GB each | circuits from one neighbour home/seed | a minute home/seed | newcomers median days to middle, standing (dir; given) | honest seen by operator",
         r.seeds[0]
     );
     for (s, runs) in &r.carriers {
@@ -569,7 +569,7 @@ fn print_sizing(r: &sizing::Report) {
         let c = &f.carrying;
         let days = |x: Option<f64>| x.map_or("-".into(), |x| format!("{x:.0}"));
         println!(
-            "{} | {:.0}% | {} | {:.0}% | {:.0}% | {:.0} | {:?} | {:.0}% / {:.0}% | {:.0}, {:.0} | {} | {}/{} | {}/{} | {}, {}; {}, {} | {} of {}",
+            "{} | {:.0}% | {} | {:.0}% | {:.0}% | {:.0} | {:?} | {:.0}% / {:.0}% | {} | {}, {} | {:.0}% / {:.0}% | {:.0}, {:.0} | {} | {}/{} | {}/{} | {}, {}; {}, {} | {} of {}",
             s.seeds,
             100.0 * s.share,
             s.jobs,
@@ -579,6 +579,11 @@ fn print_sizing(r: &sizing::Report) {
             f.hops_taken,
             100.0 * f.seed_single_share,
             100.0 * f.seed_both_share,
+            f.earned_viewer_hops,
+            f.probationers,
+            f.graduated,
+            100.0 * f.relayed_said_no / (f.relayed_said_no + f.relayed_no_room).max(1.0),
+            100.0 * f.relayed_no_room / (f.relayed_said_no + f.relayed_no_room).max(1.0),
             c.median_a_day / 1e6,
             c.most_a_day / 1e6,
             c.seed_bytes

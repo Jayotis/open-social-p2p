@@ -298,6 +298,20 @@ impl Partners {
     }
 }
 
+/// A viewer's probationary carrier (way 4, amended 2026-11-20): a middle
+/// machine that finished a job for it, given later middle jobs until it
+/// earns standing or 30 days pass.
+#[derive(Clone, Debug)]
+struct Probation {
+    machine: usize,
+    since: f64,
+    last_day: Option<usize>,
+}
+
+/// Probationary carriers a viewer keeps at once.
+const PROBATION_PLACES: usize = 2;
+const PROBATION_DAYS: f64 = 30.0;
+
 /// What decides each transfer's path, and what the nodes write down.
 struct Media {
     way: Way,
@@ -372,6 +386,7 @@ struct Media {
     /// Each circuit through a carrier: (carrier, the neighbour on the
     /// viewer's side, which opened it; start; end), in seconds from the start.
     circuits: Vec<(usize, usize, f64, f64)>,
+    probation: Vec<Vec<Probation>>,
 }
 
 /// The figures the experiments' plan records, beyond each post's.
@@ -453,6 +468,15 @@ pub struct HopCounts {
     pub seed_end_hops: usize,
     pub seed_both_single: usize,
     pub seed_both_ends: usize,
+    /// Transfers whose viewer's hop was an ordinary node it had earned;
+    /// probationers taken on, and those that earned standing.
+    pub earned_viewer_hops: usize,
+    pub probationers: usize,
+    pub graduated: usize,
+    /// Bytes on the wire through the relay on way 4's transfers, by why:
+    /// that end said no to its own address being seen, or no hop had room.
+    pub relayed_said_no: f64,
+    pub relayed_no_room: f64,
 }
 
 /// ADR 0017's starting value: a middle turn on 1 transfer in 10 through hops.
@@ -522,6 +546,58 @@ impl Media {
         };
         let qs = if self.addr_yes[h] { seeds } else { Vec::new() };
         (ps, qs)
+    }
+
+    /// Way 4: one of `v`'s probationary carriers that hasn't had a middle
+    /// job from it today, with room. Its day is marked taken.
+    fn probation_turn(&mut self, v: usize, taken: &[usize], load: &Load) -> Option<usize> {
+        if self.way != Way::Carriers {
+            return None;
+        }
+        let day = ((self.post_at + load.now) / DAY) as usize;
+        let k = self.probation[v].iter().position(|pr| {
+            pr.last_day != Some(day)
+                && !taken.contains(&pr.machine)
+                && self.can_hop(pr.machine, load)
+        })?;
+        self.probation[v][k].last_day = Some(day);
+        Some(self.probation[v][k].machine)
+    }
+
+    /// A finished way-4 job: its middle machine, an ordinary node with no
+    /// standing with the viewer, becomes a probationer if there's a place.
+    fn on_probation(&mut self, part: &Part, t: f64) {
+        let v = part.to;
+        for leg in part.legs.iter().filter(|l| l.carried) {
+            let m = leg.from;
+            let middle = !self.seed[m] && !self.earned_hops[v].contains(&m);
+            if !middle || self.probation[v].iter().any(|pr| pr.machine == m) {
+                continue;
+            }
+            if self.probation[v].len() < PROBATION_PLACES {
+                self.probation[v].push(Probation {
+                    machine: m,
+                    since: t,
+                    last_day: Some((t / DAY) as usize),
+                });
+                self.hops.probationers += 1;
+            }
+        }
+    }
+
+    /// Before each post: probationers that earned standing with their
+    /// viewer leave probation, as do those past 30 days.
+    fn review_probation(&mut self, t: f64) {
+        for v in 0..self.probation.len() {
+            let list = std::mem::take(&mut self.probation[v]);
+            for pr in list {
+                if self.has_standing(v, pr.machine) {
+                    self.hops.graduated += 1;
+                } else if t - pr.since <= PROBATION_DAYS * DAY {
+                    self.probation[v].push(pr);
+                }
+            }
+        }
     }
 
     /// `m` has standing with `v`: jobs for it on 3 days, or under A, as the
@@ -624,7 +700,7 @@ impl Media {
     /// Way 3's path from host `h` to viewer `v`: H → Q → (M) → P → V.
     fn hop_path(&mut self, h: usize, v: usize, load: &Load) -> Vec<Leg> {
         let t = self.post_at;
-        let (ps, qs) = if self.way == Way::Carriers {
+        let (mut ps, qs) = if self.way == Way::Carriers {
             self.carrier_hops(h, v, load)
         } else {
             (self.viewer_hops(v, h, load), self.host_hops(h, v, load))
@@ -641,6 +717,14 @@ impl Media {
         }
         let pick = |rng: &mut Rng, c: &[usize]| (!c.is_empty()).then(|| c[rng.below(c.len())]);
         let mut q = pick(&mut self.hop_rng, &qs);
+        // Way 4: V never takes the host's seed carrier when another hop has
+        // room (amended 2026-11-20).
+        if self.way == Way::Carriers
+            && let Some(q) = q
+            && ps.iter().any(|&x| x != q)
+        {
+            ps.retain(|&x| x != q);
+        }
         // If V would pick Q itself, the transfer takes that one hop.
         let single = q.is_some_and(|q| ps.contains(&q));
         let p = if single {
@@ -663,10 +747,11 @@ impl Media {
         taken.extend(p);
         taken.extend(q);
         let rate = self.sizing.map_or(MIDDLE_EVERY, |s| s.newcomer_rate);
-        let m = if self.hop_rng.chance(rate) {
-            self.middle(v, &taken, load)
-        } else {
-            None
+        // Way 4: a probationary carrier gets the middle first, once a day.
+        let m = match self.probation_turn(v, &taken, load) {
+            Some(m) => Some(m),
+            None if self.hop_rng.chance(rate) => self.middle(v, &taken, load),
+            None => None,
         };
         if let Some(m) = m {
             self.hops.middle_turns += 1;
@@ -679,6 +764,9 @@ impl Media {
         self.hops.end_hops += ends.len();
         self.hops.end_hops_operator += ends.iter().filter(|&&e| self.operator[e]).count();
         self.hops.seed_end_hops += ends.iter().filter(|&&e| self.seed[e]).count();
+        if p.is_some_and(|p| !self.seed[p] && !single) {
+            self.hops.earned_viewer_hops += 1;
+        }
         if single || (p.is_some() && q.is_some()) {
             self.hops.both_ends += 1;
             if ends.iter().all(|&e| self.operator[e]) {
@@ -892,6 +980,23 @@ impl Rules for Media {
                 }
                 if b {
                     self.b_known.work(part.legs[1].from, part.to, part.bytes, t);
+                }
+                if self.way == Way::Carriers {
+                    self.on_probation(part, t);
+                }
+            }
+            if self.way == Way::Carriers {
+                let last = part.legs.len() - 1;
+                for (k, _) in part.legs.iter().enumerate().filter(|(_, l)| l.relayed) {
+                    let wire = part.bytes * OVERHEAD;
+                    // The host's leg, or the viewer's.
+                    let said_no = (k == 0 && !self.addr_yes[part.source])
+                        || (k == last && !self.addr_yes[part.to]);
+                    if said_no {
+                        self.hops.relayed_said_no += wire;
+                    } else {
+                        self.hops.relayed_no_room += wire;
+                    }
                 }
             }
             // Each carrier's circuit, opened by its neighbour on the viewer's
@@ -1582,6 +1687,7 @@ pub fn run(
         sizing,
         earned_hops: vec![Vec::new(); members.len()],
         circuits: Vec::new(),
+        probation: vec![Vec::new(); members.len()],
     };
     rules.records.one_way = exp.one_way;
     let mut kim_rng = Rng::new(seed.wrapping_add(9));
@@ -1693,6 +1799,7 @@ pub fn run(
                 earned[v].push(m);
             }
             rules.earned_hops = earned;
+            rules.review_probation(at);
         }
         for (n, &d) in rules
             .carried

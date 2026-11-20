@@ -1,6 +1,14 @@
 # Sizing carriers: limits and the newcomer rate, in a model
 
-**Status:** Run on 2026-11-20 ([results](#results)): no setting meets every mark, so nothing is set, and the figures go to the maintainer. Plan fixed on 2026-11-20, before any code or run. [ADR 0043](../decisions/0043-the-media-plane-before-the-alpha.md)'s sizing stage: carrying is built in P11 whatever this shows, so the run doesn't decide whether to build. It sets the starting values: a node's upload share for carrying, its jobs at once, its limits on circuits from one neighbour and new circuits a minute, and how often a transfer gives a newcomer a middle turn. Changing a pass mark later needs a dated note here saying what changed and why.
+**Status:** Run twice on 2026-11-20 ([results](#results)): in neither run does a setting meet every mark, so nothing is set, and the figures go to the maintainer. Plan fixed on 2026-11-20, before any code or run. [ADR 0043](../decisions/0043-the-media-plane-before-the-alpha.md)'s sizing stage: carrying is built in P11 whatever this shows, so the run doesn't decide whether to build. It sets the starting values: a node's upload share for carrying, its jobs at once, its limits on circuits from one neighbour and new circuits a minute, and how often a transfer gives a newcomer a middle turn. Changing a pass mark later needs a dated note here saying what changed and why.
+
+**Amended 2026-11-20, after the first run, before the second (the maintainer):** the first run's results stand below as run. Three changes for the second run, with the same settings and seeds:
+
+- **Probationary carriers.** Middle machines picked at random never earned standing. The bar stays as it is: jobs for one viewer on 3 different days in the last 30, checked by that viewer. A viewer now keeps a middle machine that finished a job for it, as one of up to 2 probationary carriers. On each day it fetches, it gives each one a middle job first, before the random draw, at most one a day as the bar counts days. A probationer leaves when it earns standing, when it fails, or 30 days after it was taken on. The newcomer rate now sets how often a viewer tries a machine it hasn't worked with.
+- **Different seed carriers at the two ends.** A viewer never takes the host's seed carrier as its own hop when another hop has room. The project runs every seed carrier, so the figures count transfers where the project's seed carriers held both ends apart from those where one machine did. A machine of the same operator can share its logs: during bootstrap, the project sees both ends as the relay does, and that's a limit of the bootstrap, said as such.
+- **Mark 1** now asks whether carriers are materially slower, not slower at all. An extra hop costs a little, and the first run missed the old mark on 2 to 7% differences while meeting B8 on every late post. The first run would have met the new mark (its worst post was 7% later). Stage D measures the time to build a circuit on real nodes.
+
+Also recorded: the relay's bytes on way 4's transfers by why (an end said no to its own address being seen, or no hop had room); how often the viewer's hop was an ordinary node it earned; probationers taken on, and how many earned standing.
 
 ## The model
 
@@ -33,7 +41,7 @@ That's 14 settings and the 2 to compare against, each with seeds 1 to 5. Each ma
 
 Fixed on 2026-11-20, before the model is built.
 
-1. **Not slower than the project relay.** Over all 45 posts, way 4's time for 95% of followers is no later than the project-relay way's for at least 9 posts in 10, and no more than a fifth later for any. B8's three marks are met on at least as many posts of weeks 10 to 13 as the project-relay way meets.
+1. **Not materially slower than the project relay** (amended 2026-11-20). Over all 45 posts, way 4's time for 95% of followers is within a tenth of the project-relay way's for at least 9 posts in 10, and no more than a fifth later for any. B8's three marks are met on at least as many posts of weeks 10 to 13 as the project-relay way meets. *Until 2026-11-20 it asked for no later, not within a tenth, on 9 posts in 10.*
 2. **Off the relay.** In weeks 10 to 13, way 4 sends at most half the bytes through the relay that the project-relay way sends.
 3. **Newcomers get going.** In each of Z's newcomer groups, judged apart: 9 in 10 get a middle turn within 7 days of arriving, and standing with one node (jobs for it on 3 different days in the last 30, the bar for sitting next to that viewer) within 28.
 4. **The operator sees both ends no more often than its share suggests:** of the transfers with a hop at both ends, the share where it held them all is at most 2p², where p is its share of the hops next to an end.
@@ -57,6 +65,8 @@ For each setting:
 - honest nodes whose address the operator's machines learned.
 
 ## Results
+
+### First run
 
 `osp-month sizing` in `osp-sim`, 2026-11-20. Each mark is judged on seed 1; the brackets give how many of seeds 1 to 5 meet it. The whole sweep takes about 90 s. Unchanged ways still give the hops model's published figures.
 
@@ -84,6 +94,29 @@ By the plan's rule, no upload share, jobs at once or newcomer rate is set, and n
 **The project relay's server.** Its busiest second carried about 960 Mbit/s with everything through it, and 700 with 2 seed carriers. That's about a 1 Gbit/s server link, for one creator with 430 followers.
 
 **Circuits, if limits were set from these figures:** a home held at most 4 circuits from one neighbour at once and opened at most 9 in a minute, in any setting and seed. A seed carrier held at most 5 from one neighbour, and took up to 99 a minute.
+
+### Second run
+
+With probationary carriers, different seed carriers at the two ends and the amended mark 1 (2026-11-20). The ways compared against are unchanged.
+
+| Mark | Result | Seed 1 |
+| --- | --- | --- |
+| 1, speed | met at 50% with 2 jobs [5/5], and at 50%, 4 jobs and 5% [5/5]; missed elsewhere | at 50% and 2 jobs, every post within a tenth, worst 1.06 to 1.09x. At 25%, worst 1.17 to 2.13x, and with 4 jobs B8 is met on as few as 2 of 13 late posts |
+| 2, off the relay | missed with 1 and 2 seed carriers [0/5]; 4: met [4/5] | 59 to 73% of the project relay's bytes with 2 seed carriers, 78% with 1, 46% with 4 |
+| 3, newcomers | missed in every setting [0/5] | standing within 28 days: 8 to 19 of 50 directory newcomers, 0 or 1 of 50 given one machine |
+| 4, the operator | met in every setting | it held no hop next to both ends of any transfer |
+
+Again nothing is set by the plan's rule.
+
+**Graduation works for nodes already there.** At 50%, 2 jobs and 10%, viewers took on 2,346 probationers and 2,151 of them earned standing. On 18,593 transfers the viewer's hop was an ordinary node it had earned, against none in the first run. One seed carrier next to both ends fell from 99% of transfers with a hop at both ends to 5%, and the project's seed carriers holding both ends fell to 29%. Homes carried a median 11 MB a day, at most 78.
+
+**What stays on the relay is the question on a node's own address.** 67 to 82% of the relay's bytes on way 4 are an end's leg where that end said no; the rest is no hop with room. On seed 1 at 50%, 2 jobs and 10%, the ends saying no alone send about 47% of the project relay's bytes: mark 2's 50% can't be met with 1 in 4 saying no, whatever the carriers. With 4 seed carriers nearly all of it is ends saying no.
+
+**A quarter of a home's upload is too little for an earned hop.** At 25%, a 5 Mbit/s home carries at 1.25 Mbit/s, and a viewer whose earned hop is such a home fetches slowly: up to twice the project relay's time. More jobs at once split that share further. At 50% with 2 jobs, mark 1 is met on every seed.
+
+**Newcomers still start too slowly.** Probation places go mostly to machines that are in many tables already: the established ones. A directory newcomer took a median 21 to 31 days to standing, and newcomers given one machine almost never got a middle turn: they're in very few tables.
+
+**Circuits,** in every setting: a home held at most 4 from one neighbour at once and opened at most 10 in a minute; a seed carrier at most 21 from one neighbour.
 
 ## Not modelled
 
