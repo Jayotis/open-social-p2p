@@ -1,6 +1,6 @@
 # ADR 0043 design note: carrier circuits
 
-**Status:** Proposed (2026-11-20), for the maintainer's review. ADR 0043's design stage: nothing of carrying is built before this note is accepted. It picks the layer construction, the wire format, and how a hop checks it is on an OSP path and not a general proxy. Every node carries from the middle by default ([ADR 0017](0017-one-hop-forwarding.md) as amended 2026-11-20). Who may sit next to an end, how standing is earned, how often newcomers get a middle turn, the limits' values and the fallback stay with [ADR 0017](0017-one-hop-forwarding.md) and [ADR 0043](0043-the-media-plane-before-the-alpha.md).
+**Status:** Accepted (2026-11-20), the maintainer's decision. ADR 0043's design stage. It picks the layer construction, the wire format, and how a hop checks it is on an OSP path and not a general proxy. Every node carries from the middle by default ([ADR 0017](0017-one-hop-forwarding.md) as amended 2026-11-20). Who may sit next to an end, how standing is earned, how often newcomers get a middle turn, the limits' values and the fallback stay with [ADR 0017](0017-one-hop-forwarding.md) and [ADR 0043](0043-the-media-plane-before-the-alpha.md).
 
 ## The path
 
