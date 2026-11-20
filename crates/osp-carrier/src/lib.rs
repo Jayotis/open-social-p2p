@@ -15,19 +15,27 @@
 //! left out, a byte changed or a packet repeated fails a check, and the packet
 //! is dropped.
 //!
-//! This crate is the part with no networking: the descriptors, the frames on
-//! a link between neighbours, the commands only a circuit's last hop reads,
-//! and the layers. Carrying them is the carrier service's job, and the ends'
-//! connection over a circuit is the circuit transport's.
+//! The descriptors, the frames on a link between neighbours, the commands
+//! only a circuit's last hop reads, and the layers have no networking. The
+//! [`Carrier`] carries them on a node's carrier endpoint; [`HostLink`] and
+//! [`ViewerCircuit`] are the two ends, carrying the ends' own packets. The
+//! circuit transport puts iroh's QUIC on those.
 
 mod descriptor;
+mod ends;
 mod frame;
 mod layer;
+mod service;
 
 pub use descriptor::{CarrierInfo, Descriptor, MAX_DESCRIPTOR_BYTES};
+pub use ends::{HostEvent, HostLink, ViewerCircuit};
 pub use frame::{CircuitId, DestroyReason, Frame, Relay, SLOT_LEN, Slot};
 pub use layer::{
     CarrierKeys, CircuitKey, Direction, Layer, MAX_PACKETS, Onion, SETUP_LEN, Setup, WINDOW,
+};
+pub use service::{
+    ALPN, Carrier, Config, Dial, LINK_DATAGRAM, Limits, SETUP_TIMEOUT, SLOT_LIFETIME, Stats,
+    relay_dial, request_slot, wait_for_room,
 };
 
 /// The protocol's name, which binds every key and signature to it.
