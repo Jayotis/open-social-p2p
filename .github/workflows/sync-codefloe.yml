@@ -1,8 +1,11 @@
 name: Sync GitHub to Codefloe
 
+# The EU mirror is a minor requirement, so it catches up once a day rather
+# than on every merge. Release tags still go at once.
 on:
+  schedule:
+    - cron: '17 4 * * *'
   push:
-    branches: [main]
     tags:
       - 'v*'
   workflow_dispatch:
