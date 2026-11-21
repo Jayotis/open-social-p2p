@@ -2,13 +2,13 @@
 
 Version 2 (proposed), 2026-11-20. These are the proposed full terms for Open Social P2P (OSP), intended to take effect when approved and published with updated app onboarding. Until then, Version 1 remains the app's accepted onboarding terms.
 
-OSP is a decentralized social network. You run or choose the computer (your "node") that holds your identity and content. The OSP project provides open-source software and may operate supporting services, but it does not host or control the entire network. Please read the important limits below before publishing.
+OSP is open-source software for a self-sustaining, peer-to-peer social network. You run or choose the computer (your "node") that holds your identity and content. The project aims to maintain and distribute software, not to become a permanent operator of network infrastructure, user accounts, media hosting or content distribution. Limited project-run infrastructure may help bootstrap alpha testing, but the intended network must be able to continue without it. Please read the important limits below before publishing.
 
 ## 1. What these terms cover
 
-These terms govern your use of official OSP software, osp2p.com and project-run services such as directories, relays and reporting. Independently operated nodes and modified software are controlled by their respective operators; these terms do not make the OSP project the operator of those systems or bind people who have not accepted them.
+These terms govern your use of official OSP software and, where relevant, the project website and any temporary project-operated facilities actually offered. Independently operated nodes, relays, directories and modified software are controlled by their respective operators. These terms neither make the OSP project their operator nor bind people who have not accepted them.
 
-The rules for official OSP software apply to its Android and iPhone apps, released node software and project-run services alike. A project's ability to restrict its own services does not amount to control over all participants or every copy of content.
+The rules for official OSP software apply to its Android and iPhone apps and released node software. Any project-operated facilities may also apply their own rules. Such rules do not create project-wide authority over independently operated systems or copies of content.
 
 ## 2. Who can use OSP
 
@@ -58,11 +58,11 @@ These are rules for official software and project-run services, **not a claim th
 
 You can report a post or person using [the reporting form](https://osp2p.com/report/). The project reviews reports and may act on violations of these rules. Reports alone do not establish a violation or automatically put content on a list. You can also ask for a listing decision to be reconsidered using the form.
 
-Each node owner can block accounts, posts or files locally. The project may remove material from its own directories or deny access to project-run services. Those actions do not delete material from independently operated nodes.
+Each node owner can block accounts, posts or files locally. During bootstrap testing, the project may delist material from a directory it operates or restrict access to a relay it provides. In a mature self-sustaining network, independent operators will make their own decisions about directories, relays, blocking and lists. No such decision remotely deletes material from someone else's node.
 
-The project publishes a signed **optional** hide list focused on the most severe categories: sexual material involving minors, intimate images shared without consent, prolonged graphic or sadistic realistic violence, and credible threats. Adult explicit sexual material is prohibited in official software but is **not** placed on that hide list merely for that reason. Owners choose at setup whether to enable the list, may turn it off, and may make exceptions for particular people. An enabled list is checked by official software; a person's exception does not authorize redistribution of listed files.
+The project currently publishes a signed **optional** hide list focused on the most severe categories: sexual material involving minors, intimate images shared without consent, prolonged graphic or sadistic realistic violence, and credible threats. Adult explicit sexual material is prohibited in official software but is **not** placed on that hide list merely for that reason. Owners choose at setup whether to enable the list, may turn it off, and may make exceptions for particular people. An enabled list is checked by official software; a person's exception does not authorize redistribution of listed files.
 
-For details on the policy and the technology, see [ADR 0042](decisions/0042-content-rules-reports-and-the-project-hide-list.md). OSP cannot guarantee that every objectionable or unlawful post will be detected or removed.
+Other people or communities may publish their own signed lists, independently of the project, as supported by the software. No permanent central moderation authority is intended. For details on the current policy and technology, see [ADR 0042](decisions/0042-content-rules-reports-and-the-project-hide-list.md). OSP cannot guarantee that every objectionable or unlawful post will be detected or removed.
 
 ## 8. Privacy and security
 
@@ -86,11 +86,11 @@ OSP is designed to enable direct relationships between creators, audiences and a
 
 Creators and advertisers are responsible for their own agreements, lawful disclosures, taxes, intellectual-property rights and applicable advertising rules. Unless the project expressly becomes a party to a separate transaction, it is not a party to transactions between users.
 
-## 11. Availability and changes to project services
+## 11. Independent operation, temporary infrastructure and availability
 
-OSP is under active development. Features, compatibility, directory entries, relays, access to project services and software releases may change or stop. Connectivity and access to public media depend on independently operated computers and network conditions.
+OSP is under active development. For alpha testing, the project may temporarily operate relays, directories, a signed hide list, a website or reporting facilities. They are bootstrap aids, not a promise of ongoing centralized hosting or a requirement that users rely on the project forever. The design goal is for participants and independent providers to supply discovery, connectivity, storage and distribution so the network can continue without project infrastructure. That goal is not a guarantee that the current alpha already works without those services. Features, compatibility and availability may change, and access to public media depends on peers and network conditions.
 
-The project may protect its own services against abuse, impose reasonable rate limits, discontinue a service or refuse access where permitted by law. Doing so does not remotely erase content on your node or confer authority over the independent network.
+While it operates a temporary service, the project may protect that service against abuse, impose reasonable rate limits, discontinue it or refuse access where permitted by law. Doing so neither removes content from independently operated nodes nor gives the project authority over the network.
 
 ## 12. No guarantees and limits of responsibility
 
@@ -116,4 +116,4 @@ For questions, rights-holder concerns, reports or reconsideration requests, emai
 
 ## Important distinction
 
-These terms describe the official project and the services it operates. An independent node owner controls their own machine and remains responsible for their own actions. No agreement can guarantee complete deletion, universal moderation, network availability or immunity from the law.
+These terms describe the software publisher and any limited facilities it actually operates during development; they do not appoint the project as the network's permanent service provider, host or governing authority. Independent node operators control their machines and remain responsible for their own actions. The goal is a network that survives without the original maintainer or project infrastructure. No agreement can guarantee complete deletion, universal moderation, network availability or immunity from the law.
