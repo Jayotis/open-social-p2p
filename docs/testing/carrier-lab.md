@@ -1,6 +1,6 @@
 # Carrier circuits on the lab nodes (ADR 0043 stage B, P11 part 6)
 
-**Status:** Functional pass, 2026-11-21, the maintainer's call. Main at d7550d9 (stage B part 5b) on every node. The newcomer's middle turn is in [below](#the-newcomers-middle-turn) once it's run. Speed isn't graded here: that's stage D, which first measures the relay-only way on these nodes.
+**Status:** Functional pass, 2026-11-21, the maintainer's call. Main at d7550d9 (stage B part 5b) on every node. The newcomer's middle turn passed the same day ([below](#the-newcomers-middle-turn)). Speed isn't graded here: that's stage D, which first measures the relay-only way on these nodes.
 
 [ADR 0043](../decisions/0043-the-media-plane-before-the-alpha.md)'s stage B gate asks that a video go H → Q → P → V on the lab nodes, that a packet capture shows neither end learning the other's address, and that a new node carries in the middle with no setup answer.
 
@@ -53,4 +53,15 @@ n0 is measured for comparison and isn't graded. Changing a mark needs a dated no
 
 ## The newcomer's middle turn
 
-Not seen yet. `osp machine hello` doesn't add a machine to the table it picks middles from, so Middle has to arrive through ordinary meeting.
+**Passed, 2026-11-21.** `osp machine hello` doesn't add a machine to the table V picks middles from, so Middle arrived through ordinary meeting. Then Empty posted a fresh 20 s clip (4.0 MB) and Robin fetched it.
+
+- **Middle had the middle:** Robin logged `a machine has the middle turn=Fresh` for Middle, then `a machine is taken on probation` and `fetched through carriers hops=3`: H → Q → M → P → V.
+- **H** talked only to Q's relay (and Tor), as in the two-hop run. Nothing went to the home network.
+- **Q**'s carrier had one direct peer during the fetch: M, which is the next hop. Q sees M's address, as a neighbour on the path does.
+- **M → P** didn't pass through Q's machine. Both are on the home network.
+- **V** talked to Q's relay, which carried its leg to P, and sent a few small hole-punching packets to P, its own hop. It sent none to M.
+- **Work offers:** Robin logged that Middle's first job may be offered on. The lines for asking for and taking work offers (`asked a machine at standing for work offers`, `took a work offer`, `turn=Offered`) need three days of standing, so they aren't seen yet.
+
+**Observed, not graded:** the download took 15.5 s, with its first byte after 2.0 s. The fetch command took 23.6 s, including the circuit offer and building the circuit.
+
+A first try at this ran for 3.5 h without a middle, for two reasons that came from the test itself. It posted the same clip each round, so after round 1 Robin already held the blob. And the clip was under 1 MiB, and files that small skip carriers (`SMALL_BLOB`).
