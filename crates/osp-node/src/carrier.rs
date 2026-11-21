@@ -26,6 +26,7 @@ use tracing::{debug, info, warn};
 
 use crate::{
     config::{Config, RelayChoice},
+    db::Db,
     home::Home,
     keys,
     machine::{MachineSide, Published},
@@ -57,6 +58,7 @@ impl CarrierSide {
         config: &Config,
         machine: &MachineSide,
         relays: &RelayPolicy,
+        db: &Arc<Db>,
     ) -> Result<Option<Self>> {
         if !config.carrier.enabled {
             return Ok(None);
@@ -71,7 +73,10 @@ impl CarrierSide {
             relay_mode,
             relays,
             key,
-            vec![osp_carrier::ALPN.to_vec()],
+            vec![
+                osp_carrier::ALPN.to_vec(),
+                osp_proto::social::WORK_OFFERS_ALPN.to_vec(),
+            ],
         )
         .await
         .context("starting the carrier endpoint")?;
@@ -91,6 +96,7 @@ impl CarrierSide {
             machine.published(),
             limits,
             dial,
+            crate::work_offers::answerer(db.clone(), machine.acquaintances.clone()),
             carrier.clone(),
         ));
         Ok(Some(Self {
@@ -163,6 +169,7 @@ async fn keep_carrying(
     published: Published,
     limits: Limits,
     dial: Dial,
+    others: osp_carrier::Others,
     cell: Arc<OnceLock<Carrier>>,
 ) {
     let mut named: Option<String> = None;
@@ -189,6 +196,7 @@ async fn keep_carrying(
                         offers: Vec::new(),
                         limits: limits.clone(),
                         dial: dial.clone(),
+                        others: Some(others.clone()),
                     };
                     match Carrier::spawn(endpoint.clone(), config) {
                         Ok(carrier) => {

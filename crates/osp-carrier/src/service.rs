@@ -176,7 +176,13 @@ pub struct Config {
     pub offers: Vec<String>,
     pub limits: Limits,
     pub dial: Dial,
+    /// Takes connections on the endpoint's other ALPNs, if it has any: the
+    /// node's own small requests to its carrier. Without it they're closed.
+    pub others: Option<Others>,
 }
+
+/// Where a carrier endpoint's connections on other ALPNs go.
+pub type Others = Arc<dyn Fn(Connection) + Send + Sync>;
 
 /// What a carrier has done, for status and tests.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -201,18 +207,23 @@ impl Carrier {
     pub fn spawn(endpoint: Endpoint, config: Config) -> Result<Self> {
         let (tx, rx) = mpsc::channel(4096);
         let mut tasks = JoinSet::new();
+        let others = config.others.clone();
         let state = State::new(&endpoint, config, tx.clone())?;
         tasks.spawn(state.run(rx));
         let accept_tx = tx.clone();
         tasks.spawn(async move {
             while let Some(incoming) = endpoint.accept().await {
                 let tx = accept_tx.clone();
+                let others = others.clone();
                 tokio::spawn(async move {
                     match incoming.await {
                         Ok(conn) if conn.alpn() == ALPN => {
                             let _ = tx.send(Event::Link(conn, false)).await;
                         }
-                        Ok(conn) => conn.close(0u32.into(), b"not a carrier link"),
+                        Ok(conn) => match &others {
+                            Some(others) => others(conn),
+                            None => conn.close(0u32.into(), b"not a carrier link"),
+                        },
                         Err(e) => debug!("a carrier link failed to open: {e:#}"),
                     }
                 });

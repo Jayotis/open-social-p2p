@@ -22,6 +22,14 @@ pub(crate) const STANDING_DAYS: i64 = 3;
 pub(crate) const STANDING_WINDOW_DAYS: i64 = 30;
 /// Machines remembered as having finished a job, at most: the oldest go.
 const MAX_WORKED: i64 = 10_000;
+/// A machine's first middle job here makes it one to offer on, for this
+/// many days after its last finished job here...
+pub(crate) const TIP_DAYS: i64 = 30;
+/// ...to at most this many who ask, ever: later jobs don't add more.
+pub(crate) const TIP_HANDED: i64 = 2;
+/// Suggestions this node keeps at once, each for `SUGGESTION_DAYS`.
+pub(crate) const SUGGESTIONS_KEPT: i64 = 2;
+pub(crate) const SUGGESTION_DAYS: i64 = 30;
 
 /// A probationary carrier: a machine that finished a job for this node and
 /// hasn't earned standing yet.
@@ -145,6 +153,140 @@ impl Db {
         )?;
         Ok(())
     }
+
+    /// Notes that `machine` finished its first middle job for this node at
+    /// `now`, so this node may offer it to those who ask. Only a first job
+    /// makes a tip, so one handed out twice, or ended, isn't made again.
+    pub(crate) fn add_tip(&self, machine: &EndpointId, now: i64) -> Result<()> {
+        self.conn().execute(
+            "INSERT OR IGNORE INTO carrier_tips (machine, first_ms, last_ms)
+             VALUES (?1, ?2, ?2)",
+            params![machine.to_string(), now],
+        )?;
+        Ok(())
+    }
+
+    /// Notes a later finished job by `machine` at `now`: its tip, if any and
+    /// not ended, lasts `TIP_DAYS` from now. Its handouts stay as they were.
+    pub(crate) fn refresh_tip(&self, machine: &EndpointId, now: i64) -> Result<()> {
+        self.conn().execute(
+            "UPDATE carrier_tips SET last_ms = MAX(last_ms, ?2) WHERE machine = ?1 AND ended = 0",
+            params![machine.to_string(), now],
+        )?;
+        Ok(())
+    }
+
+    /// A circuit with `machine` in the middle failed: it's offered no more.
+    pub(crate) fn end_tip(&self, machine: &EndpointId) -> Result<()> {
+        self.conn().execute(
+            "UPDATE carrier_tips SET ended = 1 WHERE machine = ?1",
+            params![machine.to_string()],
+        )?;
+        Ok(())
+    }
+
+    /// The machine to offer someone who asks at `now`, if any, counted as
+    /// handed once more: of those not ended, handed fewer than `TIP_HANDED`
+    /// times and whose last job here was in the last `TIP_DAYS`, the one
+    /// whose first job here was latest, so a newer machine goes ahead of one
+    /// that keeps working, for which `usable` says yes. Those past their
+    /// days go.
+    pub(crate) fn hand_tip(
+        &self,
+        now: i64,
+        usable: &dyn Fn(&EndpointId) -> bool,
+    ) -> Result<Option<EndpointId>> {
+        let conn = self.conn();
+        let tx = conn.unchecked_transaction()?;
+        tx.execute(
+            "DELETE FROM carrier_tips WHERE last_ms < ?1",
+            params![now - TIP_DAYS * DAY_MS],
+        )?;
+        let open: Vec<String> = {
+            let mut stmt = tx.prepare(
+                "SELECT machine FROM carrier_tips WHERE handed < ?1 AND ended = 0
+                 ORDER BY first_ms DESC",
+            )?;
+            stmt.query_map(params![TIP_HANDED], |row| row.get(0))?
+                .collect::<rusqlite::Result<_>>()?
+        };
+        let tip = open
+            .iter()
+            .filter_map(|m| m.parse::<EndpointId>().ok())
+            .find(|m| usable(m));
+        if let Some(machine) = tip {
+            tx.execute(
+                "UPDATE carrier_tips SET handed = handed + 1 WHERE machine = ?1",
+                params![machine.to_string()],
+            )?;
+        }
+        tx.commit()?;
+        Ok(tip)
+    }
+
+    /// Keeps `machine`, offered by `from`, as a suggestion until `until`,
+    /// unless `SUGGESTIONS_KEPT` are held already. Whether it was kept.
+    pub(crate) fn add_suggestion(
+        &self,
+        machine: &EndpointId,
+        descriptor: &str,
+        from: &EndpointId,
+        until: i64,
+    ) -> Result<bool> {
+        let conn = self.conn();
+        let held: i64 = conn.query_row("SELECT COUNT(*) FROM carrier_suggestions", [], |row| {
+            row.get(0)
+        })?;
+        if held >= SUGGESTIONS_KEPT {
+            return Ok(false);
+        }
+        Ok(conn.execute(
+            "INSERT OR IGNORE INTO carrier_suggestions (machine, descriptor, from_machine, until_ms)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![machine.to_string(), descriptor, from.to_string(), until],
+        )? == 1)
+    }
+
+    /// The suggestions held at `now`, the earliest offered first, with
+    /// each one's descriptor as last had. Those run out go.
+    pub(crate) fn suggestions(&self, now: i64) -> Result<Vec<(EndpointId, String)>> {
+        let conn = self.conn();
+        conn.execute(
+            "DELETE FROM carrier_suggestions WHERE until_ms <= ?1",
+            params![now],
+        )?;
+        let mut stmt =
+            conn.prepare("SELECT machine, descriptor FROM carrier_suggestions ORDER BY until_ms")?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        let mut list = Vec::new();
+        for row in rows {
+            let (machine, descriptor) = row?;
+            if let Ok(machine) = machine.parse() {
+                list.push((machine, descriptor));
+            }
+        }
+        Ok(list)
+    }
+
+    /// A newer descriptor for a suggested machine.
+    pub(crate) fn renew_suggestion(&self, machine: &EndpointId, descriptor: &str) -> Result<()> {
+        self.conn().execute(
+            "UPDATE carrier_suggestions SET descriptor = ?2 WHERE machine = ?1",
+            params![machine.to_string(), descriptor],
+        )?;
+        Ok(())
+    }
+
+    /// A suggestion had its turn: it goes, whether the job finished or not.
+    pub(crate) fn end_suggestion(&self, machine: &EndpointId) -> Result<()> {
+        self.conn().execute(
+            "DELETE FROM carrier_suggestions WHERE machine = ?1",
+            params![machine.to_string()],
+        )?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -189,5 +331,73 @@ mod tests {
         assert_eq!((list[0].since_ms, list[0].last_day), (DAY_MS, 5));
         db.end_probation(&kim).unwrap();
         assert_eq!(db.probationers().unwrap().len(), 1);
+    }
+
+    /// Mo's machine finished its first middle job for Jimmy's node, then
+    /// Sam's did. Sam's, the newer, is handed first, to two who ask, then
+    /// Mo's. Later work keeps Mo's going past its 30 days, but never adds
+    /// handouts, and a tip isn't made again.
+    #[test]
+    fn a_tip_goes_to_two_askers_the_newest_first_while_its_machine_works() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(&dir.path().join("t.db")).unwrap();
+        let [mo, sam] = [0, 1].map(|_| SecretKey::generate().public());
+        let start = 100 * DAY_MS;
+        let any = |_: &EndpointId| true;
+        let handed = |at| db.hand_tip(at, &any).unwrap();
+        db.add_tip(&mo, start).unwrap();
+        db.add_tip(&sam, start + 1).unwrap();
+        assert_eq!(handed(start + 2), Some(sam));
+        assert_eq!(handed(start + 3), Some(sam));
+        let not_mo = |m: &EndpointId| *m != mo;
+        assert_eq!(
+            db.hand_tip(start + 4, &not_mo).unwrap(),
+            None,
+            "not in the table"
+        );
+        // Mo's machine works again on day 20, so it's offered past day 30.
+        db.refresh_tip(&mo, start + 20 * DAY_MS).unwrap();
+        assert_eq!(handed(start + 35 * DAY_MS), Some(mo));
+        db.refresh_tip(&mo, start + 36 * DAY_MS).unwrap();
+        db.add_tip(&mo, start + 36 * DAY_MS).unwrap();
+        assert_eq!(handed(start + 37 * DAY_MS), Some(mo));
+        assert_eq!(handed(start + 38 * DAY_MS), None, "two handouts, ever");
+    }
+
+    /// A tip ends when a circuit with its machine in the middle fails, and
+    /// one whose machine stops working goes after 30 days.
+    #[test]
+    fn a_tip_ends_on_a_failed_job_or_after_30_days_without_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(&dir.path().join("t.db")).unwrap();
+        let [mo, sam] = [0, 1].map(|_| SecretKey::generate().public());
+        let any = |_: &EndpointId| true;
+        db.add_tip(&mo, 0).unwrap();
+        db.add_tip(&sam, 0).unwrap();
+        db.end_tip(&sam).unwrap();
+        db.refresh_tip(&sam, DAY_MS).unwrap();
+        assert_eq!(db.hand_tip(DAY_MS, &any).unwrap(), Some(mo));
+        assert_eq!(db.hand_tip(TIP_DAYS * DAY_MS + 1, &any).unwrap(), None);
+    }
+
+    /// Alice's node keeps 2 suggestions at most, for 30 days, the earliest
+    /// first, and one goes once it had its turn.
+    #[test]
+    fn suggestions_are_kept_two_at_most_until_they_run_out() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(&dir.path().join("t.db")).unwrap();
+        let [jimmy, mo, sam, kim] = [0, 1, 2, 3].map(|_| SecretKey::generate().public());
+        let until = 30 * DAY_MS;
+        assert!(db.add_suggestion(&mo, "mo's", &jimmy, until).unwrap());
+        assert!(!db.add_suggestion(&mo, "mo's", &jimmy, until).unwrap());
+        assert!(db.add_suggestion(&sam, "sam's", &jimmy, until + 1).unwrap());
+        assert!(!db.add_suggestion(&kim, "kim's", &jimmy, until).unwrap());
+        db.renew_suggestion(&mo, "newer").unwrap();
+        assert_eq!(
+            db.suggestions(0).unwrap(),
+            [(mo, "newer".into()), (sam, "sam's".into())]
+        );
+        db.end_suggestion(&sam).unwrap();
+        assert_eq!(db.suggestions(until).unwrap(), [], "Mo's ran out");
     }
 }

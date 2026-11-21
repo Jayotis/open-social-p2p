@@ -336,43 +336,65 @@ async fn offer_of(
 }
 
 /// Fetches `blob` with only what `offer` says: a circuit through the hop it
-/// names, to the slot, then the ends' QUIC to the circuit endpoint.
-async fn fetch_through(relay: &RelayUrl, offer: &CircuitOffer, blob: BlobHash) -> Vec<u8> {
+/// names, to the slot, then the ends' QUIC to the circuit endpoint. If that
+/// fails, asks `host` for a fresh offer and tries again, twice at most: under
+/// load the host may have linked to its hop again since the offer, and its
+/// slot was the old link's.
+async fn fetch_through(
+    relay: &RelayUrl,
+    offer: &CircuitOffer,
+    blob: BlobHash,
+    again: (&(Endpoint, SecretKey), &Node, (ObjectId, BlobHash)),
+) -> Vec<u8> {
+    let mut offer = offer.clone();
+    for tried in 1.. {
+        match try_fetch_through(relay, &offer, blob).await {
+            Ok(got) => return got,
+            Err(e) if tried < 3 => {
+                eprintln!("fetching through the hop, try {tried}: {e:#}");
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                offer = offer_of(again.0, again.1, again.2, true).await.unwrap();
+            }
+            Err(e) => panic!("fetching through the hop: {e:#}"),
+        }
+    }
+    unreachable!()
+}
+
+async fn try_fetch_through(
+    relay: &RelayUrl,
+    offer: &CircuitOffer,
+    blob: BlobHash,
+) -> anyhow::Result<Vec<u8>> {
     use iroh_blobs::store::mem::MemStore;
 
-    let bytes = data_encoding::BASE64URL_NOPAD
-        .decode(offer.carrier.as_bytes())
-        .unwrap();
-    let descriptor = Descriptor::from_bytes(&bytes).unwrap();
-    let info = descriptor.verify(now()).unwrap();
+    let bytes = data_encoding::BASE64URL_NOPAD.decode(offer.carrier.as_bytes())?;
+    let descriptor = Descriptor::from_bytes(&bytes)?;
+    let info = descriptor.verify(now())?;
     let viewer = end(relay).await;
-    let circuit = ViewerCircuit::build(
-        link(&viewer, &info).await,
-        std::slice::from_ref(&descriptor),
-        offer.slot,
-    )
-    .await
-    .unwrap();
-    let ends = osp_carrier::viewer_endpoint(circuit, offer.endpoint)
-        .await
-        .unwrap();
-    let conn = timeout(
-        WAIT,
-        ends.connect(EndpointAddr::new(offer.endpoint), iroh_blobs::ALPN),
-    )
-    .await
-    .unwrap()
-    .unwrap();
-    assert_eq!(conn.remote_id(), offer.endpoint);
-    let mine = MemStore::new();
-    let hash = iroh_blobs::Hash::from_bytes(*blob.as_bytes());
-    timeout(WAIT, mine.remote().fetch(conn.clone(), hash))
-        .await
-        .unwrap()
-        .unwrap();
-    let got = mine.get_bytes(hash).await.unwrap().to_vec();
-    conn.close(0u32.into(), b"done");
-    ends.close().await;
+    let got = async {
+        let circuit = ViewerCircuit::build(
+            link(&viewer, &info).await,
+            std::slice::from_ref(&descriptor),
+            offer.slot,
+        )
+        .await?;
+        let ends = osp_carrier::viewer_endpoint(circuit, offer.endpoint).await?;
+        let conn = timeout(
+            WAIT,
+            ends.connect(EndpointAddr::new(offer.endpoint), iroh_blobs::ALPN),
+        )
+        .await??;
+        assert_eq!(conn.remote_id(), offer.endpoint);
+        let mine = MemStore::new();
+        let hash = iroh_blobs::Hash::from_bytes(*blob.as_bytes());
+        timeout(WAIT, mine.remote().fetch(conn.clone(), hash)).await??;
+        let got = mine.get_bytes(hash).await?.to_vec();
+        conn.close(0u32.into(), b"done");
+        ends.close().await;
+        anyhow::Ok(got)
+    }
+    .await;
     viewer.close().await;
     got
 }
@@ -415,7 +437,7 @@ async fn a_host_names_its_seed_carrier_and_is_reached_through_it() {
     // Her circuit endpoint is none of the endpoints with an address.
     assert!(!alice.endpoint_ids().contains(&offer.endpoint));
 
-    let photo = fetch_through(&relay, &offer, asked.1).await;
+    let photo = fetch_through(&relay, &offer, asked.1, (&me, &alice, asked)).await;
     assert_eq!(iroh_blobs::Hash::new(&photo).as_bytes(), asked.1.as_bytes());
 
     // Kim's node goes: no hop to name. Back: linked again, through the same
@@ -425,7 +447,10 @@ async fn a_host_names_its_seed_carrier_and_is_reached_through_it() {
     let kim = start(&kim_home, &net).await;
     let again = offer_of(&me, &alice, asked, true).await.unwrap();
     assert_eq!(again.endpoint, offer.endpoint);
-    assert_eq!(fetch_through(&relay, &again, asked.1).await, photo);
+    assert_eq!(
+        fetch_through(&relay, &again, asked.1, (&me, &alice, asked)).await,
+        photo
+    );
 
     alice.shutdown().await.unwrap();
     kim.shutdown().await.unwrap();
@@ -781,9 +806,11 @@ fn quick() -> MeetingTimes {
 /// Jimmy's machine meets it through a directory. When Jimmy opens Alice's
 /// large photo, Mo's machine has his node's fresh turn in the middle:
 /// Alice → Quinn → Mo → Kim → Jimmy. It carried the photo, and Jimmy's node
-/// takes it on probation, without standing yet.
+/// takes it on probation, without standing yet. Sam's node, which holds
+/// Jimmy's machine at standing, asks it for work and is offered Mo's, which
+/// then carries in the middle of Sam's fetch too.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_fresh_machine_carries_in_the_middle_and_is_taken_on_probation() {
+async fn a_fresh_machine_carries_in_the_middle_and_is_offered_on() {
     let dir = tempfile::tempdir().unwrap();
     let (_relay, relay) = local_relay().await;
     let net = SimNet::new(4);
@@ -864,7 +891,39 @@ async fn a_fresh_machine_carries_in_the_middle_and_is_taken_on_probation() {
     assert_eq!(probation, [mo_machine]);
     assert!(standing.is_empty(), "standing takes 3 days");
 
-    for node in [jimmy, mo, alice, kim, quinn, directory] {
+    // Work offers (part 4d-2). Sam's node holds Jimmy's machine at standing
+    // and has room for a newcomer, so it asks Jimmy's carrier, which names
+    // Mo's machine. Sam's node has met nobody else.
+    let home = dir.path().join("sam");
+    let mut sam_config = config("Sam", &relay);
+    sam_config.endpoints.enabled = true;
+    sam_config.carrier.known = vec![known(&kim)];
+    sam_config.sync.prefetch = false;
+    Node::init(&home, &sam_config).unwrap();
+    let sam = start(&home, &net).await;
+    let jimmy_machine = jimmy.machine_id().unwrap();
+    sam.credit_carrier_on_days(&jimmy_machine, 3).unwrap();
+    sam.ask_for_work_now().await.unwrap();
+    assert_eq!(sam.work_offers_held().unwrap(), [mo_machine]);
+
+    // Mo's machine has Sam's newcomer turn in the middle, next to Jimmy's,
+    // and is taken on probation. The offer had its turn. (Sam's machine may
+    // have met Mo's by then, and given it the turn as fresh instead: the
+    // picks module's tests say which goes first.)
+    follow(&sam, &alice).await;
+    let before = carried(&mo).await;
+    let size = sam.open_blob(&asked.1).await.unwrap();
+    assert!(
+        carried(&mo).await >= before + size,
+        "Mo's machine didn't carry for Sam's node"
+    );
+    let (probation, standing) = sam.carrier_picks().unwrap();
+    assert_eq!(probation, [mo_machine]);
+    assert_eq!(standing, [jimmy_machine], "an offer is never standing");
+    let held = sam.work_offers_held().unwrap();
+    assert!(held.is_empty(), "{held:?}, mo {mo_machine}");
+
+    for node in [sam, jimmy, mo, alice, kim, quinn, directory] {
         node.shutdown().await.unwrap();
     }
 }

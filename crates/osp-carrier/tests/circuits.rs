@@ -66,6 +66,7 @@ async fn carrier(book: &Book, limits: Limits) -> Node {
             offers: vec![],
             limits,
             dial: book_dial(endpoint.clone(), book.clone()),
+            others: None,
         },
     )
     .unwrap();

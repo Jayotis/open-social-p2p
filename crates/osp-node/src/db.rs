@@ -36,7 +36,7 @@ mod replies;
 mod sent_replies;
 mod universe;
 mod vouches;
-pub(crate) use carriers::{DAY_MS, Probationer};
+pub(crate) use carriers::{DAY_MS, Probationer, SUGGESTION_DAYS};
 pub use hide::Applied as HideApplied;
 pub(crate) use likes::{HeldLike, SentLike};
 pub(crate) use replies::{Choice, Held, ReceivedReply, ReplyRow};
@@ -681,6 +681,23 @@ const MIGRATIONS: &[&str] = &[
         machine  TEXT PRIMARY KEY,
         since_ms INTEGER NOT NULL,
         last_day INTEGER NOT NULL
+    );",
+    // Work offers (`db::carriers`, ADR 0043 part 4d-2): the machines whose
+    // first middle job for this node it may offer to those who ask, kept
+    // apart from their work (`carrier_jobs`), and the machines offered to
+    // this node by those it holds at standing.
+    "CREATE TABLE carrier_tips (
+        machine  TEXT PRIMARY KEY,
+        first_ms INTEGER NOT NULL,
+        last_ms  INTEGER NOT NULL,
+        handed   INTEGER NOT NULL DEFAULT 0,
+        ended    INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE TABLE carrier_suggestions (
+        machine    TEXT PRIMARY KEY,
+        descriptor TEXT NOT NULL,
+        from_machine TEXT NOT NULL,
+        until_ms   INTEGER NOT NULL
     );",
 ];
 
@@ -7256,6 +7273,7 @@ mod tests {
                      DROP TABLE hide_exceptions; DROP TABLE block_dropped;
                      DROP TABLE machine_starts; DROP TABLE carrier_jobs;
                      DROP TABLE carriers_worked; DROP TABLE carrier_probation;
+                     DROP TABLE carrier_tips; DROP TABLE carrier_suggestions;
                      PRAGMA user_version = 24;",
                 )
                 .unwrap();
