@@ -27,7 +27,7 @@ use std::{
 use anyhow::{Context, Result, bail, ensure};
 use iroh::{Endpoint, EndpointAddr, PublicKey, SecretKey};
 use iroh_blobs::util::connection_pool::ConnectionPool;
-use osp_proto::{BlobHash, Note, ObjectId};
+use osp_proto::{BlobHash, Note, ObjectId, social::CircuitOffer};
 use tokio::{sync::Notify, time::Instant};
 use tracing::{debug, info};
 
@@ -261,7 +261,7 @@ fn take_turn(taken: &mut VecDeque<Instant>, now: Instant, limit: usize) -> bool 
 }
 
 /// Shuffles `list`: a viewer takes hosts in an order of its own.
-fn in_own_order<T>(list: &mut [T]) {
+pub(crate) fn in_own_order<T>(list: &mut [T]) {
     for i in (1..list.len()).rev() {
         let j = ((random_fraction() * (i + 1) as f64) as usize).min(i);
         list.swap(i, j);
@@ -318,7 +318,20 @@ impl Core {
                     )
                     .await
                 }
-                None => Ok(Vec::new()),
+                None => Ok((Vec::new(), None)),
+            }
+        };
+        // The author's node through its hop, if it offers a way and this
+        // node fetches through carriers (ADR 0043); otherwise, or if that
+        // fails, the relays as before.
+        let author_node = authors.first().map(|bound| bound.public);
+        let over_circuit = |offer: Option<CircuitOffer>| async move {
+            match author_node {
+                Some(node) => {
+                    self.try_over_circuit(blob, node, offer.as_ref(), class, declared)
+                        .await
+                }
+                None => None,
             }
         };
         // Then the sources not yet tried: those its author named, and its
@@ -353,8 +366,11 @@ impl Core {
         };
         let fetched = if sources.is_empty() {
             // Nothing to start with: hear the author out first.
-            let rest = then(ask.await?, &[]);
-            download(rest).await
+            let (named, offer) = ask.await?;
+            match over_circuit(offer).await {
+                Some(size) => Ok(size),
+                None => download(then(named, &[])).await,
+            }
         } else {
             // Start with the listed hosts while the author is asked, so an
             // author who's off costs no wait (real nodes: 10 s of 11.8 s).
@@ -365,12 +381,15 @@ impl Core {
                 biased;
                 asked = &mut ask => {
                     // A `Delete` drops the download under way.
-                    let named = asked?;
+                    let (named, offer) = asked?;
                     match listed.await {
                         Ok(size) => Ok(size),
-                        Err(e) => match then(named, &sources) {
-                            rest if rest.is_empty() => Err(e),
-                            rest => download(rest).await,
+                        Err(e) => match over_circuit(offer).await {
+                            Some(size) => Ok(size),
+                            None => match then(named, &sources) {
+                                rest if rest.is_empty() => Err(e),
+                                rest => download(rest).await,
+                            },
                         },
                     }
                 }
@@ -383,10 +402,16 @@ impl Core {
                         }
                         _ => Ok(size),
                     },
-                    Err(e) => match then(ask.await?, &sources) {
-                        rest if rest.is_empty() => Err(e),
-                        rest => download(rest).await,
-                    },
+                    Err(e) => {
+                        let (named, offer) = ask.await?;
+                        match over_circuit(offer).await {
+                            Some(size) => Ok(size),
+                            None => match then(named, &sources) {
+                                rest if rest.is_empty() => Err(e),
+                                rest => download(rest).await,
+                            },
+                        }
+                    }
                 },
             }
         };

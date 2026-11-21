@@ -64,6 +64,8 @@ A carrier's endpoint is an iroh endpoint with a relay, **published nowhere** (no
 
 **2. The first hop.** V connects to P and sends `CREATE` with the HPKE setup for P.
 
+*Settled when building (2026-11-20).* Until ADR 0017's standing is built, V's hop P is a seed carrier too, picked at random from those whose record can be read; when it is Q, the path is one hop. V asks for H's offer the way it already asks who hosts a file: over Tor, or from a viewing endpoint to H's media endpoint. A circuit that can't be built, or a fetch that fails over it, leaves the fetch to the relays as before. A carrier that restarts has a new circuit key, so a viewer forgets a hop's descriptor when a circuit through it fails, and a host reads its hop's afresh for each link.
+
 **3. One hop at a time.** V sends `EXTEND` through the circuit so far, naming the next carrier by machine ID with its descriptor. Only the last hop can read it, checks the descriptor's signature, dials that carrier's endpoint, and passes on the next hop's HPKE setup. P learns its next neighbour, never what follows.
 
 **4. Reaching the host.** With Q last, V sends `CONNECT_HOST` with the slot, which only Q can read. Q joins the circuit to the host connection holding that slot. A slot that doesn't exist, has expired or belongs to another connection is refused.

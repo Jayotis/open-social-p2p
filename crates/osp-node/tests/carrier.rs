@@ -1,7 +1,8 @@
 //! Every node carries (ADR 0043, stage B part 4a): its machine record names
 //! its carrier in a signed descriptor and says when its machine key started,
 //! and a circuit goes through the node's carrier. A host keeps a link to a
-//! seed carrier and names it to viewers (part 4b).
+//! seed carrier and names it to viewers (part 4b), and a viewer fetches
+//! through its own hop and the host's (part 4c).
 //!
 //! Kim's node is the carrier here. Machine names run on the simulated
 //! network, which has no Tor; the carrier endpoint uses a real relay on
@@ -16,7 +17,7 @@ use iroh::{
 use iroh_relay::server::{RelayConfig, Server, ServerConfig};
 use osp_carrier::{ALPN, CarrierInfo, Descriptor, HostEvent, HostLink, ViewerCircuit};
 use osp_node::{
-    Config, Node, RelayChoice, SeedCarrier, SimSettings,
+    Config, KnownDirectory, Node, RelayChoice, SeedCarrier, SimSettings,
     simnet::{self, Link, SimNet},
 };
 use osp_proto::{
@@ -413,4 +414,119 @@ async fn a_host_names_its_seed_carrier_and_is_reached_through_it() {
 
     alice.shutdown().await.unwrap();
     kim.shutdown().await.unwrap();
+}
+
+/// A directory, on the simulated network only.
+async fn directory(home: &Path, net: &SimNet) -> Node {
+    let mut config = Config::local_test("The directory");
+    config.endpoints.enabled = true;
+    config.directory.serve = true;
+    Node::init(home, &config).unwrap();
+    let settings = SimSettings {
+        listed_read_every: Duration::from_millis(200),
+        new_name_for: Duration::ZERO,
+        ..sim(net)
+    };
+    Node::spawn_sim(home, settings).await.unwrap()
+}
+
+/// Someone on the relay who knows `directory` and the seed carrier `seed`.
+fn knowing(name: &str, relay: &RelayUrl, directory: &Node, seed: Option<EndpointId>) -> Config {
+    let mut config = config(name, relay);
+    config.endpoints.enabled = true;
+    config.directory.known = vec![KnownDirectory {
+        machine: directory.machine_id().unwrap(),
+        node: directory.node_id(),
+    }];
+    config.carrier.known = seed
+        .map(|machine| SeedCarrier { machine })
+        .into_iter()
+        .collect();
+    config
+}
+
+/// Reads the directory until `node` holds the post `id`.
+async fn find(node: &Node, id: ObjectId) {
+    timeout(Duration::from_secs(60), async {
+        loop {
+            assert!(matches!(
+                call(node, ClientRequest::ReadDirectories).await,
+                ClientResponse::DirectoriesRead { .. }
+            ));
+            if matches!(
+                node.handle(ClientRequest::Show { id }).await,
+                ClientResponse::Item { .. }
+            ) {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    })
+    .await
+    .expect("the post was never found");
+}
+
+/// Jimmy finds Alice's photo through a directory and opens it. Both know
+/// Kim's node, a seed carrier: Alice's node links to it, and Jimmy's picks
+/// it as its own hop too, so the photo comes over one hop, and Kim's carrier
+/// carried it. Robin knows no seed carrier and gets it through the relay as
+/// before. With Kim's node off, Sam, who knows it, still gets the photo:
+/// through the relay.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_viewer_fetches_through_its_hop_and_the_hosts_and_falls_back_to_the_relay() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_relay, relay) = local_relay().await;
+    let net = SimNet::new(4);
+    let directory = directory(&dir.path().join("directory"), &net).await;
+
+    let kim_home = dir.path().join("kim");
+    let mut kim_config = config("Kim", &relay);
+    kim_config.carrier.seed = true;
+    Node::init(&kim_home, &kim_config).unwrap();
+    let kim = start(&kim_home, &net).await;
+    let seed = kim.machine_id().unwrap();
+
+    let alice_home = dir.path().join("alice");
+    let mut alice_config = knowing("Alice", &relay, &directory, Some(seed));
+    alice_config.directory.list_me = true;
+    Node::init(&alice_home, &alice_config).unwrap();
+    let alice = start(&alice_home, &net).await;
+    let asked = post_photo(&alice, dir.path()).await;
+    assert!(alice.ask_to_be_listed().await);
+    let me = stranger(&net).await;
+    offer_of(&me, &alice, asked, true).await;
+
+    let viewer = async |name: &str, seed: Option<EndpointId>| {
+        let home = dir.path().join(name);
+        Node::init(&home, &knowing(name, &relay, &directory, seed)).unwrap();
+        let node = start(&home, &net).await;
+        find(&node, asked.0).await;
+        node
+    };
+    let carried = async || kim.carrier_stats().await.unwrap().bytes;
+
+    let jimmy = viewer("Jimmy", Some(seed)).await;
+    let before = carried().await;
+    let size = jimmy.open_blob(&asked.1).await.unwrap();
+    assert!(
+        carried().await >= before + size,
+        "Kim's carrier didn't carry it"
+    );
+    assert_eq!(jimmy.viewing_endpoints_made(), 1);
+
+    let robin = viewer("Robin", None).await;
+    let before = carried().await;
+    assert_eq!(robin.open_blob(&asked.1).await.unwrap(), size);
+    assert!(
+        carried().await < before + size,
+        "Robin's fetch went through Kim"
+    );
+
+    kim.shutdown().await.unwrap();
+    let sam = viewer("Sam", Some(seed)).await;
+    assert_eq!(sam.open_blob(&asked.1).await.unwrap(), size);
+
+    for node in [jimmy, robin, sam, alice, directory] {
+        node.shutdown().await.unwrap();
+    }
 }

@@ -44,7 +44,6 @@ pub(crate) struct CarrierSide {
     pub endpoint: Endpoint,
     /// The carrier, once the endpoint has a relay to name. Status reads it
     /// from part 5 on.
-    #[allow(dead_code)]
     carrier: Arc<OnceLock<Carrier>>,
     _task: AbortOnDropHandle<()>,
 }
@@ -102,7 +101,6 @@ impl CarrierSide {
     }
 
     /// The carrier, once it's running.
-    #[allow(dead_code)]
     pub fn carrier(&self) -> Option<&Carrier> {
         self.carrier.get()
     }
