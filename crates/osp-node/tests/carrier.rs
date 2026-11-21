@@ -340,15 +340,38 @@ async fn offer_of(
 /// fails, asks `host` for a fresh offer and tries again, twice at most: under
 /// load the host may have linked to its hop again since the offer, and its
 /// slot was the old link's.
+///
+/// Each failure says `when`, and whether the offer's circuit key is the one
+/// in the machine record of `seed`, the hop, now: a refused first hop with
+/// another key means the host handed out a key its hop no longer holds.
 async fn fetch_through(
     relay: &RelayUrl,
     offer: &CircuitOffer,
     blob: BlobHash,
     again: (&(Endpoint, SecretKey), &Node, (ObjectId, BlobHash)),
+    (seed, when): (EndpointId, &str),
 ) -> Vec<u8> {
     let mut offer = offer.clone();
     for tried in 1.. {
-        match try_fetch_through(relay, &offer, blob).await {
+        let result = try_fetch_through(relay, &offer, blob).await;
+        if let Err(e) = &result {
+            let key = |text: &str| {
+                let bytes = data_encoding::BASE64URL_NOPAD
+                    .decode(text.as_bytes())
+                    .ok()?;
+                let info = Descriptor::from_bytes(&bytes).ok()?.verify(now()).ok()?;
+                Some(info.circuit_key)
+            };
+            let live = greet(again.0, seed).await.carrier;
+            let same = match live.as_deref().and_then(key) {
+                Some(live) => (key(&offer.carrier) == Some(live)).to_string(),
+                None => "no live descriptor".to_string(),
+            };
+            eprintln!(
+                "{when}, try {tried}: {e:#} (the offer's circuit key is the hop's now: {same})"
+            );
+        }
+        match result {
             Ok(got) => return got,
             Err(e) if tried < 3 => {
                 eprintln!("fetching through the hop, try {tried}: {e:#}");
@@ -438,7 +461,14 @@ async fn a_host_names_its_seed_carrier_and_is_reached_through_it() {
     // Her circuit endpoint is none of the endpoints with an address.
     assert!(!alice.endpoint_ids().contains(&offer.endpoint));
 
-    let photo = fetch_through(&relay, &offer, asked.1, (&me, &alice, asked)).await;
+    let photo = fetch_through(
+        &relay,
+        &offer,
+        asked.1,
+        (&me, &alice, asked),
+        (seed, "before Kim's node restarts"),
+    )
+    .await;
     assert_eq!(iroh_blobs::Hash::new(&photo).as_bytes(), asked.1.as_bytes());
 
     // Kim's node goes: no hop to name. Back: linked again, through the same
@@ -449,7 +479,14 @@ async fn a_host_names_its_seed_carrier_and_is_reached_through_it() {
     let again = offer_of(&me, &alice, asked, true).await.unwrap();
     assert_eq!(again.endpoint, offer.endpoint);
     assert_eq!(
-        fetch_through(&relay, &again, asked.1, (&me, &alice, asked)).await,
+        fetch_through(
+            &relay,
+            &again,
+            asked.1,
+            (&me, &alice, asked),
+            (seed, "after Kim's node restarts")
+        )
+        .await,
         photo
     );
 
