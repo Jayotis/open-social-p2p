@@ -661,7 +661,7 @@ async fn media_hosts_as_stranger(
 
 /// The public IDs of the hosts a media-hosts reply names.
 fn named_by(reply: &MediaHostsResponse) -> HashSet<EndpointId> {
-    let MediaHostsResponse::Hosts { hosts } = reply else {
+    let MediaHostsResponse::Hosts { hosts, .. } = reply else {
         panic!("unexpected {reply:?}");
     };
     hosts.iter().map(|h| h.binding.public).collect()

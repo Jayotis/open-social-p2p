@@ -42,8 +42,8 @@ const RENEW: Duration = Duration::from_secs(60);
 pub(crate) struct CarrierSide {
     /// The endpoint it carries on.
     pub endpoint: Endpoint,
-    /// The carrier, once the endpoint has a relay to name. Hosts' slots and
-    /// status read it from part 4b on.
+    /// The carrier, once the endpoint has a relay to name. Status reads it
+    /// from part 5 on.
     #[allow(dead_code)]
     carrier: Arc<OnceLock<Carrier>>,
     _task: AbortOnDropHandle<()>,
@@ -62,24 +62,20 @@ impl CarrierSide {
         if !config.carrier.enabled {
             return Ok(None);
         }
-        let net = &config.network;
-        let relay_mode = match &net.relay {
-            RelayChoice::Disabled => {
-                info!("not carrying for other nodes: carrying needs a relay, and relays are off");
-                return Ok(None);
-            }
-            RelayChoice::Default => RelayMode::Default,
-            RelayChoice::Custom(_) => RelayMode::Custom(own_relay_map(net)?),
+        let Some(relay_mode) = relay_mode(config)? else {
+            info!("not carrying for other nodes: carrying needs a relay, and relays are off");
+            return Ok(None);
         };
-        let path = home.carrier_key();
-        let key = match path.exists() {
-            true => keys::load(&path)?,
-            false => keys::create(&path)?,
-        };
-        let endpoint = carrier_endpoint(config, relay_mode, key).await?;
-        if let Some(fallback) = relays.fallback() {
-            fallback.follow(&endpoint);
-        }
+        let key = kept_key(&home.carrier_key())?;
+        let endpoint = relayed_endpoint(
+            config,
+            relay_mode,
+            relays,
+            key,
+            vec![osp_carrier::ALPN.to_vec()],
+        )
+        .await
+        .context("starting the carrier endpoint")?;
         let limits = match config.carrier.seed {
             true => Limits::seed(),
             false => Limits::home(),
@@ -112,18 +108,40 @@ impl CarrierSide {
     }
 }
 
-/// An endpoint for carrying: a relay, no address lookup and nothing
-/// published, so neighbours reach it only by the ID and relay in its
-/// descriptor. A relay-only node binds no IP sockets here either.
-async fn carrier_endpoint(
+/// The relays a link between carriers goes through, or None with relays
+/// off: neighbours reach each other through a relay first.
+pub(crate) fn relay_mode(config: &Config) -> Result<Option<RelayMode>> {
+    let net = &config.network;
+    Ok(match &net.relay {
+        RelayChoice::Disabled => None,
+        RelayChoice::Default => Some(RelayMode::Default),
+        RelayChoice::Custom(_) => Some(RelayMode::Custom(own_relay_map(net)?)),
+    })
+}
+
+/// The key at `path`, made the first time.
+pub(crate) fn kept_key(path: &std::path::Path) -> Result<SecretKey> {
+    match path.exists() {
+        true => keys::load(path),
+        false => keys::create(path),
+    }
+}
+
+/// An endpoint for links between carriers, or between a host and its hop: a
+/// relay, no address lookup and nothing published, so the other end reaches
+/// it only by an ID it was given. A relay-only node binds no IP sockets here
+/// either.
+pub(crate) async fn relayed_endpoint(
     config: &Config,
     relay_mode: RelayMode,
+    relays: &RelayPolicy,
     key: SecretKey,
+    alpns: Vec<Vec<u8>>,
 ) -> Result<Endpoint> {
     let net = &config.network;
     let mut builder = Endpoint::builder(presets::Minimal)
         .relay_mode(relay_mode)
-        .alpns(vec![osp_carrier::ALPN.to_vec()])
+        .alpns(alpns)
         .secret_key(key);
     if net.relay_only {
         builder = builder.clear_ip_transports();
@@ -131,10 +149,11 @@ async fn carrier_endpoint(
         // On the main endpoint's address, on a port of its own.
         builder = builder.bind_addr(SocketAddr::new(bind.ip(), 0))?;
     }
-    builder
-        .bind()
-        .await
-        .context("starting the carrier endpoint")
+    let endpoint = builder.bind().await?;
+    if let Some(fallback) = relays.fallback() {
+        fallback.follow(&endpoint);
+    }
+    Ok(endpoint)
 }
 
 /// Starts the carrier once its endpoint has a relay, tells it when the relay

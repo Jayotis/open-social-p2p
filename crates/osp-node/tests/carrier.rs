@@ -1,6 +1,7 @@
 //! Every node carries (ADR 0043, stage B part 4a): its machine record names
 //! its carrier in a signed descriptor and says when its machine key started,
-//! and a circuit goes through the node's carrier.
+//! and a circuit goes through the node's carrier. A host keeps a link to a
+//! seed carrier and names it to viewers (part 4b).
 //!
 //! Kim's node is the carrier here. Machine names run on the simulated
 //! network, which has no Tor; the carrier endpoint uses a real relay on
@@ -15,13 +16,15 @@ use iroh::{
 use iroh_relay::server::{RelayConfig, Server, ServerConfig};
 use osp_carrier::{ALPN, CarrierInfo, Descriptor, HostEvent, HostLink, ViewerCircuit};
 use osp_node::{
-    Config, Node, RelayChoice, SimSettings,
+    Config, Node, RelayChoice, SeedCarrier, SimSettings,
     simnet::{self, Link, SimNet},
 };
 use osp_proto::{
-    MACHINE_ALPN,
+    BlobHash, MACHINE_ALPN, ObjectId,
     framing::{read_frame, write_frame},
     machine::{MachineInfo, MachineRecord, MachineRequest, MachineResponse},
+    rpc::{ClientRequest, ClientResponse},
+    social::{CircuitOffer, MEDIA_HOSTS_ALPN, MediaHostsRequest, MediaHostsResponse},
 };
 use tokio::time::timeout;
 
@@ -228,4 +231,186 @@ async fn a_node_without_a_relay_or_with_carrying_off_names_no_carrier() {
         assert!(!home.join("carrier.key").exists(), "{name}");
         node.shutdown().await.unwrap();
     }
+}
+
+async fn call(node: &Node, req: ClientRequest) -> ClientResponse {
+    match node.handle(req).await {
+        ClientResponse::Error { message } => panic!("request failed: {message}"),
+        resp => resp,
+    }
+}
+
+/// A small photo, posted.
+async fn post_photo(node: &Node, dir: &Path) -> (ObjectId, BlobHash) {
+    let photo = dir.join("photo.png");
+    let status = tokio::process::Command::new("ffmpeg")
+        .args(["-hide_banner", "-loglevel", "error", "-y"])
+        .args(["-f", "lavfi", "-i", "testsrc=s=64x64", "-frames:v", "1"])
+        .arg(&photo)
+        .status()
+        .await
+        .expect("ffmpeg must be installed");
+    assert!(status.success());
+    let req = ClientRequest::Post {
+        content: "Alice's photo".into(),
+        attachments: vec![photo],
+        uploads: vec![],
+        upload: None,
+    };
+    let ClientResponse::Posted { id } = call(node, req).await else {
+        panic!("not posted")
+    };
+    let ClientResponse::Item { item } = call(node, ClientRequest::Show { id }).await else {
+        panic!("not shown")
+    };
+    (id, item.attachments[0].attachment.blob)
+}
+
+/// What `host`'s media endpoint answers a stranger asking who hosts `blob`.
+async fn media_hosts(
+    me: &(Endpoint, SecretKey),
+    host: &Node,
+    (post, blob): (ObjectId, BlobHash),
+) -> Option<CircuitOffer> {
+    let ClientResponse::Status(status) = call(host, ClientRequest::Status).await else {
+        panic!("no status");
+    };
+    let media = status
+        .endpoints
+        .and_then(|e| e.media)
+        .expect("a media endpoint");
+    let addr = EndpointAddr::from_parts(media, [TransportAddr::Custom(simnet::addr(media))]);
+    let conn = me.0.connect(addr, MEDIA_HOSTS_ALPN).await.unwrap();
+    let (mut send, mut recv) = conn.open_bi().await.unwrap();
+    write_frame(&mut send, &MediaHostsRequest { post, blob })
+        .await
+        .unwrap();
+    send.finish().unwrap();
+    let reply: MediaHostsResponse = read_frame(&mut recv).await.unwrap();
+    conn.close(0u32.into(), b"done");
+    let MediaHostsResponse::Hosts { circuit, .. } = reply else {
+        panic!("unexpected {reply:?}");
+    };
+    circuit.map(|c| *c)
+}
+
+/// Waits for `host` to name a hop, or to name none.
+async fn offer_of(
+    me: &(Endpoint, SecretKey),
+    host: &Node,
+    asked: (ObjectId, BlobHash),
+    named: bool,
+) -> Option<CircuitOffer> {
+    timeout(Duration::from_secs(60), async {
+        loop {
+            let offer = media_hosts(me, host, asked).await;
+            if offer.is_some() == named {
+                return offer;
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| {
+        panic!(
+            "the host never named {}",
+            if named { "a hop" } else { "no hop" }
+        )
+    })
+}
+
+/// Fetches `blob` with only what `offer` says: a circuit through the hop it
+/// names, to the slot, then the ends' QUIC to the circuit endpoint.
+async fn fetch_through(relay: &RelayUrl, offer: &CircuitOffer, blob: BlobHash) -> Vec<u8> {
+    use iroh_blobs::store::mem::MemStore;
+
+    let bytes = data_encoding::BASE64URL_NOPAD
+        .decode(offer.carrier.as_bytes())
+        .unwrap();
+    let descriptor = Descriptor::from_bytes(&bytes).unwrap();
+    let info = descriptor.verify(now()).unwrap();
+    let viewer = end(relay).await;
+    let circuit = ViewerCircuit::build(
+        link(&viewer, &info).await,
+        std::slice::from_ref(&descriptor),
+        offer.slot,
+    )
+    .await
+    .unwrap();
+    let ends = osp_carrier::viewer_endpoint(circuit, offer.endpoint)
+        .await
+        .unwrap();
+    let conn = timeout(
+        WAIT,
+        ends.connect(EndpointAddr::new(offer.endpoint), iroh_blobs::ALPN),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(conn.remote_id(), offer.endpoint);
+    let mine = MemStore::new();
+    let hash = iroh_blobs::Hash::from_bytes(*blob.as_bytes());
+    timeout(WAIT, mine.remote().fetch(conn.clone(), hash))
+        .await
+        .unwrap()
+        .unwrap();
+    let got = mine.get_bytes(hash).await.unwrap().to_vec();
+    conn.close(0u32.into(), b"done");
+    ends.close().await;
+    viewer.close().await;
+    got
+}
+
+/// Alice's node links to Kim's, a seed carrier, and names it, the slot and
+/// her circuit endpoint to a stranger asking who hosts her photo. The
+/// stranger fetches the photo through Kim's node with only that, and the
+/// file checks out. With Kim's node off, Alice's names no hop; once it's
+/// back, it links again.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_host_names_its_seed_carrier_and_is_reached_through_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_relay, relay) = local_relay().await;
+    let net = SimNet::new(3);
+    let kim_home = dir.path().join("kim");
+    let mut kim_config = config("Kim", &relay);
+    kim_config.carrier.seed = true;
+    Node::init(&kim_home, &kim_config).unwrap();
+    let kim = start(&kim_home, &net).await;
+    let seed = kim.machine_id().unwrap();
+
+    let alice_home = dir.path().join("alice");
+    let mut alice_config = config("Alice", &relay);
+    alice_config.endpoints.enabled = true;
+    alice_config.carrier.known = vec![SeedCarrier { machine: seed }];
+    Node::init(&alice_home, &alice_config).unwrap();
+    let alice = start(&alice_home, &net).await;
+    let asked = post_photo(&alice, dir.path()).await;
+    let me = stranger(&net).await;
+
+    let offer = offer_of(&me, &alice, asked, true).await.unwrap();
+    let bytes = data_encoding::BASE64URL_NOPAD
+        .decode(offer.carrier.as_bytes())
+        .unwrap();
+    let hop = Descriptor::from_bytes(&bytes)
+        .unwrap()
+        .verify(now())
+        .unwrap();
+    assert_eq!(hop.machine, seed);
+    // Her circuit endpoint is none of the endpoints with an address.
+    assert!(!alice.endpoint_ids().contains(&offer.endpoint));
+
+    let photo = fetch_through(&relay, &offer, asked.1).await;
+    assert_eq!(iroh_blobs::Hash::new(&photo).as_bytes(), asked.1.as_bytes());
+
+    // Kim's node goes: no hop to name. Back: linked again, through the same
+    // circuit endpoint.
+    kim.shutdown().await.unwrap();
+    assert!(offer_of(&me, &alice, asked, false).await.is_none());
+    let kim = start(&kim_home, &net).await;
+    let again = offer_of(&me, &alice, asked, true).await.unwrap();
+    assert_eq!(again.endpoint, offer.endpoint);
+    assert_eq!(fetch_through(&relay, &again, asked.1).await, photo);
+
+    alice.shutdown().await.unwrap();
+    kim.shutdown().await.unwrap();
 }

@@ -346,7 +346,11 @@ impl Core {
             true => Some(Box::new(self.bound_endpoint(&own.direct).await)),
             false => None,
         };
-        Ok(SocialResponse::Endpoints { media, direct })
+        Ok(SocialResponse::Endpoints {
+            media,
+            direct,
+            circuit: self.circuit_offer(),
+        })
     }
 
     /// Asks `node` for its endpoints, offering our direct one if our rule
@@ -363,7 +367,8 @@ impl Core {
             false => None,
         };
         let req = SocialRequest::Endpoints { direct: offer };
-        let SocialResponse::Endpoints { media, direct } = self.social_request(node, &req).await?
+        let SocialResponse::Endpoints { media, direct, .. } =
+            self.social_request(node, &req).await?
         else {
             bail!("unexpected reply to Endpoints");
         };

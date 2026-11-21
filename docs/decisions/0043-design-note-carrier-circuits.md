@@ -60,6 +60,8 @@ A carrier's endpoint is an iroh endpoint with a relay, **published nowhere** (no
 
 **1. The host's side.** H keeps a connection with Q, as a node keeps one with its relay. Q gives that connection a **host slot**: a random, short-lived token with no address in it. When V asks over Tor, H hands over Q's descriptor, the slot and H's circuit endpoint ID. V never gets H's address.
 
+*Settled when building (2026-11-20).* Until ADR 0018, Q is a seed carrier from `carriers.txt`, and H reads its descriptor from its machine record. H dials Q from an endpoint made for that link alone, never from its machine name or its public ID, so Q sees the link's address and nothing that names H's machine or owner. Its circuit endpoint keeps its key across restarts and answers what its media endpoint answers. H hands out the offer in its answer to `Endpoints` over Tor and to a viewing endpoint's media-hosts request, and builds the link again when it closes and once a day after Q's circuit key is replaced.
+
 **2. The first hop.** V connects to P and sends `CREATE` with the HPKE setup for P.
 
 **3. One hop at a time.** V sends `EXTEND` through the circuit so far, naming the next carrier by machine ID with its descriptor. Only the last hop can read it, checks the descriptor's signature, dials that carrier's endpoint, and passes on the next hop's HPKE setup. P learns its next neighbour, never what follows.
