@@ -44,9 +44,10 @@ jobs:
           fi
           printf '%s\n' "$files"
           all=false
-          grep -Eq '^\.github/' <<< "$files" && all=true
+          # Workflows other than the mirror's can change any job.
+          grep -E '^\.github/' <<< "$files" | grep -Evq '^\.github/workflows/sync-codefloe\.yml$' && all=true
           # What can't change what Rust builds or tests.
-          not_rust='^(docs/|notes/|app/(lib|test|android|ios|icon|assets|fonts)/|app/[^/]+$|[^/]+\.md$|LICENSE$|codemagic\.yaml$|\.gitignore$|\.gitleaks\.toml$)'
+          not_rust='^(\.github/workflows/sync-codefloe\.yml$|docs/|notes/|app/(lib|test|android|ios|icon|assets|fonts)/|app/[^/]+$|[^/]+\.md$|LICENSE$|codemagic\.yaml$|\.gitignore$|\.gitleaks\.toml$)'
           rust=$all
           grep -Evq "$not_rust" <<< "$files" && rust=true
           # The app's Dart, not the Rust under app/rust (the rust job's).
