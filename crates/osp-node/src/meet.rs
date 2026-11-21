@@ -327,6 +327,14 @@ pub(crate) struct Start {
     pub first_seen_ms: i64,
 }
 
+/// A machine in the table that names a carrier (`Acquaintances::carriers`).
+#[derive(Debug, Clone)]
+pub(crate) struct TableCarrier {
+    pub machine: EndpointId,
+    pub descriptor: osp_carrier::Descriptor,
+    pub start: Option<Start>,
+}
+
 /// A machine's start is forgotten this long after it was first seen, once
 /// it's out of the table.
 const START_KEPT_MS: i64 = 30 * 24 * 60 * 60 * 1000;
@@ -824,7 +832,6 @@ impl Table {
     }
 
     /// When `machine` started, as held here, if it's been seen.
-    #[cfg_attr(not(test), allow(dead_code))] // for newcomers' turns, in part 4d
     pub fn start(&self, machine: &EndpointId) -> Option<Start> {
         self.starts.get(machine).copied()
     }
@@ -1574,6 +1581,26 @@ impl Acquaintances {
 
     pub fn acquaintances(&self) -> Vec<Acquaintance> {
         self.with(|t| t.acquaintances(now_ms()))
+    }
+
+    /// The machines in the table whose latest record names a carrier that
+    /// checks out at `now` (unix seconds), each with its descriptor and its
+    /// start as held here: those a viewer may give a middle turn (ADR 0017).
+    pub fn carriers(&self, now: u64) -> Vec<TableCarrier> {
+        let table = self.table.lock().unwrap_or_else(|e| e.into_inner());
+        table
+            .entries
+            .values()
+            .filter_map(|entry| {
+                let info = entry.record.verify().ok()?;
+                let descriptor = crate::machine::carrier_of(&info, now)?;
+                Some(TableCarrier {
+                    machine: entry.machine,
+                    descriptor,
+                    start: table.start(&entry.machine),
+                })
+            })
+            .collect()
     }
 
     /// How each machine looks in the Universe (ADR 0033).
