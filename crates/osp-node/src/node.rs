@@ -990,6 +990,22 @@ impl Node {
             .unwrap_or_default()
     }
 
+    /// The machines its table names as carriers, with a start held here:
+    /// those that may have a fresh middle turn. For tests: a machine is met
+    /// before its record names its carrier.
+    pub fn carriers_in_table(&self) -> Vec<EndpointId> {
+        let Some(machine) = self.core.machine.as_ref() else {
+            return Vec::new();
+        };
+        machine
+            .acquaintances
+            .carriers(crate::hops::unix_now())
+            .into_iter()
+            .filter(|c| c.start.is_some())
+            .map(|c| c.machine)
+            .collect()
+    }
+
     /// How its machine name's introductions went (ADR 0016). For tests and
     /// the simulator.
     pub fn introductions(&self) -> IntroductionCounts {

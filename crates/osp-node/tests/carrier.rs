@@ -818,19 +818,17 @@ async fn a_fresh_machine_carries_in_the_middle_and_is_taken_on_probation() {
     Node::init(&home, &jimmy_config).unwrap();
     let jimmy = Node::spawn_sim(&home, meeting).await.unwrap();
     let mo_machine = mo.machine_id().unwrap();
+    // Not only met: Mo's carrier starts after its machine does, so its
+    // first record may name none.
     timeout(Duration::from_secs(60), async {
-        while !jimmy
-            .acquaintances()
-            .iter()
-            .any(|a| a.machine == mo_machine)
-        {
+        while !jimmy.carriers_in_table().contains(&mo_machine) {
             let _ = jimmy.meet_round_now().await;
             let _ = mo.meet_round_now().await;
             tokio::time::sleep(Duration::from_millis(250)).await;
         }
     })
     .await
-    .expect("Jimmy's machine never heard of Mo's");
+    .expect("Jimmy's machine never heard of Mo's carrier");
 
     let home = dir.path().join("alice");
     let mut alice_config = config("Alice", &relay);
