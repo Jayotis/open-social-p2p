@@ -493,6 +493,8 @@ impl crate::node::Core {
             month_bytes,
             month_budget,
             over_budget,
+            data_cap_gb: controls.data_cap_gb,
+            monthly_gb: controls.monthly_gb,
             off,
             paused: controls.paused,
             metered: controls.metered,

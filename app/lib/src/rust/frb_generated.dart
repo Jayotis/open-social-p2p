@@ -66,7 +66,7 @@ class RustLib extends BaseEntrypoint<RustLibApi, RustLibApiImpl, RustLibWire> {
   String get codegenVersion => '2.13.0';
 
   @override
-  int get rustContentHash => -976717386;
+  int get rustContentHash => 322887748;
 
   static const kDefaultExternalLibraryLoaderConfig =
       ExternalLibraryLoaderConfig(
@@ -286,9 +286,25 @@ abstract class RustLibApi extends BaseApi {
 
   Future<List<SentReply>> crateApiOspOspAppSentReplies({required OspApp that});
 
+  Future<void> crateApiOspOspAppSetCarrying({
+    required OspApp that,
+    bool? paused,
+    bool? metered,
+    int? jobs,
+    int? uploadShare,
+    int? uploadMbps,
+    int? monthlyGb,
+    int? dataCapGb,
+  });
+
   Future<HideListState> crateApiOspOspAppSetHideList({
     required OspApp that,
     required bool inUse,
+  });
+
+  Future<void> crateApiOspOspAppSetHops({
+    required OspApp that,
+    required bool yes,
   });
 
   Future<Profile> crateApiOspOspAppSetProfile({
@@ -2142,6 +2158,74 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       const TaskConstMeta(debugName: "OspApp_sent_replies", argNames: ["that"]);
 
   @override
+  Future<void> crateApiOspOspAppSetCarrying({
+    required OspApp that,
+    bool? paused,
+    bool? metered,
+    int? jobs,
+    int? uploadShare,
+    int? uploadMbps,
+    int? monthlyGb,
+    int? dataCapGb,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerOspApp(
+            that,
+            serializer,
+          );
+          sse_encode_opt_box_autoadd_bool(paused, serializer);
+          sse_encode_opt_box_autoadd_bool(metered, serializer);
+          sse_encode_opt_box_autoadd_u_32(jobs, serializer);
+          sse_encode_opt_box_autoadd_u_32(uploadShare, serializer);
+          sse_encode_opt_box_autoadd_u_32(uploadMbps, serializer);
+          sse_encode_opt_box_autoadd_u_32(monthlyGb, serializer);
+          sse_encode_opt_box_autoadd_u_32(dataCapGb, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 50,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_unit,
+          decodeErrorData: sse_decode_AnyhowException,
+        ),
+        constMeta: kCrateApiOspOspAppSetCarryingConstMeta,
+        argValues: [
+          that,
+          paused,
+          metered,
+          jobs,
+          uploadShare,
+          uploadMbps,
+          monthlyGb,
+          dataCapGb,
+        ],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiOspOspAppSetCarryingConstMeta =>
+      const TaskConstMeta(
+        debugName: "OspApp_set_carrying",
+        argNames: [
+          "that",
+          "paused",
+          "metered",
+          "jobs",
+          "uploadShare",
+          "uploadMbps",
+          "monthlyGb",
+          "dataCapGb",
+        ],
+      );
+
+  @override
   Future<HideListState> crateApiOspOspAppSetHideList({
     required OspApp that,
     required bool inUse,
@@ -2158,7 +2242,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 50,
+            funcId: 51,
             port: port_,
           );
         },
@@ -2178,6 +2262,43 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         debugName: "OspApp_set_hide_list",
         argNames: ["that", "inUse"],
       );
+
+  @override
+  Future<void> crateApiOspOspAppSetHops({
+    required OspApp that,
+    required bool yes,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerOspApp(
+            that,
+            serializer,
+          );
+          sse_encode_bool(yes, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 52,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_unit,
+          decodeErrorData: sse_decode_AnyhowException,
+        ),
+        constMeta: kCrateApiOspOspAppSetHopsConstMeta,
+        argValues: [that, yes],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiOspOspAppSetHopsConstMeta => const TaskConstMeta(
+    debugName: "OspApp_set_hops",
+    argNames: ["that", "yes"],
+  );
 
   @override
   Future<Profile> crateApiOspOspAppSetProfile({
@@ -2204,7 +2325,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 51,
+            funcId: 53,
             port: port_,
           );
         },
@@ -2251,7 +2372,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 52,
+            funcId: 54,
             port: port_,
           );
         },
@@ -2291,7 +2412,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 53,
+            funcId: 55,
             port: port_,
           );
         },
@@ -2329,7 +2450,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 54,
+            funcId: 56,
             port: port_,
           );
         },
@@ -2366,7 +2487,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 55,
+            funcId: 57,
             port: port_,
           );
         },
@@ -2399,7 +2520,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 56,
+            funcId: 58,
             port: port_,
           );
         },
@@ -2430,7 +2551,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 57,
+            funcId: 59,
             port: port_,
           );
         },
@@ -2467,7 +2588,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 58,
+            funcId: 60,
             port: port_,
           );
         },
@@ -2504,7 +2625,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 59,
+            funcId: 61,
             port: port_,
           );
         },
@@ -2537,7 +2658,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 60,
+            funcId: 62,
             port: port_,
           );
         },
@@ -2574,7 +2695,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 61,
+            funcId: 63,
             port: port_,
           );
         },
@@ -2611,7 +2732,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 62,
+            funcId: 64,
             port: port_,
           );
         },
@@ -2652,7 +2773,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 63,
+            funcId: 65,
             port: port_,
           );
         },
@@ -2689,7 +2810,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 64,
+            funcId: 66,
             port: port_,
           );
         },
@@ -2727,7 +2848,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 65,
+            funcId: 67,
             port: port_,
           );
         },
@@ -2764,7 +2885,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 66,
+            funcId: 68,
             port: port_,
           );
         },
@@ -2792,7 +2913,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         callFfi: () {
           final serializer = SseSerializer(generalizedFrbRustBinding);
           sse_encode_String(text, serializer);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 67)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 69)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_opt_box_autoadd_shared_code,
@@ -2817,7 +2938,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 68,
+            funcId: 70,
             port: port_,
           );
         },
@@ -2842,7 +2963,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         callFfi: () {
           final serializer = SseSerializer(generalizedFrbRustBinding);
           sse_encode_String(text, serializer);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 69)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 71)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_bool,
@@ -2865,7 +2986,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         callFfi: () {
           final serializer = SseSerializer(generalizedFrbRustBinding);
           sse_encode_String(text, serializer);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 70)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 72)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_bool,
@@ -2887,7 +3008,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       SyncTask(
         callFfi: () {
           final serializer = SseSerializer(generalizedFrbRustBinding);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 71)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 73)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_String,
@@ -2910,7 +3031,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         callFfi: () {
           final serializer = SseSerializer(generalizedFrbRustBinding);
           sse_encode_String(text, serializer);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 72)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 74)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_shared_code,
@@ -3056,6 +3177,18 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  bool dco_decode_box_autoadd_bool(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return raw as bool;
+  }
+
+  @protected
+  CarrierState dco_decode_box_autoadd_carrier_state(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return dco_decode_carrier_state(raw);
+  }
+
+  @protected
   PlatformInt64 dco_decode_box_autoadd_i_64(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return dco_decode_i_64(raw);
@@ -3146,6 +3279,36 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  CarrierState dco_decode_carrier_state(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 20)
+      throw Exception('unexpected arr length: expect 20 but see ${arr.length}');
+    return CarrierState(
+      carrying: dco_decode_bool(arr[0]),
+      off: dco_decode_opt_String(arr[1]),
+      paused: dco_decode_bool(arr[2]),
+      metered: dco_decode_bool(arr[3]),
+      seed: dco_decode_bool(arr[4]),
+      jobs: dco_decode_u_32(arr[5]),
+      uploadShare: dco_decode_u_32(arr[6]),
+      uploadMbps: dco_decode_f_64(arr[7]),
+      uploadFrom: dco_decode_String(arr[8]),
+      circuits: dco_decode_u_32(arr[9]),
+      bytes: dco_decode_i_64(arr[10]),
+      hops: dco_decode_opt_box_autoadd_bool(arr[11]),
+      monthBytes: dco_decode_i_64(arr[12]),
+      monthBudget: dco_decode_opt_box_autoadd_i_64(arr[13]),
+      overBudget: dco_decode_bool(arr[14]),
+      dataCapGb: dco_decode_u_32(arr[15]),
+      monthlyGb: dco_decode_opt_box_autoadd_u_32(arr[16]),
+      seeds: dco_decode_u_32(arr[17]),
+      standing: dco_decode_u_32(arr[18]),
+      probation: dco_decode_u_32(arr[19]),
+    );
+  }
+
+  @protected
   ConnectedPerson dco_decode_connected_person(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
@@ -3190,6 +3353,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
 
   @protected
   double dco_decode_f_32(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return raw as double;
+  }
+
+  @protected
+  double dco_decode_f_64(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return raw as double;
   }
@@ -3524,8 +3693,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   NodeStatus dco_decode_node_status(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 19)
-      throw Exception('unexpected arr length: expect 19 but see ${arr.length}');
+    if (arr.length != 20)
+      throw Exception('unexpected arr length: expect 20 but see ${arr.length}');
     return NodeStatus(
       name: dco_decode_String(arr[0]),
       version: dco_decode_String(arr[1]),
@@ -3546,6 +3715,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       hostedPosts: dco_decode_u_32(arr[16]),
       servedLatelyBytes: dco_decode_i_64(arr[17]),
       spaceBytes: dco_decode_i_64(arr[18]),
+      carrier: dco_decode_opt_box_autoadd_carrier_state(arr[19]),
     );
   }
 
@@ -3553,6 +3723,18 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   String? dco_decode_opt_String(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return raw == null ? null : dco_decode_String(raw);
+  }
+
+  @protected
+  bool? dco_decode_opt_box_autoadd_bool(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return raw == null ? null : dco_decode_box_autoadd_bool(raw);
+  }
+
+  @protected
+  CarrierState? dco_decode_opt_box_autoadd_carrier_state(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return raw == null ? null : dco_decode_box_autoadd_carrier_state(raw);
   }
 
   @protected
@@ -4206,6 +4388,20 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  bool sse_decode_box_autoadd_bool(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return (sse_decode_bool(deserializer));
+  }
+
+  @protected
+  CarrierState sse_decode_box_autoadd_carrier_state(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return (sse_decode_carrier_state(deserializer));
+  }
+
+  @protected
   PlatformInt64 sse_decode_box_autoadd_i_64(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     return (sse_decode_i_64(deserializer));
@@ -4303,6 +4499,53 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  CarrierState sse_decode_carrier_state(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_carrying = sse_decode_bool(deserializer);
+    var var_off = sse_decode_opt_String(deserializer);
+    var var_paused = sse_decode_bool(deserializer);
+    var var_metered = sse_decode_bool(deserializer);
+    var var_seed = sse_decode_bool(deserializer);
+    var var_jobs = sse_decode_u_32(deserializer);
+    var var_uploadShare = sse_decode_u_32(deserializer);
+    var var_uploadMbps = sse_decode_f_64(deserializer);
+    var var_uploadFrom = sse_decode_String(deserializer);
+    var var_circuits = sse_decode_u_32(deserializer);
+    var var_bytes = sse_decode_i_64(deserializer);
+    var var_hops = sse_decode_opt_box_autoadd_bool(deserializer);
+    var var_monthBytes = sse_decode_i_64(deserializer);
+    var var_monthBudget = sse_decode_opt_box_autoadd_i_64(deserializer);
+    var var_overBudget = sse_decode_bool(deserializer);
+    var var_dataCapGb = sse_decode_u_32(deserializer);
+    var var_monthlyGb = sse_decode_opt_box_autoadd_u_32(deserializer);
+    var var_seeds = sse_decode_u_32(deserializer);
+    var var_standing = sse_decode_u_32(deserializer);
+    var var_probation = sse_decode_u_32(deserializer);
+    return CarrierState(
+      carrying: var_carrying,
+      off: var_off,
+      paused: var_paused,
+      metered: var_metered,
+      seed: var_seed,
+      jobs: var_jobs,
+      uploadShare: var_uploadShare,
+      uploadMbps: var_uploadMbps,
+      uploadFrom: var_uploadFrom,
+      circuits: var_circuits,
+      bytes: var_bytes,
+      hops: var_hops,
+      monthBytes: var_monthBytes,
+      monthBudget: var_monthBudget,
+      overBudget: var_overBudget,
+      dataCapGb: var_dataCapGb,
+      monthlyGb: var_monthlyGb,
+      seeds: var_seeds,
+      standing: var_standing,
+      probation: var_probation,
+    );
+  }
+
+  @protected
   ConnectedPerson sse_decode_connected_person(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var var_identity = sse_decode_String(deserializer);
@@ -4350,6 +4593,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   double sse_decode_f_32(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     return deserializer.buffer.getFloat32();
+  }
+
+  @protected
+  double sse_decode_f_64(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return deserializer.buffer.getFloat64();
   }
 
   @protected
@@ -4889,6 +5138,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_hostedPosts = sse_decode_u_32(deserializer);
     var var_servedLatelyBytes = sse_decode_i_64(deserializer);
     var var_spaceBytes = sse_decode_i_64(deserializer);
+    var var_carrier = sse_decode_opt_box_autoadd_carrier_state(deserializer);
     return NodeStatus(
       name: var_name,
       version: var_version,
@@ -4909,6 +5159,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       hostedPosts: var_hostedPosts,
       servedLatelyBytes: var_servedLatelyBytes,
       spaceBytes: var_spaceBytes,
+      carrier: var_carrier,
     );
   }
 
@@ -4918,6 +5169,30 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
 
     if (sse_decode_bool(deserializer)) {
       return (sse_decode_String(deserializer));
+    } else {
+      return null;
+    }
+  }
+
+  @protected
+  bool? sse_decode_opt_box_autoadd_bool(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    if (sse_decode_bool(deserializer)) {
+      return (sse_decode_box_autoadd_bool(deserializer));
+    } else {
+      return null;
+    }
+  }
+
+  @protected
+  CarrierState? sse_decode_opt_box_autoadd_carrier_state(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    if (sse_decode_bool(deserializer)) {
+      return (sse_decode_box_autoadd_carrier_state(deserializer));
     } else {
       return null;
     }
@@ -5697,6 +5972,21 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_box_autoadd_bool(bool self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_bool(self, serializer);
+  }
+
+  @protected
+  void sse_encode_box_autoadd_carrier_state(
+    CarrierState self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_carrier_state(self, serializer);
+  }
+
+  @protected
   void sse_encode_box_autoadd_i_64(
     PlatformInt64 self,
     SseSerializer serializer,
@@ -5804,6 +6094,31 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_carrier_state(CarrierState self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_bool(self.carrying, serializer);
+    sse_encode_opt_String(self.off, serializer);
+    sse_encode_bool(self.paused, serializer);
+    sse_encode_bool(self.metered, serializer);
+    sse_encode_bool(self.seed, serializer);
+    sse_encode_u_32(self.jobs, serializer);
+    sse_encode_u_32(self.uploadShare, serializer);
+    sse_encode_f_64(self.uploadMbps, serializer);
+    sse_encode_String(self.uploadFrom, serializer);
+    sse_encode_u_32(self.circuits, serializer);
+    sse_encode_i_64(self.bytes, serializer);
+    sse_encode_opt_box_autoadd_bool(self.hops, serializer);
+    sse_encode_i_64(self.monthBytes, serializer);
+    sse_encode_opt_box_autoadd_i_64(self.monthBudget, serializer);
+    sse_encode_bool(self.overBudget, serializer);
+    sse_encode_u_32(self.dataCapGb, serializer);
+    sse_encode_opt_box_autoadd_u_32(self.monthlyGb, serializer);
+    sse_encode_u_32(self.seeds, serializer);
+    sse_encode_u_32(self.standing, serializer);
+    sse_encode_u_32(self.probation, serializer);
+  }
+
+  @protected
   void sse_encode_connected_person(
     ConnectedPerson self,
     SseSerializer serializer,
@@ -5843,6 +6158,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   void sse_encode_f_32(double self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     serializer.buffer.putFloat32(self);
+  }
+
+  @protected
+  void sse_encode_f_64(double self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    serializer.buffer.putFloat64(self);
   }
 
   @protected
@@ -6288,6 +6609,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_u_32(self.hostedPosts, serializer);
     sse_encode_i_64(self.servedLatelyBytes, serializer);
     sse_encode_i_64(self.spaceBytes, serializer);
+    sse_encode_opt_box_autoadd_carrier_state(self.carrier, serializer);
   }
 
   @protected
@@ -6297,6 +6619,29 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_bool(self != null, serializer);
     if (self != null) {
       sse_encode_String(self, serializer);
+    }
+  }
+
+  @protected
+  void sse_encode_opt_box_autoadd_bool(bool? self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    sse_encode_bool(self != null, serializer);
+    if (self != null) {
+      sse_encode_box_autoadd_bool(self, serializer);
+    }
+  }
+
+  @protected
+  void sse_encode_opt_box_autoadd_carrier_state(
+    CarrierState? self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    sse_encode_bool(self != null, serializer);
+    if (self != null) {
+      sse_encode_box_autoadd_carrier_state(self, serializer);
     }
   }
 
@@ -7097,12 +7442,40 @@ class OspAppImpl extends RustOpaque implements OspApp {
   Future<List<SentReply>> sentReplies() =>
       RustLib.instance.api.crateApiOspOspAppSentReplies(that: this);
 
+  /// Changes how the node carries for others (ADR 0043 §8). Each one
+  /// left out stays as it is. `monthly_gb` and `data_cap_gb` take 0 for
+  /// no limit.
+  Future<void> setCarrying({
+    bool? paused,
+    bool? metered,
+    int? jobs,
+    int? uploadShare,
+    int? uploadMbps,
+    int? monthlyGb,
+    int? dataCapGb,
+  }) => RustLib.instance.api.crateApiOspOspAppSetCarrying(
+    that: this,
+    paused: paused,
+    metered: metered,
+    jobs: jobs,
+    uploadShare: uploadShare,
+    uploadMbps: uploadMbps,
+    monthlyGb: monthlyGb,
+    dataCapGb: dataCapGb,
+  );
+
   /// Answers whether to use the list, or changes the answer. Off, all it
   /// hid comes back; on, the node fetches it soon.
   Future<HideListState> setHideList({required bool inUse}) => RustLib
       .instance
       .api
       .crateApiOspOspAppSetHideList(that: this, inUse: inUse);
+
+  /// The owner's answer on whether the hops the node picks may see its
+  /// internet address: yes, its own video goes through them; no, through
+  /// relays.
+  Future<void> setHops({required bool yes}) =>
+      RustLib.instance.api.crateApiOspOspAppSetHops(that: this, yes: yes);
 
   /// Publishes the owner's profile. `photo`, a file on this phone shrunk
   /// to about 1,024 px, becomes the new picture; without one,

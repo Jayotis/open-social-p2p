@@ -51,11 +51,13 @@ Carrying uses half your upload at most, always behind your own traffic, so setup
 - `osp carrier metered yes` stops it while your connection is metered;
 - `osp carrier pause` stops it for troubleshooting, and `osp carrier resume` starts it again. A paused node still gets every post and video.
 
+The app has the same controls under *Your node*, *Carrying*.
+
 Setup also asks one question about your own video:
 
 > Your node can fetch and send video through other nodes it picks, which is much faster than the public fallback. The node next to yours sees your internet address and which node you're fetching from, as the fallback does today, but never what's inside.
 
-Yes is recommended. With no, or until you answer, your node's own video goes through the public fallback relays, as today. `osp hops yes` or `osp hops no` changes it at any time.
+Yes is recommended. With no, or until you answer, your node's own video goes through the public fallback relays, as today. `osp hops yes` or `osp hops no` changes it at any time, as does *Carrying* in the app. A node set up before the question asks it in the app, once paired.
 
 For the first few minutes, while Tor makes its first connections, a search may find nobody, and `osp directory read` may say a directory didn't answer. Try again a minute later.
 

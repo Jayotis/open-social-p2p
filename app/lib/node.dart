@@ -275,6 +275,47 @@ class HomeNode extends ChangeNotifier with WidgetsBindingObserver {
     }
   }
 
+  /// Carrying for other nodes (ADR 0043 §8), as the node last said. None
+  /// from a node before carrying's controls.
+  CarrierState? get carrier => status?.carrier;
+
+  /// Whether to ask if the hops the node picks may see its address: its
+  /// node knows seed carriers and hasn't been asked, as one set up before
+  /// the question wasn't. Until then its own video goes through relays.
+  bool get hopsDue {
+    final c = carrier;
+    return paired != null && c != null && c.hops == null && c.seeds > 0;
+  }
+
+  /// The owner's answer on the hops seeing the node's address.
+  Future<void> answerHops(bool yes) async {
+    await app.setHops(yes: yes);
+    await checkStatus();
+  }
+
+  /// Changes how the node carries; each one left out stays as it is.
+  /// Fails with the node's reason, as for a share over 100 percent.
+  Future<void> setCarrying({
+    bool? paused,
+    bool? metered,
+    int? jobs,
+    int? uploadShare,
+    int? uploadMbps,
+    int? monthlyGb,
+    int? dataCapGb,
+  }) async {
+    await app.setCarrying(
+      paused: paused,
+      metered: metered,
+      jobs: jobs,
+      uploadShare: uploadShare,
+      uploadMbps: uploadMbps,
+      monthlyGb: monthlyGb,
+      dataCapGb: dataCapGb,
+    );
+    await checkStatus();
+  }
+
   Timer? _poll;
   StreamSubscription<List<ConnectivityResult>>? _network;
   final Map<String, Future<String>> _urls = {};

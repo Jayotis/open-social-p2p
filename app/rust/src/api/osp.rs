@@ -149,6 +149,53 @@ pub struct NodeStatus {
     pub served_lately_bytes: i64,
     /// The space OSP uses on the node.
     pub space_bytes: i64,
+    /// Carrying other nodes' encrypted video, and the question on the
+    /// node's own address (ADR 0043 §8). None from a node before part 5.
+    pub carrier: Option<CarrierState>,
+}
+
+/// Carrying for other nodes (ADR 0043 §8), as the owner set it and as it
+/// goes.
+pub struct CarrierState {
+    /// Whether it carries now: not paused, not metered, within the month's
+    /// budget, and running.
+    pub carrying: bool,
+    /// Why it doesn't run at all, in plain words, when it doesn't.
+    pub off: Option<String>,
+    pub paused: bool,
+    pub metered: bool,
+    /// A seed carrier, a server on the release's list.
+    pub seed: bool,
+    /// Circuits carrying at once.
+    pub jobs: u32,
+    /// The share of the upload carrying may use, in percent.
+    pub upload_share: u32,
+    /// The upload the share is of, in Mbit/s, and where that came from:
+    /// `set` (the owner's), `cap`, `measured` or `assumed`.
+    pub upload_mbps: f64,
+    pub upload_from: String,
+    /// Circuits open now; bytes carried since the node started.
+    pub circuits: u32,
+    pub bytes: i64,
+    /// The owner's answer on the hops it picks seeing its address: None if
+    /// not asked yet, when its own video goes through relays.
+    pub hops: Option<bool>,
+    /// Carried this UTC month, both ways, and what it may: None for no
+    /// limit.
+    pub month_bytes: i64,
+    pub month_budget: Option<i64>,
+    pub over_budget: bool,
+    /// The plan's monthly data cap in GB, 0 for unlimited or not given.
+    pub data_cap_gb: u32,
+    /// The owner's own monthly budget in GB, if set instead of half the
+    /// cap; 0 for no limit.
+    pub monthly_gb: Option<u32>,
+    /// Seed carriers the node knows: with none, its own video has no hop
+    /// to go through, and the question isn't asked.
+    pub seeds: u32,
+    /// Machines at standing with this node, and on probation.
+    pub standing: u32,
+    pub probation: u32,
 }
 
 /// A request to be a trusted follower, or someone trusted (ADR 0013).
@@ -826,6 +873,7 @@ impl OspApp {
             hosted_posts: s.shared.posts as u32,
             served_lately_bytes: s.served_lately_bytes as i64,
             space_bytes: s.space_bytes as i64,
+            carrier: s.carrier.map(|c| carrier_state(*c)),
         })
     }
 
@@ -1287,6 +1335,47 @@ impl OspApp {
             .request(&ClientRequest::HideException { actor, except })
             .await?;
         self.hide_list().await
+    }
+
+    /// Changes how the node carries for others (ADR 0043 §8). Each one
+    /// left out stays as it is. `monthly_gb` and `data_cap_gb` take 0 for
+    /// no limit.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn set_carrying(
+        &self,
+        paused: Option<bool>,
+        metered: Option<bool>,
+        jobs: Option<u32>,
+        upload_share: Option<u32>,
+        upload_mbps: Option<u32>,
+        monthly_gb: Option<u32>,
+        data_cap_gb: Option<u32>,
+    ) -> Result<()> {
+        let upload_share = upload_share
+            .map(|p| {
+                u8::try_from(p).map_err(|_| anyhow::anyhow!("the share goes up to 100 percent"))
+            })
+            .transpose()?;
+        self.client
+            .request(&ClientRequest::SetCarrying {
+                paused,
+                metered,
+                jobs: jobs.map(|j| j as usize),
+                upload_share,
+                upload_mbps: upload_mbps.map(u64::from),
+                monthly_gb: monthly_gb.map(u64::from),
+                data_cap_gb: data_cap_gb.map(u64::from),
+            })
+            .await?;
+        Ok(())
+    }
+
+    /// The owner's answer on whether the hops the node picks may see its
+    /// internet address: yes, its own video goes through them; no, through
+    /// relays.
+    pub async fn set_hops(&self, yes: bool) -> Result<()> {
+        self.client.request(&ClientRequest::SetHops { yes }).await?;
+        Ok(())
     }
 
     /// Who the node follows, by name.
@@ -1915,6 +2004,34 @@ fn node_info(p: Pairing) -> NodeInfo {
         name: p.name,
         identity: p.identity.to_string(),
         paired: p.paired,
+    }
+}
+
+fn carrier_state(c: osp_client::osp_proto::rpc::CarrierStatus) -> CarrierState {
+    let n = |v: usize| v.min(u32::MAX as usize) as u32;
+    let gb = |v: u64| v.min(u32::MAX as u64) as u32;
+    let b = |v: u64| v.min(i64::MAX as u64) as i64;
+    CarrierState {
+        carrying: c.carrying,
+        off: c.off,
+        paused: c.paused,
+        metered: c.metered,
+        seed: c.seed,
+        jobs: n(c.jobs),
+        upload_share: c.upload_share.into(),
+        upload_mbps: c.upload_mbps,
+        upload_from: c.upload_from,
+        circuits: n(c.circuits),
+        bytes: b(c.bytes),
+        hops: c.hops,
+        month_bytes: b(c.month_bytes),
+        month_budget: c.month_budget.map(b),
+        over_budget: c.over_budget,
+        data_cap_gb: gb(c.data_cap_gb),
+        monthly_gb: c.monthly_gb.map(gb),
+        seeds: n(c.seeds),
+        standing: n(c.standing),
+        probation: n(c.probation),
     }
 }
 
