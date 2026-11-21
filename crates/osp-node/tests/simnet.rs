@@ -619,13 +619,21 @@ impl Unheard {
         // Once Carol's node has asked who else holds a copy, others'
         // requests take all of Alice's node's places for them.
         tokio::time::sleep(Duration::from_secs(1)).await;
+        // Alice's node takes the requests in as it gets to them, which
+        // under load may be a while.
         let taken = take_social_places(&net, alice.node_id()).await;
-        tokio::time::sleep(Duration::from_millis(500)).await;
-        let resp = ask(&conn, &SocialRequest::WhoHosts { blob }).await;
-        assert!(
-            matches!(&resp, SocialResponse::Error { message } if message.contains("busy")),
-            "{resp:?}"
-        );
+        let started = Instant::now();
+        loop {
+            let resp = ask(&conn, &SocialRequest::WhoHosts { blob }).await;
+            if matches!(&resp, SocialResponse::Error { message } if message.contains("busy")) {
+                break;
+            }
+            assert!(
+                started.elapsed() < Duration::from_secs(5),
+                "never busy: {resp:?}"
+            );
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
 
         // So when Carol's node has the photo, Alice's is too busy to hear
         // it. The post shows all the same.
