@@ -431,7 +431,8 @@ async fn a_host_names_its_seed_carrier_and_is_reached_through_it() {
     kim.shutdown().await.unwrap();
 }
 
-/// A directory, on the simulated network only.
+/// A directory, on the simulated network only, where a name listed today
+/// may host at once.
 async fn directory(home: &Path, net: &SimNet) -> Node {
     let mut config = Config::local_test("The directory");
     config.endpoints.enabled = true;
@@ -440,6 +441,7 @@ async fn directory(home: &Path, net: &SimNet) -> Node {
     let settings = SimSettings {
         listed_read_every: Duration::from_millis(200),
         new_name_for: Duration::ZERO,
+        hosting_after_listed: Duration::ZERO,
         ..sim(net)
     };
     Node::spawn_sim(home, settings).await.unwrap()
@@ -611,6 +613,147 @@ async fn followers_fetch_through_the_hosts_hop() {
     })
     .await
     .expect("Sam's node didn't fetch it through Kim");
+
+    for node in [jimmy, sam, alice, kim] {
+        node.shutdown().await.unwrap();
+    }
+}
+
+/// Robin finds Alice's large photo through a directory and reshares it
+/// with hosting, listed. Robin's node knows Kim's, a seed carrier, and
+/// offers a way through it on its media endpoint; Alice's knows none. With
+/// Alice's node off, Jimmy finds the post and fetches Robin's copy through
+/// Kim's carrier, not the relay.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_stranger_fetches_a_listed_resharers_copy_through_its_hop() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_relay, relay) = local_relay().await;
+    let net = SimNet::new(4);
+    let directory = directory(&dir.path().join("directory"), &net).await;
+
+    let kim_home = dir.path().join("kim");
+    let mut kim_config = config("Kim", &relay);
+    kim_config.carrier.seed = true;
+    Node::init(&kim_home, &kim_config).unwrap();
+    let kim = start(&kim_home, &net).await;
+    let seed = kim.machine_id().unwrap();
+    let carried = async || kim.carrier_stats().await.unwrap().bytes;
+
+    let listed = async |name: &str, seed: Option<EndpointId>| {
+        let home = dir.path().join(name);
+        let mut config = knowing(name, &relay, &directory, seed);
+        config.directory.list_me = true;
+        Node::init(&home, &config).unwrap();
+        start(&home, &net).await
+    };
+    let alice = listed("Alice", None).await;
+    let asked = post_large_photo(&alice, dir.path()).await;
+    assert!(alice.ask_to_be_listed().await);
+
+    let robin = listed("Robin", Some(seed)).await;
+    find(&robin, asked.0).await;
+    let reshare = ClientRequest::Reshare {
+        id: asked.0,
+        host: true,
+    };
+    call(&robin, reshare).await;
+    assert!(robin.ask_to_be_listed().await);
+    let me = stranger(&net).await;
+    offer_of(&me, &robin, asked, true).await;
+    alice.shutdown().await.unwrap();
+
+    let home = dir.path().join("jimmy");
+    Node::init(&home, &knowing("Jimmy", &relay, &directory, Some(seed))).unwrap();
+    let jimmy = start(&home, &net).await;
+    timeout(Duration::from_secs(60), async {
+        loop {
+            find(&jimmy, asked.0).await;
+            let ClientResponse::Item { item } =
+                call(&jimmy, ClientRequest::Show { id: asked.0 }).await
+            else {
+                panic!("not shown");
+            };
+            if item.found_reshares.iter().any(|r| r.hosting) {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    })
+    .await
+    .expect("Robin's hosting reshare was never found");
+    let before = carried().await;
+    let size = jimmy.open_blob(&asked.1).await.unwrap();
+    assert!(size > 1 << 20);
+    assert!(
+        carried().await >= before + size,
+        "Jimmy's fetch didn't go through Kim"
+    );
+
+    for node in [jimmy, robin, kim, directory] {
+        node.shutdown().await.unwrap();
+    }
+}
+
+/// Alice's node knows no carrier. Sam's node fetches her large photo ahead
+/// of time and shares its copy; it knows Kim's, a seed carrier, and offers
+/// a way through it on its media endpoint. When Jimmy follows Alice, her
+/// node names Sam's copy, and Jimmy's node fetches it through Kim's carrier
+/// rather than the relay, and before trying Alice's own node.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_follower_fetches_another_followers_copy_through_its_hop() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_relay, relay) = local_relay().await;
+    let net = SimNet::new(4);
+
+    let kim_home = dir.path().join("kim");
+    let mut kim_config = config("Kim", &relay);
+    kim_config.carrier.seed = true;
+    Node::init(&kim_home, &kim_config).unwrap();
+    let kim = start(&kim_home, &net).await;
+    let seed = SeedCarrier {
+        machine: kim.machine_id().unwrap(),
+    };
+    let carried = async || kim.carrier_stats().await.unwrap().bytes;
+
+    let node = async |name: &str, known: Vec<SeedCarrier>| {
+        let home = dir.path().join(name);
+        let mut config = config(name, &relay);
+        config.endpoints.enabled = true;
+        config.carrier.known = known;
+        config.sync.prefetch = true;
+        config.swarm.share_prefetched = true;
+        Node::init(&home, &config).unwrap();
+        let sim = SimSettings {
+            prefetch_spread: Duration::ZERO,
+            ..sim(&net)
+        };
+        Node::spawn_sim(&home, sim).await.unwrap()
+    };
+    let alice = node("Alice", Vec::new()).await;
+    let asked = post_large_photo(&alice, dir.path()).await;
+
+    let sam = node("Sam", vec![seed.clone()]).await;
+    follow(&sam, &alice).await;
+    timeout(Duration::from_secs(60), async {
+        while alice.swarm_copies(&sam.node_id()).unwrap() == 0 {
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    })
+    .await
+    .expect("Sam's node never told Alice's it holds a copy");
+    let me = stranger(&net).await;
+    offer_of(&me, &sam, asked, true).await;
+
+    let before = carried().await;
+    let jimmy = node("Jimmy", vec![seed]).await;
+    follow(&jimmy, &alice).await;
+    timeout(Duration::from_secs(60), async {
+        while carried().await < before + (1 << 20) {
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    })
+    .await
+    .expect("Jimmy's node didn't fetch Sam's copy through Kim");
 
     for node in [jimmy, sam, alice, kim] {
         node.shutdown().await.unwrap();

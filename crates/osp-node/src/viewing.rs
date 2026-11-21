@@ -355,14 +355,34 @@ impl Core {
         // listed host doesn't serve every viewer alone; its author's own are
         // still asked only after the rest, one at a time.
         let author_nodes: Vec<_> = authors.iter().map(|bound| bound.public).collect();
-        let download = |sources: Vec<Source>| {
+        // A resharer with a hop of its own is reached through it, and by
+        // the relay only if that fails (ADR 0043). Asked only for a large
+        // file, which is what crawls through a relay.
+        let download = async |sources: Vec<Source>| {
+            let mut offers = Vec::new();
+            if declared > store::SMALL_BLOB && self.fetches_through_carriers() {
+                let resharers: Vec<Source> = sources
+                    .iter()
+                    .filter(|s| !author_nodes.contains(&s.node))
+                    .cloned()
+                    .collect();
+                offers = self
+                    .ask_hosts_for_offers(&lease.inner.endpoint, &resharers, id, blob)
+                    .await;
+            }
             let mut sources = Sources {
                 at_once: sources,
                 in_turn: Vec::new(),
             };
             sources.spare(&author_nodes);
-            self.store
-                .download_through(blob, sources, class, declared, &lease.inner.pool)
+            self.download_offered(
+                blob,
+                sources,
+                offers,
+                (class, declared),
+                Some(&lease.inner.pool),
+            )
+            .await
         };
         let fetched = if sources.is_empty() {
             // Nothing to start with: hear the author out first.
