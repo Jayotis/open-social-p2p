@@ -336,43 +336,65 @@ async fn offer_of(
 }
 
 /// Fetches `blob` with only what `offer` says: a circuit through the hop it
-/// names, to the slot, then the ends' QUIC to the circuit endpoint.
-async fn fetch_through(relay: &RelayUrl, offer: &CircuitOffer, blob: BlobHash) -> Vec<u8> {
+/// names, to the slot, then the ends' QUIC to the circuit endpoint. If that
+/// fails, asks `host` for a fresh offer and tries again, twice at most: under
+/// load the host may have linked to its hop again since the offer, and its
+/// slot was the old link's.
+async fn fetch_through(
+    relay: &RelayUrl,
+    offer: &CircuitOffer,
+    blob: BlobHash,
+    again: (&(Endpoint, SecretKey), &Node, (ObjectId, BlobHash)),
+) -> Vec<u8> {
+    let mut offer = offer.clone();
+    for tried in 1.. {
+        match try_fetch_through(relay, &offer, blob).await {
+            Ok(got) => return got,
+            Err(e) if tried < 3 => {
+                eprintln!("fetching through the hop, try {tried}: {e:#}");
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                offer = offer_of(again.0, again.1, again.2, true).await.unwrap();
+            }
+            Err(e) => panic!("fetching through the hop: {e:#}"),
+        }
+    }
+    unreachable!()
+}
+
+async fn try_fetch_through(
+    relay: &RelayUrl,
+    offer: &CircuitOffer,
+    blob: BlobHash,
+) -> anyhow::Result<Vec<u8>> {
     use iroh_blobs::store::mem::MemStore;
 
-    let bytes = data_encoding::BASE64URL_NOPAD
-        .decode(offer.carrier.as_bytes())
-        .unwrap();
-    let descriptor = Descriptor::from_bytes(&bytes).unwrap();
-    let info = descriptor.verify(now()).unwrap();
+    let bytes = data_encoding::BASE64URL_NOPAD.decode(offer.carrier.as_bytes())?;
+    let descriptor = Descriptor::from_bytes(&bytes)?;
+    let info = descriptor.verify(now())?;
     let viewer = end(relay).await;
-    let circuit = ViewerCircuit::build(
-        link(&viewer, &info).await,
-        std::slice::from_ref(&descriptor),
-        offer.slot,
-    )
-    .await
-    .unwrap();
-    let ends = osp_carrier::viewer_endpoint(circuit, offer.endpoint)
-        .await
-        .unwrap();
-    let conn = timeout(
-        WAIT,
-        ends.connect(EndpointAddr::new(offer.endpoint), iroh_blobs::ALPN),
-    )
-    .await
-    .unwrap()
-    .unwrap();
-    assert_eq!(conn.remote_id(), offer.endpoint);
-    let mine = MemStore::new();
-    let hash = iroh_blobs::Hash::from_bytes(*blob.as_bytes());
-    timeout(WAIT, mine.remote().fetch(conn.clone(), hash))
-        .await
-        .unwrap()
-        .unwrap();
-    let got = mine.get_bytes(hash).await.unwrap().to_vec();
-    conn.close(0u32.into(), b"done");
-    ends.close().await;
+    let got = async {
+        let circuit = ViewerCircuit::build(
+            link(&viewer, &info).await,
+            std::slice::from_ref(&descriptor),
+            offer.slot,
+        )
+        .await?;
+        let ends = osp_carrier::viewer_endpoint(circuit, offer.endpoint).await?;
+        let conn = timeout(
+            WAIT,
+            ends.connect(EndpointAddr::new(offer.endpoint), iroh_blobs::ALPN),
+        )
+        .await??;
+        assert_eq!(conn.remote_id(), offer.endpoint);
+        let mine = MemStore::new();
+        let hash = iroh_blobs::Hash::from_bytes(*blob.as_bytes());
+        timeout(WAIT, mine.remote().fetch(conn.clone(), hash)).await??;
+        let got = mine.get_bytes(hash).await?.to_vec();
+        conn.close(0u32.into(), b"done");
+        ends.close().await;
+        anyhow::Ok(got)
+    }
+    .await;
     viewer.close().await;
     got
 }
@@ -415,7 +437,7 @@ async fn a_host_names_its_seed_carrier_and_is_reached_through_it() {
     // Her circuit endpoint is none of the endpoints with an address.
     assert!(!alice.endpoint_ids().contains(&offer.endpoint));
 
-    let photo = fetch_through(&relay, &offer, asked.1).await;
+    let photo = fetch_through(&relay, &offer, asked.1, (&me, &alice, asked)).await;
     assert_eq!(iroh_blobs::Hash::new(&photo).as_bytes(), asked.1.as_bytes());
 
     // Kim's node goes: no hop to name. Back: linked again, through the same
@@ -425,7 +447,10 @@ async fn a_host_names_its_seed_carrier_and_is_reached_through_it() {
     let kim = start(&kim_home, &net).await;
     let again = offer_of(&me, &alice, asked, true).await.unwrap();
     assert_eq!(again.endpoint, offer.endpoint);
-    assert_eq!(fetch_through(&relay, &again, asked.1).await, photo);
+    assert_eq!(
+        fetch_through(&relay, &again, asked.1, (&me, &alice, asked)).await,
+        photo
+    );
 
     alice.shutdown().await.unwrap();
     kim.shutdown().await.unwrap();
