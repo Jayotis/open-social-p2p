@@ -154,6 +154,28 @@ pub enum ClientRequest {
     /// The project's hide list as this node applies it (ADR 0042 §6).
     /// Answered with `HideList`.
     HideList,
+    /// Change how the node carries for other nodes (ADR 0043 §8). Each field
+    /// left out stays as it is. Applied at once, and kept in config.toml.
+    SetCarrying {
+        #[serde(default)]
+        paused: Option<bool>,
+        #[serde(default)]
+        metered: Option<bool>,
+        #[serde(default)]
+        jobs: Option<usize>,
+        /// The share of the upload carrying may use, in percent.
+        #[serde(default)]
+        upload_share: Option<u8>,
+        /// The connection's upload speed in Mbit/s, which the share is of.
+        #[serde(default)]
+        upload_mbps: Option<u64>,
+    },
+    /// The owner's answer on whether the hops this node picks may see its
+    /// internet address (ADR 0043 §8). With yes, its own fetches and its
+    /// media go through them; with no, through relays.
+    SetHops {
+        yes: bool,
+    },
     /// Turn the hide list on or off. Off, everything it hid comes back; on,
     /// it's fetched again soon.
     SetHideList {
@@ -805,6 +827,51 @@ pub struct StatusInfo {
     /// The space OSP uses on the node: the media it holds and its database.
     #[serde(default)]
     pub space_bytes: u64,
+    /// Carrying for other nodes, and the hops question (ADR 0043 §8).
+    #[serde(default)]
+    pub carrier: Option<Box<CarrierStatus>>,
+}
+
+/// Carrying other nodes' encrypted video (ADR 0043 §8), as the owner set it
+/// and as it goes.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct CarrierStatus {
+    /// Whether it carries now: not paused, not metered, and running.
+    pub carrying: bool,
+    /// Why it doesn't run at all, in plain words, when it doesn't.
+    #[serde(default)]
+    pub off: Option<String>,
+    pub paused: bool,
+    pub metered: bool,
+    /// Carrying as a seed carrier, a server on the release's list.
+    #[serde(default)]
+    pub seed: bool,
+    /// Circuits carrying at once.
+    pub jobs: usize,
+    /// The share of the upload carrying may use, in percent.
+    pub upload_share: u8,
+    /// The upload the share is of, in Mbit/s.
+    pub upload_mbps: f64,
+    /// Where that figure came from: `set` (asked at setup), `cap` (the cap
+    /// on serving media), `measured` or `assumed`.
+    pub upload_from: String,
+    /// The bytes a second carrying may use, all circuits together, if capped.
+    #[serde(default)]
+    pub bytes_per_sec: Option<u64>,
+    /// Circuits open now, and since the node started: bytes carried and
+    /// circuits answered busy.
+    pub circuits: usize,
+    pub bytes: u64,
+    pub busy: u64,
+    /// The owner's answer on the hops this node picks seeing its address:
+    /// unset if not asked yet, when its own leg stays on relays.
+    #[serde(default)]
+    pub hops: Option<bool>,
+    /// Seed carriers this node knows.
+    pub seeds: usize,
+    /// Machines at standing with this node, and on probation.
+    pub standing: usize,
+    pub probation: usize,
 }
 
 /// What a node has served of the posts it reshared with hosting (ADR 0025's

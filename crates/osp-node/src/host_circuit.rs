@@ -229,7 +229,13 @@ pub(crate) async fn keep_linked(core: Arc<Core>, blobs: BlobsProtocol) {
     };
     let mut wait = FIRST_WAIT;
     let mut hop = None;
+    let mut hops = core.hops.subscribe();
     loop {
+        // The hop sees this node's address: only with the owner's yes.
+        let answered = hops.wait_for(|yes| *yes == Some(true)).await.is_ok();
+        if !answered {
+            return;
+        }
         if let Some(tor) = &core.tor {
             tor.ready().await;
         }
@@ -250,6 +256,13 @@ pub(crate) async fn keep_linked(core: Arc<Core>, blobs: BlobsProtocol) {
                     _ = sender.closed() => debug!("the link to the hop closed; linking again"),
                     _ = tokio::time::sleep_until(Instant::now() + renew) => {
                         debug!("the hop's circuit key was replaced; linking again")
+                    }
+                    _ = async { hops.wait_for(|yes| *yes != Some(true)).await.is_ok() } => {
+                        info!("media is no longer reached through a carrier: the owner said no to hops");
+                        if let Some(old) = circuit.swap(None) {
+                            old.end().await;
+                        }
+                        hop = None;
                     }
                 }
             }

@@ -226,6 +226,20 @@ impl Core {
             ClientRequest::HideList => ClientResponse::HideList {
                 info: self.hide_list_info()?,
             },
+            ClientRequest::SetCarrying {
+                paused,
+                metered,
+                jobs,
+                upload_share,
+                upload_mbps,
+            } => {
+                self.set_carrying(paused, metered, jobs, upload_share, upload_mbps)?;
+                ClientResponse::Ok
+            }
+            ClientRequest::SetHops { yes } => {
+                self.set_hops(yes)?;
+                ClientResponse::Ok
+            }
             ClientRequest::SetHideList { on } => {
                 self.set_hide_list(on)?;
                 ClientResponse::Ok
@@ -573,6 +587,7 @@ impl Core {
             },
             served_lately_bytes: self.db.served_lately(day_of(now_ms()))?,
             space_bytes,
+            carrier: Some(Box::new(self.carrier_status().await?)),
         })
     }
 

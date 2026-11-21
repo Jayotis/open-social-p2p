@@ -145,6 +145,18 @@ enum Command {
         /// passes the ones to use
         #[arg(long, value_name = "MACHINE", conflicts_with = "no_tor")]
         carrier: Vec<EndpointId>,
+        /// Your connection's upload speed in Mbit/s: carrying other nodes' video uses half
+        /// of it at most (ADR 0043). Otherwise you're asked
+        #[arg(long, value_name = "MBIT/S")]
+        upload_mbps: Option<u64>,
+        /// Let the nodes yours picks to carry its video see its internet address, so its
+        /// video goes through them, not the public fallback (ADR 0043 §8). Otherwise you're
+        /// asked, if the installer named seed carriers
+        #[arg(long, conflicts_with = "no_hops")]
+        hops: bool,
+        /// Keep this node's own video on the public fallback relays. Otherwise you're asked
+        #[arg(long)]
+        no_hops: bool,
     },
     /// Run the node in the foreground (Ctrl-C to stop)
     Daemon,
@@ -176,6 +188,16 @@ enum Command {
         #[command(subcommand)]
         change: Option<HideListCommand>,
     },
+    /// Carrying other nodes' encrypted video (ADR 0043): with no change given,
+    /// how it goes
+    Carrier {
+        #[command(subcommand)]
+        change: Option<CarrierCommand>,
+    },
+    /// Whether the nodes yours picks to carry its video may see its internet
+    /// address (ADR 0043 §8): yes, its video goes through them; no, through
+    /// the public fallback relays
+    Hops { answer: YesNo },
     /// List who you follow
     Following,
     /// Publish a post, optionally with photos or videos
@@ -429,6 +451,29 @@ enum BlockCommand {
 }
 
 #[derive(Subcommand)]
+enum CarrierCommand {
+    /// Stop carrying, for troubleshooting: what it carries ends, and nothing
+    /// new is taken. Your node still gets every post and video
+    Pause,
+    /// Carry again
+    Resume,
+    /// Say whether the connection is metered: carrying stops while it is
+    Metered { answer: YesNo },
+    /// Circuits carried at once [default: 2]
+    Jobs { jobs: usize },
+    /// The share of your upload carrying may use, in percent [default: 50]
+    Share { percent: u8 },
+    /// Your connection's upload speed in Mbit/s, which the share is of
+    Upload { mbps: u64 },
+}
+
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum YesNo {
+    Yes,
+    No,
+}
+
+#[derive(Subcommand)]
 enum HideListCommand {
     /// Apply the list again; it's fetched within a minute or so
     On,
@@ -601,6 +646,9 @@ async fn main() -> Result<()> {
             no_hide_list,
             directory,
             carrier,
+            upload_mbps,
+            hops,
+            no_hops,
         } => {
             let lookup = !no_address_lookup;
             let ask_name = name.is_none();
@@ -615,6 +663,8 @@ async fn main() -> Result<()> {
                 share: answered(share, no_share),
                 list_me: answered(list_me, no_list_me),
                 hide_list: answered(hide_list, no_hide_list),
+                upload_mbps,
+                hops: answered(hops, no_hops),
                 ask_name,
             };
             if restore {
@@ -775,6 +825,22 @@ async fn main() -> Result<()> {
                 except: false,
             },
         },
+        Command::Carrier { change } => return carrier(&home, change, cli.json).await,
+        Command::Hops { answer } => {
+            let yes = matches!(answer, YesNo::Yes);
+            done(send(&home, ClientRequest::SetHops { yes }).await?)?;
+            if !cli.json {
+                println!(
+                    "{}",
+                    match yes {
+                        true =>
+                            "Your node's video goes through the hops it picks; they see its address.",
+                        false => "Your node's video goes through the public fallback relays.",
+                    }
+                );
+            }
+            return Ok(());
+        }
         Command::Following => ClientRequest::Following,
         Command::Devices => ClientRequest::Devices,
         Command::Peers => ClientRequest::Peers,
@@ -1018,6 +1084,8 @@ struct Answers {
     share: Option<bool>,
     list_me: Option<bool>,
     hide_list: Option<bool>,
+    upload_mbps: Option<u64>,
+    hops: Option<bool>,
     /// No `--name` was given, so a new node asks for one.
     ask_name: bool,
 }
@@ -1039,6 +1107,7 @@ async fn init(home: &Path, mut config: Config, check_words: bool, answers: Answe
     config.swarm.share_prefetched = ask_share(answers.share)?;
     config.directory.list_me = ask_list_me(answers.list_me, config.tor.enabled)?;
     config.lists.hide = ask_hide_list(answers.hide_list)?;
+    ask_carrying(&mut config, &answers)?;
     let words = osp_node::backup::new_identity_words();
     print_words(&words);
     if check_words {
@@ -1065,6 +1134,112 @@ async fn init(home: &Path, mut config: Config, check_words: bool, answers: Answe
     print_start_line(home);
     Ok(())
 }
+
+/// Whether the node will carry other nodes' video: it needs a machine name,
+/// so Tor, and a relay.
+fn will_carry(config: &Config) -> bool {
+    config.carrier.enabled
+        && config.tor.enabled
+        && config.machine.enabled
+        && config.network.relay != RelayChoice::Disabled
+}
+
+/// Tells the owner the node carries (ADR 0017, "Told at setup"), and asks
+/// what it may use: the upload speed, and whether the hops it picks may see
+/// its address (ADR 0043 §8). Carrying itself isn't asked.
+fn ask_carrying(config: &mut Config, answers: &Answers) -> Result<()> {
+    if !will_carry(config) {
+        return Ok(());
+    }
+    println!();
+    for line in CARRYING_TOLD {
+        println!("{line}");
+    }
+    config.serving.upload_mbps = match answers.upload_mbps {
+        Some(mbps) => mbps,
+        None => ask_upload_mbps()?,
+    };
+    if !config.carrier.known.is_empty() {
+        config.carrier.hops = ask_hops(answers.hops)?;
+    }
+    Ok(())
+}
+
+/// ADR 0017's words for setup, as the install guide has them.
+const CARRYING_TOLD: &[&str] = &[
+    "Your node carries encrypted video between other nodes, under its machine name,",
+    "within the limits you set. This uses some of your upload, and builds your node's",
+    "standing with the nodes it helps, which can get it direct links and quicker",
+    "service. You can't see what's inside. The nodes next to yours see your internet",
+    "address sending it, never who you are, and you answer for what your connection",
+    "sends, as with anything else you do online. You can pause it (`osp carrier pause`).",
+];
+
+/// The connection's upload speed, for carrying's share of it. 0, not known,
+/// if the owner skips it: carrying then starts small.
+fn ask_upload_mbps() -> Result<u64> {
+    println!();
+    println!("Carrying uses half your upload at most, always behind your own traffic. A speed");
+    println!("test shows your upload; a guess is fine, and you can change it later");
+    println!("(`osp carrier upload <Mbit/s>`).");
+    loop {
+        print!("Your upload speed in Mbit/s (Enter to skip): ");
+        std::io::Write::flush(&mut std::io::stdout())?;
+        let mut line = String::new();
+        if std::io::stdin().read_line(&mut line)? == 0 {
+            println!();
+            return Ok(0);
+        }
+        let line = line.trim().trim_end_matches("Mbit/s").trim();
+        if line.is_empty() {
+            println!("Skipped: carrying takes a slow home's 10 Mbit/s until you set it.");
+            return Ok(0);
+        }
+        match line.parse::<f64>() {
+            Ok(mbps) if (1.0..=100_000.0).contains(&mbps) => return Ok(mbps.round() as u64),
+            _ => println!("Please give a number of Mbit/s, such as 20, or press Enter to skip."),
+        }
+    }
+}
+
+/// Asks the question on the node's own address (ADR 0043 §8), with yes
+/// recommended. With no answer it stays unasked, and the node's own video
+/// stays on the fallback until the owner chooses.
+fn ask_hops(choice: Option<bool>) -> Result<Option<bool>> {
+    if choice.is_some() {
+        return Ok(choice);
+    }
+    println!();
+    for line in HOPS_QUESTION {
+        println!("{line}");
+    }
+    println!();
+    println!("Recommended: yes. With no, your node's own video goes through the public");
+    println!("fallback relays, as today. You can change it later (`osp hops yes|no`).");
+    loop {
+        print!("Let the nodes yours picks see its address? [Yes] / no: ");
+        std::io::Write::flush(&mut std::io::stdout())?;
+        let mut line = String::new();
+        if std::io::stdin().read_line(&mut line)? == 0 {
+            println!();
+            println!("No answer: your node's video stays on the fallback until you choose.");
+            return Ok(None);
+        }
+        match line.trim().to_lowercase().as_str() {
+            "" | "yes" | "y" => return Ok(Some(true)),
+            "no" | "n" => return Ok(Some(false)),
+            _ => println!("Please press Enter for yes, or answer \"no\"."),
+        }
+    }
+}
+
+/// ADR 0043 §8's words for the question.
+const HOPS_QUESTION: &[&str] = &[
+    "Your node can fetch and send video through other nodes it picks, which is much",
+    "faster than the public fallback. The node next to yours sees your internet address",
+    "and which node you're fetching from, as the fallback does today, but never what's",
+    "inside.",
+];
 
 /// Says what this machine still needs for the node to work, and how to get it.
 async fn say_missing(config: &Config) {
@@ -1117,6 +1292,7 @@ async fn restore_node(
     config.swarm.share_prefetched = ask_share(answers.share)?;
     config.directory.list_me = ask_list_me(answers.list_me, config.tor.enabled)?;
     config.lists.hide = ask_hide_list(answers.hide_list)?;
+    ask_carrying(&mut config, &answers)?;
     let restored = Node::restore(home, &config, &words, backup, old_key)?;
     println!("Restored identity {}", restored.identity);
     println!("on a new node in {}.", home.display());
@@ -2360,6 +2536,116 @@ fn secs(ms: u64) -> String {
     format!("{:.1} s", ms as f64 / 1000.0)
 }
 
+/// One line on how carrying goes.
+fn carrying_line(c: &osp_proto::rpc::CarrierStatus) -> String {
+    let upload = format!(
+        "{} at once, {}% of {} Mbit/s{}",
+        c.jobs,
+        c.upload_share,
+        c.upload_mbps,
+        match c.upload_from.as_str() {
+            "set" => "",
+            "cap" => " (your cap on serving)",
+            "measured" => " (measured)",
+            _ => " (assumed: `osp carrier upload <Mbit/s>`)",
+        }
+    );
+    let upload = match (c.seed, c.bytes_per_sec) {
+        (true, None) => format!(
+            "{} at once, as a seed carrier, with its whole upload",
+            c.jobs
+        ),
+        _ => upload,
+    };
+    if let Some(off) = &c.off {
+        format!("off: {off}")
+    } else if c.paused {
+        "paused (`osp carrier resume`)".to_string()
+    } else if c.metered {
+        "stopped: the connection is metered (`osp carrier metered no`)".to_string()
+    } else {
+        format!(
+            "on, {} circuit(s) now, {} since the node started; {upload}",
+            c.circuits,
+            size(c.bytes)
+        )
+    }
+}
+
+fn hops_line(hops: Option<bool>) -> &'static str {
+    match hops {
+        Some(true) => {
+            "yes: your node's video goes through the hops it picks, which see its address"
+        }
+        Some(false) => "no: your node's video goes through the public fallback relays",
+        None => "not asked yet: your node's video goes through relays (`osp hops yes|no`)",
+    }
+}
+
+/// `osp carrier`: makes the change, if any, then says how carrying goes.
+async fn carrier(home: &Path, change: Option<CarrierCommand>, json: bool) -> Result<()> {
+    let request = change.map(|change| {
+        let (mut paused, mut metered, mut jobs, mut upload_share, mut upload_mbps) =
+            (None, None, None, None, None);
+        match change {
+            CarrierCommand::Pause => paused = Some(true),
+            CarrierCommand::Resume => paused = Some(false),
+            CarrierCommand::Metered { answer } => metered = Some(matches!(answer, YesNo::Yes)),
+            CarrierCommand::Jobs { jobs: n } => jobs = Some(n),
+            CarrierCommand::Share { percent } => upload_share = Some(percent),
+            CarrierCommand::Upload { mbps } => upload_mbps = Some(mbps),
+        }
+        ClientRequest::SetCarrying {
+            paused,
+            metered,
+            jobs,
+            upload_share,
+            upload_mbps,
+        }
+    });
+    if let Some(request) = request {
+        done(send(home, request).await?)?;
+    }
+    let ClientResponse::Status(status) = send(home, ClientRequest::Status).await? else {
+        bail!("the node didn't answer with its status");
+    };
+    let Some(c) = status.carrier else {
+        bail!("this node's version says nothing about carrying");
+    };
+    if json {
+        println!("{}", serde_json::to_string_pretty(&c)?);
+        return Ok(());
+    }
+    println!("Carrying:  {}", carrying_line(&c));
+    if c.off.is_none() {
+        println!(
+            "Busy:      {} circuit(s) turned away since the node started",
+            c.busy
+        );
+        println!(
+            "Standing:  {} machine(s) earned it with your node, {} on probation",
+            c.standing, c.probation
+        );
+    }
+    match c.seeds {
+        0 => println!("Seeds:     none known, so your node's own video goes through relays"),
+        n => {
+            println!("Seeds:     {n} seed carrier(s) known");
+            println!("Hops:      {}", hops_line(c.hops));
+        }
+    }
+    Ok(())
+}
+
+/// Ok for `Ok`, the node's message for an error.
+fn done(response: ClientResponse) -> Result<()> {
+    match response {
+        ClientResponse::Ok => Ok(()),
+        ClientResponse::Error { message } => bail!(message),
+        other => bail!("unexpected answer: {other:?}"),
+    }
+}
+
 fn print_status(s: &StatusInfo) {
     println!("Name:      {}", s.name);
     println!("Identity:  {}", s.identity);
@@ -2459,6 +2745,12 @@ fn print_status(s: &StatusInfo) {
         size(s.served_lately_bytes),
         size(s.space_bytes)
     );
+    if let Some(c) = &s.carrier {
+        println!("Carrying:  {}", carrying_line(c));
+        if c.seeds > 0 {
+            println!("Hops:      {}", hops_line(c.hops));
+        }
+    }
     if let Some(own) = &s.endpoints {
         let media = match own.media {
             Some(media) => media.fmt_short().to_string(),
@@ -3077,6 +3369,56 @@ mod tests {
         assert_eq!(shown, [m1.clone(), m2]);
         // With Tor off there's no machine name to carry under.
         assert!(Cli::try_parse_from(["osp", "init", "--no-tor", "--carrier", &m1]).is_err());
+    }
+
+    #[test]
+    fn init_takes_the_upload_and_the_hops_answer() {
+        let cli = Cli::try_parse_from(["osp", "init", "--upload-mbps", "20", "--no-hops"]).unwrap();
+        let Command::Init {
+            upload_mbps,
+            hops,
+            no_hops,
+            ..
+        } = cli.command
+        else {
+            panic!("not init");
+        };
+        assert_eq!(upload_mbps, Some(20));
+        assert_eq!(answered(hops, no_hops), Some(false));
+        assert!(Cli::try_parse_from(["osp", "init", "--hops", "--no-hops"]).is_err());
+        // Answered by flags, nothing is asked.
+        let mut config = init_config(None, &["default".into()], None, true, false, true);
+        config.carrier.known = vec![osp_node::SeedCarrier {
+            machine: osp_proto::SecretKey::generate().public(),
+        }];
+        let answers = Answers {
+            share: Some(true),
+            list_me: Some(false),
+            hide_list: Some(true),
+            upload_mbps: Some(20),
+            hops: Some(true),
+            ask_name: false,
+        };
+        ask_carrying(&mut config, &answers).unwrap();
+        assert_eq!(config.serving.upload_mbps, 20);
+        assert_eq!(config.carrier.hops, Some(true));
+    }
+
+    #[test]
+    fn carrier_and_hops_commands_parse() {
+        for args in [
+            &["osp", "carrier"][..],
+            &["osp", "carrier", "pause"],
+            &["osp", "carrier", "resume"],
+            &["osp", "carrier", "metered", "yes"],
+            &["osp", "carrier", "jobs", "3"],
+            &["osp", "carrier", "share", "40"],
+            &["osp", "carrier", "upload", "20"],
+            &["osp", "hops", "no"],
+        ] {
+            assert!(Cli::try_parse_from(args).is_ok(), "{args:?}");
+        }
+        assert!(Cli::try_parse_from(["osp", "hops", "maybe"]).is_err());
     }
 
     /// What install.sh passes for the project's relays (ADR 0044 step 4).
