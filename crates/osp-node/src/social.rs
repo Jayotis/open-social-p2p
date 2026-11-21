@@ -298,11 +298,19 @@ impl Core {
                 let bound = self.endpoints.is_some();
                 let mut nodes = Vec::new();
                 let mut hosts = Vec::new();
+                let mut circuit = None;
                 let class = self.db.blob_class(&blob)?;
                 let share = self.config.swarm.share_prefetched;
                 if class.is_some_and(|c| c.served_to_anyone(share)) {
                     match bound {
-                        true => hosts.extend(self.own_host_for(&remote).await?),
+                        true => {
+                            let own = self.own_host_for(&remote).await?;
+                            // Its own media, through its hop (ADR 0043).
+                            if own.is_some() {
+                                circuit = self.circuit_offer();
+                            }
+                            hosts.extend(own);
+                        }
                         false => nodes.push(self.shareable_addr().await),
                     }
                 }
@@ -411,7 +419,7 @@ impl Core {
                     }
                 }
                 match bound {
-                    true => SocialResponse::BoundHosts { hosts },
+                    true => SocialResponse::BoundHosts { hosts, circuit },
                     false => SocialResponse::Hosts { nodes },
                 }
             }

@@ -35,6 +35,10 @@ use crate::{
     viewing::in_own_order,
 };
 
+/// Nodes that offered a way to their own media through their hops, each
+/// with its offer.
+pub(crate) type Offers = Vec<(EndpointId, CircuitOffer)>;
+
 /// A cached descriptor is asked for again this long before its circuit key
 /// runs out, so a circuit isn't built on a key about to go.
 const FRESH_FOR: u64 = 5 * 60;
@@ -220,6 +224,46 @@ impl Core {
                 None
             }
         }
+    }
+
+    /// Downloads `blob` from `sources`, as the store does, but reaches the
+    /// nodes in `offers` through carriers rather than their relayed media
+    /// endpoints when this node fetches through carriers (ADR 0043): the
+    /// other sources first, then each offer's circuit, then all of
+    /// `sources` as before, the relays included. A node's direct endpoint
+    /// is never held back.
+    pub(crate) async fn download_offered(
+        &self,
+        blob: &BlobHash,
+        sources: Sources,
+        offers: Offers,
+        class: BlobClass,
+        declared: u64,
+    ) -> Result<u64> {
+        if offers.is_empty() || !self.fetches_through_carriers() {
+            return self.store.download(blob, sources, class, declared).await;
+        }
+        let offered = |s: &Source| !s.from_direct && offers.iter().any(|(node, _)| *node == s.node);
+        let mut others = sources.clone();
+        others.at_once.retain(|s| !offered(s));
+        others.in_turn.retain(|s| !offered(s));
+        if !others.is_empty() {
+            match self.store.download(blob, others, class, declared).await {
+                Ok(size) => return Ok(size),
+                Err(e) => {
+                    debug!(blob = %blob.fmt_short(), "the other sources failed; through carriers next: {e:#}")
+                }
+            }
+        }
+        for (node, offer) in &offers {
+            if let Some(size) = self
+                .try_over_circuit(blob, *node, Some(offer), class, declared)
+                .await
+            {
+                return Ok(size);
+            }
+        }
+        self.store.download(blob, sources, class, declared).await
     }
 }
 

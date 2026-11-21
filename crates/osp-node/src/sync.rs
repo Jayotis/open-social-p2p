@@ -19,13 +19,14 @@ use iroh::{EndpointAddr, EndpointId, PublicKey};
 use n0_future::{BufferedStreamExt, StreamExt, stream};
 use osp_proto::{
     BlobHash, Delete, ForwardDelete, Note, ObjectId, Payload, SignedObject, now_rfc3339,
-    social::{MAX_GET_OBJECTS, MAX_OUTBOX_PAGE, SocialRequest, SocialResponse},
+    social::{CircuitOffer, MAX_GET_OBJECTS, MAX_OUTBOX_PAGE, SocialRequest, SocialResponse},
 };
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
 use crate::{
     db::{BlobClass, Follow, now_ms},
+    hops::Offers,
     node::{Core, check_addr, remember},
     social::profile_date,
     store::{self, Source, Sources},
@@ -840,14 +841,17 @@ impl Core {
     async fn fetch_from_swarm(&self, wanted: &Wanted) -> Result<Vec<EndpointAddr>> {
         let blob = &wanted.blob;
         let mut sources = Sources::default();
+        let mut offers = Vec::new();
         if self.store.stored_size(blob).await?.is_none() {
             let mut named: Vec<Source> = Vec::new();
             for tracker in &wanted.trackers {
-                for source in self.named_hosts(tracker, blob).await {
+                let (sources, offer) = self.named_hosts(tracker, blob).await;
+                for source in sources {
                     if !named.iter().any(|s| s.node == source.node) {
                         named.push(source);
                     }
                 }
+                offers.extend(offer.map(|offer| (tracker.id, offer)));
             }
             // A crowd asks these first, so they're asked one at a time,
             // after the followers named.
@@ -870,8 +874,7 @@ impl Core {
             sources.in_turn.sort_by_key(|s| authors.contains(&s.node));
         }
         let size = self
-            .store
-            .download(blob, sources, BlobClass::Prefetch, wanted.size)
+            .download_offered(blob, sources, offers, BlobClass::Prefetch, wanted.size)
             .await?;
         self.still_named(blob, size).await?;
         let mut untold = Vec::new();
@@ -906,20 +909,27 @@ impl Core {
     /// The nodes `node` names as hosts of `blob`, other than itself and
     /// this node. An author's node names followers holding a copy to its
     /// followers (doc 13); they're used for this download only (see
-    /// `ask_who_hosts`).
-    async fn named_hosts(&self, node: &EndpointAddr, blob: &BlobHash) -> Vec<Source> {
+    /// `ask_who_hosts`). And how to reach `node`'s own media through its
+    /// hop, if it offers a way (ADR 0043).
+    async fn named_hosts(
+        &self,
+        node: &EndpointAddr,
+        blob: &BlobHash,
+    ) -> (Vec<Source>, Option<CircuitOffer>) {
         let req = SocialRequest::WhoHosts { blob: *blob };
-        let mut named = match self.social_request(node, &req).await {
+        let (mut named, offer) = match self.social_request(node, &req).await {
             Ok(reply) => self.sources_in(reply),
-            Err(_) => Vec::new(),
+            Err(_) => (Vec::new(), None),
         };
         named.retain(|source| source.node != node.id);
-        named
+        (named, offer)
     }
 
     /// The hosts a `WhoHosts` reply names, other than this node, each once,
-    /// within `MAX_HOSTS_PER_REPLY`. They can be found by ID for now.
-    fn sources_in(&self, reply: SocialResponse) -> Vec<Source> {
+    /// within `MAX_HOSTS_PER_REPLY`. They can be found by ID for now. And
+    /// the circuit offer for the answering node's own media, if any.
+    fn sources_in(&self, reply: SocialResponse) -> (Vec<Source>, Option<CircuitOffer>) {
+        let mut offer = None;
         let named: Vec<Source> = match reply {
             SocialResponse::Hosts { nodes } => nodes
                 .iter()
@@ -930,11 +940,14 @@ impl Core {
                     Source::from(addr.id)
                 })
                 .collect(),
-            SocialResponse::BoundHosts { hosts } => hosts
-                .iter()
-                .take(MAX_HOSTS_PER_REPLY)
-                .filter_map(|host| self.source_named(host))
-                .collect(),
+            SocialResponse::BoundHosts { hosts, circuit } => {
+                offer = circuit.map(|c| *c);
+                hosts
+                    .iter()
+                    .take(MAX_HOSTS_PER_REPLY)
+                    .filter_map(|host| self.source_named(host))
+                    .collect()
+            }
             _ => Vec::new(),
         };
         let me = self.endpoint.id();
@@ -944,19 +957,20 @@ impl Core {
                 sources.push(source);
             }
         }
-        sources
+        (sources, offer)
     }
 
     /// Asks `nodes` at once who hosts `blob`, and returns what each said, in
     /// their order. With someone `waiting`, gives up on them all after
     /// `ASK_FIRST_WAIT`, and asks only those a round trip or two away: a first
     /// connection over Tor isn't waited for, but readied for next time.
+    /// With each, its circuit offer for its own media, if it gave one.
     async fn ask_who_hosts_at_once(
         &self,
         nodes: Vec<EndpointAddr>,
         blob: &BlobHash,
         waiting: bool,
-    ) -> Vec<(EndpointId, Vec<Source>)> {
+    ) -> Vec<(EndpointId, Vec<Source>, Option<CircuitOffer>)> {
         let give_up = waiting.then(|| tokio::time::Instant::now() + ASK_FIRST_WAIT);
         let to_ask = nodes.into_iter().filter(|node| {
             let ask = !waiting || self.answers_quickly(&node.id);
@@ -973,11 +987,11 @@ impl Core {
                     Some(at) => tokio::time::timeout_at(at, ask).await.ok(),
                     None => Some(ask.await),
                 };
-                let sources = match reply {
+                let (sources, offer) = match reply {
                     Some(Ok(reply)) => self.sources_in(reply),
-                    _ => Vec::new(),
+                    _ => (Vec::new(), None),
                 };
-                (node.id, sources)
+                (node.id, sources, offer)
             })
             .buffered_ordered(ASK_AT_ONCE)
             .collect()
@@ -1014,16 +1028,17 @@ impl Core {
         // Opened on demand, on one of our devices or with `osp fetch`:
         // someone is waiting.
         let waiting = class == BlobClass::Cache;
-        let sources = if self.store.has(blob).await? {
-            Sources::default()
+        let (sources, offers) = if self.store.has(blob).await? {
+            (Sources::default(), Vec::new())
         } else if waiting {
             self.sources_asking_first(blob).await?
         } else {
-            Sources::one_at_a_time(self.known_providers(blob)?)
+            let known = self.known_providers(blob)?;
+            let offers = self.offers_for(blob, &known, declared).await?;
+            (Sources::one_at_a_time(known), offers)
         };
         match self
-            .store
-            .download(blob, sources.clone(), class, declared)
+            .download_offered(blob, sources.clone(), offers, class, declared)
             .await
         {
             Ok(size) => self.still_named(blob, size).await,
@@ -1085,8 +1100,9 @@ impl Core {
     /// followers with a copy, as a prefetch through the swarm does, several
     /// at once; then the nodes known to serve it, and any of the author's
     /// own that a resharer named, one at a time. So everyone who opens a
-    /// post doesn't go to its author.
-    async fn sources_asking_first(&self, blob: &BlobHash) -> Result<Sources> {
+    /// post doesn't go to its author. With the circuit offers those asked
+    /// gave for their own media (ADR 0043).
+    async fn sources_asking_first(&self, blob: &BlobHash) -> Result<(Sources, Offers)> {
         let known = self.known_providers(blob)?;
         let is_known = |id: &EndpointId| known.iter().any(|source| source.node == *id);
         let to_ask = self.db.follows()?.into_iter().map(|f| f.addr);
@@ -1094,7 +1110,9 @@ impl Core {
         // Someone is waiting: a node that doesn't answer at once is only tried
         // for the download, with the rest.
         let mut named: Vec<Source> = Vec::new();
-        for (asked, hosts) in self.ask_who_hosts_at_once(to_ask, blob, true).await {
+        let mut offers = Vec::new();
+        for (asked, hosts, offer) in self.ask_who_hosts_at_once(to_ask, blob, true).await {
+            offers.extend(offer.map(|offer| (asked, offer)));
             for host in hosts {
                 let again = host.node == asked
                     || is_known(&host.node)
@@ -1111,7 +1129,7 @@ impl Core {
         if let Some(author) = self.db.blob_author(blob)? {
             sources.spare(&self.nodes_of(&author));
         }
-        Ok(sources)
+        Ok((sources, offers))
     }
 
     /// Nodes believed to serve `blob`, most recently seen first, those we
@@ -1141,6 +1159,25 @@ impl Core {
         Ok(sources)
     }
 
+    /// The circuit offers for their own media of the nodes we follow among
+    /// `known`, which serve `blob`, when it's large and this node fetches
+    /// through carriers (ADR 0043): a large file through the relays is what
+    /// crawls. Asked over Tor, with nobody waiting, so a fetch ahead of time
+    /// that isn't through the swarm reaches its author through its hop too.
+    async fn offers_for(&self, blob: &BlobHash, known: &[Source], declared: u64) -> Result<Offers> {
+        if declared <= store::SMALL_BLOB || !self.fetches_through_carriers() {
+            return Ok(Vec::new());
+        }
+        let is_known = |id: &EndpointId| known.iter().any(|source| source.node == *id);
+        let to_ask = self.db.follows()?.into_iter().map(|f| f.addr);
+        let to_ask = to_ask.filter(|addr| is_known(&addr.id)).collect();
+        let asked = self.ask_who_hosts_at_once(to_ask, blob, false).await;
+        Ok(asked
+            .into_iter()
+            .filter_map(|(node, _, offer)| Some((node, offer?)))
+            .collect())
+    }
+
     /// Asks the nodes we follow who else hosts `blob`. Returns the nodes they
     /// name, then those that answered and those we knew of, which were
     /// likely asked already. What they name is used for this download only,
@@ -1152,7 +1189,7 @@ impl Core {
         let to_ask = follows.into_iter().map(|f| f.addr).collect();
         let mut found: Vec<Source> = Vec::new();
         let mut answered: Vec<Source> = Vec::new();
-        for (asked, hosts) in self.ask_who_hosts_at_once(to_ask, blob, waiting).await {
+        for (asked, hosts, _) in self.ask_who_hosts_at_once(to_ask, blob, waiting).await {
             for host in hosts {
                 let list = match host.node == asked {
                     true => &mut answered,

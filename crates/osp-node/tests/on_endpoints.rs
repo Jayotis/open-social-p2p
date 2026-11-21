@@ -260,7 +260,7 @@ impl Peer {
     /// The hosts a node names, by their endpoints.
     async fn who_hosts(&self, blob: BlobHash) -> Vec<BoundEndpoint> {
         match self.ask(&SocialRequest::WhoHosts { blob }).await {
-            SocialResponse::BoundHosts { hosts } => hosts,
+            SocialResponse::BoundHosts { hosts, .. } => hosts,
             other => panic!("unexpected {other:?}"),
         }
     }
@@ -623,6 +623,7 @@ impl ProtocolHandler for NamesHosts {
             let reply = match read_frame::<_, SocialRequest>(&mut recv).await {
                 Ok(SocialRequest::WhoHosts { .. }) => SocialResponse::BoundHosts {
                     hosts: self.0.clone(),
+                    circuit: None,
                 },
                 _ => SocialResponse::Error {
                     message: "not that".to_string(),

@@ -273,9 +273,13 @@ pub enum SocialResponse {
     },
     /// The answer to `WhoHosts` from a node with other endpoints (ADR 0014):
     /// each host by the endpoint that serves its media, tied to its public ID
-    /// by its binding.
+    /// by its binding. `circuit` is how to reach the answering node's own
+    /// media through its hop instead, when it names itself and has one (ADR
+    /// 0043).
     BoundHosts {
         hosts: Vec<BoundEndpoint>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        circuit: Option<Box<CircuitOffer>>,
     },
     Objects {
         objects: Vec<SignedObject>,

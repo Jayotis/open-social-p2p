@@ -632,7 +632,7 @@ async fn who_hosts_as_stranger(net: &SimNet, kim: &Node, blob: BlobHash) -> Hash
     let reply: SocialResponse = read_frame(&mut recv).await.unwrap();
     conn.close(0u32.into(), b"done");
     me.close().await;
-    let SocialResponse::BoundHosts { hosts } = reply else {
+    let SocialResponse::BoundHosts { hosts, .. } = reply else {
         panic!("unexpected {reply:?}");
     };
     hosts.iter().map(|h| h.binding.public).collect()
