@@ -76,6 +76,12 @@ impl Home {
         self.root.join("carrier.key")
     }
 
+    /// The key of the endpoint viewers' circuits reach (ADR 0043), reached
+    /// only through the node's hop.
+    pub fn circuit_key(&self) -> PathBuf {
+        self.root.join("circuit.key")
+    }
+
     pub fn db(&self) -> PathBuf {
         self.root.join("osp.db")
     }

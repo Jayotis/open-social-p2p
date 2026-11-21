@@ -135,7 +135,10 @@ impl Core {
             });
         }
         hosts.extend(self.resharers_for_viewers(&req.blob)?);
-        Ok(MediaHostsResponse::Hosts { hosts })
+        Ok(MediaHostsResponse::Hosts {
+            hosts,
+            circuit: self.circuit_offer(),
+        })
     }
 
     /// Asks the author's media endpoint, from a viewing endpoint, who hosts
@@ -174,7 +177,7 @@ impl Core {
             }
         };
         match resp {
-            MediaHostsResponse::Hosts { hosts } => Ok(hosts
+            MediaHostsResponse::Hosts { hosts, .. } => Ok(hosts
                 .iter()
                 .filter(|h| h.check(&h.binding.public, EndpointKind::Media).is_ok())
                 .map(|h| Source {

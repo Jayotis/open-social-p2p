@@ -21,6 +21,7 @@ mod events;
 mod health;
 mod hide_list;
 mod home;
+mod host_circuit;
 mod hosting;
 mod keys;
 mod likes;

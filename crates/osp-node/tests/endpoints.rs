@@ -713,6 +713,7 @@ impl ProtocolHandler for Answers {
                 let resp = SocialResponse::Endpoints {
                     media: Some(Box::new(self.0.clone())),
                     direct: None,
+                    circuit: None,
                 };
                 write_frame(&mut send, &resp).await.ok();
                 send.finish().ok();

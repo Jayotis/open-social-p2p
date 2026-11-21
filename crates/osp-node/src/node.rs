@@ -26,7 +26,7 @@ use tokio::{
     sync::{Notify, Semaphore, mpsc, watch},
     task::JoinHandle,
 };
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 /// Most streams a peer may have open on one connection at a time. A phone
 /// loading a feed full of images uses the most; extra streams wait their turn.
@@ -197,7 +197,7 @@ impl Default for SimSettings {
 /// Serves blobs on an endpoint that isn't the last to stop. `BlobsProtocol`
 /// shuts its store down when its router stops, and a store shuts down once.
 #[derive(Debug, Clone)]
-struct SharedBlobs(BlobsProtocol);
+pub(crate) struct SharedBlobs(pub BlobsProtocol);
 
 impl ProtocolHandler for SharedBlobs {
     async fn accept(&self, conn: Connection) -> Result<(), AcceptError> {
@@ -319,6 +319,9 @@ pub(crate) struct Core {
     pub machine: Option<MachineSide>,
     /// The node's carrier, when it carries (ADR 0043).
     pub carrier: Option<CarrierSide>,
+    /// The node's link to its hop, which viewers' circuits reach its media
+    /// through (ADR 0043), when seed carriers are known.
+    pub host_circuit: Option<crate::host_circuit::HostCircuit>,
     /// Wakes a directory's reading of listed nodes, for someone new.
     pub listed_now: Notify,
     /// The day a directory last picked its listed posts' hosts (ADR 0025).
@@ -570,6 +573,21 @@ impl Node {
             }
             false => None,
         };
+        // Hosting through a carrier never stops the node starting.
+        let host_circuit = match crate::host_circuit::why_not(
+            machine.is_some(),
+            endpoints.as_ref().is_some_and(|e| e.media.is_some())
+                && config.network.relay != RelayChoice::Disabled,
+            config.carrier.known.len(),
+        ) {
+            Some(why) => {
+                debug!("media isn't reached through a carrier: {why}");
+                None
+            }
+            None => crate::host_circuit::HostCircuit::load(&home)
+                .inspect_err(|e| warn!("media isn't reached through a carrier: {e:#}"))
+                .ok(),
+        };
         // With Tor on, the node's ID is on Tor only: it connects nowhere else.
         let endpoint = match &tor {
             Some(tor) => tor.endpoint.clone(),
@@ -710,6 +728,7 @@ impl Node {
             endpoints,
             machine,
             carrier,
+            host_circuit,
             listed_now: Notify::new(),
             hosts_picked_day: std::sync::atomic::AtomicI64::new(-1),
             reading_directories: tokio::sync::Mutex::new(HashSet::new()),
@@ -735,6 +754,7 @@ impl Node {
         let (blobs, serving_rules) = core
             .store
             .protocol(&core.config.serving, &core.config.swarm);
+        let blobs_for_circuits = blobs.clone();
         let social = SocialProtocol::new(core.clone());
         let client = ClientProtocol::new(core.clone());
         // Messages between nodes go on neither of these, so if Tor is down
@@ -832,6 +852,12 @@ impl Node {
             hide_list,
         ];
         tasks.extend(directory_tasks);
+        if core.host_circuit.is_some() {
+            tasks.push(tokio::spawn(crate::host_circuit::keep_linked(
+                core.clone(),
+                blobs_for_circuits,
+            )));
+        }
         if core.config.network.relay != RelayChoice::Disabled {
             tasks.push(tokio::spawn(network::log_nat_changes(
                 core.endpoint_on_the_network().clone(),
@@ -1170,6 +1196,9 @@ impl Node {
         self.core.viewing.close_all().await;
         if let Some(carrier) = &self.core.carrier {
             carrier.endpoint.close().await;
+        }
+        if let Some(circuit) = &self.core.host_circuit {
+            circuit.close().await;
         }
         self.router
             .shutdown()

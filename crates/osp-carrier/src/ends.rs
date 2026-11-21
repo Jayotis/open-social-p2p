@@ -124,6 +124,12 @@ impl HostLink {
         self.events.recv().await
     }
 
+    /// Another sending half, to read the slot from after the link is handed
+    /// to [`host_endpoint`](crate::host_endpoint).
+    pub fn sender(&self) -> HostSender {
+        self.sender.clone()
+    }
+
     /// The sending half, and what comes over the link.
     pub fn split(self) -> (HostSender, mpsc::Receiver<HostEvent>) {
         (self.sender, self.events)
@@ -154,6 +160,21 @@ impl HostSender {
             reason: DestroyReason::Closed,
         };
         let _ = self.conn.send_datagram(Bytes::from(frame.encode()));
+    }
+
+    /// Waits until the link to the hop has closed.
+    pub async fn closed(&self) {
+        self.conn.closed().await;
+    }
+
+    /// Whether the link to the hop has closed.
+    pub fn is_closed(&self) -> bool {
+        self.conn.close_reason().is_some()
+    }
+
+    /// Ends the link to the hop, and with it every circuit on it.
+    pub fn end(&self) {
+        self.conn.close(0u32.into(), b"done");
     }
 }
 

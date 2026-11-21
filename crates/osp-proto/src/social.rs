@@ -300,9 +300,13 @@ pub enum SocialResponse {
         vouches: Vec<CarriedVouch>,
     },
     /// This node's media endpoint, and its direct one if its rule allows.
+    /// `circuit` is how to reach its media through its hop instead, once it
+    /// has one (ADR 0043).
     Endpoints {
         media: Option<Box<BoundEndpoint>>,
         direct: Option<Box<BoundEndpoint>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        circuit: Option<Box<CircuitOffer>>,
     },
     Error {
         message: String,
@@ -314,6 +318,25 @@ pub enum SocialResponse {
 pub struct HostingReshare {
     pub announce: SignedObject,
     pub profile: SignedObject,
+}
+
+/// How a viewer reaches a host's media through the host's hop Q (ADR 0043's
+/// design note, "The host's side"), never the host's address.
+///
+/// Say Jimmy asks Alice's node how to reach her media. It names Q by its
+/// signed descriptor, the slot Q gave her node's link, and the endpoint her
+/// node answers circuits on. Jimmy's node builds a circuit ending at Q and
+/// hands Q the slot; Q joins it to her link. Q is all Jimmy's node learns of
+/// where Alice's node is.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CircuitOffer {
+    /// Q's carrier descriptor, as unpadded base64url of its bytes, as a
+    /// machine record carries it.
+    pub carrier: String,
+    /// The host slot, valid for a few minutes.
+    pub slot: [u8; 16],
+    /// The host's circuit endpoint.
+    pub endpoint: PublicKey,
 }
 
 /// ALPN of the one request an author's media endpoint answers besides media
@@ -332,9 +355,13 @@ pub struct MediaHostsRequest {
 #[serde(tag = "result", rename_all = "snake_case")]
 pub enum MediaHostsResponse {
     /// The hosting resharers that may be named to anyone, by their media
-    /// endpoints, and the author's own. Never a follower's copy.
+    /// endpoints, and the author's own. Never a follower's copy. `circuit`
+    /// is how to reach the author's media through its hop instead, once it
+    /// has one (ADR 0043).
     Hosts {
         hosts: Vec<BoundEndpoint>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        circuit: Option<Box<CircuitOffer>>,
     },
     /// The post was deleted: the author's signed `Delete` (ADR 0019).
     Deleted {
