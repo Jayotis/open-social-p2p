@@ -655,6 +655,14 @@ const MIGRATIONS: &[&str] = &[
         received_ms INTEGER NOT NULL,
         PRIMARY KEY (kind, target, id)
     );",
+    // When each machine in the table started, by the earliest of what its
+    // records said and when it was first seen, so a later record can't make
+    // it new again (ADR 0043's signed start).
+    "CREATE TABLE machine_starts (
+        machine       TEXT PRIMARY KEY,
+        started_ms    INTEGER NOT NULL,
+        first_seen_ms INTEGER NOT NULL
+    );",
 ];
 
 /// How many days of `served_days` are kept: the summary's 30, and today.
@@ -2295,6 +2303,23 @@ impl Db {
                 params![machine.to_string()],
             )?;
         }
+        for start in &changes.starts {
+            tx.execute(
+                "INSERT OR REPLACE INTO machine_starts (machine, started_ms, first_seen_ms)
+                 VALUES (?1, ?2, ?3)",
+                params![
+                    start.machine.to_string(),
+                    start.started_ms,
+                    start.first_seen_ms
+                ],
+            )?;
+        }
+        for machine in &changes.starts_removed {
+            tx.execute(
+                "DELETE FROM machine_starts WHERE machine = ?1",
+                params![machine.to_string()],
+            )?;
+        }
         if let Some(dials) = &changes.dials {
             tx.execute("DELETE FROM machine_dials", [])?;
             for dial in dials {
@@ -2311,9 +2336,33 @@ impl Db {
 
     /// Forgets every machine known, for a new machine name.
     pub fn forget_machines(&self) -> Result<()> {
-        self.conn()
-            .execute_batch("DELETE FROM machines; DELETE FROM machine_dials;")?;
+        self.conn().execute_batch(
+            "DELETE FROM machines; DELETE FROM machine_dials; DELETE FROM machine_starts;",
+        )?;
         Ok(())
+    }
+
+    /// When the machines seen started. A row that doesn't read is left out.
+    pub fn machine_starts(&self) -> Result<Vec<meet::Start>> {
+        let conn = self.conn();
+        let mut stmt =
+            conn.prepare("SELECT machine, started_ms, first_seen_ms FROM machine_starts")?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get(1)?, row.get(2)?))
+        })?;
+        let mut starts = Vec::new();
+        for row in rows {
+            let (machine, started_ms, first_seen_ms) = row?;
+            match machine.parse() {
+                Ok(machine) => starts.push(meet::Start {
+                    machine,
+                    started_ms,
+                    first_seen_ms,
+                }),
+                Err(e) => tracing::warn!("leaving out a machine's start that doesn't read: {e}"),
+            }
+        }
+        Ok(starts)
     }
 
     // ---- what came from directories (ADR 0015) ----
@@ -7186,6 +7235,7 @@ mod tests {
                      DROP TABLE opened_posts; DROP TABLE opened_people; DROP TABLE blocks;
                      DROP TABLE hide_list; DROP TABLE hide_state; DROP TABLE hidden_objects;
                      DROP TABLE hide_exceptions; DROP TABLE block_dropped;
+                     DROP TABLE machine_starts;
                      PRAGMA user_version = 24;",
                 )
                 .unwrap();

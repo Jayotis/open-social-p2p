@@ -8,6 +8,7 @@
 mod activity;
 mod admission;
 pub mod backup;
+mod carrier;
 mod client;
 mod cluster;
 pub mod config;
@@ -59,7 +60,10 @@ pub const VERSION: &str = match option_env!("OSP_RELEASE") {
 
 #[cfg(feature = "sim")]
 pub use admission::Meeting;
-pub use config::{Config, DirectRule, IntroductionsConfig, KnownDirectory, RelayChoice};
+pub use config::{
+    CarrierConfig, Config, DirectRule, IntroductionsConfig, KnownDirectory, RelayChoice,
+    SeedCarrier,
+};
 pub use db::BlobClass;
 pub use endpoints::PeerEndpoints;
 pub use home::Home;

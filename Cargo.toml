@@ -14,6 +14,7 @@ osp-proto = { path = "crates/osp-proto" }
 osp-node = { path = "crates/osp-node" }
 osp-client = { path = "crates/osp-client" }
 osp-tor = { path = "crates/osp-tor" }
+osp-carrier = { path = "crates/osp-carrier" }
 
 anyhow = "1"
 bip39 = { version = "3", default-features = false, features = ["zeroize"] } # English words only

@@ -20,9 +20,10 @@
 # systemd. Packages are installed with apt (Debian, Ubuntu, Raspberry Pi OS);
 # elsewhere it says what to install.
 #
-# The directories come from the release's directories.txt, and the relays from
-# its relays.txt, never from the program: `osp` has no built-in directory or
-# relay (ADRs 0015 and 0044).
+# The directories come from the release's directories.txt, the relays from its
+# relays.txt and the seed carriers from its carriers.txt, never from the
+# program: `osp` has no built-in directory, relay or carrier (ADRs 0015, 0044
+# and 0043).
 set -euo pipefail
 
 # The release job writes its tag here.
@@ -94,6 +95,8 @@ fetch SHA256SUMS
 fetch directories.txt
 # Optional: a release without it leaves the node on n0's relays.
 curl -fsSL --retry 3 -o "$work/relays.txt" "$BASE/relays.txt" 2>/dev/null || rm -f "$work/relays.txt"
+# Optional too: a release without it names no seed carriers.
+curl -fsSL --retry 3 -o "$work/carriers.txt" "$BASE/carriers.txt" 2>/dev/null || rm -f "$work/carriers.txt"
 # This catches a damaged download, not a changed release: the sums come from
 # the same place as the program.
 (cd "$work" && grep " $tarball\$" SHA256SUMS | sha256sum -c --quiet -) || stop "$tarball doesn't match SHA256SUMS"
@@ -130,6 +133,14 @@ else
         directories+=(--directory "$machine" "$node")
     done < "$work/directories.txt"
     ((${#directories[@]})) || stop "directories.txt names no directories"
+    # Each line: a seed carrier's machine name. # starts a comment.
+    carriers=()
+    if [[ -e "$work/carriers.txt" ]]; then
+        while read -r machine _; do
+            [[ -z "$machine" || "$machine" == \#* ]] && continue
+            carriers+=(--carrier "$machine")
+        done < "$work/carriers.txt"
+    fi
     # Each line: a relay URL. # starts a comment.
     relays=()
     if [[ -e "$work/relays.txt" ]]; then
@@ -163,10 +174,10 @@ else
     if [[ -n "${OSP_INIT_FLAGS:-}" ]]; then
         # shellcheck disable=SC2086 # several flags
         OSP_INSTALLING=1 OSP_RELAY_TOKEN="$token" "$BIN/osp" --home "$NODE_HOME" init \
-            "${directories[@]}" "${relays[@]}" $OSP_INIT_FLAGS
+            "${directories[@]}" "${carriers[@]}" "${relays[@]}" $OSP_INIT_FLAGS
     else
         OSP_INSTALLING=1 OSP_RELAY_TOKEN="$token" "$BIN/osp" --home "$NODE_HOME" init \
-            "${directories[@]}" "${relays[@]}" < /dev/tty
+            "${directories[@]}" "${carriers[@]}" "${relays[@]}" < /dev/tty
     fi
     created=true
 fi
