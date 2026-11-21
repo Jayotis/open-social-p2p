@@ -10,6 +10,7 @@ import 'device_key.dart';
 import 'format.dart';
 import 'node.dart';
 import 'screens/hide_list_screen.dart';
+import 'screens/hops_screen.dart';
 import 'screens/pair_screen.dart';
 import 'screens/welcome_screen.dart';
 import 'shell.dart';
@@ -82,6 +83,8 @@ class PhoneApp extends StatelessWidget {
               ? HideListScreen(node: node)
               : node.paired == null
               ? PairScreen(node: node)
+              : node.hopsDue
+              ? HopsScreen(node: node)
               : AppShell(node: node),
         ),
       },

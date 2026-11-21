@@ -4,6 +4,7 @@ import '../format.dart';
 import '../node.dart';
 import '../theme.dart';
 import 'advanced_screen.dart';
+import 'carrying_screen.dart';
 import 'events_screen.dart';
 import '../widgets/sky_bar.dart';
 
@@ -83,6 +84,13 @@ class _NodeSummaryScreenState extends State<NodeSummaryScreen> {
                       : 'It sent ${formatBytes(s.servedLatelyBytes)} of '
                             'photos and videos to others in the last 30 days.',
                 ),
+                if (s.carrier case final c?)
+                  _Line(
+                    icon: Icons.route_outlined,
+                    text: carryingLine(c),
+                    detail: 'Carrying: limits and your own video',
+                    onTap: () => widget.open(CarryingScreen(node: node)),
+                  ),
                 _Line(
                   icon: Icons.people_outline,
                   text:
@@ -146,15 +154,23 @@ class _NodeSummaryScreenState extends State<NodeSummaryScreen> {
 String _people(int n) => n == 1 ? '1 person' : '$n people';
 
 class _Line extends StatelessWidget {
-  const _Line({required this.icon, required this.text, this.detail});
+  const _Line({
+    required this.icon,
+    required this.text,
+    this.detail,
+    this.onTap,
+  });
 
   final IconData icon;
   final String text;
   final String? detail;
 
+  /// Set, the line opens more, and shows it with an arrow.
+  final VoidCallback? onTap;
+
   @override
   Widget build(BuildContext context) {
-    return Padding(
+    final line = Padding(
       padding: const EdgeInsets.symmetric(vertical: Space.s),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -171,8 +187,10 @@ class _Line extends StatelessWidget {
               ],
             ),
           ),
+          if (onTap != null) const Icon(Icons.chevron_right, size: 20),
         ],
       ),
     );
+    return onTap == null ? line : InkWell(onTap: onTap, child: line);
   }
 }

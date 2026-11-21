@@ -881,6 +881,13 @@ pub struct CarrierStatus {
     pub month_budget: Option<u64>,
     #[serde(default)]
     pub over_budget: bool,
+    /// The plan's monthly data cap in GB (0 for unlimited or not asked),
+    /// and the owner's own budget for carrying in GB, if they set one
+    /// instead of half the cap.
+    #[serde(default)]
+    pub data_cap_gb: u64,
+    #[serde(default)]
+    pub monthly_gb: Option<u64>,
     /// Seed carriers this node knows.
     pub seeds: usize,
     /// Machines at standing with this node, and on probation.

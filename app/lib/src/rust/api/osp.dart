@@ -6,7 +6,7 @@
 import '../frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `activity_item`, `block_target`, `found_person`, `found_resharers`, `hides_reply`, `hides`, `invite_for`, `liker`, `node_info`, `one`, `path_hop`, `post`, `profile_of`, `progress`, `reply_info`, `report_to`, `run_post`, `sent_reply`, `shared_code`, `shown`, `trust_entry`, `universe_event`, `universe`
+// These functions are ignored because they are not marked as `pub`: `activity_item`, `block_target`, `carrier_state`, `found_person`, `found_resharers`, `hides_reply`, `hides`, `invite_for`, `liker`, `node_info`, `one`, `path_hop`, `post`, `profile_of`, `progress`, `reply_info`, `report_to`, `run_post`, `sent_reply`, `shared_code`, `shown`, `trust_entry`, `universe_event`, `universe`
 // These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `Hider`
 // These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`
 
@@ -14,7 +14,8 @@ import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 /// secure storage.
 String newDeviceKey() => RustLib.instance.api.crateApiOspNewDeviceKey();
 
-/// Makes sure a ticket looks like a pairing ticket before trying to pair.
+/// Makes sure a ticket looks like a pairing ticket before trying to pair:
+/// `OSPPAIR1`, or `OSPPAIR2` from a node with its own relays (ADR 0044).
 bool isPairingTicket({required String text}) =>
     RustLib.instance.api.crateApiOspIsPairingTicket(text: text);
 
@@ -231,9 +232,27 @@ abstract class OspApp implements RustOpaqueInterface {
   /// The owner's replies to others' posts, newest first.
   Future<List<SentReply>> sentReplies();
 
+  /// Changes how the node carries for others (ADR 0043 §8). Each one
+  /// left out stays as it is. `monthly_gb` and `data_cap_gb` take 0 for
+  /// no limit.
+  Future<void> setCarrying({
+    bool? paused,
+    bool? metered,
+    int? jobs,
+    int? uploadShare,
+    int? uploadMbps,
+    int? monthlyGb,
+    int? dataCapGb,
+  });
+
   /// Answers whether to use the list, or changes the answer. Off, all it
   /// hid comes back; on, the node fetches it soon.
   Future<HideListState> setHideList({required bool inUse});
+
+  /// The owner's answer on whether the hops the node picks may see its
+  /// internet address: yes, its own video goes through them; no, through
+  /// relays.
+  Future<void> setHops({required bool yes});
 
   /// Publishes the owner's profile. `photo`, a file on this phone shrunk
   /// to about 1,024 px, becomes the new picture; without one,
@@ -545,6 +564,134 @@ class CardPoint {
           people == other.people &&
           you == other.you &&
           name == other.name;
+}
+
+/// Carrying for other nodes (ADR 0043 §8), as the owner set it and as it
+/// goes.
+class CarrierState {
+  /// Whether it carries now: not paused, not metered, within the month's
+  /// budget, and running.
+  final bool carrying;
+
+  /// Why it doesn't run at all, in plain words, when it doesn't.
+  final String? off;
+  final bool paused;
+  final bool metered;
+
+  /// A seed carrier, a server on the release's list.
+  final bool seed;
+
+  /// Circuits carrying at once.
+  final int jobs;
+
+  /// The share of the upload carrying may use, in percent.
+  final int uploadShare;
+
+  /// The upload the share is of, in Mbit/s, and where that came from:
+  /// `set` (the owner's), `cap`, `measured` or `assumed`.
+  final double uploadMbps;
+  final String uploadFrom;
+
+  /// Circuits open now; bytes carried since the node started.
+  final int circuits;
+  final PlatformInt64 bytes;
+
+  /// The owner's answer on the hops it picks seeing its address: None if
+  /// not asked yet, when its own video goes through relays.
+  final bool? hops;
+
+  /// Carried this UTC month, both ways, and what it may: None for no
+  /// limit.
+  final PlatformInt64 monthBytes;
+  final PlatformInt64? monthBudget;
+  final bool overBudget;
+
+  /// The plan's monthly data cap in GB, 0 for unlimited or not given.
+  final int dataCapGb;
+
+  /// The owner's own monthly budget in GB, if set instead of half the
+  /// cap; 0 for no limit.
+  final int? monthlyGb;
+
+  /// Seed carriers the node knows: with none, its own video has no hop
+  /// to go through, and the question isn't asked.
+  final int seeds;
+
+  /// Machines at standing with this node, and on probation.
+  final int standing;
+  final int probation;
+
+  const CarrierState({
+    required this.carrying,
+    this.off,
+    required this.paused,
+    required this.metered,
+    required this.seed,
+    required this.jobs,
+    required this.uploadShare,
+    required this.uploadMbps,
+    required this.uploadFrom,
+    required this.circuits,
+    required this.bytes,
+    this.hops,
+    required this.monthBytes,
+    this.monthBudget,
+    required this.overBudget,
+    required this.dataCapGb,
+    this.monthlyGb,
+    required this.seeds,
+    required this.standing,
+    required this.probation,
+  });
+
+  @override
+  int get hashCode =>
+      carrying.hashCode ^
+      off.hashCode ^
+      paused.hashCode ^
+      metered.hashCode ^
+      seed.hashCode ^
+      jobs.hashCode ^
+      uploadShare.hashCode ^
+      uploadMbps.hashCode ^
+      uploadFrom.hashCode ^
+      circuits.hashCode ^
+      bytes.hashCode ^
+      hops.hashCode ^
+      monthBytes.hashCode ^
+      monthBudget.hashCode ^
+      overBudget.hashCode ^
+      dataCapGb.hashCode ^
+      monthlyGb.hashCode ^
+      seeds.hashCode ^
+      standing.hashCode ^
+      probation.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is CarrierState &&
+          runtimeType == other.runtimeType &&
+          carrying == other.carrying &&
+          off == other.off &&
+          paused == other.paused &&
+          metered == other.metered &&
+          seed == other.seed &&
+          jobs == other.jobs &&
+          uploadShare == other.uploadShare &&
+          uploadMbps == other.uploadMbps &&
+          uploadFrom == other.uploadFrom &&
+          circuits == other.circuits &&
+          bytes == other.bytes &&
+          hops == other.hops &&
+          monthBytes == other.monthBytes &&
+          monthBudget == other.monthBudget &&
+          overBudget == other.overBudget &&
+          dataCapGb == other.dataCapGb &&
+          monthlyGb == other.monthlyGb &&
+          seeds == other.seeds &&
+          standing == other.standing &&
+          probation == other.probation;
 }
 
 class ConnectedPerson {
@@ -1035,6 +1182,10 @@ class NodeStatus {
   /// The space OSP uses on the node.
   final PlatformInt64 spaceBytes;
 
+  /// Carrying other nodes' encrypted video, and the question on the
+  /// node's own address (ADR 0043 §8). None from a node before part 5.
+  final CarrierState? carrier;
+
   const NodeStatus({
     required this.name,
     required this.version,
@@ -1055,6 +1206,7 @@ class NodeStatus {
     required this.hostedPosts,
     required this.servedLatelyBytes,
     required this.spaceBytes,
+    this.carrier,
   });
 
   @override
@@ -1077,7 +1229,8 @@ class NodeStatus {
       torStarting.hashCode ^
       hostedPosts.hashCode ^
       servedLatelyBytes.hashCode ^
-      spaceBytes.hashCode;
+      spaceBytes.hashCode ^
+      carrier.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -1102,7 +1255,8 @@ class NodeStatus {
           torStarting == other.torStarting &&
           hostedPosts == other.hostedPosts &&
           servedLatelyBytes == other.servedLatelyBytes &&
-          spaceBytes == other.spaceBytes;
+          spaceBytes == other.spaceBytes &&
+          carrier == other.carrier;
 }
 
 /// One hop, from whoever the hop before reached, to `identity`.
