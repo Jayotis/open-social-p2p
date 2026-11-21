@@ -259,9 +259,9 @@ impl Core {
     /// Downloads `blob` from `sources`, as the store does, but reaches the
     /// nodes in `offers` through carriers rather than their relayed media
     /// endpoints when this node fetches through carriers (ADR 0043): the
-    /// other sources first, then each offer's circuit, then all of
-    /// `sources` as before, the relays included. A node's direct endpoint
-    /// is never held back. With `via`, a viewing endpoint's pool, the
+    /// other sources asked at once first, and any reached directly, then
+    /// each offer's circuit, then all of `sources` as before, the relays
+    /// included. A node's direct endpoint is never held back. With `via`, a viewing endpoint's pool, the
     /// sources are reached only through it (ADR 0024).
     pub(crate) async fn download_offered(
         &self,
@@ -278,9 +278,11 @@ impl Core {
                 .await;
         }
         let offered = |s: &Source| !s.from_direct && offers.iter().any(|(node, _)| *node == s.node);
+        // Those asked one at a time are the ones to spare, such as the
+        // author's: they wait for the circuits unless reached directly.
         let mut others = sources.clone();
         others.at_once.retain(|s| !offered(s));
-        others.in_turn.retain(|s| !offered(s));
+        others.in_turn.retain(|s| s.from_direct);
         if !others.is_empty() {
             match self
                 .store

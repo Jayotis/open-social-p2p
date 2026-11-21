@@ -693,3 +693,69 @@ async fn a_stranger_fetches_a_listed_resharers_copy_through_its_hop() {
         node.shutdown().await.unwrap();
     }
 }
+
+/// Alice's node knows no carrier. Sam's node fetches her large photo ahead
+/// of time and shares its copy; it knows Kim's, a seed carrier, and offers
+/// a way through it on its media endpoint. When Jimmy follows Alice, her
+/// node names Sam's copy, and Jimmy's node fetches it through Kim's carrier
+/// rather than the relay, and before trying Alice's own node.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_follower_fetches_another_followers_copy_through_its_hop() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_relay, relay) = local_relay().await;
+    let net = SimNet::new(4);
+
+    let kim_home = dir.path().join("kim");
+    let mut kim_config = config("Kim", &relay);
+    kim_config.carrier.seed = true;
+    Node::init(&kim_home, &kim_config).unwrap();
+    let kim = start(&kim_home, &net).await;
+    let seed = SeedCarrier {
+        machine: kim.machine_id().unwrap(),
+    };
+    let carried = async || kim.carrier_stats().await.unwrap().bytes;
+
+    let node = async |name: &str, known: Vec<SeedCarrier>| {
+        let home = dir.path().join(name);
+        let mut config = config(name, &relay);
+        config.endpoints.enabled = true;
+        config.carrier.known = known;
+        config.sync.prefetch = true;
+        config.swarm.share_prefetched = true;
+        Node::init(&home, &config).unwrap();
+        let sim = SimSettings {
+            prefetch_spread: Duration::ZERO,
+            ..sim(&net)
+        };
+        Node::spawn_sim(&home, sim).await.unwrap()
+    };
+    let alice = node("Alice", Vec::new()).await;
+    let asked = post_large_photo(&alice, dir.path()).await;
+
+    let sam = node("Sam", vec![seed.clone()]).await;
+    follow(&sam, &alice).await;
+    timeout(Duration::from_secs(60), async {
+        while alice.swarm_copies(&sam.node_id()).unwrap() == 0 {
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    })
+    .await
+    .expect("Sam's node never told Alice's it holds a copy");
+    let me = stranger(&net).await;
+    offer_of(&me, &sam, asked, true).await;
+
+    let before = carried().await;
+    let jimmy = node("Jimmy", vec![seed]).await;
+    follow(&jimmy, &alice).await;
+    timeout(Duration::from_secs(60), async {
+        while carried().await < before + (1 << 20) {
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    })
+    .await
+    .expect("Jimmy's node didn't fetch Sam's copy through Kim");
+
+    for node in [jimmy, sam, alice, kim] {
+        node.shutdown().await.unwrap();
+    }
+}

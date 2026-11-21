@@ -866,6 +866,8 @@ impl Core {
                 }
             }
             named.retain(|source| !sources.contains(&source.node));
+            let offered = self.named_offers(blob, &named, &offers, wanted.size).await;
+            offers.extend(offered);
             sources.at_once = named;
             // The author's own nodes, which a resharer names too, after
             // everyone else: they're the ones to spare.
@@ -1211,6 +1213,53 @@ impl Core {
             "asked the hosts for circuit offers"
         );
         Ok(offers)
+    }
+
+    /// Asks the holders of `blob` a tracker `named`, followers with a copy
+    /// and hosting resharers, for a way through their hops (ADR 0043), on
+    /// their media endpoints, all at once: a large file through the relays
+    /// is what crawls. Only those reached by a relay and not offered
+    /// already, and not while another fetch of `blob` is asking. A slow
+    /// or failed ask holds up the download by `ASK_HOST_WAIT` at most.
+    async fn named_offers(
+        &self,
+        blob: &BlobHash,
+        named: &[Source],
+        offered: &Offers,
+        declared: u64,
+    ) -> Offers {
+        if declared <= store::SMALL_BLOB || !self.fetches_through_carriers() {
+            return Vec::new();
+        }
+        // A node named by its ID alone has no media endpoint to ask.
+        let to_ask: Vec<Source> = named
+            .iter()
+            .filter(|s| !s.from_direct && s.endpoint != s.node)
+            .filter(|s| !offered.iter().any(|(node, _)| *node == s.node))
+            .copied()
+            .collect();
+        if to_ask.is_empty() {
+            return Vec::new();
+        }
+        let Ok((_, Some(post))) = self.db.media_names(blob) else {
+            return Vec::new();
+        };
+        let Some(_asking) = self.offers_asked.start(*blob) else {
+            debug!(blob = %blob.fmt_short(), "its hosts are being asked for offers already");
+            return Vec::new();
+        };
+        let started = tokio::time::Instant::now();
+        let offers = self
+            .ask_hosts_for_offers(&self.endpoint, &to_ask, &post, blob)
+            .await;
+        debug!(
+            blob = %blob.fmt_short(),
+            asked = to_ask.len(),
+            offers = offers.len(),
+            took_ms = started.elapsed().as_millis() as u64,
+            "asked the holders named for circuit offers"
+        );
+        offers
     }
 
     /// Asks the nodes we follow who else hosts `blob`. Returns the nodes they

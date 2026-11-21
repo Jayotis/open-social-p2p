@@ -36,7 +36,7 @@ use tokio::sync::Semaphore;
 use tracing::{debug, info, warn};
 
 use crate::{
-    db::{BlobClass, now_ms},
+    db::now_ms,
     node::Core,
     store::Source,
     sync::{jitter, random_fraction},
@@ -121,9 +121,9 @@ impl Core {
     /// Who hosts `req.blob`, of this node's post `req.post`, for anyone: this
     /// node's media endpoint and the hosting resharers it names, never a
     /// follower's copy. A deleted post is answered with its `Delete`. For
-    /// a post this node reshared with hosting, just its own media endpoint,
-    /// with the way through its hop (ADR 0043): it names nobody else, as
-    /// that's the author's to do.
+    /// a post this node reshared with hosting, or whose copy it shares as
+    /// a follower, just its own media endpoint, with the way through its
+    /// hop (ADR 0043): it names nobody else, as that's the author's to do.
     fn answer_media_hosts(&self, req: &MediaHostsRequest) -> Result<MediaHostsResponse> {
         let me = self.signer.identity();
         if let Some(delete) = self.db.delete_of(&req.post, &me)? {
@@ -133,10 +133,16 @@ impl Core {
             Some(Ok(Payload::Note(note))) => note.blobs().any(|b| b == req.blob),
             _ => false,
         };
-        // Held for others because a reshare of ours promised to host it;
-        // deleting the reshare makes it cache again (ADR 0019).
+        // Held for others because a reshare of ours promised to host it
+        // (deleting the reshare makes it cache again, ADR 0019), or a copy
+        // fetched ahead of time that this node shares: it's served to
+        // whoever asks for it anyway.
+        let share = self.config.swarm.share_prefetched;
         let hosted = !own
-            && self.db.blob_class(&req.blob)? == Some(BlobClass::Replica)
+            && self
+                .db
+                .blob_class(&req.blob)?
+                .is_some_and(|class| class.served_to_anyone(share))
             && self
                 .stored_note(&req.post)?
                 .is_some_and(|note| note.blobs().any(|b| b == req.blob));
