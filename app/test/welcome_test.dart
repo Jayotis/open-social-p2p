@@ -156,8 +156,8 @@ void main() {
     expect(node.hideListDue, isFalse);
   });
 
-  test('the app shows the same terms as docs/terms.md', () {
-    final doc = File('../docs/terms.md').readAsStringSync();
+  test('the app shows the same terms as docs/terms-short.md', () {
+    final doc = File('../docs/terms-short.md').readAsStringSync();
     final bullets = [
       for (final line in doc.split('\n'))
         if (line.startsWith('- ')) line.substring(2),

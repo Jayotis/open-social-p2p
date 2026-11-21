@@ -83,7 +83,7 @@ The alpha still depends on public relay infrastructure for media paths that cann
 
 ## Terms of use
 
-The official apps and software follow one set of [terms of use](docs/terms.md): post only what you may share, you answer for what you post, and no explicit sexual material, graphic violence, sexual material involving minors, intimate images shared without consent, or threats. The apps show them before pairing ([ADR 0042](docs/decisions/0042-content-rules-reports-and-the-project-hide-list.md)).
+The official apps and software follow one set of [short onboarding rules](docs/terms-short.md) and [full Terms of Use](docs/terms.md): post only what you may share, you answer for what you post, and no explicit sexual material, graphic violence, sexual material involving minors, intimate images shared without consent, or threats. The apps show them before pairing ([ADR 0042](docs/decisions/0042-content-rules-reports-and-the-project-hide-list.md)).
 
 ## Evidence, not just plans
 
