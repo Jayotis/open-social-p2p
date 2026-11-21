@@ -324,6 +324,8 @@ pub(crate) struct Core {
     pub host_circuit: Option<crate::host_circuit::HostCircuit>,
     /// The seed carriers' descriptors, as their records last gave them.
     pub seed_descriptors: crate::hops::SeedDescriptors,
+    /// Files whose hosts are being asked for circuit offers now.
+    pub offers_asked: crate::hops::OffersAsked,
     /// Wakes a directory's reading of listed nodes, for someone new.
     pub listed_now: Notify,
     /// The day a directory last picked its listed posts' hosts (ADR 0025).
@@ -732,6 +734,7 @@ impl Node {
             carrier,
             host_circuit,
             seed_descriptors: Default::default(),
+            offers_asked: Default::default(),
             listed_now: Notify::new(),
             hosts_picked_day: std::sync::atomic::AtomicI64::new(-1),
             reading_directories: tokio::sync::Mutex::new(HashSet::new()),

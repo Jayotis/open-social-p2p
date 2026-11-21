@@ -2,7 +2,7 @@
 //! its carrier in a signed descriptor and says when its machine key started,
 //! and a circuit goes through the node's carrier. A host keeps a link to a
 //! seed carrier and names it to viewers (part 4b), and a viewer fetches
-//! through its own hop and the host's (part 4c).
+//! through its own hop and the host's (part 4c), as does a follower.
 //!
 //! Kim's node is the carrier here. Machine names run on the simulated
 //! network, which has no Tor; the carrier endpoint uses a real relay on
@@ -243,10 +243,25 @@ async fn call(node: &Node, req: ClientRequest) -> ClientResponse {
 
 /// A small photo, posted.
 async fn post_photo(node: &Node, dir: &Path) -> (ObjectId, BlobHash) {
+    post_made(node, dir, "testsrc=s=64x64").await
+}
+
+/// A photo of noise, about 3 MB, over the size followers fetch through the
+/// swarm, posted.
+async fn post_large_photo(node: &Node, dir: &Path) -> (ObjectId, BlobHash) {
+    post_made(
+        node,
+        dir,
+        "nullsrc=s=2048x2048,geq=random(1)*255:random(1)*255:random(1)*255",
+    )
+    .await
+}
+
+async fn post_made(node: &Node, dir: &Path, source: &str) -> (ObjectId, BlobHash) {
     let photo = dir.join("photo.png");
     let status = tokio::process::Command::new("ffmpeg")
         .args(["-hide_banner", "-loglevel", "error", "-y"])
-        .args(["-f", "lavfi", "-i", "testsrc=s=64x64", "-frames:v", "1"])
+        .args(["-f", "lavfi", "-i", source, "-frames:v", "1"])
         .arg(&photo)
         .status()
         .await
@@ -527,6 +542,77 @@ async fn a_viewer_fetches_through_its_hop_and_the_hosts_and_falls_back_to_the_re
     assert_eq!(sam.open_blob(&asked.1).await.unwrap(), size);
 
     for node in [jimmy, robin, sam, alice, directory] {
+        node.shutdown().await.unwrap();
+    }
+}
+
+/// Follows `author` with its ticket, and syncs.
+async fn follow(node: &Node, author: &Node) {
+    let ClientResponse::Ticket { ticket } = call(author, ClientRequest::Invite).await else {
+        panic!("no ticket");
+    };
+    call(node, ClientRequest::Follow { ticket }).await;
+    call(node, ClientRequest::Sync).await;
+}
+
+/// Jimmy and Sam follow Alice, and all three know Kim's node, a seed
+/// carrier. Alice's node names its hop when they ask who hosts her large
+/// photo, so the photo goes through Kim's carrier rather than the relay:
+/// to Jimmy when he opens it, and to Sam's node fetching it ahead of time,
+/// which asks for the offer although it isn't sharing what it prefetches.
+#[tokio::test(flavor = "multi_thread")]
+async fn followers_fetch_through_the_hosts_hop() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_relay, relay) = local_relay().await;
+    let net = SimNet::new(4);
+
+    let kim_home = dir.path().join("kim");
+    let mut kim_config = config("Kim", &relay);
+    kim_config.carrier.seed = true;
+    Node::init(&kim_home, &kim_config).unwrap();
+    let kim = start(&kim_home, &net).await;
+    let seed = SeedCarrier {
+        machine: kim.machine_id().unwrap(),
+    };
+    let carried = async || kim.carrier_stats().await.unwrap().bytes;
+
+    let node = async |name: &str, prefetch: bool| {
+        let home = dir.path().join(name);
+        let mut config = config(name, &relay);
+        config.endpoints.enabled = true;
+        config.carrier.known = vec![seed.clone()];
+        config.sync.prefetch = prefetch;
+        Node::init(&home, &config).unwrap();
+        start(&home, &net).await
+    };
+    let alice = node("Alice", true).await;
+    let me = stranger(&net).await;
+    let small = post_photo(&alice, dir.path()).await;
+    offer_of(&me, &alice, small, true).await;
+    let (_, blob) = post_large_photo(&alice, dir.path()).await;
+
+    let jimmy = node("Jimmy", false).await;
+    follow(&jimmy, &alice).await;
+    let before = carried().await;
+    let size = jimmy.open_blob(&blob).await.unwrap();
+    assert!(size > 1 << 20);
+    assert!(
+        carried().await >= before + size,
+        "Jimmy's fetch didn't go through Kim"
+    );
+
+    let before = carried().await;
+    let sam = node("Sam", true).await;
+    follow(&sam, &alice).await;
+    timeout(Duration::from_secs(60), async {
+        while carried().await < before + size {
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    })
+    .await
+    .expect("Sam's node didn't fetch it through Kim");
+
+    for node in [jimmy, sam, alice, kim] {
         node.shutdown().await.unwrap();
     }
 }

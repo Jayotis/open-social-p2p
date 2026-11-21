@@ -15,7 +15,7 @@
 //! learns.
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     sync::Mutex,
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -35,6 +35,10 @@ use crate::{
     viewing::in_own_order,
 };
 
+/// Nodes that offered a way to their own media through their hops, each
+/// with its offer.
+pub(crate) type Offers = Vec<(EndpointId, CircuitOffer)>;
+
 /// A cached descriptor is asked for again this long before its circuit key
 /// runs out, so a circuit isn't built on a key about to go.
 const FRESH_FOR: u64 = 5 * 60;
@@ -42,6 +46,35 @@ const FRESH_FOR: u64 = 5 * 60;
 /// The seed carriers' descriptors, as their machine records last gave them.
 #[derive(Default)]
 pub(crate) struct SeedDescriptors(Mutex<HashMap<EndpointId, (Descriptor, u64)>>);
+
+/// Files whose hosts are being asked for circuit offers now, so a second
+/// fetch of one, such as an open while it's fetched ahead of time, doesn't
+/// ask again (`OffersAsked::start`).
+#[derive(Default)]
+pub(crate) struct OffersAsked(Mutex<HashSet<BlobHash>>);
+
+impl OffersAsked {
+    /// Notes that `blob`'s hosts are asked, until the guard is dropped.
+    /// None if they're being asked already.
+    pub(crate) fn start(&self, blob: BlobHash) -> Option<OffersAsking<'_>> {
+        let mut asked = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        asked
+            .insert(blob)
+            .then(|| OffersAsking { asked: self, blob })
+    }
+}
+
+pub(crate) struct OffersAsking<'a> {
+    asked: &'a OffersAsked,
+    blob: BlobHash,
+}
+
+impl Drop for OffersAsking<'_> {
+    fn drop(&mut self) {
+        let mut asked = self.asked.0.lock().unwrap_or_else(|e| e.into_inner());
+        asked.remove(&self.blob);
+    }
+}
 
 pub(crate) fn unix_now() -> u64 {
     SystemTime::now()
@@ -221,11 +254,62 @@ impl Core {
             }
         }
     }
+
+    /// Downloads `blob` from `sources`, as the store does, but reaches the
+    /// nodes in `offers` through carriers rather than their relayed media
+    /// endpoints when this node fetches through carriers (ADR 0043): the
+    /// other sources first, then each offer's circuit, then all of
+    /// `sources` as before, the relays included. A node's direct endpoint
+    /// is never held back.
+    pub(crate) async fn download_offered(
+        &self,
+        blob: &BlobHash,
+        sources: Sources,
+        offers: Offers,
+        class: BlobClass,
+        declared: u64,
+    ) -> Result<u64> {
+        if offers.is_empty() || !self.fetches_through_carriers() {
+            return self.store.download(blob, sources, class, declared).await;
+        }
+        let offered = |s: &Source| !s.from_direct && offers.iter().any(|(node, _)| *node == s.node);
+        let mut others = sources.clone();
+        others.at_once.retain(|s| !offered(s));
+        others.in_turn.retain(|s| !offered(s));
+        if !others.is_empty() {
+            match self.store.download(blob, others, class, declared).await {
+                Ok(size) => return Ok(size),
+                Err(e) => {
+                    debug!(blob = %blob.fmt_short(), "the other sources failed; through carriers next: {e:#}")
+                }
+            }
+        }
+        for (node, offer) in &offers {
+            if let Some(size) = self
+                .try_over_circuit(blob, *node, Some(offer), class, declared)
+                .await
+            {
+                return Ok(size);
+            }
+        }
+        self.store.download(blob, sources, class, declared).await
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_files_hosts_are_asked_for_offers_once_at_a_time() {
+        let asked = OffersAsked::default();
+        let blob = BlobHash::from_bytes([1; 32]);
+        let first = asked.start(blob).expect("not asked yet");
+        assert!(asked.start(blob).is_none(), "asked twice at once");
+        assert!(asked.start(BlobHash::from_bytes([2; 32])).is_some());
+        drop(first);
+        assert!(asked.start(blob).is_some(), "not asked again once done");
+    }
 
     #[test]
     fn an_offer_whose_descriptor_doesnt_check_out_is_refused() {
