@@ -1,5 +1,7 @@
 /// The terms of use (ADR 0042 §3), agreed before pairing. The same words
-/// are in docs/terms.md; a test keeps the two the same.
+/// are in docs/terms-short.md; a test keeps the two the same.
+/// The complete public agreement lives in docs/terms.md and at
+/// https://osp2p.com/terms/. Keep a link to it visible before acceptance.
 library;
 
 /// Raised whenever [termsOfUse] changes, so each phone shows them again,
