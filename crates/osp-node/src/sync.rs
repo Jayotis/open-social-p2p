@@ -1162,20 +1162,49 @@ impl Core {
     /// The circuit offers for their own media of the nodes we follow among
     /// `known`, which serve `blob`, when it's large and this node fetches
     /// through carriers (ADR 0043): a large file through the relays is what
-    /// crawls. Asked over Tor, with nobody waiting, so a fetch ahead of time
-    /// that isn't through the swarm reaches its author through its hop too.
+    /// crawls. So a fetch ahead of time that isn't through the swarm
+    /// reaches its author through its hop too.
+    ///
+    /// Only where a circuit could stand in for a relay: a node reached by
+    /// its direct endpoint isn't asked. Asked as with someone waiting, so a
+    /// slow or failed ask over Tor holds up the download by
+    /// `ASK_FIRST_WAIT` at most. Not asked again while another fetch of
+    /// `blob` is asking.
     async fn offers_for(&self, blob: &BlobHash, known: &[Source], declared: u64) -> Result<Offers> {
         if declared <= store::SMALL_BLOB || !self.fetches_through_carriers() {
             return Ok(Vec::new());
         }
-        let is_known = |id: &EndpointId| known.iter().any(|source| source.node == *id);
-        let to_ask = self.db.follows()?.into_iter().map(|f| f.addr);
-        let to_ask = to_ask.filter(|addr| is_known(&addr.id)).collect();
-        let asked = self.ask_who_hosts_at_once(to_ask, blob, false).await;
-        Ok(asked
+        let relayed = |id: &EndpointId| {
+            known.iter().any(|s| s.node == *id)
+                && !known.iter().any(|s| s.node == *id && s.from_direct)
+        };
+        let to_ask: Vec<EndpointAddr> = self
+            .db
+            .follows()?
+            .into_iter()
+            .map(|f| f.addr)
+            .filter(|addr| relayed(&addr.id))
+            .collect();
+        if to_ask.is_empty() {
+            return Ok(Vec::new());
+        }
+        let Some(_asking) = self.offers_asked.start(*blob) else {
+            debug!(blob = %blob.fmt_short(), "its hosts are being asked for offers already");
+            return Ok(Vec::new());
+        };
+        let started = tokio::time::Instant::now();
+        let asked = self.ask_who_hosts_at_once(to_ask, blob, true).await;
+        let offers: Offers = asked
             .into_iter()
             .filter_map(|(node, _, offer)| Some((node, offer?)))
-            .collect())
+            .collect();
+        debug!(
+            blob = %blob.fmt_short(),
+            offers = offers.len(),
+            took_ms = started.elapsed().as_millis() as u64,
+            "asked the hosts for circuit offers"
+        );
+        Ok(offers)
     }
 
     /// Asks the nodes we follow who else hosts `blob`. Returns the nodes they

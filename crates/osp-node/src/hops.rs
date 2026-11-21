@@ -15,7 +15,7 @@
 //! learns.
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     sync::Mutex,
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -46,6 +46,35 @@ const FRESH_FOR: u64 = 5 * 60;
 /// The seed carriers' descriptors, as their machine records last gave them.
 #[derive(Default)]
 pub(crate) struct SeedDescriptors(Mutex<HashMap<EndpointId, (Descriptor, u64)>>);
+
+/// Files whose hosts are being asked for circuit offers now, so a second
+/// fetch of one, such as an open while it's fetched ahead of time, doesn't
+/// ask again (`OffersAsked::start`).
+#[derive(Default)]
+pub(crate) struct OffersAsked(Mutex<HashSet<BlobHash>>);
+
+impl OffersAsked {
+    /// Notes that `blob`'s hosts are asked, until the guard is dropped.
+    /// None if they're being asked already.
+    pub(crate) fn start(&self, blob: BlobHash) -> Option<OffersAsking<'_>> {
+        let mut asked = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        asked
+            .insert(blob)
+            .then(|| OffersAsking { asked: self, blob })
+    }
+}
+
+pub(crate) struct OffersAsking<'a> {
+    asked: &'a OffersAsked,
+    blob: BlobHash,
+}
+
+impl Drop for OffersAsking<'_> {
+    fn drop(&mut self) {
+        let mut asked = self.asked.0.lock().unwrap_or_else(|e| e.into_inner());
+        asked.remove(&self.blob);
+    }
+}
 
 pub(crate) fn unix_now() -> u64 {
     SystemTime::now()
@@ -270,6 +299,17 @@ impl Core {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_files_hosts_are_asked_for_offers_once_at_a_time() {
+        let asked = OffersAsked::default();
+        let blob = BlobHash::from_bytes([1; 32]);
+        let first = asked.start(blob).expect("not asked yet");
+        assert!(asked.start(blob).is_none(), "asked twice at once");
+        assert!(asked.start(BlobHash::from_bytes([2; 32])).is_some());
+        drop(first);
+        assert!(asked.start(blob).is_some(), "not asked again once done");
+    }
 
     #[test]
     fn an_offer_whose_descriptor_doesnt_check_out_is_refused() {
