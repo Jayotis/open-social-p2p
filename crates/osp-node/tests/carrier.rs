@@ -571,6 +571,8 @@ async fn the_owners_controls_apply_at_once_and_are_kept() {
         jobs,
         upload_share,
         upload_mbps,
+        monthly_gb: None,
+        data_cap_gb: Some(400),
     };
     kim.handle(set(None, None, Some(3), Some(40), Some(20)))
         .await;
@@ -579,6 +581,9 @@ async fn the_owners_controls_apply_at_once_and_are_kept() {
     assert_eq!(now.upload_from, "set");
     assert_eq!(now.bytes_per_sec, Some(1_000_000));
     assert!(now.carrying);
+    // Half the plan's 400 GB a month.
+    assert_eq!(now.month_budget, Some(200_000_000_000));
+    assert!(!now.over_budget);
 
     kim.handle(set(None, Some(true), None, None, None)).await;
     let now = carrier(status(&kim).await);
@@ -600,6 +605,7 @@ async fn the_owners_controls_apply_at_once_and_are_kept() {
     assert_eq!(saved.carrier.jobs, Some(3));
     assert_eq!(saved.carrier.upload_share, Some(40));
     assert_eq!(saved.serving.upload_mbps, 20);
+    assert_eq!(saved.serving.data_cap_gb, 400);
     assert!(!saved.carrier.paused && !saved.carrier.metered);
     kim.shutdown().await.unwrap();
 }

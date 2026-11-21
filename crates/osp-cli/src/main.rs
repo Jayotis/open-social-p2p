@@ -149,6 +149,10 @@ enum Command {
         /// of it at most (ADR 0043). Otherwise you're asked
         #[arg(long, value_name = "MBIT/S")]
         upload_mbps: Option<u64>,
+        /// Your internet plan's monthly data cap in GB, 0 for unlimited: carrying keeps to
+        /// half of it. Otherwise you're asked
+        #[arg(long, value_name = "GB")]
+        data_cap_gb: Option<u64>,
         /// Let the nodes yours picks to carry its video see its internet address, so its
         /// video goes through them, not the public fallback (ADR 0043 §8). Otherwise you're
         /// asked, if the installer named seed carriers
@@ -465,6 +469,12 @@ enum CarrierCommand {
     Share { percent: u8 },
     /// Your connection's upload speed in Mbit/s, which the share is of
     Upload { mbps: u64 },
+    /// Your internet plan's monthly data cap in GB, 0 for unlimited:
+    /// carrying keeps to half of it
+    Cap { gb: u64 },
+    /// What carrying may use in a month, in GB, both ways counted, in place
+    /// of half your plan's cap. 0 for no limit
+    Monthly { gb: u64 },
 }
 
 #[derive(Clone, Copy, clap::ValueEnum)]
@@ -647,6 +657,7 @@ async fn main() -> Result<()> {
             directory,
             carrier,
             upload_mbps,
+            data_cap_gb,
             hops,
             no_hops,
         } => {
@@ -664,6 +675,7 @@ async fn main() -> Result<()> {
                 list_me: answered(list_me, no_list_me),
                 hide_list: answered(hide_list, no_hide_list),
                 upload_mbps,
+                data_cap_gb,
                 hops: answered(hops, no_hops),
                 ask_name,
             };
@@ -1085,6 +1097,7 @@ struct Answers {
     list_me: Option<bool>,
     hide_list: Option<bool>,
     upload_mbps: Option<u64>,
+    data_cap_gb: Option<u64>,
     hops: Option<bool>,
     /// No `--name` was given, so a new node asks for one.
     ask_name: bool,
@@ -1159,6 +1172,10 @@ fn ask_carrying(config: &mut Config, answers: &Answers) -> Result<()> {
         Some(mbps) => mbps,
         None => ask_upload_mbps()?,
     };
+    config.serving.data_cap_gb = match answers.data_cap_gb {
+        Some(gb) => gb,
+        None => ask_data_cap_gb()?,
+    };
     if !config.carrier.known.is_empty() {
         config.carrier.hops = ask_hops(answers.hops)?;
     }
@@ -1198,6 +1215,36 @@ fn ask_upload_mbps() -> Result<u64> {
         match line.parse::<f64>() {
             Ok(mbps) if (1.0..=100_000.0).contains(&mbps) => return Ok(mbps.round() as u64),
             _ => println!("Please give a number of Mbit/s, such as 20, or press Enter to skip."),
+        }
+    }
+}
+
+/// The internet plan's monthly data cap, 0 for unlimited: carrying keeps to
+/// half of it in a month, both ways counted.
+fn ask_data_cap_gb() -> Result<u64> {
+    println!();
+    println!("If your internet plan has a monthly data cap, carrying keeps to half of it,");
+    println!("counting what comes in and goes out, and waits for the next month once that's");
+    println!("used. Your plan says its cap; many are unlimited. You can change it later");
+    println!("(`osp carrier cap <GB>`, or `osp carrier monthly <GB>` for carrying's own).");
+    loop {
+        print!("Your plan's monthly data cap in GB (Enter for unlimited): ");
+        std::io::Write::flush(&mut std::io::stdout())?;
+        let mut line = String::new();
+        if std::io::stdin().read_line(&mut line)? == 0 {
+            println!();
+            return Ok(0);
+        }
+        let line = line.trim().to_lowercase();
+        let line = line.trim_end_matches("gb").trim();
+        match line {
+            "" | "unlimited" | "none" | "0" => return Ok(0),
+            _ => match line.parse::<u64>() {
+                Ok(gb) if gb > 0 => return Ok(gb),
+                _ => println!(
+                    "Please give a number of GB, such as 400, or press Enter for unlimited."
+                ),
+            },
         }
     }
 }
@@ -2563,6 +2610,11 @@ fn carrying_line(c: &osp_proto::rpc::CarrierStatus) -> String {
         "paused (`osp carrier resume`)".to_string()
     } else if c.metered {
         "stopped: the connection is metered (`osp carrier metered no`)".to_string()
+    } else if c.over_budget {
+        format!(
+            "waiting for next month: this month's {} is used (`osp carrier monthly <GB>`)",
+            size(c.month_budget.unwrap_or(0))
+        )
     } else {
         format!(
             "on, {} circuit(s) now, {} since the node started; {upload}",
@@ -2587,6 +2639,7 @@ async fn carrier(home: &Path, change: Option<CarrierCommand>, json: bool) -> Res
     let request = change.map(|change| {
         let (mut paused, mut metered, mut jobs, mut upload_share, mut upload_mbps) =
             (None, None, None, None, None);
+        let (mut monthly_gb, mut data_cap_gb) = (None, None);
         match change {
             CarrierCommand::Pause => paused = Some(true),
             CarrierCommand::Resume => paused = Some(false),
@@ -2594,6 +2647,8 @@ async fn carrier(home: &Path, change: Option<CarrierCommand>, json: bool) -> Res
             CarrierCommand::Jobs { jobs: n } => jobs = Some(n),
             CarrierCommand::Share { percent } => upload_share = Some(percent),
             CarrierCommand::Upload { mbps } => upload_mbps = Some(mbps),
+            CarrierCommand::Cap { gb } => data_cap_gb = Some(gb),
+            CarrierCommand::Monthly { gb } => monthly_gb = Some(gb),
         }
         ClientRequest::SetCarrying {
             paused,
@@ -2601,6 +2656,8 @@ async fn carrier(home: &Path, change: Option<CarrierCommand>, json: bool) -> Res
             jobs,
             upload_share,
             upload_mbps,
+            monthly_gb,
+            data_cap_gb,
         }
     });
     if let Some(request) = request {
@@ -2618,6 +2675,14 @@ async fn carrier(home: &Path, change: Option<CarrierCommand>, json: bool) -> Res
     }
     println!("Carrying:  {}", carrying_line(&c));
     if c.off.is_none() {
+        println!(
+            "Month:     {} carried, both ways{}",
+            size(c.month_bytes),
+            match c.month_budget {
+                Some(budget) => format!(", of {}", size(budget)),
+                None => ", no limit (`osp carrier cap <GB>` if your plan has one)".to_string(),
+            }
+        );
         println!(
             "Busy:      {} circuit(s) turned away since the node started",
             c.busy
@@ -3396,11 +3461,13 @@ mod tests {
             list_me: Some(false),
             hide_list: Some(true),
             upload_mbps: Some(20),
+            data_cap_gb: Some(400),
             hops: Some(true),
             ask_name: false,
         };
         ask_carrying(&mut config, &answers).unwrap();
         assert_eq!(config.serving.upload_mbps, 20);
+        assert_eq!(config.serving.data_cap_gb, 400);
         assert_eq!(config.carrier.hops, Some(true));
     }
 
@@ -3414,6 +3481,8 @@ mod tests {
             &["osp", "carrier", "jobs", "3"],
             &["osp", "carrier", "share", "40"],
             &["osp", "carrier", "upload", "20"],
+            &["osp", "carrier", "cap", "400"],
+            &["osp", "carrier", "monthly", "50"],
             &["osp", "hops", "no"],
         ] {
             assert!(Cli::try_parse_from(args).is_ok(), "{args:?}");

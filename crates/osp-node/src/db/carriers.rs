@@ -401,3 +401,77 @@ mod tests {
         assert_eq!(db.suggestions(until).unwrap(), [], "Mo's ran out");
     }
 }
+
+/// Days of `carried_days` kept: this month and last, at most.
+const CARRIED_DAYS_KEPT: i64 = 62;
+
+impl Db {
+    /// Adds `bytes` carried for others on `day`, and forgets days long gone.
+    pub(crate) fn add_carried(&self, day: i64, bytes: u64) -> Result<()> {
+        let conn = self.conn();
+        conn.execute(
+            "INSERT INTO carried_days (day, bytes) VALUES (?1, ?2)
+             ON CONFLICT (day) DO UPDATE SET bytes = bytes + ?2",
+            params![day, bytes as i64],
+        )?;
+        conn.execute(
+            "DELETE FROM carried_days WHERE day < ?1",
+            params![day - CARRIED_DAYS_KEPT],
+        )?;
+        Ok(())
+    }
+
+    /// The bytes carried from `first` to `last`, both days included.
+    pub(crate) fn carried_between(&self, first: i64, last: i64) -> Result<u64> {
+        let bytes: i64 = self.conn().query_row(
+            "SELECT COALESCE(SUM(bytes), 0) FROM carried_days WHERE day >= ?1 AND day <= ?2",
+            params![first, last],
+            |row| row.get(0),
+        )?;
+        Ok(bytes as u64)
+    }
+}
+
+/// The first day of the UTC month `day` falls in, both counted from 1970
+/// (Howard Hinnant's `civil_from_days`, for the day of the month).
+pub(crate) fn month_start(day: i64) -> i64 {
+    let z = day + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day_of_month = doy - (153 * mp + 2) / 5; // 0 for the 1st
+    day - day_of_month
+}
+
+#[cfg(test)]
+mod month_tests {
+    use super::*;
+
+    #[test]
+    fn a_month_starts_on_its_first() {
+        // 1970-01-01 is day 0; 2026-11-21 is day 20_778, 2026-11-01 day 20_758.
+        assert_eq!(month_start(0), 0);
+        assert_eq!(month_start(30), 0);
+        assert_eq!(month_start(31), 31);
+        assert_eq!(month_start(20_778), 20_758);
+        assert_eq!(month_start(20_758), 20_758);
+        assert_eq!(month_start(20_757), 20_727);
+        // 2024-02-29, a leap day: February began on day 19_754.
+        assert_eq!(month_start(19_782), 19_754);
+    }
+
+    #[test]
+    fn carried_bytes_add_up_by_day_and_old_days_go() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(&dir.path().join("t.db")).unwrap();
+        db.add_carried(100, 5).unwrap();
+        db.add_carried(100, 7).unwrap();
+        db.add_carried(101, 1).unwrap();
+        assert_eq!(db.carried_between(100, 101).unwrap(), 13);
+        assert_eq!(db.carried_between(101, 101).unwrap(), 1);
+        db.add_carried(200, 1).unwrap();
+        assert_eq!(db.carried_between(0, 199).unwrap(), 0);
+    }
+}

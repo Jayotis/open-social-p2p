@@ -31,7 +31,7 @@ It then:
 
 1. installs Tor, ffmpeg and heif-convert with apt, if they're missing;
 2. downloads `osp` for your machine into `~/.local/bin`, and checks it against the release's checksums (a damaged download is refused);
-3. creates your node in `~/.local/share/osp`. It asks your name (as others see it), whether to share copies of posts you follow, whether to be listed by directories, whether to use the project's hide list, your upload speed and whether the nodes yours picks may see its address (see [Carrying](#carrying) below), then shows your recovery words and asks for three of them back;
+3. creates your node in `~/.local/share/osp`. It asks your name (as others see it), whether to share copies of posts you follow, whether to be listed by directories, whether to use the project's hide list, your upload speed, your plan's monthly data cap and whether the nodes yours picks may see its address (see [Carrying](#carrying) below), then shows your recovery words and asks for three of them back;
 4. sets the node to read the alpha's directories, from the release's `directories.txt`. To change them later, edit `[[directory.known]]` in `~/.local/share/osp/config.toml`;
 5. with a token, sets the node to use the project's relays, from the release's `relays.txt`, and n0's only while those let nobody in. They're `relay`, `relay_token` and `relay_fallback` under `[network]` in the same file;
 6. sets the seed carriers (ADR 0043), from the release's `carriers.txt` if it has one: the nodes that may carry video next to yours from the start. They're `[[carrier.known]]` in the same file;
@@ -46,6 +46,7 @@ Your node carries encrypted video between other nodes, under its machine name, w
 Carrying uses half your upload at most, always behind your own traffic, so setup asks your upload speed (a speed test shows it; a guess is fine). Skipped, it takes a slow home's 10 Mbit/s until you set it. `osp carrier` shows how it goes, and changes it:
 
 - `osp carrier upload <Mbit/s>` sets your upload speed, and `osp carrier share <percent>` the share carrying may use;
+- if your plan has a monthly data cap, carrying keeps to half of it, counting what comes in and goes out, and waits for the next month (UTC) once that's used. `osp carrier cap <GB>` sets your plan's cap (0 for unlimited), and `osp carrier monthly <GB>` what carrying may use instead;
 - `osp carrier jobs <n>` sets how many it carries at once (2 to start);
 - `osp carrier metered yes` stops it while your connection is metered;
 - `osp carrier pause` stops it for troubleshooting, and `osp carrier resume` starts it again. A paused node still gets every post and video.

@@ -54,6 +54,9 @@ pub(crate) struct Controls {
     /// for none.
     pub upload_mbps: u64,
     pub max_upload_mbps: u64,
+    /// The month's budget for carrying and the plan's data cap, in GB.
+    pub monthly_gb: Option<u64>,
+    pub data_cap_gb: u64,
 }
 
 impl Controls {
@@ -67,7 +70,19 @@ impl Controls {
             upload_share: c.upload_share,
             upload_mbps: config.serving.upload_mbps,
             max_upload_mbps: config.serving.max_upload_mbps,
+            monthly_gb: c.monthly_gb,
+            data_cap_gb: config.serving.data_cap_gb,
         }
+    }
+
+    /// The bytes carrying may use in a UTC month, both ways: the owner's
+    /// budget, else half the plan's data cap. None for no limit.
+    pub fn monthly_budget(&self) -> Option<u64> {
+        let gb = match self.monthly_gb {
+            Some(gb) => gb,
+            None => self.data_cap_gb / 2,
+        };
+        (gb > 0).then(|| gb.saturating_mul(1_000_000_000))
     }
 
     /// Whether it carries nothing for now: paused, or on a metered
@@ -134,6 +149,27 @@ pub(crate) enum UploadFrom {
     Assumed,
 }
 
+/// What `keep_carrying` reads the owner's settings from, and writes what it
+/// carried to.
+pub(crate) struct Owner {
+    pub controls: watch::Receiver<Controls>,
+    pub measured: Measured,
+    pub db: Arc<Db>,
+}
+
+/// The bytes a carrier moved, as they count against a data plan: each was
+/// received, then sent on.
+fn both_ways(carried: u64) -> u64 {
+    carried.saturating_mul(2)
+}
+
+/// This month's bytes carried, both ways, and the day it is.
+fn carried_this_month(db: &Db) -> Result<(u64, i64)> {
+    let today = crate::db::day_of(crate::hops::unix_now() as i64 * 1000);
+    let first = crate::db::carriers::month_start(today);
+    Ok((db.carried_between(first, today)?, today))
+}
+
 /// The fastest the node was measured serving media, once the store is open.
 pub(crate) type Measured = Arc<OnceLock<Arc<dyn Fn() -> Option<f64> + Send + Sync>>>;
 
@@ -198,7 +234,11 @@ impl CarrierSide {
             endpoint.clone(),
             machine.key().clone(),
             machine.published(),
-            (watching, measured.clone()),
+            Owner {
+                controls: watching,
+                measured: measured.clone(),
+                db: db.clone(),
+            },
             dial,
             crate::work_offers::answerer(db.clone(), machine.acquaintances.clone()),
             carrier.clone(),
@@ -288,7 +328,7 @@ async fn keep_carrying(
     endpoint: Endpoint,
     machine: SecretKey,
     published: Published,
-    (mut controls, measured): (watch::Receiver<Controls>, Measured),
+    owner: Owner,
     dial: Dial,
     others: osp_carrier::Others,
     cell: Arc<OnceLock<Carrier>>,
@@ -297,7 +337,15 @@ async fn keep_carrying(
     let mut renewed: Option<tokio::time::Instant> = None;
     // What the carrier was last given: its limits and whether it's stopped.
     let mut applied: Option<(Limits, bool)> = None;
+    let Owner {
+        mut controls,
+        measured,
+        db,
+    } = owner;
     let measure = || measured.get().and_then(|f| f());
+    // What the carrier had carried when last written down.
+    let mut counted = 0u64;
+    let mut over_budget = false;
     loop {
         let now = controls.borrow_and_update().clone();
         let limits = now.limits(measure());
@@ -355,7 +403,32 @@ async fn keep_carrying(
             }
         }
         if let Some(carrier) = cell.get() {
-            let want = (limits, now.stopped());
+            // What it carried since last time goes towards the month.
+            match carrier.stats().await {
+                Ok(stats) => {
+                    let new = stats.bytes.saturating_sub(counted);
+                    counted = stats.bytes;
+                    let month = (new > 0)
+                        .then(|| {
+                            let day = crate::db::day_of(crate::hops::unix_now() as i64 * 1000);
+                            db.add_carried(day, both_ways(new))
+                        })
+                        .transpose()
+                        .and_then(|_| carried_this_month(&db));
+                    match month {
+                        Ok((used, _)) => {
+                            let over = now.monthly_budget().is_some_and(|b| used >= b);
+                            if over && !over_budget {
+                                info!(used, "carrying stopped: this month's budget is used up");
+                            }
+                            over_budget = over;
+                        }
+                        Err(e) => warn!("couldn't count what was carried: {e:#}"),
+                    }
+                }
+                Err(_) => return,
+            }
+            let want = (limits, now.stopped() || over_budget);
             if applied.as_ref() != Some(&want) {
                 let (limits, stopped) = want.clone();
                 let changed_stop = applied.as_ref().is_none_or(|(_, s)| *s != stopped);
@@ -365,10 +438,11 @@ async fn keep_carrying(
                     return;
                 }
                 if changed_stop {
-                    match (stopped, now.metered) {
-                        (true, true) => info!("carrying stopped: the connection is metered"),
-                        (true, false) => info!("carrying paused"),
-                        (false, _) => info!("carrying again"),
+                    match (stopped, now.metered, now.paused) {
+                        (true, true, _) => info!("carrying stopped: the connection is metered"),
+                        (true, _, true) => info!("carrying paused"),
+                        (true, _, _) => {}
+                        (false, _, _) => info!("carrying again"),
                     }
                 }
                 applied = Some(want);
@@ -411,8 +485,14 @@ impl crate::node::Core {
         let (circuits, bytes, busy) = stats
             .as_ref()
             .map_or((0, 0, 0), |s| (s.circuits, s.bytes, s.busy));
+        let (month_bytes, _) = carried_this_month(&self.db)?;
+        let month_budget = controls.monthly_budget();
+        let over_budget = month_budget.is_some_and(|b| month_bytes >= b);
         Ok(osp_proto::rpc::CarrierStatus {
-            carrying: stats.is_some() && !controls.stopped(),
+            carrying: stats.is_some() && !controls.stopped() && !over_budget,
+            month_bytes,
+            month_budget,
+            over_budget,
             off,
             paused: controls.paused,
             metered: controls.metered,
@@ -467,6 +547,7 @@ impl crate::node::Core {
         jobs: Option<usize>,
         upload_share: Option<u8>,
         upload_mbps: Option<u64>,
+        (monthly_gb, data_cap_gb): (Option<u64>, Option<u64>),
     ) -> Result<()> {
         if let Some(jobs) = jobs {
             anyhow::ensure!(
@@ -496,6 +577,12 @@ impl crate::node::Core {
         }
         if let Some(mbps) = upload_mbps {
             config.serving.upload_mbps = mbps;
+        }
+        if monthly_gb.is_some() {
+            config.carrier.monthly_gb = monthly_gb;
+        }
+        if let Some(gb) = data_cap_gb {
+            config.serving.data_cap_gb = gb;
         }
         config.save(&self.home.config())?;
         if let Some(side) = &self.carrier {
@@ -540,7 +627,30 @@ mod tests {
             upload_share: None,
             upload_mbps: 0,
             max_upload_mbps: 0,
+            monthly_gb: None,
+            data_cap_gb: 0,
         }
+    }
+
+    #[test]
+    fn the_months_budget_is_half_the_plans_cap_unless_the_owner_sets_one() {
+        assert_eq!(home().monthly_budget(), None);
+        let plan = Controls {
+            data_cap_gb: 400,
+            ..home()
+        };
+        assert_eq!(plan.monthly_budget(), Some(200_000_000_000));
+        let own = Controls {
+            monthly_gb: Some(50),
+            ..plan.clone()
+        };
+        assert_eq!(own.monthly_budget(), Some(50_000_000_000));
+        let none = Controls {
+            monthly_gb: Some(0),
+            ..plan
+        };
+        assert_eq!(none.monthly_budget(), None);
+        assert_eq!(both_ways(10), 20);
     }
 
     #[test]

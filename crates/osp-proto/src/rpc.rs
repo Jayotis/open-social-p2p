@@ -169,6 +169,12 @@ pub enum ClientRequest {
         /// The connection's upload speed in Mbit/s, which the share is of.
         #[serde(default)]
         upload_mbps: Option<u64>,
+        /// What carrying may use in a month, in GB; 0 for no limit.
+        #[serde(default)]
+        monthly_gb: Option<u64>,
+        /// The internet plan's monthly data cap in GB; 0 for unlimited.
+        #[serde(default)]
+        data_cap_gb: Option<u64>,
     },
     /// The owner's answer on whether the hops this node picks may see its
     /// internet address (ADR 0043 §8). With yes, its own fetches and its
@@ -867,6 +873,14 @@ pub struct CarrierStatus {
     /// unset if not asked yet, when its own leg stays on relays.
     #[serde(default)]
     pub hops: Option<bool>,
+    /// What it carried this UTC month, both ways, and what it may: none
+    /// for no limit. Over it, carrying waits for the next month.
+    #[serde(default)]
+    pub month_bytes: u64,
+    #[serde(default)]
+    pub month_budget: Option<u64>,
+    #[serde(default)]
+    pub over_budget: bool,
     /// Seed carriers this node knows.
     pub seeds: usize,
     /// Machines at standing with this node, and on probation.

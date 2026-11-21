@@ -284,6 +284,10 @@ pub struct CarrierConfig {
     /// a home node, all of it for a seed carrier. It's always behind the
     /// node's own serving.
     pub upload_share: Option<u8>,
+    /// What carrying may use in a UTC month, in GB, both ways counted.
+    /// Unset: half the plan's `data_cap_gb` under [serving], or no limit
+    /// without one. 0 means no limit.
+    pub monthly_gb: Option<u64>,
     /// Whether the hops this node picks may see its internet address, so its
     /// own fetches and its media go through them (ADR 0043 §8, asked at
     /// setup). Unset means not asked yet, and its own leg stays on relays,
@@ -301,6 +305,7 @@ impl Default for CarrierConfig {
             metered: false,
             jobs: None,
             upload_share: None,
+            monthly_gb: None,
             hops: None,
         }
     }
@@ -389,6 +394,9 @@ pub struct ServingConfig {
     /// carrying uses its share of it. 0 means not known, and carrying then
     /// goes by `max_upload_mbps` or the fastest measured.
     pub upload_mbps: u64,
+    /// The internet plan's monthly data cap in GB, asked at setup: carrying
+    /// keeps to half of it. 0 means unlimited.
+    pub data_cap_gb: u64,
 }
 
 impl Default for Config {

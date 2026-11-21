@@ -232,8 +232,17 @@ impl Core {
                 jobs,
                 upload_share,
                 upload_mbps,
+                monthly_gb,
+                data_cap_gb,
             } => {
-                self.set_carrying(paused, metered, jobs, upload_share, upload_mbps)?;
+                self.set_carrying(
+                    paused,
+                    metered,
+                    jobs,
+                    upload_share,
+                    upload_mbps,
+                    (monthly_gb, data_cap_gb),
+                )?;
                 ClientResponse::Ok
             }
             ClientRequest::SetHops { yes } => {
