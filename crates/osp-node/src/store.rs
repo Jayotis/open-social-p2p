@@ -363,7 +363,7 @@ impl ContentStore {
             .await
     }
 
-    async fn download_with(
+    pub(crate) async fn download_with(
         &self,
         hash: &BlobHash,
         sources: Sources,

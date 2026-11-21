@@ -874,7 +874,13 @@ impl Core {
             sources.in_turn.sort_by_key(|s| authors.contains(&s.node));
         }
         let size = self
-            .download_offered(blob, sources, offers, BlobClass::Prefetch, wanted.size)
+            .download_offered(
+                blob,
+                sources,
+                offers,
+                (BlobClass::Prefetch, wanted.size),
+                None,
+            )
             .await?;
         self.still_named(blob, size).await?;
         let mut untold = Vec::new();
@@ -1038,7 +1044,7 @@ impl Core {
             (Sources::one_at_a_time(known), offers)
         };
         match self
-            .download_offered(blob, sources.clone(), offers, class, declared)
+            .download_offered(blob, sources.clone(), offers, (class, declared), None)
             .await
         {
             Ok(size) => self.still_named(blob, size).await,

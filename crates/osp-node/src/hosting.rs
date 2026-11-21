@@ -23,6 +23,7 @@ use iroh::{
     endpoint::Connection,
     protocol::{AcceptError, ProtocolHandler},
 };
+use n0_future::{BufferedStreamExt, StreamExt, stream};
 use osp_proto::{
     BlobHash, BoundEndpoint, EndpointKind, Note, ObjectId, Payload, SignedObject,
     framing::{read_frame, read_frame_max, write_frame},
@@ -35,7 +36,7 @@ use tokio::sync::Semaphore;
 use tracing::{debug, info, warn};
 
 use crate::{
-    db::now_ms,
+    db::{BlobClass, now_ms},
     node::Core,
     store::Source,
     sync::{jitter, random_fraction},
@@ -49,6 +50,11 @@ const STREAM_TIMEOUT: Duration = Duration::from_secs(20);
 /// How long a viewer waits for the author's media endpoint to answer before
 /// going on with the sources it has.
 const ASK_AUTHOR_WAIT: Duration = Duration::from_secs(10);
+/// How long a viewer waits for a resharer's media endpoint to offer a way
+/// through its hop (ADR 0043) before fetching from it by the relay.
+const ASK_HOST_WAIT: Duration = Duration::from_secs(5);
+/// Resharers asked at once for a way through their hops.
+const ASK_HOSTS_AT_ONCE: usize = 8;
 /// A resharer whose copy failed this many checks in a row is forgotten.
 const FORGET_AFTER_FAILS: u32 = 7;
 const HOUR: Duration = Duration::from_secs(60 * 60);
@@ -114,18 +120,28 @@ impl ProtocolHandler for MediaHostsProtocol {
 impl Core {
     /// Who hosts `req.blob`, of this node's post `req.post`, for anyone: this
     /// node's media endpoint and the hosting resharers it names, never a
-    /// follower's copy. A deleted post is answered with its `Delete`.
+    /// follower's copy. A deleted post is answered with its `Delete`. For
+    /// a post this node reshared with hosting, just its own media endpoint,
+    /// with the way through its hop (ADR 0043): it names nobody else, as
+    /// that's the author's to do.
     fn answer_media_hosts(&self, req: &MediaHostsRequest) -> Result<MediaHostsResponse> {
         let me = self.signer.identity();
         if let Some(delete) = self.db.delete_of(&req.post, &me)? {
             return Ok(MediaHostsResponse::Deleted { delete });
         }
-        let has_blob = match self.db.outbox_object(&req.post)?.map(|o| o.verify()) {
+        let own = match self.db.outbox_object(&req.post)?.map(|o| o.verify()) {
             Some(Ok(Payload::Note(note))) => note.blobs().any(|b| b == req.blob),
             _ => false,
         };
-        if !has_blob {
-            bail!("that isn't media of one of this node's posts");
+        // Held for others because a reshare of ours promised to host it;
+        // deleting the reshare makes it cache again (ADR 0019).
+        let hosted = !own
+            && self.db.blob_class(&req.blob)? == Some(BlobClass::Replica)
+            && self
+                .stored_note(&req.post)?
+                .is_some_and(|note| note.blobs().any(|b| b == req.blob));
+        if !own && !hosted {
+            bail!("that isn't media this node hosts");
         }
         let mut hosts = Vec::new();
         if let Some(media) = self.endpoints.as_ref().and_then(|e| e.media.as_ref()) {
@@ -134,7 +150,9 @@ impl Core {
                 addr: EndpointAddr::new(media.endpoint.id()),
             });
         }
-        hosts.extend(self.resharers_for_viewers(&req.blob)?);
+        if own {
+            hosts.extend(self.resharers_for_viewers(&req.blob)?);
+        }
         Ok(MediaHostsResponse::Hosts {
             hosts,
             circuit: self.circuit_offer(),
@@ -153,19 +171,7 @@ impl Core {
         (post, note): (&ObjectId, &Note),
         blob: &BlobHash,
     ) -> Result<(Vec<Source>, Option<CircuitOffer>)> {
-        let ask = async {
-            let conn = viewing.connect(author_media, MEDIA_HOSTS_ALPN).await?;
-            let (mut send, mut recv) = conn.open_bi().await?;
-            let req = MediaHostsRequest {
-                post: *post,
-                blob: *blob,
-            };
-            write_frame(&mut send, &req).await?;
-            send.finish()?;
-            let resp: MediaHostsResponse = read_frame(&mut recv).await?;
-            conn.close(0u32.into(), b"done");
-            anyhow::Ok(resp)
-        };
+        let ask = ask_media_hosts(viewing, author_media, post, blob);
         let resp = match tokio::time::timeout(ASK_AUTHOR_WAIT, ask).await {
             Ok(Ok(resp)) => resp,
             Ok(Err(e)) => {
@@ -199,6 +205,39 @@ impl Core {
                 Ok((Vec::new(), None))
             }
         }
+    }
+
+    /// Asks each of `hosts`, resharers' media endpoints, at once from
+    /// `viewing`, for a way through its hop to its copy of `blob` of `post`
+    /// (ADR 0043). Those that offer one within `ASK_HOST_WAIT`, each with
+    /// its offer; the rest are fetched from by the relay as before.
+    pub(crate) async fn ask_hosts_for_offers(
+        &self,
+        viewing: &Endpoint,
+        hosts: &[Source],
+        post: &ObjectId,
+        blob: &BlobHash,
+    ) -> crate::hops::Offers {
+        let (post, blob) = (*post, *blob);
+        let asks = hosts.iter().copied().map(|host| async move {
+            let ask = ask_media_hosts(viewing, EndpointAddr::new(host.endpoint), &post, &blob);
+            match tokio::time::timeout(ASK_HOST_WAIT, ask).await {
+                Ok(Ok(MediaHostsResponse::Hosts {
+                    circuit: Some(offer),
+                    ..
+                })) => Some((host.node, *offer)),
+                Ok(Err(e)) => {
+                    debug!(host = %host.node.fmt_short(), "couldn't ask a host for a way through its hop: {e:#}");
+                    None
+                }
+                _ => None,
+            }
+        });
+        let offers: Vec<_> = stream::iter(asks)
+            .buffered_unordered(ASK_HOSTS_AT_ONCE)
+            .collect()
+            .await;
+        offers.into_iter().flatten().collect()
     }
 
     /// Acts on a `Delete` of a found post that its author's media endpoint
@@ -367,4 +406,24 @@ pub(crate) async fn resharers_loop(core: Arc<Core>) {
         }
         tokio::time::sleep(jitter(tick)).await;
     }
+}
+
+/// One `MEDIA_HOSTS_ALPN` request to `media`, from `viewing`.
+async fn ask_media_hosts(
+    viewing: &Endpoint,
+    media: EndpointAddr,
+    post: &ObjectId,
+    blob: &BlobHash,
+) -> Result<MediaHostsResponse> {
+    let conn = viewing.connect(media, MEDIA_HOSTS_ALPN).await?;
+    let (mut send, mut recv) = conn.open_bi().await?;
+    let req = MediaHostsRequest {
+        post: *post,
+        blob: *blob,
+    };
+    write_frame(&mut send, &req).await?;
+    send.finish()?;
+    let resp: MediaHostsResponse = read_frame(&mut recv).await?;
+    conn.close(0u32.into(), b"done");
+    Ok(resp)
 }

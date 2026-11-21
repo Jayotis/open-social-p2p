@@ -22,6 +22,7 @@ use std::{
 
 use anyhow::{Context, Result, anyhow};
 use iroh::{EndpointId, SecretKey, TransportAddr};
+use iroh_blobs::util::connection_pool::ConnectionPool;
 use osp_carrier::{Descriptor, SETUP_TIMEOUT, ViewerCircuit};
 use osp_proto::{BlobHash, social::CircuitOffer};
 use tracing::{debug, info};
@@ -260,24 +261,32 @@ impl Core {
     /// endpoints when this node fetches through carriers (ADR 0043): the
     /// other sources first, then each offer's circuit, then all of
     /// `sources` as before, the relays included. A node's direct endpoint
-    /// is never held back.
+    /// is never held back. With `via`, a viewing endpoint's pool, the
+    /// sources are reached only through it (ADR 0024).
     pub(crate) async fn download_offered(
         &self,
         blob: &BlobHash,
         sources: Sources,
         offers: Offers,
-        class: BlobClass,
-        declared: u64,
+        (class, declared): (BlobClass, u64),
+        via: Option<&ConnectionPool>,
     ) -> Result<u64> {
         if offers.is_empty() || !self.fetches_through_carriers() {
-            return self.store.download(blob, sources, class, declared).await;
+            return self
+                .store
+                .download_with(blob, sources, class, declared, via)
+                .await;
         }
         let offered = |s: &Source| !s.from_direct && offers.iter().any(|(node, _)| *node == s.node);
         let mut others = sources.clone();
         others.at_once.retain(|s| !offered(s));
         others.in_turn.retain(|s| !offered(s));
         if !others.is_empty() {
-            match self.store.download(blob, others, class, declared).await {
+            match self
+                .store
+                .download_with(blob, others, class, declared, via)
+                .await
+            {
                 Ok(size) => return Ok(size),
                 Err(e) => {
                     debug!(blob = %blob.fmt_short(), "the other sources failed; through carriers next: {e:#}")
@@ -292,7 +301,9 @@ impl Core {
                 return Ok(size);
             }
         }
-        self.store.download(blob, sources, class, declared).await
+        self.store
+            .download_with(blob, sources, class, declared, via)
+            .await
     }
 }
 
