@@ -3,13 +3,19 @@
 //! machine the viewer already trusts.
 //!
 //! Say Mo's new machine had the middle of one of Jimmy's fetches, and the
-//! file passed its hash check: Mo's first job for Jimmy's node, which notes
-//! it as a tip for 7 days. Alice's node holds Jimmy's machine at standing,
+//! file passed its hash check: Mo's first job for Jimmy's node. Jimmy's node
+//! remembers the work as it remembers any (`db::carriers`: standing, and
+//! that Mo's machine ever worked for it), and apart from that makes Mo's
+//! machine one it may offer on: to at most 2 who ask, ever, the newest
+//! first, for 30 days from Mo's last finished job for it, while Mo's
+//! machine is in its table, and until a circuit with Mo's machine in the
+//! middle fails. Later work keeps the offer going, never adds handouts.
+//! Alice's node holds Jimmy's machine at standing,
 //! and after one of her fetches through hops it has room for a newcomer: a
 //! probation place free, no fresh machine waiting, no offer held. So it asks
 //! Jimmy's carrier "know a machine that could work for me?", from a key made
 //! for the ask, as her circuits do, so Jimmy's node never learns who asked.
-//! It names Mo's machine, as it does to at most one other asker. Alice's
+//! It names Mo's machine, with the descriptor its table has now. Alice's
 //! node keeps the offer up to 30 days, and Mo's machine has her once-a-day
 //! newcomer turn in the middle when no fresh machine is waiting. After that
 //! one job it's like any machine that finished one: probation, then standing
@@ -39,7 +45,8 @@ use crate::{
     carrier::{relay_mode, relayed_endpoint},
     db::{DAY_MS, Db, SUGGESTION_DAYS, day_of, now_ms},
     hops::unix_now,
-    machine::descriptor_from_text,
+    machine::{descriptor_from_text, descriptor_text},
+    meet::Acquaintances,
     node::Core,
     viewing::in_own_order,
 };
@@ -63,8 +70,8 @@ pub(crate) struct WorkAsks {
 }
 
 /// The carrier endpoint's answers to [`WORK_OFFERS_ALPN`], from the tips
-/// in `db`.
-pub(crate) fn answerer(db: Arc<Db>) -> osp_carrier::Others {
+/// in `db`, for machines `table` names as carriers now.
+pub(crate) fn answerer(db: Arc<Db>, table: Arc<Acquaintances>) -> osp_carrier::Others {
     let answers = Arc::new(Semaphore::new(MAX_ANSWERS));
     Arc::new(move |conn: Connection| {
         if conn.alpn() != WORK_OFFERS_ALPN {
@@ -76,9 +83,10 @@ pub(crate) fn answerer(db: Arc<Db>) -> osp_carrier::Others {
             return;
         };
         let db = db.clone();
+        let table = table.clone();
         tokio::spawn(async move {
             let _permit = permit;
-            if let Err(e) = tokio::time::timeout(ASK_WAIT, answer(&db, &conn)).await {
+            if let Err(e) = tokio::time::timeout(ASK_WAIT, answer(&db, &table, &conn)).await {
                 debug!("an ask for work took too long: {e}");
             }
         });
@@ -86,13 +94,23 @@ pub(crate) fn answerer(db: Arc<Db>) -> osp_carrier::Others {
 }
 
 /// One ask for work, on its own connection.
-async fn answer(db: &Db, conn: &Connection) -> Result<()> {
+async fn answer(db: &Db, table: &Acquaintances, conn: &Connection) -> Result<()> {
     let (mut send, mut recv) = conn.accept_bi().await?;
     let _: WorkOffersRequest = read_frame_max(&mut recv, MAX_REQUEST_LEN).await?;
-    let offers = match db.hand_tip(now_ms())? {
-        Some((machine, carrier)) => {
+    // Only a machine with a carrier that checks out now, by its record in
+    // the table: one gone from it has nothing current to offer.
+    let carriers: HashMap<EndpointId, String> = table
+        .carriers(unix_now())
+        .into_iter()
+        .map(|c| (c.machine, descriptor_text(&c.descriptor)))
+        .collect();
+    let offers = match db.hand_tip(now_ms(), &|m| carriers.contains_key(m))? {
+        Some(machine) => {
             debug!(machine = %machine.fmt_short(), "offered a machine for work to one who asked");
-            vec![WorkOffer { machine, carrier }]
+            vec![WorkOffer {
+                machine,
+                carrier: carriers[&machine].clone(),
+            }]
         }
         None => Vec::new(),
     };
@@ -236,7 +254,7 @@ impl Core {
             }
             match tokio::time::timeout(ASK_WAIT, self.seed_descriptor(machine, false)).await {
                 Ok(Ok(descriptor)) => {
-                    let text = crate::machine::descriptor_text(&descriptor);
+                    let text = descriptor_text(&descriptor);
                     self.db.renew_suggestion(&machine, &text)?;
                 }
                 Ok(Err(e)) => {

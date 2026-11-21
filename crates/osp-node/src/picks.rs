@@ -353,16 +353,16 @@ impl Core {
         for machine in hops.iter().filter(|m| !known.seeds.contains(*m)) {
             let now = now_ms();
             let first = self.db.credit_carrier(machine, now)?;
-            let Some(m) = middle.filter(|m| m.machine == *machine) else {
+            self.db.refresh_tip(machine, now)?;
+            if middle.is_none_or(|m| m.machine != *machine) {
                 continue;
-            };
+            }
             if takes_probation(known, machine, first) {
                 self.db.add_probationer(machine, now)?;
                 debug!(machine = %machine.fmt_short(), "a machine is taken on probation");
             }
             if first {
-                let text = crate::machine::descriptor_text(&m.descriptor);
-                self.db.add_tip(machine, &text, now)?;
+                self.db.add_tip(machine, now)?;
                 debug!(machine = %machine.fmt_short(), "a machine's first job here may be offered on");
             }
         }
@@ -375,6 +375,10 @@ impl Core {
             && let Err(e) = self.db.end_probation(&middle.machine)
         {
             debug!("ending a probation: {e:#}");
+        }
+        // Its work is still remembered; it's only not offered on.
+        if let Err(e) = self.db.end_tip(&middle.machine) {
+            debug!("ending a tip: {e:#}");
         }
     }
 }

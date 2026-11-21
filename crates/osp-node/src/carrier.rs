@@ -96,7 +96,7 @@ impl CarrierSide {
             machine.published(),
             limits,
             dial,
-            crate::work_offers::answerer(db.clone()),
+            crate::work_offers::answerer(db.clone(), machine.acquaintances.clone()),
             carrier.clone(),
         ));
         Ok(Some(Self {

@@ -683,13 +683,15 @@ const MIGRATIONS: &[&str] = &[
         last_day INTEGER NOT NULL
     );",
     // Work offers (`db::carriers`, ADR 0043 part 4d-2): the machines whose
-    // first middle job for this node it may offer to those who ask, and the
-    // machines offered to this node by those it holds at standing.
+    // first middle job for this node it may offer to those who ask, kept
+    // apart from their work (`carrier_jobs`), and the machines offered to
+    // this node by those it holds at standing.
     "CREATE TABLE carrier_tips (
-        machine    TEXT PRIMARY KEY,
-        descriptor TEXT NOT NULL,
-        first_ms   INTEGER NOT NULL,
-        handed     INTEGER NOT NULL DEFAULT 0
+        machine  TEXT PRIMARY KEY,
+        first_ms INTEGER NOT NULL,
+        last_ms  INTEGER NOT NULL,
+        handed   INTEGER NOT NULL DEFAULT 0,
+        ended    INTEGER NOT NULL DEFAULT 0
     );
     CREATE TABLE carrier_suggestions (
         machine    TEXT PRIMARY KEY,

@@ -22,9 +22,10 @@ pub(crate) const STANDING_DAYS: i64 = 3;
 pub(crate) const STANDING_WINDOW_DAYS: i64 = 30;
 /// Machines remembered as having finished a job, at most: the oldest go.
 const MAX_WORKED: i64 = 10_000;
-/// A machine's first middle job here is offered on for this many days...
-pub(crate) const TIP_DAYS: i64 = 7;
-/// ...to at most this many who ask.
+/// A machine's first middle job here makes it one to offer on, for this
+/// many days after its last finished job here...
+pub(crate) const TIP_DAYS: i64 = 30;
+/// ...to at most this many who ask, ever: later jobs don't add more.
 pub(crate) const TIP_HANDED: i64 = 2;
 /// Suggestions this node keeps at once, each for `SUGGESTION_DAYS`.
 pub(crate) const SUGGESTIONS_KEPT: i64 = 2;
@@ -154,45 +155,71 @@ impl Db {
     }
 
     /// Notes that `machine` finished its first middle job for this node at
-    /// `now`, with its descriptor then (as a record carries it), so this
-    /// node may offer it to those who ask.
-    pub(crate) fn add_tip(&self, machine: &EndpointId, descriptor: &str, now: i64) -> Result<()> {
+    /// `now`, so this node may offer it to those who ask. Only a first job
+    /// makes a tip, so one handed out twice, or ended, isn't made again.
+    pub(crate) fn add_tip(&self, machine: &EndpointId, now: i64) -> Result<()> {
         self.conn().execute(
-            "INSERT OR IGNORE INTO carrier_tips (machine, descriptor, first_ms)
-             VALUES (?1, ?2, ?3)",
-            params![machine.to_string(), descriptor, now],
+            "INSERT OR IGNORE INTO carrier_tips (machine, first_ms, last_ms)
+             VALUES (?1, ?2, ?2)",
+            params![machine.to_string(), now],
         )?;
         Ok(())
     }
 
-    /// The tip to hand someone who asks at `now`, if any: the oldest of
-    /// the last `TIP_DAYS` handed fewer than `TIP_HANDED` times, counted as
-    /// handed once more. Older ones go.
-    pub(crate) fn hand_tip(&self, now: i64) -> Result<Option<(EndpointId, String)>> {
+    /// Notes a later finished job by `machine` at `now`: its tip, if any and
+    /// not ended, lasts `TIP_DAYS` from now. Its handouts stay as they were.
+    pub(crate) fn refresh_tip(&self, machine: &EndpointId, now: i64) -> Result<()> {
+        self.conn().execute(
+            "UPDATE carrier_tips SET last_ms = MAX(last_ms, ?2) WHERE machine = ?1 AND ended = 0",
+            params![machine.to_string(), now],
+        )?;
+        Ok(())
+    }
+
+    /// A circuit with `machine` in the middle failed: it's offered no more.
+    pub(crate) fn end_tip(&self, machine: &EndpointId) -> Result<()> {
+        self.conn().execute(
+            "UPDATE carrier_tips SET ended = 1 WHERE machine = ?1",
+            params![machine.to_string()],
+        )?;
+        Ok(())
+    }
+
+    /// The machine to offer someone who asks at `now`, if any, counted as
+    /// handed once more: of those not ended, handed fewer than `TIP_HANDED`
+    /// times and whose last job here was in the last `TIP_DAYS`, the one
+    /// whose first job here was latest, so a newer machine goes ahead of one
+    /// that keeps working, for which `usable` says yes. Those past their
+    /// days go.
+    pub(crate) fn hand_tip(
+        &self,
+        now: i64,
+        usable: &dyn Fn(&EndpointId) -> bool,
+    ) -> Result<Option<EndpointId>> {
         let conn = self.conn();
         let tx = conn.unchecked_transaction()?;
         tx.execute(
-            "DELETE FROM carrier_tips WHERE first_ms < ?1",
+            "DELETE FROM carrier_tips WHERE last_ms < ?1",
             params![now - TIP_DAYS * DAY_MS],
         )?;
-        let tip: Option<(String, String)> = tx
-            .query_row(
-                "SELECT machine, descriptor FROM carrier_tips WHERE handed < ?1
-                 ORDER BY first_ms LIMIT 1",
-                params![TIP_HANDED],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .optional()?;
-        let tip = match tip {
-            Some((machine, descriptor)) => {
-                tx.execute(
-                    "UPDATE carrier_tips SET handed = handed + 1 WHERE machine = ?1",
-                    params![machine],
-                )?;
-                machine.parse().ok().map(|m| (m, descriptor))
-            }
-            None => None,
+        let open: Vec<String> = {
+            let mut stmt = tx.prepare(
+                "SELECT machine FROM carrier_tips WHERE handed < ?1 AND ended = 0
+                 ORDER BY first_ms DESC",
+            )?;
+            stmt.query_map(params![TIP_HANDED], |row| row.get(0))?
+                .collect::<rusqlite::Result<_>>()?
         };
+        let tip = open
+            .iter()
+            .filter_map(|m| m.parse::<EndpointId>().ok())
+            .find(|m| usable(m));
+        if let Some(machine) = tip {
+            tx.execute(
+                "UPDATE carrier_tips SET handed = handed + 1 WHERE machine = ?1",
+                params![machine.to_string()],
+            )?;
+        }
         tx.commit()?;
         Ok(tip)
     }
@@ -306,24 +333,51 @@ mod tests {
         assert_eq!(db.probationers().unwrap().len(), 1);
     }
 
-    /// Mo's and Sam's machines finished first middle jobs for Jimmy's node,
-    /// Mo's first. Mo's is handed to two who ask, then Sam's, and a tip past
-    /// its 7 days goes.
+    /// Mo's machine finished its first middle job for Jimmy's node, then
+    /// Sam's did. Sam's, the newer, is handed first, to two who ask, then
+    /// Mo's. Later work keeps Mo's going past its 30 days, but never adds
+    /// handouts, and a tip isn't made again.
     #[test]
-    fn a_tip_goes_to_two_askers_the_oldest_first_for_7_days() {
+    fn a_tip_goes_to_two_askers_the_newest_first_while_its_machine_works() {
         let dir = tempfile::tempdir().unwrap();
         let db = Db::open(&dir.path().join("t.db")).unwrap();
         let [mo, sam] = [0, 1].map(|_| SecretKey::generate().public());
         let start = 100 * DAY_MS;
-        db.add_tip(&mo, "mo's", start).unwrap();
-        db.add_tip(&sam, "sam's", start + 1).unwrap();
-        db.add_tip(&mo, "again", start + 2).unwrap();
-        let handed = |at| db.hand_tip(at).unwrap();
-        assert_eq!(handed(start + 3), Some((mo, "mo's".into())));
-        assert_eq!(handed(start + 4), Some((mo, "mo's".into())));
-        assert_eq!(handed(start + 5), Some((sam, "sam's".into())));
-        let late = start + 1 + TIP_DAYS * DAY_MS + 1;
-        assert_eq!(handed(late), None, "Sam's 7 days are over");
+        let any = |_: &EndpointId| true;
+        let handed = |at| db.hand_tip(at, &any).unwrap();
+        db.add_tip(&mo, start).unwrap();
+        db.add_tip(&sam, start + 1).unwrap();
+        assert_eq!(handed(start + 2), Some(sam));
+        assert_eq!(handed(start + 3), Some(sam));
+        let not_mo = |m: &EndpointId| *m != mo;
+        assert_eq!(
+            db.hand_tip(start + 4, &not_mo).unwrap(),
+            None,
+            "not in the table"
+        );
+        // Mo's machine works again on day 20, so it's offered past day 30.
+        db.refresh_tip(&mo, start + 20 * DAY_MS).unwrap();
+        assert_eq!(handed(start + 35 * DAY_MS), Some(mo));
+        db.refresh_tip(&mo, start + 36 * DAY_MS).unwrap();
+        db.add_tip(&mo, start + 36 * DAY_MS).unwrap();
+        assert_eq!(handed(start + 37 * DAY_MS), Some(mo));
+        assert_eq!(handed(start + 38 * DAY_MS), None, "two handouts, ever");
+    }
+
+    /// A tip ends when a circuit with its machine in the middle fails, and
+    /// one whose machine stops working goes after 30 days.
+    #[test]
+    fn a_tip_ends_on_a_failed_job_or_after_30_days_without_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(&dir.path().join("t.db")).unwrap();
+        let [mo, sam] = [0, 1].map(|_| SecretKey::generate().public());
+        let any = |_: &EndpointId| true;
+        db.add_tip(&mo, 0).unwrap();
+        db.add_tip(&sam, 0).unwrap();
+        db.end_tip(&sam).unwrap();
+        db.refresh_tip(&sam, DAY_MS).unwrap();
+        assert_eq!(db.hand_tip(DAY_MS, &any).unwrap(), Some(mo));
+        assert_eq!(db.hand_tip(TIP_DAYS * DAY_MS + 1, &any).unwrap(), None);
     }
 
     /// Alice's node keeps 2 suggestions at most, for 30 days, the earliest
