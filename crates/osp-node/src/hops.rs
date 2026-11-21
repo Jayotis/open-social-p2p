@@ -3,11 +3,11 @@
 //!
 //! Say Jimmy opens Alice's photo. Alice's node named its hop Q, a slot and
 //! its circuit endpoint (`CircuitOffer`). Jimmy's node picks a hop of its own,
-//! P, from the seed carriers it knows: until ADR 0017's standing is built
-//! (part 4d), only those may sit next to an end. It dials P from an endpoint
-//! made for this circuit, builds V → P → Q, hands Q the slot, and fetches
-//! over the ends' own QUIC on an endpoint whose only path is the circuit. If
-//! both ends picked the same machine, it's one hop (ADR 0043 §4).
+//! P: a machine with standing with it, or a seed carrier (`picks`), and
+//! sometimes a machine in the middle, M. It dials P from an endpoint made for
+//! this circuit, builds V → P → (M →) Q, hands Q the slot, and fetches over
+//! the ends' own QUIC on an endpoint whose only path is the circuit. If both
+//! ends picked the same machine, it's one hop (ADR 0043 §4).
 //!
 //! A circuit that can't be built, or a fetch that fails over it, leaves the
 //! fetch to the way it went before: through the relays, the project's first
@@ -146,22 +146,12 @@ impl Core {
         seeds
     }
 
-    /// This node's own hop for a circuit: the first seed carrier, in an
-    /// order of its own, whose descriptor can be had.
-    async fn own_hop(&self) -> Result<Descriptor> {
-        let mut last = anyhow!("no seed carrier is known");
-        for seed in self.seeds_in_own_order() {
-            match self.seed_descriptor(seed, true).await {
-                Ok(descriptor) => return Ok(descriptor),
-                Err(e) => last = e,
-            }
-        }
-        Err(last.context("no hop of this node's own could be had"))
-    }
-
     /// Fetches `blob` from `host`'s node through a circuit to what `offer`
-    /// names: this node's own hop, then the host's, then the host's circuit
-    /// endpoint. Nothing goes any other way.
+    /// names: this node's own hop, perhaps a machine in the middle (the
+    /// `picks` module), then the host's hop, then the host's circuit
+    /// endpoint. Nothing goes any other way. A circuit with a machine in the
+    /// middle that fails is tried once more without it. A fetch that passes
+    /// the hash check credits the hops.
     pub(crate) async fn fetch_over_circuit(
         &self,
         blob: &BlobHash,
@@ -171,13 +161,64 @@ impl Core {
         declared: u64,
     ) -> Result<u64> {
         let theirs = offered_hop(offer, unix_now())?;
-        let mine = self.own_hop().await?;
+        let their_hop = theirs.verify(unix_now())?.machine;
+        let known = self.known_carriers()?;
+        let mine = self.own_hop(&known, their_hop).await?;
         let my_hop = mine.verify(unix_now())?.machine;
-        let hops = match my_hop == theirs.verify(unix_now())?.machine {
-            // Both ends picked it: one hop.
+        let mut hops = match my_hop == their_hop {
+            // Both ends picked it: one hop, and nothing in the middle, which
+            // would sit next to an end.
             true => vec![theirs],
             false => vec![mine, theirs],
         };
+        let middle = match hops.len() {
+            2 => self.middle_hop(&known, &[my_hop, their_hop]),
+            _ => None,
+        };
+        if let Some(m) = &middle {
+            hops.insert(1, m.descriptor.clone());
+        }
+        let mut fetched = self
+            .fetch_through_hops(blob, host, offer, &hops, (class, declared))
+            .await;
+        if let (Err(e), Some(m)) = (&fetched, &middle) {
+            debug!(machine = %m.machine.fmt_short(), "the circuit through a machine in the middle failed; without it: {e:#}");
+            self.middle_failed(m);
+            hops.remove(1);
+            fetched = self
+                .fetch_through_hops(blob, host, offer, &hops, (class, declared))
+                .await;
+        }
+        let size = fetched.inspect_err(|_| {
+            // Asked for again next time, in case the hop restarted.
+            self.seed_descriptors.0.lock().unwrap().remove(&my_hop);
+        })?;
+        let machines: Vec<EndpointId> = hops
+            .iter()
+            .filter_map(|d| d.verify(unix_now()).ok().map(|i| i.machine))
+            .collect();
+        if declared > store::SMALL_BLOB
+            && let Err(e) = self.credit_hops(&known, &machines, middle.as_ref().map(|m| m.machine))
+        {
+            debug!("couldn't note the hops' job: {e:#}");
+        }
+        info!(
+            blob = %blob.fmt_short(),
+            hops = hops.len(),
+            "fetched through carriers"
+        );
+        Ok(size)
+    }
+
+    /// One try at fetching `blob` through a circuit through `hops`.
+    async fn fetch_through_hops(
+        &self,
+        blob: &BlobHash,
+        host: EndpointId,
+        offer: &CircuitOffer,
+        hops: &[Descriptor],
+        (class, declared): (BlobClass, u64),
+    ) -> Result<u64> {
         let first = hops[0].verify(unix_now())?;
         let relays = self.tracker.relays().clone();
         let relay = relay_mode(&self.config)?.context("relays are off")?;
@@ -194,7 +235,7 @@ impl Core {
             let conn = tokio::time::timeout(SETUP_TIMEOUT, dial(first))
                 .await
                 .map_err(|_| anyhow!("the first hop didn't answer in time"))??;
-            let circuit = ViewerCircuit::build(conn, &hops, offer.slot).await?;
+            let circuit = ViewerCircuit::build(conn, hops, offer.slot).await?;
             let ends = osp_carrier::viewer_endpoint(circuit, offer.endpoint).await?;
             let pool = store::new_pool(&ends);
             let source = Source {
@@ -218,16 +259,7 @@ impl Core {
         }
         .await;
         link_endpoint.close().await;
-        let size = fetched.inspect_err(|_| {
-            // Asked for again next time, in case the hop restarted.
-            self.seed_descriptors.0.lock().unwrap().remove(&my_hop);
-        })?;
-        info!(
-            blob = %blob.fmt_short(),
-            hops = hops.len(),
-            "fetched through carriers"
-        );
-        Ok(size)
+        fetched
     }
 
     /// As `fetch_over_circuit`, when this node fetches through carriers and

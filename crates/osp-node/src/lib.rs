@@ -33,6 +33,7 @@ mod network;
 mod node;
 mod opened;
 mod peers;
+mod picks;
 mod places;
 mod profiles;
 mod relays;

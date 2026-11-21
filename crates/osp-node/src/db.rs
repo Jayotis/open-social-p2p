@@ -27,6 +27,7 @@ use opened::NOT_OPENED;
 
 mod activity;
 mod blocks;
+mod carriers;
 mod hide;
 mod likes;
 mod opened;
@@ -35,6 +36,7 @@ mod replies;
 mod sent_replies;
 mod universe;
 mod vouches;
+pub(crate) use carriers::{DAY_MS, Probationer};
 pub use hide::Applied as HideApplied;
 pub(crate) use likes::{HeldLike, SentLike};
 pub(crate) use replies::{Choice, Held, ReceivedReply, ReplyRow};
@@ -662,6 +664,23 @@ const MIGRATIONS: &[&str] = &[
         machine       TEXT PRIMARY KEY,
         started_ms    INTEGER NOT NULL,
         first_seen_ms INTEGER NOT NULL
+    );",
+    // What this node, as a viewer, notes of the carriers its circuits went
+    // through (ADR 0017's credit, `db::carriers`): the days each finished a
+    // job for it, those it ever finished one with, and its probationers.
+    "CREATE TABLE carrier_jobs (
+        machine TEXT NOT NULL,
+        day     INTEGER NOT NULL,
+        PRIMARY KEY (machine, day)
+    );
+    CREATE TABLE carriers_worked (
+        machine  TEXT PRIMARY KEY,
+        first_ms INTEGER NOT NULL
+    );
+    CREATE TABLE carrier_probation (
+        machine  TEXT PRIMARY KEY,
+        since_ms INTEGER NOT NULL,
+        last_day INTEGER NOT NULL
     );",
 ];
 
@@ -7235,7 +7254,8 @@ mod tests {
                      DROP TABLE opened_posts; DROP TABLE opened_people; DROP TABLE blocks;
                      DROP TABLE hide_list; DROP TABLE hide_state; DROP TABLE hidden_objects;
                      DROP TABLE hide_exceptions; DROP TABLE block_dropped;
-                     DROP TABLE machine_starts;
+                     DROP TABLE machine_starts; DROP TABLE carrier_jobs;
+                     DROP TABLE carriers_worked; DROP TABLE carrier_probation;
                      PRAGMA user_version = 24;",
                 )
                 .unwrap();

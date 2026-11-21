@@ -324,6 +324,8 @@ pub(crate) struct Core {
     pub host_circuit: Option<crate::host_circuit::HostCircuit>,
     /// The seed carriers' descriptors, as their records last gave them.
     pub seed_descriptors: crate::hops::SeedDescriptors,
+    /// The day this node last gave a fresh machine the middle (ADR 0017).
+    pub fresh_turns: crate::picks::FreshTurns,
     /// Files whose hosts are being asked for circuit offers now.
     pub offers_asked: crate::hops::OffersAsked,
     /// Wakes a directory's reading of listed nodes, for someone new.
@@ -734,6 +736,7 @@ impl Node {
             carrier,
             host_circuit,
             seed_descriptors: Default::default(),
+            fresh_turns: Default::default(),
             offers_asked: Default::default(),
             listed_now: Notify::new(),
             hosts_picked_day: std::sync::atomic::AtomicI64::new(-1),
@@ -987,6 +990,22 @@ impl Node {
             .unwrap_or_default()
     }
 
+    /// The machines its table names as carriers, with a start held here:
+    /// those that may have a fresh middle turn. For tests: a machine is met
+    /// before its record names its carrier.
+    pub fn carriers_in_table(&self) -> Vec<EndpointId> {
+        let Some(machine) = self.core.machine.as_ref() else {
+            return Vec::new();
+        };
+        machine
+            .acquaintances
+            .carriers(crate::hops::unix_now())
+            .into_iter()
+            .filter(|c| c.start.is_some())
+            .map(|c| c.machine)
+            .collect()
+    }
+
     /// How its machine name's introductions went (ADR 0016). For tests and
     /// the simulator.
     pub fn introductions(&self) -> IntroductionCounts {
@@ -1074,6 +1093,14 @@ impl Node {
     /// 0029). For tests.
     pub fn tell_vouches_now(&self) {
         self.core.tell_vouches_now.notify_one();
+    }
+
+    /// The machines this node holds on probation as carriers, and those
+    /// with standing with it (ADR 0017). For tests.
+    pub fn carrier_picks(&self) -> Result<(Vec<EndpointId>, Vec<EndpointId>)> {
+        let probation = self.core.db.probationers()?.into_iter().map(|p| p.machine);
+        let standing = self.core.db.carriers_at_standing(crate::db::now_ms())?;
+        Ok((probation.collect(), standing))
     }
 
     /// Runs a round of meeting machines now, as the node does about every

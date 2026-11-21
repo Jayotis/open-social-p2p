@@ -17,7 +17,7 @@ use iroh::{
 use iroh_relay::server::{RelayConfig, Server, ServerConfig};
 use osp_carrier::{ALPN, CarrierInfo, Descriptor, HostEvent, HostLink, ViewerCircuit};
 use osp_node::{
-    Config, KnownDirectory, Node, RelayChoice, SeedCarrier, SimSettings,
+    Config, KnownDirectory, MeetingTimes, Node, RelayChoice, SeedCarrier, SimSettings,
     simnet::{self, Link, SimNet},
 };
 use osp_proto::{
@@ -756,6 +756,115 @@ async fn a_follower_fetches_another_followers_copy_through_its_hop() {
     .expect("Jimmy's node didn't fetch Sam's copy through Kim");
 
     for node in [jimmy, sam, alice, kim] {
+        node.shutdown().await.unwrap();
+    }
+}
+
+/// Meeting machines quickly, for a test.
+fn quick() -> MeetingTimes {
+    MeetingTimes {
+        hour: Duration::from_secs(1),
+        round: Duration::from_millis(100),
+        try_again_after: Duration::from_millis(300),
+        check_in_every: Duration::from_secs(2),
+        met_lately: Duration::from_secs(60),
+        still_answering: Duration::from_secs(30),
+        forget_silent: Duration::from_secs(120),
+        known_after: Duration::from_secs(2),
+        half_life: Duration::from_secs(60),
+        introducer_after: Duration::from_secs(1),
+    }
+}
+
+/// Kim's and Quinn's nodes are seed carriers. Alice's node knows only
+/// Quinn's, and Jimmy's only Kim's. Mo's node is new, an ordinary one, and
+/// Jimmy's machine meets it through a directory. When Jimmy opens Alice's
+/// large photo, Mo's machine has his node's fresh turn in the middle:
+/// Alice → Quinn → Mo → Kim → Jimmy. It carried the photo, and Jimmy's node
+/// takes it on probation, without standing yet.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_fresh_machine_carries_in_the_middle_and_is_taken_on_probation() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_relay, relay) = local_relay().await;
+    let net = SimNet::new(4);
+    let directory = directory(&dir.path().join("directory"), &net).await;
+
+    let seed = async |name: &str| {
+        let home = dir.path().join(name);
+        let mut config = config(name, &relay);
+        config.carrier.seed = true;
+        Node::init(&home, &config).unwrap();
+        start(&home, &net).await
+    };
+    let kim = seed("Kim").await;
+    let quinn = seed("Quinn").await;
+    let known = |node: &Node| SeedCarrier {
+        machine: node.machine_id().unwrap(),
+    };
+
+    let meeting = SimSettings {
+        meeting: quick(),
+        first_read_wait: Duration::from_millis(200),
+        read_every: Duration::from_secs(1),
+        ..sim(&net)
+    };
+    let home = dir.path().join("mo");
+    Node::init(&home, &knowing("Mo", &relay, &directory, None)).unwrap();
+    let mo = Node::spawn_sim(&home, meeting.clone()).await.unwrap();
+    let home = dir.path().join("jimmy");
+    let mut jimmy_config = knowing("Jimmy", &relay, &directory, None);
+    jimmy_config.carrier.known = vec![known(&kim)];
+    jimmy_config.sync.prefetch = false;
+    Node::init(&home, &jimmy_config).unwrap();
+    let jimmy = Node::spawn_sim(&home, meeting).await.unwrap();
+    let mo_machine = mo.machine_id().unwrap();
+    // Not only met: Mo's carrier starts after its machine does, so its
+    // first record may name none.
+    timeout(Duration::from_secs(60), async {
+        while !jimmy.carriers_in_table().contains(&mo_machine) {
+            let _ = jimmy.meet_round_now().await;
+            let _ = mo.meet_round_now().await;
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    })
+    .await
+    .expect("Jimmy's machine never heard of Mo's carrier");
+
+    let home = dir.path().join("alice");
+    let mut alice_config = config("Alice", &relay);
+    alice_config.endpoints.enabled = true;
+    alice_config.carrier.known = vec![known(&quinn)];
+    Node::init(&home, &alice_config).unwrap();
+    let alice = start(&home, &net).await;
+    let me = stranger(&net).await;
+    let asked = post_large_photo(&alice, dir.path()).await;
+    offer_of(&me, &alice, asked, true).await;
+    follow(&jimmy, &alice).await;
+
+    let carried = async |node: &Node| node.carrier_stats().await.unwrap().bytes;
+    let before = [
+        carried(&kim).await,
+        carried(&mo).await,
+        carried(&quinn).await,
+    ];
+    let size = jimmy.open_blob(&asked.1).await.unwrap();
+    assert!(size > 1 << 20);
+    let after = [
+        carried(&kim).await,
+        carried(&mo).await,
+        carried(&quinn).await,
+    ];
+    for (i, name) in ["Kim", "Mo", "Quinn"].iter().enumerate() {
+        assert!(
+            after[i] >= before[i] + size,
+            "{name}'s machine didn't carry it: {before:?} {after:?}"
+        );
+    }
+    let (probation, standing) = jimmy.carrier_picks().unwrap();
+    assert_eq!(probation, [mo_machine]);
+    assert!(standing.is_empty(), "standing takes 3 days");
+
+    for node in [jimmy, mo, alice, kim, quinn, directory] {
         node.shutdown().await.unwrap();
     }
 }
