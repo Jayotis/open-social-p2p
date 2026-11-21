@@ -451,7 +451,7 @@ pub(crate) struct Published(Arc<std::sync::RwLock<Option<String>>>);
 
 impl Published {
     pub fn set(&self, descriptor: &osp_carrier::Descriptor) {
-        let text = data_encoding::BASE64URL_NOPAD.encode(&descriptor.to_bytes());
+        let text = descriptor_text(descriptor);
         *self.0.write().unwrap_or_else(|e| e.into_inner()) = Some(text);
     }
 
@@ -465,12 +465,28 @@ impl Published {
 /// none, or one that doesn't check out. Viewers pick hops by it from part 4c.
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn carrier_of(info: &MachineInfo, now: u64) -> Option<osp_carrier::Descriptor> {
+    descriptor_from_text(info.carrier.as_ref()?, &info.machine, now)
+}
+
+/// A carrier descriptor as a machine record carries it: unpadded base64url
+/// of its bytes.
+pub(crate) fn descriptor_text(descriptor: &osp_carrier::Descriptor) -> String {
+    data_encoding::BASE64URL_NOPAD.encode(&descriptor.to_bytes())
+}
+
+/// The descriptor in `text`, as a record carries it, checked: signed by
+/// `machine`, its circuit key valid at `now` (unix seconds).
+pub(crate) fn descriptor_from_text(
+    text: &str,
+    machine: &iroh::EndpointId,
+    now: u64,
+) -> Option<osp_carrier::Descriptor> {
     let bytes = data_encoding::BASE64URL_NOPAD
-        .decode(info.carrier.as_ref()?.as_bytes())
+        .decode(text.as_bytes())
         .ok()?;
     let descriptor = osp_carrier::Descriptor::from_bytes(&bytes).ok()?;
     let carrier = descriptor.verify(now).ok()?;
-    (carrier.machine == info.machine).then_some(descriptor)
+    (carrier.machine == *machine).then_some(descriptor)
 }
 
 /// When this node's machine key started, in unix seconds: written when the

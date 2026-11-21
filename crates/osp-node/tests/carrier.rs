@@ -781,9 +781,11 @@ fn quick() -> MeetingTimes {
 /// Jimmy's machine meets it through a directory. When Jimmy opens Alice's
 /// large photo, Mo's machine has his node's fresh turn in the middle:
 /// Alice → Quinn → Mo → Kim → Jimmy. It carried the photo, and Jimmy's node
-/// takes it on probation, without standing yet.
+/// takes it on probation, without standing yet. Sam's node, which holds
+/// Jimmy's machine at standing, asks it for work and is offered Mo's, which
+/// then carries in the middle of Sam's fetch too.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_fresh_machine_carries_in_the_middle_and_is_taken_on_probation() {
+async fn a_fresh_machine_carries_in_the_middle_and_is_offered_on() {
     let dir = tempfile::tempdir().unwrap();
     let (_relay, relay) = local_relay().await;
     let net = SimNet::new(4);
@@ -864,7 +866,39 @@ async fn a_fresh_machine_carries_in_the_middle_and_is_taken_on_probation() {
     assert_eq!(probation, [mo_machine]);
     assert!(standing.is_empty(), "standing takes 3 days");
 
-    for node in [jimmy, mo, alice, kim, quinn, directory] {
+    // Work offers (part 4d-2). Sam's node holds Jimmy's machine at standing
+    // and has room for a newcomer, so it asks Jimmy's carrier, which names
+    // Mo's machine. Sam's node has met nobody else.
+    let home = dir.path().join("sam");
+    let mut sam_config = config("Sam", &relay);
+    sam_config.endpoints.enabled = true;
+    sam_config.carrier.known = vec![known(&kim)];
+    sam_config.sync.prefetch = false;
+    Node::init(&home, &sam_config).unwrap();
+    let sam = start(&home, &net).await;
+    let jimmy_machine = jimmy.machine_id().unwrap();
+    sam.credit_carrier_on_days(&jimmy_machine, 3).unwrap();
+    sam.ask_for_work_now().await.unwrap();
+    assert_eq!(sam.work_offers_held().unwrap(), [mo_machine]);
+
+    // Mo's machine has Sam's newcomer turn in the middle, next to Jimmy's,
+    // and is taken on probation. The offer had its turn. (Sam's machine may
+    // have met Mo's by then, and given it the turn as fresh instead: the
+    // picks module's tests say which goes first.)
+    follow(&sam, &alice).await;
+    let before = carried(&mo).await;
+    let size = sam.open_blob(&asked.1).await.unwrap();
+    assert!(
+        carried(&mo).await >= before + size,
+        "Mo's machine didn't carry for Sam's node"
+    );
+    let (probation, standing) = sam.carrier_picks().unwrap();
+    assert_eq!(probation, [mo_machine]);
+    assert_eq!(standing, [jimmy_machine], "an offer is never standing");
+    let held = sam.work_offers_held().unwrap();
+    assert!(held.is_empty(), "{held:?}, mo {mo_machine}");
+
+    for node in [sam, jimmy, mo, alice, kim, quinn, directory] {
         node.shutdown().await.unwrap();
     }
 }

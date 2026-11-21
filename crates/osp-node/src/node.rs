@@ -326,6 +326,8 @@ pub(crate) struct Core {
     pub seed_descriptors: crate::hops::SeedDescriptors,
     /// The day this node last gave a fresh machine the middle (ADR 0017).
     pub fresh_turns: crate::picks::FreshTurns,
+    /// Asks for work offers, when this node has room (ADR 0043 part 4d-2).
+    pub work_asks: crate::work_offers::WorkAsks,
     /// Files whose hosts are being asked for circuit offers now.
     pub offers_asked: crate::hops::OffersAsked,
     /// Wakes a directory's reading of listed nodes, for someone new.
@@ -559,7 +561,7 @@ impl Node {
         );
         // Carrying never stops the node starting.
         let carrier = match &machine {
-            Some(machine) => CarrierSide::start(&home, &config, machine, &relays)
+            Some(machine) => CarrierSide::start(&home, &config, machine, &relays, &db)
                 .await
                 .unwrap_or_else(|e| {
                     warn!("not carrying for other nodes: {e:#}");
@@ -737,6 +739,7 @@ impl Node {
             host_circuit,
             seed_descriptors: Default::default(),
             fresh_turns: Default::default(),
+            work_asks: Default::default(),
             offers_asked: Default::default(),
             listed_now: Notify::new(),
             hosts_picked_day: std::sync::atomic::AtomicI64::new(-1),
@@ -861,6 +864,9 @@ impl Node {
             hide_list,
         ];
         tasks.extend(directory_tasks);
+        if core.machine.is_some() {
+            tasks.push(tokio::spawn(crate::work_offers::ask_loop(core.clone())));
+        }
         if core.host_circuit.is_some() {
             tasks.push(tokio::spawn(crate::host_circuit::keep_linked(
                 core.clone(),
@@ -1101,6 +1107,30 @@ impl Node {
         let probation = self.core.db.probationers()?.into_iter().map(|p| p.machine);
         let standing = self.core.db.carriers_at_standing(crate::db::now_ms())?;
         Ok((probation.collect(), standing))
+    }
+
+    /// Notes jobs by `machine` on each of the last `days` days, as if it had
+    /// carried for this node then. For tests: standing takes 3 days.
+    pub fn credit_carrier_on_days(&self, machine: &EndpointId, days: i64) -> Result<()> {
+        let now = crate::db::now_ms();
+        for day in 0..days {
+            self.core
+                .db
+                .credit_carrier(machine, now - day * crate::db::DAY_MS)?;
+        }
+        Ok(())
+    }
+
+    /// Asks for a work offer now if there's room, as the node does after a
+    /// fetch through hops (ADR 0043 part 4d-2). For tests.
+    pub async fn ask_for_work_now(&self) -> Result<()> {
+        self.core.ask_for_work().await
+    }
+
+    /// The machines offered to this node for work that it holds. For tests.
+    pub fn work_offers_held(&self) -> Result<Vec<EndpointId>> {
+        let held = self.core.db.suggestions(crate::db::now_ms())?;
+        Ok(held.into_iter().map(|(machine, _)| machine).collect())
     }
 
     /// Runs a round of meeting machines now, as the node does about every

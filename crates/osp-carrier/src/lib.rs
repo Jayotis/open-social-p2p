@@ -35,8 +35,8 @@ pub use layer::{
     CarrierKeys, CircuitKey, Direction, Layer, MAX_PACKETS, Onion, SETUP_LEN, Setup, WINDOW,
 };
 pub use service::{
-    ALPN, Carrier, Config, Dial, LINK_DATAGRAM, Limits, SETUP_TIMEOUT, SLOT_LIFETIME, Stats,
-    relay_dial, request_slot, wait_for_room,
+    ALPN, Carrier, Config, Dial, LINK_DATAGRAM, Limits, Others, SETUP_TIMEOUT, SLOT_LIFETIME,
+    Stats, relay_dial, request_slot, wait_for_room,
 };
 pub use transport::{TRANSPORT_ID, host_endpoint, viewer_endpoint};
 

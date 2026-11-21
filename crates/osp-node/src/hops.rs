@@ -198,7 +198,7 @@ impl Core {
             .filter_map(|d| d.verify(unix_now()).ok().map(|i| i.machine))
             .collect();
         if declared > store::SMALL_BLOB
-            && let Err(e) = self.credit_hops(&known, &machines, middle.as_ref().map(|m| m.machine))
+            && let Err(e) = self.credit_hops(&known, &machines, middle.as_ref())
         {
             debug!("couldn't note the hops' job: {e:#}");
         }
@@ -207,6 +207,7 @@ impl Core {
             hops = hops.len(),
             "fetched through carriers"
         );
+        self.may_ask_for_work();
         Ok(size)
     }
 

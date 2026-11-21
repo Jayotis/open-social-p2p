@@ -14,13 +14,16 @@
 //! 2. else, once a day, the machine that came into his table earliest of
 //!    those in their own first 7 days by their signed start and new to his
 //!    table in the last 7, that his node never finished a job with;
-//! 3. else, on 1 transfer in 20, one from his table at random: one his node
+//! 3. else, in that same once-a-day turn when no machine is fresh, a
+//!    machine offered to his node for work (the `work_offers` module);
+//! 4. else, on 1 transfer in 20, one from his table at random: one his node
 //!    never finished a job with if there is one, else any with no standing.
 //!
 //! A fetch that passes iroh-blobs' hash check credits each hop that isn't a
 //! seed carrier, once a day. A middle machine's job may take it into a
 //! probation place: the first place takes any, the second only a first job.
-//! A probationer whose circuit fails leaves.
+//! A probationer whose circuit fails leaves. A machine's first middle job
+//! is offered on to those who ask for work.
 
 use std::{collections::HashSet, sync::Mutex};
 
@@ -31,6 +34,7 @@ use tracing::debug;
 
 use crate::{
     db::{DAY_MS, Probationer, day_of, now_ms},
+    hops::unix_now,
     meet::TableCarrier,
     node::Core,
     sync::random_fraction,
@@ -60,6 +64,8 @@ pub(crate) struct FreshTurns(Mutex<Option<i64>>);
 pub(crate) enum MiddleTurn {
     Probation,
     Fresh,
+    /// Offered for work by a machine at standing.
+    Offered,
     Drawn,
 }
 
@@ -71,6 +77,15 @@ pub(crate) struct Middle {
     pub turn: MiddleTurn,
 }
 
+/// A machine offered to this node for work, held until its turn.
+#[derive(Debug, Clone)]
+pub(crate) struct Suggestion {
+    pub machine: EndpointId,
+    /// Its descriptor from the table if it's there, else as offered or
+    /// last renewed, while it checks out.
+    pub descriptor: Option<Descriptor>,
+}
+
 /// What this node knows of the machines it might pick, at one moment.
 pub(crate) struct Known {
     pub now: i64,
@@ -78,6 +93,7 @@ pub(crate) struct Known {
     pub standing: HashSet<EndpointId>,
     pub probationers: Vec<Probationer>,
     pub table: Vec<TableCarrier>,
+    pub suggestions: Vec<Suggestion>,
 }
 
 impl Known {
@@ -90,11 +106,55 @@ impl Known {
     fn in_table(&self, machine: &EndpointId) -> Option<&TableCarrier> {
         self.table.iter().find(|c| c.machine == *machine)
     }
+
+    /// The fresh machines not in `taken`, the earliest into the table
+    /// first: in their own first 7 days by their signed start, new to the
+    /// table in the last 7, and never worked with.
+    fn fresh(
+        &self,
+        taken: &[EndpointId],
+        worked: &dyn Fn(&EndpointId) -> bool,
+    ) -> Vec<&TableCarrier> {
+        let mut fresh: Vec<(&TableCarrier, i64)> = self
+            .table
+            .iter()
+            .filter(|c| self.may_be_middle(&c.machine, taken) && !worked(&c.machine))
+            .filter_map(|c| {
+                let start = c.start?;
+                (self.now - start.first_seen_ms <= FRESH_MS
+                    && self.now - start.started_ms <= FRESH_MS)
+                    .then_some((c, start.first_seen_ms))
+            })
+            .collect();
+        // Those that came in at the same moment in an order of this node's
+        // own, not always the same one first.
+        in_own_order(&mut fresh);
+        fresh.sort_by_key(|(_, first_seen)| *first_seen);
+        fresh.into_iter().map(|(c, _)| c).collect()
+    }
+
+    /// Whether this node has room for a machine offered for work: a
+    /// probation place free, no fresh machine waiting, and no offer held.
+    pub fn has_room_for_an_offer(&self, worked: &dyn Fn(&EndpointId) -> bool) -> bool {
+        self.probationers.len() < PROBATION_PLACES
+            && self.suggestions.is_empty()
+            && self.fresh(&[], worked).is_empty()
+    }
+
+    /// Whether an offer of `machine` may be taken: not a seed carrier, not
+    /// at standing or on probation, never worked with, and not held already.
+    pub fn may_take_offer(&self, machine: &EndpointId, worked: bool) -> bool {
+        !worked
+            && !self.seeds.contains(machine)
+            && !self.standing.contains(machine)
+            && !self.probationers.iter().any(|p| p.machine == *machine)
+            && !self.suggestions.iter().any(|s| s.machine == *machine)
+    }
 }
 
 /// The middle machine, if one has a turn: a probationer that hasn't had one
 /// today, else the oldest fresh machine if none had a fresh turn today
-/// (`fresh_today`), else on `NEWCOMER_RATE` of transfers one at random
+/// (`fresh_today`), else in that turn a machine offered for work, else on `NEWCOMER_RATE` of transfers one at random
 /// (`draw` is a fraction of 1). `worked` says whether this node ever
 /// finished a job with a machine. None of `taken`, a seed carrier, or a
 /// machine at standing.
@@ -120,23 +180,20 @@ pub(crate) fn pick_middle(
         }
     }
     if !fresh_today {
-        let mut fresh: Vec<(&TableCarrier, i64)> = known
-            .table
-            .iter()
-            .filter(|c| known.may_be_middle(&c.machine, taken) && !worked(&c.machine))
-            .filter_map(|c| {
-                let start = c.start?;
-                (known.now - start.first_seen_ms <= FRESH_MS
-                    && known.now - start.started_ms <= FRESH_MS)
-                    .then_some((c, start.first_seen_ms))
-            })
-            .collect();
-        // Those that came in at the same moment in an order of this node's
-        // own, not always the same one first.
-        in_own_order(&mut fresh);
-        fresh.sort_by_key(|(_, first_seen)| *first_seen);
-        if let Some((c, _)) = fresh.first() {
+        if let Some(c) = known.fresh(taken, worked).first() {
             return Some(middle(c, MiddleTurn::Fresh));
+        }
+        for s in &known.suggestions {
+            if known.may_be_middle(&s.machine, taken)
+                && !worked(&s.machine)
+                && let Some(descriptor) = &s.descriptor
+            {
+                return Some(Middle {
+                    machine: s.machine,
+                    descriptor: descriptor.clone(),
+                    turn: MiddleTurn::Offered,
+                });
+            }
         }
     }
     if draw >= NEWCOMER_RATE {
@@ -194,12 +251,25 @@ impl Core {
         if let Ok(me) = self.machine().map(|m| m.id()) {
             table.retain(|c| c.machine != me);
         }
+        let mut suggestions = Vec::new();
+        for (machine, text) in self.db.suggestions(now)? {
+            let descriptor = table
+                .iter()
+                .find(|c| c.machine == machine)
+                .map(|c| c.descriptor.clone())
+                .or_else(|| crate::machine::descriptor_from_text(&text, &machine, unix_now()));
+            suggestions.push(Suggestion {
+                machine,
+                descriptor,
+            });
+        }
         Ok(Known {
             now,
             seeds,
             standing,
             probationers,
             table,
+            suggestions,
         })
     }
 
@@ -251,8 +321,18 @@ impl Core {
                     debug!("noting a probationer's turn: {e:#}");
                 }
             }
-            MiddleTurn::Fresh => *fresh_day = Some(today),
+            MiddleTurn::Fresh | MiddleTurn::Offered => *fresh_day = Some(today),
             MiddleTurn::Drawn => {}
+        }
+        // An offered machine had its turn, whichever way it came, and
+        // whether the job finishes or not.
+        if known
+            .suggestions
+            .iter()
+            .any(|s| s.machine == middle.machine)
+            && let Err(e) = self.db.end_suggestion(&middle.machine)
+        {
+            debug!("ending an offer: {e:#}");
         }
         debug!(machine = %middle.machine.fmt_short(), turn = ?middle.turn, "a machine has the middle");
         Some(middle)
@@ -262,19 +342,28 @@ impl Core {
     /// those that aren't seed carriers, once a day each, and takes the
     /// machine in the middle, if any, into probation if there's a place. The
     /// host's hop is the host's pick, and this node's own has standing or
-    /// is a seed carrier.
+    /// is a seed carrier. A middle machine's first job here is offered on
+    /// to those who ask for work.
     pub(crate) fn credit_hops(
         &self,
         known: &Known,
         hops: &[EndpointId],
-        middle: Option<EndpointId>,
+        middle: Option<&Middle>,
     ) -> Result<()> {
         for machine in hops.iter().filter(|m| !known.seeds.contains(*m)) {
             let now = now_ms();
             let first = self.db.credit_carrier(machine, now)?;
-            if Some(*machine) == middle && takes_probation(known, machine, first) {
+            let Some(m) = middle.filter(|m| m.machine == *machine) else {
+                continue;
+            };
+            if takes_probation(known, machine, first) {
                 self.db.add_probationer(machine, now)?;
                 debug!(machine = %machine.fmt_short(), "a machine is taken on probation");
+            }
+            if first {
+                let text = crate::machine::descriptor_text(&m.descriptor);
+                self.db.add_tip(machine, &text, now)?;
+                debug!(machine = %machine.fmt_short(), "a machine's first job here may be offered on");
             }
         }
         Ok(())
@@ -333,6 +422,7 @@ mod tests {
             standing: HashSet::new(),
             probationers: Vec::new(),
             table,
+            suggestions: Vec::new(),
         }
     }
 
@@ -374,6 +464,64 @@ mod tests {
         assert_eq!(m.machine, late.machine);
         // Once a day.
         assert!(pick_middle(&k, &[], true, 1.0, &NEVER).is_none());
+    }
+
+    /// Mo's machine was offered for work. It has the once-a-day turn only
+    /// when no machine is fresh, and only with a descriptor that checks out.
+    #[test]
+    fn an_offered_machine_has_the_fresh_turn_when_none_is_fresh() {
+        let now = 100 * DAY_MS;
+        let mo = carrier(None);
+        let fresh = carrier(Some((now - DAY_MS, now - DAY_MS)));
+        let mut k = known(vec![fresh.clone()]);
+        k.suggestions.push(Suggestion {
+            machine: mo.machine,
+            descriptor: Some(mo.descriptor.clone()),
+        });
+        let m = pick_middle(&k, &[], false, 1.0, &NEVER).unwrap();
+        assert_eq!(m.turn, MiddleTurn::Fresh, "a fresh machine first");
+        let fresh_worked = |m: &EndpointId| *m == fresh.machine;
+        let m = pick_middle(&k, &[], false, 1.0, &fresh_worked).unwrap();
+        assert_eq!((m.machine, m.turn), (mo.machine, MiddleTurn::Offered));
+        assert!(
+            pick_middle(&k, &[], true, 1.0, &fresh_worked).is_none(),
+            "once a day"
+        );
+        k.suggestions[0].descriptor = None;
+        assert!(pick_middle(&k, &[], false, 1.0, &fresh_worked).is_none());
+    }
+
+    /// Room for an offer: a probation place free, nothing fresh waiting,
+    /// none held. One that's at standing or on probation isn't taken.
+    #[test]
+    fn an_offer_is_asked_for_only_with_room() {
+        let now = 100 * DAY_MS;
+        let [mo, kim, sam] = [0, 1, 2].map(|_| SecretKey::generate().public());
+        let fresh = carrier(Some((now - DAY_MS, now - DAY_MS)));
+        let mut k = known(vec![fresh.clone()]);
+        assert!(!k.has_room_for_an_offer(&NEVER), "a fresh machine waits");
+        let fresh_worked = |m: &EndpointId| *m == fresh.machine;
+        assert!(k.has_room_for_an_offer(&fresh_worked));
+        assert!(k.may_take_offer(&mo, false));
+        assert!(!k.may_take_offer(&mo, true), "worked with already");
+        k.standing.insert(kim);
+        assert!(!k.may_take_offer(&kim, false));
+        for machine in [kim, sam] {
+            k.probationers.push(Probationer {
+                machine,
+                since_ms: now,
+                last_day: 0,
+            });
+        }
+        assert!(!k.may_take_offer(&sam, false));
+        assert!(!k.has_room_for_an_offer(&fresh_worked), "both places taken");
+        k.probationers.pop();
+        k.suggestions.push(Suggestion {
+            machine: mo,
+            descriptor: None,
+        });
+        assert!(!k.has_room_for_an_offer(&fresh_worked), "one held");
+        assert!(!k.may_take_offer(&mo, false));
     }
 
     #[test]

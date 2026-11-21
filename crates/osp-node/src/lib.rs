@@ -52,6 +52,7 @@ mod universe;
 mod uploads;
 mod viewing;
 mod vouches;
+mod work_offers;
 mod world;
 
 /// This build's version: the release's tag when the release job sets

@@ -343,6 +343,36 @@ pub struct CircuitOffer {
     pub endpoint: PublicKey,
 }
 
+/// ALPN of the one request a carrier endpoint answers besides carrier links
+/// (ADR 0043 stage B part 4d-2): "know a machine that could work for me?".
+/// Say Mo's machine finished its first middle job for Jimmy's node. Alice's
+/// node holds Jimmy's machine at standing, has room for a newcomer, and asks
+/// it from a key made for the ask, so Jimmy's node never learns who asked.
+pub const WORK_OFFERS_ALPN: &[u8] = b"osp/work-offers/0";
+
+/// "Know a machine that could work for me?", on a carrier endpoint. Nothing
+/// else is said: the asker isn't named.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct WorkOffersRequest {}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct WorkOffersResponse {
+    /// At most one, for now: a machine that lately finished its first
+    /// middle job for the answering node.
+    pub offers: Vec<WorkOffer>,
+}
+
+/// A machine offered for work. An offer is a chance at one middle job,
+/// never standing.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkOffer {
+    pub machine: PublicKey,
+    /// Its carrier descriptor as the offering node last had it, as unpadded
+    /// base64url of its bytes, as a machine record carries it. It may have
+    /// run out: the asker asks the machine itself then.
+    pub carrier: String,
+}
+
 /// ALPN of the one request an author's media endpoint answers besides media
 /// (ADR 0025): who hosts one of its posts' files. It's how a viewing endpoint
 /// asks, through the relay, without showing who it is (ADR 0024).
