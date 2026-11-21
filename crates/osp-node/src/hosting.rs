@@ -27,8 +27,8 @@ use osp_proto::{
     BlobHash, BoundEndpoint, EndpointKind, Note, ObjectId, Payload, SignedObject,
     framing::{read_frame, read_frame_max, write_frame},
     social::{
-        HostingReshare, MAX_REQUEST_LEN, MEDIA_HOSTS_ALPN, MediaHostsRequest, MediaHostsResponse,
-        SocialRequest, SocialResponse,
+        CircuitOffer, HostingReshare, MAX_REQUEST_LEN, MEDIA_HOSTS_ALPN, MediaHostsRequest,
+        MediaHostsResponse, SocialRequest, SocialResponse,
     },
 };
 use tokio::sync::Semaphore;
@@ -143,15 +143,16 @@ impl Core {
 
     /// Asks the author's media endpoint, from a viewing endpoint, who hosts
     /// `blob` of `post` (ADR 0025). The hosts it names, their bindings
-    /// checked; an error if the post was deleted, once its `Delete` is kept
-    /// here. Nothing if it can't be reached in time.
+    /// checked, and the way through its hop it offers (ADR 0043); an error
+    /// if the post was deleted, once its `Delete` is kept here. Nothing if it
+    /// can't be reached in time.
     pub(crate) async fn ask_author_for_hosts(
         &self,
         viewing: &Endpoint,
         author_media: EndpointAddr,
         (post, note): (&ObjectId, &Note),
         blob: &BlobHash,
-    ) -> Result<Vec<Source>> {
+    ) -> Result<(Vec<Source>, Option<CircuitOffer>)> {
         let ask = async {
             let conn = viewing.connect(author_media, MEDIA_HOSTS_ALPN).await?;
             let (mut send, mut recv) = conn.open_bi().await?;
@@ -169,30 +170,33 @@ impl Core {
             Ok(Ok(resp)) => resp,
             Ok(Err(e)) => {
                 debug!("couldn't ask the author's media endpoint who hosts it: {e:#}");
-                return Ok(Vec::new());
+                return Ok((Vec::new(), None));
             }
             Err(_) => {
                 debug!("the author's media endpoint didn't say who hosts it in time");
-                return Ok(Vec::new());
+                return Ok((Vec::new(), None));
             }
         };
         match resp {
-            MediaHostsResponse::Hosts { hosts, .. } => Ok(hosts
-                .iter()
-                .filter(|h| h.check(&h.binding.public, EndpointKind::Media).is_ok())
-                .map(|h| Source {
-                    node: h.binding.public,
-                    endpoint: h.binding.endpoint,
-                    from_direct: false,
-                })
-                .collect()),
+            MediaHostsResponse::Hosts { hosts, circuit } => Ok((
+                hosts
+                    .iter()
+                    .filter(|h| h.check(&h.binding.public, EndpointKind::Media).is_ok())
+                    .map(|h| Source {
+                        node: h.binding.public,
+                        endpoint: h.binding.endpoint,
+                        from_direct: false,
+                    })
+                    .collect(),
+                circuit.map(|c| *c),
+            )),
             MediaHostsResponse::Deleted { delete } => {
                 self.found_deleted(&delete, post, note).await?;
                 bail!("its author deleted it")
             }
             MediaHostsResponse::Error { message } => {
                 debug!("the author's media endpoint replied: {message}");
-                Ok(Vec::new())
+                Ok((Vec::new(), None))
             }
         }
     }

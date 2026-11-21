@@ -322,6 +322,8 @@ pub(crate) struct Core {
     /// The node's link to its hop, which viewers' circuits reach its media
     /// through (ADR 0043), when seed carriers are known.
     pub host_circuit: Option<crate::host_circuit::HostCircuit>,
+    /// The seed carriers' descriptors, as their records last gave them.
+    pub seed_descriptors: crate::hops::SeedDescriptors,
     /// Wakes a directory's reading of listed nodes, for someone new.
     pub listed_now: Notify,
     /// The day a directory last picked its listed posts' hosts (ADR 0025).
@@ -729,6 +731,7 @@ impl Node {
             machine,
             carrier,
             host_circuit,
+            seed_descriptors: Default::default(),
             listed_now: Notify::new(),
             hosts_picked_day: std::sync::atomic::AtomicI64::new(-1),
             reading_directories: tokio::sync::Mutex::new(HashSet::new()),
@@ -902,6 +905,12 @@ impl Node {
 
     /// How many viewing endpoints this node has made since it started (ADR
     /// 0024).
+    /// What its carrier has carried, while it carries (ADR 0043). For tests
+    /// until the node's status shows it.
+    pub async fn carrier_stats(&self) -> Option<osp_carrier::Stats> {
+        self.core.carrier.as_ref()?.carrier()?.stats().await.ok()
+    }
+
     pub fn viewing_endpoints_made(&self) -> usize {
         self.core.viewing.made()
     }

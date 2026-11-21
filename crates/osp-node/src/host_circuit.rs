@@ -19,7 +19,7 @@
 
 use std::{
     sync::{Arc, RwLock},
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::Duration,
 };
 
 use anyhow::{Context, Result, anyhow};
@@ -33,10 +33,10 @@ use tracing::{debug, info};
 use crate::{
     carrier::{kept_key, relay_mode, relayed_endpoint},
     home::Home,
+    hops::unix_now,
     hosting::MediaHostsProtocol,
-    machine::carrier_of,
     node::{Core, SharedBlobs},
-    sync::{jitter, random_fraction},
+    sync::jitter,
     threads::RepliesProtocol,
 };
 
@@ -121,13 +121,6 @@ impl HostCircuit {
     }
 }
 
-fn unix_now() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
-}
-
 impl Core {
     /// How a viewer reaches this node's media through its hop, while it has
     /// a link to one.
@@ -143,17 +136,7 @@ impl Core {
         blobs: &BlobsProtocol,
         prefer: Option<EndpointId>,
     ) -> Result<(Live, u64)> {
-        let mut seeds: Vec<EndpointId> = self
-            .config
-            .carrier
-            .known
-            .iter()
-            .map(|s| s.machine)
-            .collect();
-        for i in (1..seeds.len()).rev() {
-            let j = ((random_fraction() * (i + 1) as f64) as usize).min(i);
-            seeds.swap(i, j);
-        }
+        let mut seeds = self.seeds_in_own_order();
         if let Some(at) = prefer.and_then(|p| seeds.iter().position(|s| *s == p)) {
             seeds[..=at].rotate_right(1);
         }
@@ -178,11 +161,8 @@ impl Core {
         blobs: &BlobsProtocol,
         hop: EndpointId,
     ) -> Result<(Live, u64)> {
-        let greeting = self.machine()?.hello(hop).await?;
-        let now = unix_now();
-        let descriptor = carrier_of(&greeting.info, now)
-            .context("its machine record names no carrier that checks out")?;
-        let info = descriptor.verify(now)?;
+        let descriptor = self.seed_descriptor(hop, false).await?;
+        let info = descriptor.verify(unix_now())?;
         let relays = self.tracker.relays().clone();
         let relay = relay_mode(&self.config)?.context("relays are off")?;
         // A key for this link alone, so nothing ties it to this node's
