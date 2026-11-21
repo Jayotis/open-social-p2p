@@ -263,6 +263,8 @@ pub struct KnownDirectory {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct CarrierConfig {
+    /// Off, the node runs no carrier at all (tests, and nodes with relays
+    /// off). The owner's switch is `paused`.
     pub enabled: bool,
     /// Carry with a seed carrier's limits, for a server on the release's
     /// `carriers.txt`, not a home node's.
@@ -270,6 +272,27 @@ pub struct CarrierConfig {
     /// The seed carriers this node knows, from the release's `carriers.txt`
     /// (ADR 0043 §6), by machine ID. Never built into the program.
     pub known: Vec<SeedCarrier>,
+    /// Paused under Advanced, for troubleshooting: it ends what it carries
+    /// and takes nothing new. The node still gets every post and video.
+    pub paused: bool,
+    /// The connection is metered: carrying stops while this is on.
+    pub metered: bool,
+    /// Circuits carrying at once. Unset: 2 for a home node, 40 for a seed
+    /// carrier, from the sizing stage.
+    pub jobs: Option<usize>,
+    /// The share of the upload carrying may use, in percent. Unset: 50 for
+    /// a home node, all of it for a seed carrier. It's always behind the
+    /// node's own serving.
+    pub upload_share: Option<u8>,
+    /// What carrying may use in a UTC month, in GB, both ways counted.
+    /// Unset: half the plan's `data_cap_gb` under [serving], or no limit
+    /// without one. 0 means no limit.
+    pub monthly_gb: Option<u64>,
+    /// Whether the hops this node picks may see its internet address, so its
+    /// own fetches and its media go through them (ADR 0043 §8, asked at
+    /// setup). Unset means not asked yet, and its own leg stays on relays,
+    /// as with no.
+    pub hops: Option<bool>,
 }
 
 impl Default for CarrierConfig {
@@ -278,6 +301,12 @@ impl Default for CarrierConfig {
             enabled: true,
             seed: false,
             known: Vec::new(),
+            paused: false,
+            metered: false,
+            jobs: None,
+            upload_share: None,
+            monthly_gb: None,
+            hops: None,
         }
     }
 }
@@ -361,6 +390,13 @@ pub struct ServingConfig {
     /// together. 0 means no cap. About half your upload speed leaves room
     /// for everything else, your phone included.
     pub max_upload_mbps: u64,
+    /// The connection's upload speed in megabits per second, asked at setup:
+    /// carrying uses its share of it. 0 means not known, and carrying then
+    /// goes by `max_upload_mbps` or the fastest measured.
+    pub upload_mbps: u64,
+    /// The internet plan's monthly data cap in GB, asked at setup: carrying
+    /// keeps to half of it. 0 means unlimited.
+    pub data_cap_gb: u64,
 }
 
 impl Default for Config {

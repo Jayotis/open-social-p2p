@@ -86,7 +86,7 @@ pub async fn wait_for_room(conn: &Connection, within: Duration) -> Result<()> {
 
 /// What bounds a carrier's work. The sizing stage set the per-neighbour and
 /// per-minute values ([carrier-sizing.md](../../docs/testing/carrier-sizing.md)).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Limits {
     /// Circuits open at once.
     pub circuits: usize,
@@ -187,6 +187,8 @@ pub type Others = Arc<dyn Fn(Connection) + Send + Sync>;
 /// What a carrier has done, for status and tests.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Stats {
+    /// Whether it's paused: it takes no new circuits or host slots.
+    pub paused: bool,
     pub circuits: usize,
     pub links: usize,
     pub busy: u64,
@@ -251,6 +253,25 @@ impl Carrier {
             .map_err(|_| anyhow!("the carrier stopped"))
     }
 
+    /// Takes new limits from now on: the owner changed a control. Circuits
+    /// already open stay, unless they're past the new limits' life or bytes.
+    pub async fn set_limits(&self, limits: Limits) -> Result<()> {
+        self.tx
+            .send(Event::Limits(limits))
+            .await
+            .map_err(|_| anyhow!("the carrier stopped"))
+    }
+
+    /// Paused, it ends the circuits it carries and answers new ones `BUSY`,
+    /// so their ends go another way: for a metered connection, or for the
+    /// owner's troubleshooting.
+    pub async fn set_paused(&self, paused: bool) -> Result<()> {
+        self.tx
+            .send(Event::Paused(paused))
+            .await
+            .map_err(|_| anyhow!("the carrier stopped"))
+    }
+
     pub async fn stats(&self) -> Result<Stats> {
         let (tx, rx) = oneshot::channel();
         self.tx
@@ -272,6 +293,8 @@ enum Event {
     Slot(LinkId, oneshot::Sender<Option<Slot>>),
     Descriptor(oneshot::Sender<Descriptor>),
     Relay(String),
+    Limits(Limits),
+    Paused(bool),
     Stats(oneshot::Sender<Stats>),
 }
 
@@ -421,6 +444,22 @@ impl State {
                 }
             }
             Event::Relay(relay) => self.relay = relay,
+            Event::Limits(limits) => {
+                if limits.bytes_per_sec != self.limits.bytes_per_sec {
+                    self.bucket = None;
+                }
+                self.limits = limits;
+            }
+            Event::Paused(paused) => {
+                self.stats.paused = paused;
+                if paused {
+                    let all: Vec<_> = self.circuits.keys().copied().collect();
+                    for key in all {
+                        self.end(key, DestroyReason::Closed);
+                    }
+                    self.slots.clear();
+                }
+            }
             Event::Stats(reply) => {
                 let mut s = self.stats.clone();
                 s.circuits = self.circuits.len();
@@ -592,7 +631,8 @@ impl State {
                     .is_some_and(|t| now.duration_since(t) < ACTIVE)
             })
             .count();
-        if self.circuits.len() >= self.limits.circuits
+        if self.stats.paused
+            || self.circuits.len() >= self.limits.circuits
             || from_peer >= self.limits.per_neighbour
             || self.created.len() >= self.limits.new_per_minute
             || jobs >= self.limits.jobs
@@ -858,6 +898,9 @@ impl State {
     }
 
     fn new_slot(&mut self, link: LinkId) -> Option<Slot> {
+        if self.stats.paused {
+            return None;
+        }
         self.links.get(&link).filter(|l| !l.opened)?;
         let mut held: Vec<_> = self
             .slots

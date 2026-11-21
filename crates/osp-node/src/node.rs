@@ -348,6 +348,10 @@ pub(crate) struct Core {
     pub hide_list_asked: std::sync::atomic::AtomicBool,
     /// Wakes the hide list's fetch, when it's turned on.
     pub fetch_hide_list_now: Notify,
+    /// The owner's answer on whether the hops this node picks may see its
+    /// address (ADR 0043 §8): only with yes do its own fetches and its media
+    /// go through hops. Unset, it wasn't asked yet.
+    pub hops: tokio::sync::watch::Sender<Option<bool>>,
     /// Endpoints for fetching found posts' media unseen (ADR 0024).
     pub viewing: Viewing,
     /// Held while the owner's side is gathered (ADR 0029), one at a time.
@@ -656,6 +660,7 @@ impl Node {
             Some(own) => store.with_direct_endpoint(&own.direct.endpoint),
             None => store,
         };
+
         import_restored_media(&home, &store).await?;
         resign_own_objects(&signer, &db)?;
         // The media endpoint's binding goes in the profile (ADR 0024); a
@@ -688,6 +693,7 @@ impl Node {
         let (prefetch_later, later) = mpsc::channel(sync::MAX_WAITING);
         let hide_on = config.lists.hide == Some(true);
         let hide_asked = config.lists.hide.is_some();
+        let hops = config.carrier.hops;
         let core = Arc::new(Core {
             home,
             config,
@@ -749,6 +755,7 @@ impl Node {
             hide_list_on: std::sync::atomic::AtomicBool::new(hide_on),
             hide_list_asked: std::sync::atomic::AtomicBool::new(hide_asked),
             fetch_hide_list_now: Notify::new(),
+            hops: tokio::sync::watch::Sender::new(hops),
             viewing: Viewing::new(sim.viewing_reuse, sim.viewing_life),
             gathering: tokio::sync::Mutex::new(()),
             trying_replies: Default::default(),
@@ -796,6 +803,14 @@ impl Node {
                     .accept(osp_proto::CLIENT_ALPN, client.clone())
                     .spawn(),
             );
+        }
+        // Carrying takes its share of the fastest measured serving, when
+        // that's the only figure for the upload.
+        if let Some(carrier) = &core.carrier {
+            let weak = Arc::downgrade(&core);
+            let _ = carrier.measured.set(Arc::new(move || {
+                weak.upgrade().and_then(|core| core.store.serving().1)
+            }));
         }
         let mut directory_tasks = Vec::new();
         // A machine name answers its own protocol and nothing else (ADR 0015).

@@ -95,13 +95,20 @@ fn offered_hop(offer: &CircuitOffer, now: u64) -> Result<Descriptor> {
 }
 
 impl Core {
-    /// Whether this node fetches through carriers: it knows seed carriers,
-    /// which its own hop is picked from, and has a machine name to read
-    /// their records with.
+    /// Whether this node fetches through carriers: its owner said the hops
+    /// it picks may see its address, it knows seed carriers, which its own
+    /// hop is picked from, and it has a machine name to read their records
+    /// with.
     pub(crate) fn fetches_through_carriers(&self) -> bool {
-        !self.config.carrier.known.is_empty()
+        self.uses_hops()
+            && !self.config.carrier.known.is_empty()
             && self.machine.is_some()
             && self.config.network.relay != crate::config::RelayChoice::Disabled
+    }
+
+    /// Whether the owner said yes to the hops it picks seeing its address.
+    pub(crate) fn uses_hops(&self) -> bool {
+        *self.hops.borrow() == Some(true)
     }
 
     /// The descriptor the seed carrier `machine`'s record names: with

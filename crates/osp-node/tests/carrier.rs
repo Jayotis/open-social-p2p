@@ -340,15 +340,38 @@ async fn offer_of(
 /// fails, asks `host` for a fresh offer and tries again, twice at most: under
 /// load the host may have linked to its hop again since the offer, and its
 /// slot was the old link's.
+///
+/// Each failure says `when`, and whether the offer's circuit key is the one
+/// in the machine record of `seed`, the hop, now: a refused first hop with
+/// another key means the host handed out a key its hop no longer holds.
 async fn fetch_through(
     relay: &RelayUrl,
     offer: &CircuitOffer,
     blob: BlobHash,
     again: (&(Endpoint, SecretKey), &Node, (ObjectId, BlobHash)),
+    (seed, when): (EndpointId, &str),
 ) -> Vec<u8> {
     let mut offer = offer.clone();
     for tried in 1.. {
-        match try_fetch_through(relay, &offer, blob).await {
+        let result = try_fetch_through(relay, &offer, blob).await;
+        if let Err(e) = &result {
+            let key = |text: &str| {
+                let bytes = data_encoding::BASE64URL_NOPAD
+                    .decode(text.as_bytes())
+                    .ok()?;
+                let info = Descriptor::from_bytes(&bytes).ok()?.verify(now()).ok()?;
+                Some(info.circuit_key)
+            };
+            let live = greet(again.0, seed).await.carrier;
+            let same = match live.as_deref().and_then(key) {
+                Some(live) => (key(&offer.carrier) == Some(live)).to_string(),
+                None => "no live descriptor".to_string(),
+            };
+            eprintln!(
+                "{when}, try {tried}: {e:#} (the offer's circuit key is the hop's now: {same})"
+            );
+        }
+        match result {
             Ok(got) => return got,
             Err(e) if tried < 3 => {
                 eprintln!("fetching through the hop, try {tried}: {e:#}");
@@ -420,6 +443,7 @@ async fn a_host_names_its_seed_carrier_and_is_reached_through_it() {
     let mut alice_config = config("Alice", &relay);
     alice_config.endpoints.enabled = true;
     alice_config.carrier.known = vec![SeedCarrier { machine: seed }];
+    alice_config.carrier.hops = Some(true);
     Node::init(&alice_home, &alice_config).unwrap();
     let alice = start(&alice_home, &net).await;
     let asked = post_photo(&alice, dir.path()).await;
@@ -437,7 +461,14 @@ async fn a_host_names_its_seed_carrier_and_is_reached_through_it() {
     // Her circuit endpoint is none of the endpoints with an address.
     assert!(!alice.endpoint_ids().contains(&offer.endpoint));
 
-    let photo = fetch_through(&relay, &offer, asked.1, (&me, &alice, asked)).await;
+    let photo = fetch_through(
+        &relay,
+        &offer,
+        asked.1,
+        (&me, &alice, asked),
+        (seed, "before Kim's node restarts"),
+    )
+    .await;
     assert_eq!(iroh_blobs::Hash::new(&photo).as_bytes(), asked.1.as_bytes());
 
     // Kim's node goes: no hop to name. Back: linked again, through the same
@@ -448,11 +479,134 @@ async fn a_host_names_its_seed_carrier_and_is_reached_through_it() {
     let again = offer_of(&me, &alice, asked, true).await.unwrap();
     assert_eq!(again.endpoint, offer.endpoint);
     assert_eq!(
-        fetch_through(&relay, &again, asked.1, (&me, &alice, asked)).await,
+        fetch_through(
+            &relay,
+            &again,
+            asked.1,
+            (&me, &alice, asked),
+            (seed, "after Kim's node restarts")
+        )
+        .await,
         photo
     );
 
     alice.shutdown().await.unwrap();
+    kim.shutdown().await.unwrap();
+}
+
+/// The hop next to Alice's node sees its address, so her node links to one
+/// only with her yes (ADR 0043 §8). Not asked yet, it names none. Once she
+/// says yes it does, at once; and with no, the link goes, and her media is
+/// reached through relays again.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_host_links_to_its_hop_only_with_its_owners_yes() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_relay, relay) = local_relay().await;
+    let net = SimNet::new(3);
+    let kim_home = dir.path().join("kim");
+    let mut kim_config = config("Kim", &relay);
+    kim_config.carrier.seed = true;
+    Node::init(&kim_home, &kim_config).unwrap();
+    let kim = start(&kim_home, &net).await;
+    let seed = kim.machine_id().unwrap();
+
+    let alice_home = dir.path().join("alice");
+    let mut alice_config = config("Alice", &relay);
+    alice_config.endpoints.enabled = true;
+    alice_config.carrier.known = vec![SeedCarrier { machine: seed }];
+    Node::init(&alice_home, &alice_config).unwrap();
+    let alice = start(&alice_home, &net).await;
+    let asked = post_photo(&alice, dir.path()).await;
+    let me = stranger(&net).await;
+
+    let hops = |status: &osp_proto::rpc::StatusInfo| status.carrier.as_ref().unwrap().hops;
+    assert_eq!(hops(&status(&alice).await), None);
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    assert!(media_hosts(&me, &alice, asked).await.is_none());
+
+    alice.handle(ClientRequest::SetHops { yes: true }).await;
+    offer_of(&me, &alice, asked, true).await.unwrap();
+    assert_eq!(hops(&status(&alice).await), Some(true));
+
+    alice.handle(ClientRequest::SetHops { yes: false }).await;
+    offer_of(&me, &alice, asked, false).await;
+    // Kept for the next start.
+    let saved = Config::load(&alice_home.join("config.toml")).unwrap();
+    assert_eq!(saved.carrier.hops, Some(false));
+
+    alice.shutdown().await.unwrap();
+    kim.shutdown().await.unwrap();
+}
+
+/// Kim pauses carrying, says the connection is metered, and sets the jobs,
+/// share and upload: each applies at once, shows in status and is kept.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_owners_controls_apply_at_once_and_are_kept() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_relay, relay) = local_relay().await;
+    let net = SimNet::new(3);
+    let home = dir.path().join("kim");
+    Node::init(&home, &config("Kim", &relay)).unwrap();
+    let kim = start(&home, &net).await;
+    let carrier = |s: osp_proto::rpc::StatusInfo| *s.carrier.unwrap();
+    let now = timeout(Duration::from_secs(30), async {
+        loop {
+            let c = carrier(status(&kim).await);
+            if c.carrying {
+                return c;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .expect("Kim's node never started carrying");
+    // A home node's, from the sizing stage, of a slow home's upload.
+    assert_eq!((now.jobs, now.upload_share), (2, 50));
+    assert_eq!(now.upload_from, "assumed");
+    assert_eq!(now.bytes_per_sec, Some(625_000));
+
+    let set = |paused, metered, jobs, upload_share, upload_mbps| ClientRequest::SetCarrying {
+        paused,
+        metered,
+        jobs,
+        upload_share,
+        upload_mbps,
+        monthly_gb: None,
+        data_cap_gb: Some(400),
+    };
+    kim.handle(set(None, None, Some(3), Some(40), Some(20)))
+        .await;
+    let now = carrier(status(&kim).await);
+    assert_eq!((now.jobs, now.upload_share), (3, 40));
+    assert_eq!(now.upload_from, "set");
+    assert_eq!(now.bytes_per_sec, Some(1_000_000));
+    assert!(now.carrying);
+    // Half the plan's 400 GB a month.
+    assert_eq!(now.month_budget, Some(200_000_000_000));
+    assert!(!now.over_budget);
+
+    kim.handle(set(None, Some(true), None, None, None)).await;
+    let now = carrier(status(&kim).await);
+    assert!(now.metered && !now.carrying);
+    kim.handle(set(Some(true), Some(false), None, None, None))
+        .await;
+    let now = carrier(status(&kim).await);
+    assert!(now.paused && !now.carrying);
+    // Out of range is refused, and changes nothing.
+    match kim.handle(set(None, None, Some(0), None, None)).await {
+        ClientResponse::Error { .. } => {}
+        other => panic!("{other:?}"),
+    }
+    kim.handle(set(Some(false), None, None, None, None)).await;
+    let now = carrier(status(&kim).await);
+    assert!(now.carrying && now.jobs == 3);
+
+    let saved = Config::load(&home.join("config.toml")).unwrap();
+    assert_eq!(saved.carrier.jobs, Some(3));
+    assert_eq!(saved.carrier.upload_share, Some(40));
+    assert_eq!(saved.serving.upload_mbps, 20);
+    assert_eq!(saved.serving.data_cap_gb, 400);
+    assert!(!saved.carrier.paused && !saved.carrier.metered);
     kim.shutdown().await.unwrap();
 }
 
@@ -484,6 +638,7 @@ fn knowing(name: &str, relay: &RelayUrl, directory: &Node, seed: Option<Endpoint
         .map(|machine| SeedCarrier { machine })
         .into_iter()
         .collect();
+    config.carrier.hops = Some(true);
     config
 }
 
@@ -608,6 +763,7 @@ async fn followers_fetch_through_the_hosts_hop() {
         let mut config = config(name, &relay);
         config.endpoints.enabled = true;
         config.carrier.known = vec![seed.clone()];
+        config.carrier.hops = Some(true);
         config.sync.prefetch = prefetch;
         Node::init(&home, &config).unwrap();
         start(&home, &net).await
@@ -745,6 +901,7 @@ async fn a_follower_fetches_another_followers_copy_through_its_hop() {
         let mut config = config(name, &relay);
         config.endpoints.enabled = true;
         config.carrier.known = known;
+        config.carrier.hops = Some(true);
         config.sync.prefetch = true;
         config.swarm.share_prefetched = true;
         Node::init(&home, &config).unwrap();
@@ -841,6 +998,7 @@ async fn a_fresh_machine_carries_in_the_middle_and_is_offered_on() {
     let home = dir.path().join("jimmy");
     let mut jimmy_config = knowing("Jimmy", &relay, &directory, None);
     jimmy_config.carrier.known = vec![known(&kim)];
+    jimmy_config.carrier.hops = Some(true);
     jimmy_config.sync.prefetch = false;
     Node::init(&home, &jimmy_config).unwrap();
     let jimmy = Node::spawn_sim(&home, meeting).await.unwrap();
@@ -861,6 +1019,7 @@ async fn a_fresh_machine_carries_in_the_middle_and_is_offered_on() {
     let mut alice_config = config("Alice", &relay);
     alice_config.endpoints.enabled = true;
     alice_config.carrier.known = vec![known(&quinn)];
+    alice_config.carrier.hops = Some(true);
     Node::init(&home, &alice_config).unwrap();
     let alice = start(&home, &net).await;
     let me = stranger(&net).await;
@@ -898,6 +1057,7 @@ async fn a_fresh_machine_carries_in_the_middle_and_is_offered_on() {
     let mut sam_config = config("Sam", &relay);
     sam_config.endpoints.enabled = true;
     sam_config.carrier.known = vec![known(&kim)];
+    sam_config.carrier.hops = Some(true);
     sam_config.sync.prefetch = false;
     Node::init(&home, &sam_config).unwrap();
     let sam = start(&home, &net).await;
@@ -925,5 +1085,12 @@ async fn a_fresh_machine_carries_in_the_middle_and_is_offered_on() {
 
     for node in [sam, jimmy, mo, alice, kim, quinn, directory] {
         node.shutdown().await.unwrap();
+    }
+}
+
+async fn status(node: &Node) -> osp_proto::rpc::StatusInfo {
+    match node.handle(ClientRequest::Status).await {
+        ClientResponse::Status(status) => status,
+        other => panic!("{other:?}"),
     }
 }

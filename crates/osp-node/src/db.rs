@@ -27,7 +27,7 @@ use opened::NOT_OPENED;
 
 mod activity;
 mod blocks;
-mod carriers;
+pub(crate) mod carriers;
 mod hide;
 mod likes;
 mod opened;
@@ -698,6 +698,12 @@ const MIGRATIONS: &[&str] = &[
         descriptor TEXT NOT NULL,
         from_machine TEXT NOT NULL,
         until_ms   INTEGER NOT NULL
+    );",
+    // What this node carried for others each UTC day, both ways, so carrying
+    // keeps within the month's budget (ADR 0043 part 5).
+    "CREATE TABLE carried_days (
+        day   INTEGER PRIMARY KEY,
+        bytes INTEGER NOT NULL
     );",
 ];
 
@@ -7274,6 +7280,7 @@ mod tests {
                      DROP TABLE machine_starts; DROP TABLE carrier_jobs;
                      DROP TABLE carriers_worked; DROP TABLE carrier_probation;
                      DROP TABLE carrier_tips; DROP TABLE carrier_suggestions;
+                     DROP TABLE carried_days;
                      PRAGMA user_version = 24;",
                 )
                 .unwrap();

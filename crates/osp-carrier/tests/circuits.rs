@@ -211,6 +211,52 @@ async fn new_circuits_a_minute_are_limited() {
 }
 
 #[tokio::test]
+async fn a_paused_carrier_ends_its_circuits_and_says_busy_until_it_resumes() {
+    let book = Book::default();
+    let p = carrier(&book, Limits::home()).await;
+    let q = carrier(&book, Limits::home()).await;
+    let (_h, host) = host(&q).await;
+    let (_v, mut circuit) = viewer(&[&p, &q], host.slot()).await.unwrap();
+    // Kim pauses carrying on P, say for a metered connection.
+    p.carrier.set_paused(true).await.unwrap();
+    assert_eq!(timeout(WAIT, circuit.recv()).await.unwrap(), None);
+    let err = viewer(&[&p, &q], host.slot()).await.err().unwrap();
+    assert!(format!("{err:#}").contains("busy"), "{err:#}");
+    let stats = p.carrier.stats().await.unwrap();
+    assert!(stats.paused);
+    assert_eq!(stats.circuits, 0);
+    // A paused host's hop gives out no slots.
+    let paused_q = carrier(&book, Limits::home()).await;
+    paused_q.carrier.set_paused(true).await.unwrap();
+    let conn = endpoint(vec![])
+        .await
+        .connect(paused_q.endpoint.addr(), ALPN)
+        .await
+        .unwrap();
+    assert!(HostLink::open(conn).await.is_err());
+    // Resumed, it carries again.
+    p.carrier.set_paused(false).await.unwrap();
+    viewer(&[&p, &q], host.slot()).await.unwrap();
+}
+
+#[tokio::test]
+async fn new_limits_apply_to_the_next_circuit() {
+    let book = Book::default();
+    let q = carrier(&book, Limits::home()).await;
+    let (_h, host) = host(&q).await;
+    let _first = viewer(&[&q], host.slot()).await.unwrap();
+    q.carrier
+        .set_limits(Limits {
+            circuits: 1,
+            ..Limits::home()
+        })
+        .await
+        .unwrap();
+    let err = viewer(&[&q], host.slot()).await.err().unwrap();
+    assert!(format!("{err:#}").contains("busy"), "{err:#}");
+}
+
+#[tokio::test]
 async fn the_end_of_a_circuit_reaches_the_viewer() {
     let book = Book::default();
     let p = carrier(&book, Limits::home()).await;
