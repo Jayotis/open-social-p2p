@@ -208,6 +208,10 @@ pub struct Stats {
     /// While some wait, what's carried goes at the share exactly: more was
     /// asked of it than it allows.
     pub held_ms: u64,
+    /// Packets dropped because the queue for the upload share was full:
+    /// more was asked of the share than `HOLD_FOR` of it could hold. They
+    /// count in `dropped` too, with the carrier's other drops.
+    pub share_full: u64,
     /// Packets sent on to a link whose datagram buffer was backed up: the
     /// path, or the owner's connection, couldn't take them as fast.
     pub link_full: u64,
@@ -703,7 +707,10 @@ impl State {
                 self.send_encoded(link, encoded);
             }
             Paced::Held => self.stats.held += 1,
-            Paced::Full => self.stats.dropped += 1,
+            Paced::Full => {
+                self.stats.share_full += 1;
+                self.stats.dropped += 1;
+            }
         }
     }
 

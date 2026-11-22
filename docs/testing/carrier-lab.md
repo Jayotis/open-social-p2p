@@ -115,6 +115,15 @@ The path's length didn't matter: V's leg going direct halved the round trip and 
 
 **Where the whole file went: P's learned upload still stops at 24.4 Mbit/s.** P's debug log shows the figure going up four times during the first fetch (12.5, 15.6, 19.5, then 24.4 Mbit/s), each in a spell where packets waited for the share 2.6–4.5 s, and then no more. It logged no link backing up. So above about 20 Mbit/s, packets waited less than half of each spell, while the downloads came at 1.2 MB/s against a share of 1.53 MB/s. With the figure set by hand to 100 Mbit/s in the first run, the same path ran at about 2.5 MB/s, so the share is still what slows it, and waiting packets alone don't show that. Why the ends' traffic stays under the share isn't confirmed: `osp carrier` doesn't show P's dropped packets.
 
+## The share probe, after the third run
+
+One carrier fetch on P's own settings, with P's counters now in `osp carrier` (packets held and for how long, packets dropped with the share's queue full, packets sent to a backed-up link, all drops), read every 5 s. P had restarted, so its learned figure began at the assumed 10 Mbit/s. The whole file took 140.5 s.
+
+- **At 10 to 19.5 Mbit/s:** the share's queue was full and dropped 1,201 packets (892 in the first spell at 10 Mbit/s), and no link backed up. Every drop in the run was one of these. The figure went up four times, but the first rise took about 30 s, and spells with drops didn't always count, as packets then waited less than half the spell.
+- **At 24.4 Mbit/s, the last 45 s:** no drops, no packets held, no link backed up. What was carried came to about 1.39 MB/s, 91 % of the share.
+
+So the share was too low and dropped packets while it climbed, and the ends' QUIC backed off from the losses. A spell with packets dropped from a full queue and no link backed up now raises the figure as well. At 24.4 Mbit/s the share wasn't what held the fetch back during those 45 s, and this change doesn't explain or lift that plateau.
+
 ## The newcomer's middle turn
 
 **Passed, 2026-11-21.** `osp machine hello` doesn't add a machine to the table V picks middles from, so Middle arrived through ordinary meeting. Then Empty posted a fresh 20 s clip (4.0 MB) and Robin fetched it.

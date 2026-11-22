@@ -32,7 +32,7 @@ use crate::{
     db::BlobClass,
     machine::carrier_of,
     node::Core,
-    picks::Middle,
+    picks::{Known, Middle},
     store::{self, Source, Sources},
     viewing::in_own_order,
 };
@@ -65,6 +65,19 @@ impl Circuit {
         self.ends.close().await;
         self.link.close().await;
     }
+}
+
+/// A circuit built to an offer, with what fetching over it needs: the hops
+/// without the middle, for a second try and for credit; the middle, if one
+/// was picked, and whether the circuit goes through it; and this node's own
+/// hop, whose descriptor is forgotten if the fetch fails.
+struct Built {
+    circuit: Circuit,
+    hops: Vec<Descriptor>,
+    middle: Option<Middle>,
+    through_middle: bool,
+    known: Known,
+    my_hop: EndpointId,
 }
 
 /// How the two builds `race` waited on came out.
@@ -123,6 +136,28 @@ async fn race<T>(
             middle_failed: w.and_then(Result::err),
         },
     }
+}
+
+/// Waits on `tried` with `building` started beside it. If `tried` succeeds,
+/// what was built by then, to close, with a build still going dropped; if it
+/// fails, the build, waited for if it isn't done. So a try that fails costs
+/// no more than the build alone.
+async fn try_while_building<T, B>(
+    tried: impl Future<Output = Result<T>>,
+    building: impl Future<Output = B>,
+) -> (Result<T>, Option<B>) {
+    tokio::pin!(tried, building);
+    let mut built = None;
+    let tried = loop {
+        tokio::select! {
+            r = &mut tried => break r,
+            b = &mut building, if built.is_none() => built = Some(b),
+        }
+    };
+    if tried.is_err() && built.is_none() {
+        built = Some(building.await);
+    }
+    (tried, built)
 }
 
 /// The seed carriers' descriptors, as their machine records last gave them.
@@ -250,12 +285,19 @@ impl Core {
         class: BlobClass,
         declared: u64,
     ) -> Result<u64> {
+        let built = self.circuit_to(blob, offer).await?;
+        self.fetch_over_built(built, blob, host, offer, (class, declared))
+            .await
+    }
+
+    /// The circuit `fetch_over_circuit` fetches over, built and ready.
+    async fn circuit_to(&self, blob: &BlobHash, offer: &CircuitOffer) -> Result<Built> {
         let theirs = offered_hop(offer, unix_now())?;
         let their_hop = theirs.verify(unix_now())?.machine;
         let known = self.known_carriers()?;
         let mine = self.own_hop(&known, their_hop).await?;
         let my_hop = mine.verify(unix_now())?.machine;
-        let mut hops = match my_hop == their_hop {
+        let hops = match my_hop == their_hop {
             // Both ends picked it: one hop, and nothing in the middle, which
             // would sit next to an end.
             true => vec![theirs],
@@ -265,41 +307,68 @@ impl Core {
             2 => self.middle_hop(&known, &[my_hop, their_hop]),
             _ => None,
         };
-        let job = (class, declared);
-        let fetched = match &middle {
-            None => self
-                .fetch_through_hops(blob, host, offer, &hops, job)
-                .await
-                .map(|size| (size, false)),
+        let opened = match &middle {
+            None => self.open(blob, offer, &hops).await.map(|c| (c, false)),
             Some(m) => {
                 let mut through = hops.clone();
                 through.insert(1, m.descriptor.clone());
                 // Boxed: two circuits' builds at once are a large future.
-                match Box::pin(self.open_preferring_middle(blob, offer, &through, &hops, m)).await {
-                    Ok((circuit, true)) => {
-                        match self.download_over(circuit, blob, host, offer, job).await {
-                            Ok(size) => Ok((size, true)),
-                            Err(e) => {
-                                debug!(machine = %m.machine.fmt_short(), "the fetch through a machine in the middle failed; without it: {e:#}");
-                                self.middle_failed(m);
-                                self.fetch_through_hops(blob, host, offer, &hops, job)
-                                    .await
-                                    .map(|size| (size, false))
-                            }
-                        }
-                    }
-                    Ok((circuit, false)) => self
-                        .download_over(circuit, blob, host, offer, job)
-                        .await
-                        .map(|size| (size, false)),
-                    Err(e) => Err(e),
-                }
+                Box::pin(self.open_preferring_middle(blob, offer, &through, &hops, m)).await
             }
         };
-        let (size, through_middle) = fetched.inspect_err(|_| {
-            // Asked for again next time, in case the hop restarted.
-            self.seed_descriptors.0.lock().unwrap().remove(&my_hop);
-        })?;
+        let (circuit, through_middle) = opened.inspect_err(|_| self.forget_descriptor(&my_hop))?;
+        Ok(Built {
+            circuit,
+            hops,
+            middle,
+            through_middle,
+            known,
+            my_hop,
+        })
+    }
+
+    /// A seed carrier's descriptor is asked for again next time, in case the
+    /// hop restarted.
+    fn forget_descriptor(&self, machine: &EndpointId) {
+        self.seed_descriptors.0.lock().unwrap().remove(machine);
+    }
+
+    /// Fetches `blob` from `host` over `built`, then credits the hops that
+    /// carried it, as `fetch_over_circuit` says.
+    async fn fetch_over_built(
+        &self,
+        built: Built,
+        blob: &BlobHash,
+        host: EndpointId,
+        offer: &CircuitOffer,
+        job: (BlobClass, u64),
+    ) -> Result<u64> {
+        let Built {
+            circuit,
+            mut hops,
+            middle,
+            through_middle,
+            known,
+            my_hop,
+        } = built;
+        let (_, declared) = job;
+        let fetched = match (&middle, through_middle) {
+            (Some(m), true) => match self.download_over(circuit, blob, host, offer, job).await {
+                Ok(size) => Ok((size, true)),
+                Err(e) => {
+                    debug!(machine = %m.machine.fmt_short(), "the fetch through a machine in the middle failed; without it: {e:#}");
+                    self.middle_failed(m);
+                    self.fetch_through_hops(blob, host, offer, &hops, job)
+                        .await
+                        .map(|size| (size, false))
+                }
+            },
+            _ => self
+                .download_over(circuit, blob, host, offer, job)
+                .await
+                .map(|size| (size, false)),
+        };
+        let (size, through_middle) = fetched.inspect_err(|_| self.forget_descriptor(&my_hop))?;
         // Only the hops that carried it are credited.
         let middle = middle.filter(|_| through_middle);
         if let Some(m) = &middle {
@@ -332,15 +401,25 @@ impl Core {
         hops: &[Descriptor],
         job: (BlobClass, u64),
     ) -> Result<u64> {
+        let circuit = self.open(blob, offer, hops).await?;
+        self.download_over(circuit, blob, host, offer, job).await
+    }
+
+    /// A circuit through `hops` to `offer`'s slot, from an endpoint of its own.
+    async fn open(
+        &self,
+        blob: &BlobHash,
+        offer: &CircuitOffer,
+        hops: &[Descriptor],
+    ) -> Result<Circuit> {
         let link = self.link_endpoint().await?;
-        let circuit = match self.build_circuit(&link, blob, offer, hops).await {
-            Ok(ends) => Circuit { link, ends },
+        match self.build_circuit(&link, blob, offer, hops).await {
+            Ok(ends) => Ok(Circuit { link, ends }),
             Err(e) => {
                 link.close().await;
-                return Err(e);
+                Err(e)
             }
-        };
-        self.download_over(circuit, blob, host, offer, job).await
+        }
     }
 
     /// Builds the circuit through `through`, which has a machine in the
@@ -508,6 +587,30 @@ impl Core {
         }
     }
 
+    /// As `try_over_circuit`'s first step: the circuit to `offer`, built,
+    /// or why not logged.
+    async fn circuit_offered(&self, blob: &BlobHash, offer: &CircuitOffer) -> Option<Built> {
+        self.circuit_to(blob, offer)
+            .await
+            .inspect_err(|e| debug!(blob = %blob.fmt_short(), "couldn't fetch through carriers; the relays instead: {e:#}"))
+            .ok()
+    }
+
+    /// As `try_over_circuit`'s second step: the fetch over `built`.
+    async fn fetch_offered(
+        &self,
+        built: Built,
+        blob: &BlobHash,
+        host: EndpointId,
+        offer: &CircuitOffer,
+        job: (BlobClass, u64),
+    ) -> Option<u64> {
+        self.fetch_over_built(built, blob, host, offer, job)
+            .await
+            .inspect_err(|e| debug!(blob = %blob.fmt_short(), "couldn't fetch through carriers; the relays instead: {e:#}"))
+            .ok()
+    }
+
     /// Downloads `blob` from `sources`, as the store does, but reaches the
     /// nodes in `offers` through carriers rather than their relayed media
     /// endpoints when this node fetches through carriers (ADR 0043): the
@@ -515,6 +618,12 @@ impl Core {
     /// each offer's circuit, then all of `sources` as before, the relays
     /// included. A node's direct endpoint is never held back. With `via`, a viewing endpoint's pool, the
     /// sources are reached only through it (ADR 0024).
+    ///
+    /// The first offer's circuit is built while the other sources are
+    /// tried, so a try that fails doesn't then wait for it: stage D's first
+    /// byte (`docs/testing/carrier-lab.md`). Only the circuit is built, and
+    /// nothing is downloaded over it unless the try fails. If it succeeds,
+    /// the circuit is closed, or its build dropped.
     pub(crate) async fn download_offered(
         &self,
         blob: &BlobHash,
@@ -529,28 +638,48 @@ impl Core {
                 .download_with(blob, sources, class, declared, via)
                 .await;
         }
+        let job = (class, declared);
         let offered = |s: &Source| !s.from_direct && offers.iter().any(|(node, _)| *node == s.node);
         // Those asked one at a time are the ones to spare, such as the
         // author's: they wait for the circuits unless reached directly.
         let mut others = sources.clone();
         others.at_once.retain(|s| !offered(s));
         others.in_turn.retain(|s| s.from_direct);
+        let mut first_built = None;
         if !others.is_empty() {
-            match self
-                .store
-                .download_with(blob, others, class, declared, via)
-                .await
-            {
-                Ok(size) => return Ok(size),
+            let (_, first) = &offers[0];
+            let (tried, built) = try_while_building(
+                self.store.download_with(blob, others, class, declared, via),
+                // Boxed: a circuit's build, with a middle's beside it, is large.
+                Box::pin(self.circuit_offered(blob, first)),
+            )
+            .await;
+            match tried {
+                Ok(size) => {
+                    // Not needed: closed if ready, else its build dropped.
+                    if let Some(Some(b)) = built {
+                        b.circuit.close().await;
+                    }
+                    return Ok(size);
+                }
                 Err(e) => {
-                    debug!(blob = %blob.fmt_short(), "the other sources failed; through carriers next: {e:#}")
+                    debug!(blob = %blob.fmt_short(), "the other sources failed; through carriers next: {e:#}");
+                    first_built = built;
                 }
             }
         }
-        for (node, offer) in &offers {
-            if let Some(size) = self
-                .try_over_circuit(blob, *node, Some(offer), class, declared)
-                .await
+        for (i, (node, offer)) in offers.iter().enumerate() {
+            // Built while the other sources were tried: if that took long,
+            // it may have gone stale, so a fetch over it that fails is tried
+            // once more over a new one. One whose build failed isn't.
+            if let Some(built) = first_built.take().filter(|_| i == 0) {
+                let Some(built) = built else { continue };
+                if let Some(size) = self.fetch_offered(built, blob, *node, offer, job).await {
+                    return Ok(size);
+                }
+            }
+            if let Some(built) = self.circuit_offered(blob, offer).await
+                && let Some(size) = self.fetch_offered(built, blob, *node, offer, job).await
             {
                 return Ok(size);
             }
@@ -633,6 +762,37 @@ mod tests {
         let (r, _) = raced((2.0, false), (3.0, false)).await;
         assert!(r.chosen.unwrap_err().to_string().contains("two failed"));
         assert!(r.middle_failed.is_some());
+    }
+
+    /// A try that takes `secs` and comes out as `ok`, with the circuit
+    /// built in `build_secs` beside it: how they came out, and the time.
+    async fn tried(secs: f64, ok: bool, build_secs: f64) -> (bool, Option<&'static str>, f64) {
+        let started = tokio::time::Instant::now();
+        let (r, built) = try_while_building(build("direct", secs, ok), async move {
+            tokio::time::sleep(Duration::from_secs_f64(build_secs)).await;
+            "circuit"
+        })
+        .await;
+        let took = (started.elapsed().as_secs_f64() * 10.0).round() / 10.0;
+        (r.is_ok(), built, took)
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_direct_try_that_fails_leaves_the_circuit_built_beside_it() {
+        // Stage D: the direct try failed after 1 s, then the circuit took
+        // 4 s more. Built beside it, the 4 s are all it costs.
+        assert_eq!(tried(1.0, false, 4.0).await, (false, Some("circuit"), 4.0));
+        assert_eq!(tried(6.0, false, 4.0).await, (false, Some("circuit"), 6.0));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_direct_try_that_succeeds_doesnt_wait_for_the_circuit() {
+        assert_eq!(tried(1.0, true, 4.0).await, (true, None, 1.0), "dropped");
+        assert_eq!(
+            tried(30.0, true, 4.0).await,
+            (true, Some("circuit"), 30.0),
+            "built, so handed back to be closed"
+        );
     }
 
     #[test]
