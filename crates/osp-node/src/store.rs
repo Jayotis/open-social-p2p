@@ -829,6 +829,8 @@ impl ContentStore {
         };
         let left = || deadline.saturating_duration_since(Instant::now());
         let pool = via.unwrap_or_else(|| self.pool_for(&source));
+        let blob = request.hash.fmt_short();
+        debug!(node = %node.fmt_short(), %blob, carriers = via.is_some(), "download attempt starts");
         let connecting = pool.get_or_connect(source.endpoint);
         attempt.outcome = match tokio::time::timeout(left(), connecting).await {
             Err(_) => Outcome::Failed,
@@ -837,13 +839,23 @@ impl ContentStore {
                 connect_outcome(&e)
             }
             Ok(Ok(conn)) => {
+                // How long the connection took: near nothing when the pool
+                // already had one open.
+                debug!(
+                    node = %node.fmt_short(),
+                    %blob,
+                    connect_ms = started.elapsed().as_millis() as u64,
+                    "download attempt: connected"
+                );
+                let at_connect = conn.stats();
                 let mut progress = self
                     .store
                     .remote()
                     .execute_get(conn.clone(), request)
                     .stream();
+                let requested = Instant::now();
                 let mut stalls_at = Instant::now() + STALL_TIMEOUT;
-                loop {
+                let outcome = loop {
                     let mut wait = left().min(stalls_at.saturating_duration_since(Instant::now()));
                     if let Stop::PastPart(_) = stop {
                         wait = wait.min(RECHECK);
@@ -869,6 +881,15 @@ impl ContentStore {
                         // It ended without saying how.
                         Ok(None) => break Outcome::Failed,
                         Ok(Some(GetProgressItem::Progress(bytes))) => {
+                            if attempt.first_byte.is_none() {
+                                debug!(
+                                    node = %node.fmt_short(),
+                                    %blob,
+                                    first_byte_ms = started.elapsed().as_millis() as u64,
+                                    after_request_ms = requested.elapsed().as_millis() as u64,
+                                    "download attempt: first bytes"
+                                );
+                            }
                             attempt.first_byte.get_or_insert_with(|| started.elapsed());
                             attempt.bytes = bytes;
                             stalls_at = Instant::now() + STALL_TIMEOUT;
@@ -893,7 +914,9 @@ impl ContentStore {
                             break outcome_of(&e);
                         }
                     }
-                }
+                };
+                log_link(&conn, &at_connect, node, blob);
+                outcome
             }
         };
         attempt.took = started.elapsed();
@@ -1554,6 +1577,47 @@ fn wait_until(ready: Arc<AtomicBool>) -> ProtectCb {
         };
         Box::pin(async move { outcome })
     })
+}
+
+/// An attempt's connection, for telling flow control from congestion: each
+/// path's round trip, MTU, and this node's own congestion window and losses
+/// (since the connection opened; it mostly sends acks, so the sender's
+/// window isn't here), then what the download itself took: bytes received,
+/// window updates sent (`MAX_STREAM_DATA`) and packets lost. QUIC's blocked
+/// frames aren't counted: noq never sends them.
+fn log_link(
+    conn: &iroh::endpoint::Connection,
+    before: &iroh::endpoint::ConnectionStats,
+    node: EndpointId,
+    blob: impl std::fmt::Display,
+) {
+    for path in conn.paths().iter() {
+        let s = path.stats();
+        debug!(
+            node = %node.fmt_short(),
+            %blob,
+            selected = path.is_selected(),
+            relay = path.is_relay(),
+            rtt_ms = s.rtt.as_millis() as u64,
+            cwnd = s.cwnd,
+            congestion_events = s.congestion_events,
+            sent_packets = s.sent_packets,
+            lost_packets = s.lost_packets,
+            lost_bytes = s.lost_bytes,
+            mtu = s.current_mtu,
+            "download attempt: path"
+        );
+    }
+    let now = conn.stats();
+    debug!(
+        node = %node.fmt_short(),
+        %blob,
+        rx_bytes = now.udp_rx.bytes - before.udp_rx.bytes,
+        window_updates = now.frame_tx.max_stream_data - before.frame_tx.max_stream_data,
+        lost_packets = now.lost_packets - before.lost_packets,
+        lost_bytes = now.lost_bytes - before.lost_bytes,
+        "download attempt: during the download"
+    );
 }
 
 /// What a failed attempt to connect says about the node. The pool's own
