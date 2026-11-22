@@ -97,6 +97,24 @@ The path's length didn't matter: V's leg going direct halved the round trip and 
 
 **Where the whole file went: P's learned upload stopped rising.** P learned 24.4 Mbit/s during the first fetch, four steps up from the assumed 10, and stayed there through the other two. Half of that is 1.53 MB/s, but the downloads came at about 1.0 MB/s, two-thirds of the share, under the 80 % a spell needs before the figure goes up. P's log was at its normal level, so this is read from the figures and isn't confirmed. With P's figure set to 100 Mbit/s by hand in the first run, the same path took 44.9 s.
 
+## Stage D results, third run
+
+**Passed mark 3, failed marks 1 and 2, 2026-11-22.** Run on `cdbce16` (#276: the middle's circuit raced against the two-hop one, and the upload learned from packets waiting for the share), on every node's own settings, except that P was V's seed carrier. P's carrier log was at debug this time. Same fetches in the same order. Every carrier fetch went over two hops. Each figure is the median of three, counted as before.
+
+| Way | Whole file | First byte |
+|---|---|---|
+| Through carriers | 104.5 s | 12.9 s |
+| Relay only | 67.7 s | 7.3 s |
+| n0 only | not run | not run |
+
+1. **Whole file: failed.** The carrier fetch took 1.5 times relay-only's time (the downloads alone: 93.5 s against 61.2 s, about 1.2 MB/s against 1.9 MB/s), where the mark allows 1.1 times. It was 1.9 times in the second run and 3.4 in the first.
+2. **First byte: failed.** It came 5.6 s after relay-only's. After V's direct try at H failed, which is the same moment in every way, building the circuit took about 4 s and the first byte 1.8–2.0 s more, against 1.2 s for relay only. The circuit is only started once the direct try has failed.
+3. **Until the circuit is usable: passed.** As in the second run, V took the download from a sync and logged no `asking the trackers who hosts it`, so the start is the carrier step's own (`through carriers next`). From there to `the circuit is ready` took 4.3 s, 4.2 s and 3.8 s. In the first fetch V picked a middle (`turn=Fresh`), and the two-hop circuit, built at the same time, was used.
+
+**n0 wasn't run.** The script's change to n0 left the `relay_token` line in V's config, and a node refuses a token when none of its own relays are listed, so V didn't start for that step. The script removes the line now. The configs were put back at the end.
+
+**Where the whole file went: P's learned upload still stops at 24.4 Mbit/s.** P's debug log shows the figure going up four times during the first fetch (12.5, 15.6, 19.5, then 24.4 Mbit/s), each in a spell where packets waited for the share 2.6–4.5 s, and then no more. It logged no link backing up. So above about 20 Mbit/s, packets waited less than half of each spell, while the downloads came at 1.2 MB/s against a share of 1.53 MB/s. With the figure set by hand to 100 Mbit/s in the first run, the same path ran at about 2.5 MB/s, so the share is still what slows it, and waiting packets alone don't show that. Why the ends' traffic stays under the share isn't confirmed: `osp carrier` doesn't show P's dropped packets.
+
 ## The newcomer's middle turn
 
 **Passed, 2026-11-21.** `osp machine hello` doesn't add a machine to the table V picks middles from, so Middle arrived through ordinary meeting. Then Empty posted a fresh 20 s clip (4.0 MB) and Robin fetched it.
