@@ -844,6 +844,8 @@ impl Core {
         let mut offers = Vec::new();
         if self.store.stored_size(blob).await?.is_none() {
             let mut named: Vec<Source> = Vec::new();
+            // Where stage D's time to a usable circuit starts (carrier-lab.md).
+            debug!(blob = %blob.fmt_short(), trackers = wanted.trackers.len(), "asking the trackers who hosts it");
             for tracker in &wanted.trackers {
                 let (sources, offer) = self.named_hosts(tracker, blob).await;
                 for source in sources {

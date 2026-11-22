@@ -48,6 +48,11 @@ const ACTIVE: Duration = Duration::from_secs(10);
 const LINK_IDLE: Duration = Duration::from_secs(5 * 60);
 /// How often limits, slots, setups and keys are looked at.
 const TICK: Duration = Duration::from_secs(1);
+/// Packets held for the upload share, at most this long's worth of it...
+const HOLD_FOR: Duration = Duration::from_millis(250);
+/// ...and never less than this many bytes, so a slow share still smooths a
+/// burst.
+const HOLD_AT_LEAST: usize = 64 * 1024;
 /// Circuit IDs from the side that opened a link are below this; from the
 /// side that accepted it, at or above.
 const ACCEPTOR_IDS: CircuitId = 1 << 31;
@@ -98,7 +103,8 @@ pub struct Limits {
     /// New circuits taken in any minute.
     pub new_per_minute: usize,
     /// Bytes a second carried, all circuits together: the owner's upload
-    /// share. Packets beyond it are dropped, and the ends' QUIC slows down.
+    /// share. Packets beyond it wait their turn (`Pacer`), so the ends'
+    /// QUIC sees a slower path rather than losses. Only a full queue drops.
     pub bytes_per_sec: Option<u64>,
     /// A circuit's longest life and most bytes, after which it's ended.
     pub circuit_life: Duration,
@@ -195,6 +201,12 @@ pub struct Stats {
     pub refused: u64,
     pub dropped: u64,
     pub bytes: u64,
+    /// Packets that waited for the upload share before going on: the share,
+    /// not the path, set how fast they went.
+    pub held: u64,
+    /// Packets sent on to a link whose datagram buffer was backed up: the
+    /// path, or the owner's connection, couldn't take them as fast.
+    pub link_full: u64,
 }
 
 /// A running carrier. Dropping it stops it.
@@ -304,6 +316,8 @@ struct Link {
     /// Whether this carrier opened it, which sets the circuit IDs it picks.
     opened: bool,
     idle_since: Instant,
+    /// The most datagram buffer space it has had free: its size.
+    buffer: usize,
 }
 
 /// Where a circuit goes next, towards the host.
@@ -356,9 +370,98 @@ struct State {
     back: HashMap<(LinkId, CircuitId), (LinkId, CircuitId)>,
     slots: HashMap<Slot, (LinkId, Instant)>,
     created: VecDeque<Instant>,
-    bucket: Option<(f64, Instant)>,
+    pacer: Pacer,
     stats: Stats,
     tasks: JoinSet<()>,
+}
+
+/// The upload share, as a token bucket with a queue in front of it: a
+/// packet over the share waits for its turn rather than being dropped, up
+/// to `HOLD_FOR` of the share. In order: nothing passes a packet waiting.
+#[derive(Default)]
+struct Pacer {
+    bucket: Option<(f64, Instant)>,
+    /// Each with the bytes it carried, which is what the share counts.
+    held: VecDeque<(LinkId, Bytes, usize)>,
+    held_bytes: usize,
+}
+
+/// What the pacer did with a packet.
+#[derive(Debug, PartialEq, Eq)]
+enum Paced {
+    Now,
+    Held,
+    Full,
+}
+
+impl Pacer {
+    /// Tops the bucket up to `now`, a second of the share at most.
+    fn refill(&mut self, rate: f64, now: Instant) -> &mut f64 {
+        let (tokens, at) = self.bucket.get_or_insert((rate, now));
+        *tokens = (*tokens + now.duration_since(*at).as_secs_f64() * rate).min(rate);
+        *at = now;
+        tokens
+    }
+
+    /// Whether `frame`, of `bytes` carried, goes now, waits, or doesn't fit.
+    fn offer(
+        &mut self,
+        rate: f64,
+        link: LinkId,
+        frame: Bytes,
+        bytes: usize,
+        now: Instant,
+    ) -> Paced {
+        if self.held.is_empty() {
+            let tokens = self.refill(rate, now);
+            if *tokens >= bytes as f64 {
+                *tokens -= bytes as f64;
+                return Paced::Now;
+            }
+        }
+        let room = ((rate * HOLD_FOR.as_secs_f64()) as usize).max(HOLD_AT_LEAST);
+        if self.held_bytes + bytes > room {
+            return Paced::Full;
+        }
+        self.held_bytes += bytes;
+        self.held.push_back((link, frame, bytes));
+        Paced::Held
+    }
+
+    /// The packets whose turn has come by `now`, in order, with the bytes
+    /// each carried.
+    fn due(&mut self, rate: Option<u64>, now: Instant) -> Vec<(LinkId, Bytes, usize)> {
+        let Some(rate) = rate else {
+            // No share any more: everything held goes.
+            self.held_bytes = 0;
+            return self.held.drain(..).collect();
+        };
+        let rate = rate as f64;
+        let mut out = Vec::new();
+        while let Some(&(_, _, bytes)) = self.held.front() {
+            let tokens = self.refill(rate, now);
+            if *tokens < bytes as f64 {
+                break;
+            }
+            *tokens -= bytes as f64;
+            self.held_bytes -= bytes;
+            out.extend(self.held.pop_front());
+        }
+        out
+    }
+
+    /// When the first packet held can go, if any is.
+    fn next_turn(&self, rate: Option<u64>) -> Option<Instant> {
+        let &(_, _, bytes) = self.held.front()?;
+        let Some(rate) = rate else {
+            return Some(Instant::now());
+        };
+        let Some((tokens, at)) = self.bucket else {
+            return Some(Instant::now());
+        };
+        let short = (bytes as f64 - tokens).max(0.0);
+        Some(at + Duration::from_secs_f64(short / rate as f64))
+    }
 }
 
 fn unix_now() -> u64 {
@@ -394,7 +497,7 @@ impl State {
             back: HashMap::new(),
             slots: HashMap::new(),
             created: VecDeque::new(),
-            bucket: None,
+            pacer: Pacer::default(),
             stats: Stats::default(),
             tasks: JoinSet::new(),
         })
@@ -417,12 +520,16 @@ impl State {
     async fn run(mut self, mut rx: mpsc::Receiver<Event>) {
         let mut tick = tokio::time::interval(TICK);
         loop {
+            let turn = self.pacer.next_turn(self.limits.bytes_per_sec);
             tokio::select! {
                 ev = rx.recv() => match ev {
                     Some(ev) => self.handle(ev),
                     None => return,
                 },
                 _ = tick.tick() => self.tick(Instant::now()),
+                _ = tokio::time::sleep_until(turn.unwrap_or_else(Instant::now)), if turn.is_some() => {
+                    self.release(Instant::now());
+                }
             }
         }
     }
@@ -446,9 +553,10 @@ impl State {
             Event::Relay(relay) => self.relay = relay,
             Event::Limits(limits) => {
                 if limits.bytes_per_sec != self.limits.bytes_per_sec {
-                    self.bucket = None;
+                    self.pacer.bucket = None;
                 }
                 self.limits = limits;
+                self.release(Instant::now());
             }
             Event::Paused(paused) => {
                 self.stats.paused = paused;
@@ -483,6 +591,7 @@ impl State {
                 peer,
                 opened,
                 idle_since: Instant::now(),
+                buffer: 0,
             },
         );
         let tx = self.tx.clone();
@@ -523,29 +632,57 @@ impl State {
     }
 
     fn send(&mut self, link: LinkId, frame: &Frame) {
-        let Some(l) = self.links.get(&link) else {
+        if !self.links.contains_key(&link) {
+            return;
+        }
+        self.send_encoded(link, Bytes::from(frame.encode()));
+    }
+
+    fn send_encoded(&mut self, link: LinkId, frame: Bytes) {
+        let Some(l) = self.links.get_mut(&link) else {
             return;
         };
-        if let Err(e) = l.conn.send_datagram(Bytes::from(frame.encode())) {
+        // Its datagram buffer more than half used: the link isn't keeping
+        // up with what's sent on it.
+        let space = l.conn.datagram_send_buffer_space();
+        l.buffer = l.buffer.max(space);
+        if space < l.buffer / 2 {
+            self.stats.link_full += 1;
+        }
+        if let Err(e) = l.conn.send_datagram(frame) {
             self.stats.dropped += 1;
             debug!("couldn't send a carrier frame: {e}");
         }
     }
 
-    /// Takes `bytes` from the owner's upload share: false if there's none.
-    fn spend(&mut self, bytes: usize, now: Instant) -> bool {
+    /// Sends `frame`, carrying `bytes` for a circuit, within the owner's
+    /// upload share: now if there's room in it, else when its turn comes.
+    /// Dropped only if too much is waiting already.
+    fn carry(&mut self, link: LinkId, frame: &Frame, bytes: usize, now: Instant) {
         let Some(rate) = self.limits.bytes_per_sec else {
-            return true;
+            self.stats.bytes += bytes as u64;
+            return self.send(link, frame);
         };
-        let rate = rate as f64;
-        let (tokens, at) = self.bucket.get_or_insert((rate, now));
-        *tokens = (*tokens + now.duration_since(*at).as_secs_f64() * rate).min(rate);
-        *at = now;
-        if *tokens < bytes as f64 {
-            return false;
+        let encoded = Bytes::from(frame.encode());
+        match self
+            .pacer
+            .offer(rate as f64, link, encoded.clone(), bytes, now)
+        {
+            Paced::Now => {
+                self.stats.bytes += bytes as u64;
+                self.send_encoded(link, encoded);
+            }
+            Paced::Held => self.stats.held += 1,
+            Paced::Full => self.stats.dropped += 1,
         }
-        *tokens -= bytes as f64;
-        true
+    }
+
+    /// Sends what the pacer held whose turn has come.
+    fn release(&mut self, now: Instant) {
+        for (link, frame, bytes) in self.pacer.due(self.limits.bytes_per_sec, now) {
+            self.stats.bytes += bytes as u64;
+            self.send_encoded(link, frame);
+        }
     }
 
     fn pick_id(&self, link: LinkId) -> CircuitId {
@@ -715,39 +852,35 @@ impl State {
             (Next::Carrier, Some((on, id))) => {
                 c.bytes += payload.len() as u64;
                 c.last_active = Some(now);
-                if self.spend(payload.len(), now) {
-                    self.stats.bytes += payload.len() as u64;
-                    self.send(
-                        on,
-                        &Frame::Data {
-                            circuit: id,
-                            direction: Direction::ToHost,
-                            pn,
-                            payload,
-                        },
-                    );
-                } else {
-                    self.stats.dropped += 1;
-                }
+                let bytes = payload.len();
+                self.carry(
+                    on,
+                    &Frame::Data {
+                        circuit: id,
+                        direction: Direction::ToHost,
+                        pn,
+                        payload,
+                    },
+                    bytes,
+                    now,
+                );
             }
             (Next::Host, Some((on, id))) => match Relay::decode(payload) {
                 Ok(Relay::Data(packet)) => {
                     c.bytes += packet.len() as u64;
                     c.last_active = Some(now);
-                    if self.spend(packet.len(), now) {
-                        self.stats.bytes += packet.len() as u64;
-                        self.send(
-                            on,
-                            &Frame::Data {
-                                circuit: id,
-                                direction: Direction::ToHost,
-                                pn: 0,
-                                payload: packet,
-                            },
-                        );
-                    } else {
-                        self.stats.dropped += 1;
-                    }
+                    let bytes = packet.len();
+                    self.carry(
+                        on,
+                        &Frame::Data {
+                            circuit: id,
+                            direction: Direction::ToHost,
+                            pn: 0,
+                            payload: packet,
+                        },
+                        bytes,
+                        now,
+                    );
                 }
                 _ => self.stats.dropped += 1,
             },
@@ -970,18 +1103,17 @@ impl State {
         c.bytes += len as u64;
         c.last_active = Some(now);
         match sealed {
-            Ok((pn, payload)) if self.spend(len, now) => {
-                self.stats.bytes += len as u64;
-                self.send(
-                    key.0,
-                    &Frame::Data {
-                        circuit: key.1,
-                        direction: Direction::ToViewer,
-                        pn,
-                        payload,
-                    },
-                );
-            }
+            Ok((pn, payload)) => self.carry(
+                key.0,
+                &Frame::Data {
+                    circuit: key.1,
+                    direction: Direction::ToViewer,
+                    pn,
+                    payload,
+                },
+                len,
+                now,
+            ),
             _ => self.stats.dropped += 1,
         }
     }
@@ -1148,4 +1280,88 @@ pub async fn request_slot(conn: &Connection) -> Result<(Slot, Duration)> {
         warn!("a slot that lasts no time");
     }
     Ok((slot, Duration::from_secs(secs.into())))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const RATE: f64 = 100_000.0;
+
+    fn frame(n: u8) -> Bytes {
+        Bytes::from(vec![n; 4])
+    }
+
+    #[test]
+    fn within_the_share_a_packet_goes_at_once() {
+        let mut p = Pacer::default();
+        let now = Instant::now();
+        assert_eq!(p.offer(RATE, 1, frame(1), 50_000, now), Paced::Now);
+        assert_eq!(p.offer(RATE, 1, frame(2), 50_000, now), Paced::Now);
+        assert!(p.next_turn(Some(RATE as u64)).is_none());
+    }
+
+    #[test]
+    fn over_the_share_a_packet_waits_its_turn_in_order() {
+        let mut p = Pacer::default();
+        let now = Instant::now();
+        // The bucket starts with a second of the share.
+        assert_eq!(p.offer(RATE, 1, frame(1), 100_000, now), Paced::Now);
+        assert_eq!(p.offer(RATE, 1, frame(2), 10_000, now), Paced::Held);
+        assert_eq!(p.offer(RATE, 2, frame(3), 10_000, now), Paced::Held);
+        // A small packet doesn't pass one waiting, though it would fit sooner.
+        assert_eq!(p.offer(RATE, 1, frame(4), 1, now), Paced::Held);
+        let rate = Some(RATE as u64);
+        let turn = p.next_turn(rate).unwrap();
+        assert_eq!(turn, now + Duration::from_millis(100));
+        assert!(p.due(rate, now + Duration::from_millis(50)).is_empty());
+        let went: Vec<u8> = p
+            .due(rate, turn)
+            .into_iter()
+            .map(|(_, f, _)| f[0])
+            .collect();
+        assert_eq!(went, vec![2]);
+        let went: Vec<(LinkId, u8)> = p
+            .due(rate, now + Duration::from_millis(300))
+            .into_iter()
+            .map(|(l, f, _)| (l, f[0]))
+            .collect();
+        assert_eq!(went, vec![(2, 3), (1, 4)]);
+        assert_eq!(p.held_bytes, 0);
+        assert!(p.next_turn(rate).is_none());
+    }
+
+    #[test]
+    fn only_a_full_queue_drops() {
+        let mut p = Pacer::default();
+        let now = Instant::now();
+        assert_eq!(p.offer(RATE, 1, frame(1), 100_000, now), Paced::Now);
+        // A quarter second of 100 kB/s is under the 64 KiB floor.
+        let mut held = 0;
+        while p.offer(RATE, 1, frame(2), 1_000, now) == Paced::Held {
+            held += 1;
+        }
+        assert_eq!(held, HOLD_AT_LEAST / 1_000);
+        assert_eq!(p.offer(RATE, 1, frame(3), 1_000, now), Paced::Full);
+        // A fast share holds a quarter second of itself.
+        let fast = 10_000_000.0;
+        let mut p = Pacer::default();
+        assert_eq!(p.offer(fast, 1, frame(1), 10_000_000, now), Paced::Now);
+        let mut held = 0;
+        while p.offer(fast, 1, frame(2), 1_000, now) == Paced::Held {
+            held += 1;
+        }
+        assert_eq!(held, 2_500);
+    }
+
+    #[test]
+    fn with_the_share_lifted_everything_held_goes() {
+        let mut p = Pacer::default();
+        let now = Instant::now();
+        assert_eq!(p.offer(RATE, 1, frame(1), 100_000, now), Paced::Now);
+        assert_eq!(p.offer(RATE, 1, frame(2), 10_000, now), Paced::Held);
+        assert_eq!(p.offer(RATE, 1, frame(3), 10_000, now), Paced::Held);
+        assert_eq!(p.due(None, now).len(), 2);
+        assert_eq!(p.held_bytes, 0);
+    }
 }

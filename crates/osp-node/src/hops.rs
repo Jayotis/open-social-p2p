@@ -236,6 +236,7 @@ impl Core {
             relayed_endpoint(&self.config, relay, &relays, SecretKey::generate(), vec![])
                 .await
                 .context("starting the endpoint for the circuit")?;
+        let started = tokio::time::Instant::now();
         let fetched = async {
             let dial = osp_carrier::relay_dial(link_endpoint.clone(), move |url| {
                 relays.permits(&TransportAddr::Relay(url.clone()))
@@ -245,6 +246,12 @@ impl Core {
                 .map_err(|_| anyhow!("the first hop didn't answer in time"))??;
             let circuit = ViewerCircuit::build(conn, hops, offer.slot).await?;
             let ends = osp_carrier::viewer_endpoint(circuit, offer.endpoint).await?;
+            debug!(
+                blob = %blob.fmt_short(),
+                hops = hops.len(),
+                took_ms = started.elapsed().as_millis() as u64,
+                "the circuit is ready"
+            );
             let pool = store::new_pool(&ends);
             let source = Source {
                 node: host,
