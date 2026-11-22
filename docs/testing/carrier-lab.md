@@ -124,6 +124,24 @@ One carrier fetch on P's own settings, with P's counters now in `osp carrier` (p
 
 So the share was too low and dropped packets while it climbed, and the ends' QUIC backed off from the losses. A spell with packets dropped from a full queue and no link backed up now raises the figure as well. At 24.4 Mbit/s the share wasn't what held the fetch back during those 45 s, and this change doesn't explain or lift that plateau.
 
+## Stage D results, fourth run
+
+**Passed mark 3, failed marks 1 and 2, 2026-11-22.** Run on `22b13ce` (#279: drops from the share's full queue raise the learned upload, and the circuit is built beside the direct try), on every node's own settings, except that P was V's seed carrier. P's and V's logs were at debug. Same fetches in the same order. Every carrier fetch went over two hops. Each figure is the median of three, counted as before.
+
+| Way | Whole file | First byte |
+|---|---|---|
+| Through carriers | 104.4 s | 11.9 s |
+| Relay only | 62.2 s | 7.3 s |
+| n0 only | not run | not run |
+
+1. **Whole file: failed.** The carrier fetch took 1.7 times relay-only's time (the downloads alone: 94.6 s against 57.3 s, about 1.2 MB/s against 2.0 MB/s), where the mark allows 1.1 times. The carrier downloads took as long as in the third run (93.5 s). Relay only was faster this time. The first fetch's whole time (549.5 s) includes about 7 minutes of V syncing until it saw the post, so the median uses the other two.
+2. **First byte: failed.** It came 4.6 s after relay-only's, down from 5.6 s. The circuit now starts with the direct try and was ready 2.8–3.3 s after that try failed, against about 4 s before. The first byte then took 1.8–2.0 s through the circuit, against 1.1–1.2 s for relay only.
+3. **Until the circuit is usable: passed.** The circuit was ready before the carrier step began (`the circuit is ready` logged up to 1 s before `through carriers next`), 3.6–4.1 s after the download started.
+
+**P's learned upload passed 24.4 Mbit/s, and the fetch didn't get faster.** In the first fetch the figure went up five times in 40 s (12.5, 15.6, 19.5, 24.4, then 30.5 Mbit/s). The first three rises came with packets dropped from the share's full queue, and the last two with packets held. Then it stayed at 30.5 Mbit/s, a share of 1.9 MB/s. The second and third fetches started at 30.5 Mbit/s and still carried about 1.2 MB/s, 63 % of the share. So the share isn't what limits the carrier path now, as the probe suggested. The limit is somewhere else on the path.
+
+**n0 wasn't run.** The script's check that both nodes had left the project's relay looked for `osp2p.com` anywhere in the configs, and the hide list's address (`hide_url`) has it too. V's status showed it on n0's relay, so the step would have been n0. The check looks for `relay1.osp2p.com` now. The configs were put back at the end.
+
 ## The newcomer's middle turn
 
 **Passed, 2026-11-21.** `osp machine hello` doesn't add a machine to the table V picks middles from, so Middle arrived through ordinary meeting. Then Empty posted a fresh 20 s clip (4.0 MB) and Robin fetched it.
