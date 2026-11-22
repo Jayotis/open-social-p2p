@@ -47,9 +47,11 @@ Measured, each from the fetch command: the time until the whole file is stored (
 
 1. Through carriers, the whole file arrives within a tenth of relay-only's time.
 2. Through carriers, the first byte arrives no more than 2 s after relay-only's.
-3. Asking for circuit offers takes under 5 s each time.
+3. From asking the trackers until the circuit is usable takes under 5 s each time.
 
 n0 is measured for comparison and isn't graded. Changing a mark needs a dated note here saying what changed and why.
+
+*Mark 3 changed 2026-11-21, after the first run (the maintainer).* It was "asking for circuit offers takes under 5 s each time". On the path these fetches take, the tracker's answer carries the host's offer, so there's no separate ask to time, and the first run logged none. The mark keeps its purpose: the time from V asking the trackers (`asking the trackers who hosts it`) until the circuit can carry the download (`the circuit is ready`), both in V's log.
 
 ## Stage D results
 
@@ -66,6 +68,16 @@ n0 is measured for comparison and isn't graded. Changing a mark needs a dated no
 3. **Circuit offers: not measured.** V logged no `circuit offers` line during the run, so there was no time for the step by itself. The 3.8–4.6 s gap above, which includes it, is under 5 s.
 
 Relay only and n0 only were within 2 % of each other, so the project's relay isn't the slow part. The extra time is in the carrier path itself.
+
+**The cause: P's upload share.** P is a home node set up before `osp init` asked the upload speed, so it carried at half of an assumed 10 Mbit/s, 625 kB/s, about the 0.55 MB/s seen once the layers' bytes are taken off. Packets over that were dropped, so the ends' QUIC kept seeing losses. Three single fetches through carriers ruled the rest out:
+
+| Fetch | V → P | P's upload figure | Download |
+| --- | --- | --- | --- |
+| As in the run | through the project's relay | assumed 10 Mbit/s | 202 s |
+| P's firewall letting V's address in | direct, on the home network | assumed 10 Mbit/s | 200 s |
+| P's figure set by hand | direct, on the home network | 100 Mbit/s | 44.9 s |
+
+The path's length didn't matter: V's leg going direct halved the round trip and changed nothing. With P's figure raised, the carrier path beat relay only (about 58 s). V's processor wasn't the limit either, at most half used. Two changes followed, the maintainer's (the design note's part 5, amended): with no figure from the owner, carrying raises the upload figure while it carries at its whole share and no link backs up, starting from 10 Mbit/s; and a packet over the share waits its turn instead of being dropped. Stage D runs again on every node's own settings.
 
 ## The newcomer's middle turn
 

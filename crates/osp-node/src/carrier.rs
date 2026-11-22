@@ -14,7 +14,7 @@
 
 use std::{
     net::SocketAddr,
-    sync::{Arc, OnceLock},
+    sync::{Arc, Mutex, OnceLock},
     time::Duration,
 };
 
@@ -23,7 +23,7 @@ use tokio::sync::watch;
 use anyhow::{Context, Result};
 use iroh::{Endpoint, RelayMode, SecretKey, TransportAddr, endpoint::presets};
 use n0_future::task::AbortOnDropHandle;
-use osp_carrier::{Carrier, Dial, Limits};
+use osp_carrier::{Carrier, Dial, Limits, Stats};
 use tracing::{debug, info, warn};
 
 use crate::{
@@ -41,6 +41,16 @@ use crate::{
 pub(crate) const ASSUMED_UPLOAD_MBPS: f64 = 10.0;
 /// A home node's upload share for carrying, from the sizing stage.
 const HOME_SHARE: u8 = 50;
+/// Carrying learns the upload (`Learned`): a figure carried at in full for
+/// a while, with no link backed up, is raised by this much, and one with a
+/// link backed up is lowered by as much.
+const LEARN_STEP: f64 = 1.25;
+/// A spell shorter than this isn't judged.
+const LEARN_OVER: Duration = Duration::from_secs(4);
+/// The share counts as used in full when this much of it was carried.
+const LEARN_FULL: f64 = 0.8;
+/// No higher than this is learned, in Mbit/s.
+const LEARN_MAX_MBPS: f64 = 1000.0;
 
 /// What the owner set for carrying. It changes while the node runs.
 #[derive(Debug, Clone, PartialEq)]
@@ -154,7 +164,79 @@ pub(crate) enum UploadFrom {
 pub(crate) struct Owner {
     pub controls: watch::Receiver<Controls>,
     pub measured: Measured,
+    pub learned: Arc<Mutex<Learned>>,
     pub db: Arc<Db>,
+}
+
+/// The upload as carrying showed it, for a node with no figure from its
+/// owner. The share starts from the assumed upload. While the carrier
+/// carries at its whole share, holding packets for it, and no link it sends
+/// on backs up, the upload was more than taken: the figure goes up by
+/// `LEARN_STEP`. A link that backs up brings it down by as much, to the
+/// assumed upload at the least. So 10 Mbit/s is where it starts, not a
+/// ceiling. It isn't kept over a restart, like the serving measurement.
+#[derive(Debug, Default)]
+pub(crate) struct Learned {
+    mbps: Option<f64>,
+    /// When the spell being judged began, and the carrier's counts then.
+    since: Option<(tokio::time::Instant, Stats)>,
+}
+
+impl Learned {
+    /// The upload learned, in Mbit/s, once there is one.
+    pub fn mbps(&self) -> Option<f64> {
+        self.mbps
+    }
+
+    /// Judges the spell up to `now`, when the carrier's counts are `stats`,
+    /// the share was `rate` bytes a second, and the upload it was taken of
+    /// `upload` Mbit/s. Only a figure carrying may change goes in: not one
+    /// the owner set or capped.
+    pub fn judge(
+        &mut self,
+        stats: &Stats,
+        rate: Option<u64>,
+        upload: (f64, UploadFrom),
+        now: tokio::time::Instant,
+    ) {
+        let Some((since, before)) = self.since.take() else {
+            self.since = Some((now, stats.clone()));
+            return;
+        };
+        let took = now.duration_since(since);
+        if took < LEARN_OVER {
+            self.since = Some((since, before));
+            return;
+        }
+        self.since = Some((now, stats.clone()));
+        let (Some(rate), (mbps, UploadFrom::Measured | UploadFrom::Assumed)) = (rate, upload)
+        else {
+            return;
+        };
+        if stats.link_full > before.link_full {
+            if let Some(m) = self.mbps {
+                let lower = (m / LEARN_STEP).max(ASSUMED_UPLOAD_MBPS);
+                debug!(mbps = %format!("{lower:.1}"), "a link backed up: the upload learned from carrying goes down");
+                self.mbps = Some(lower);
+            }
+            return;
+        }
+        let carried = stats.bytes.saturating_sub(before.bytes) as f64 / took.as_secs_f64();
+        let full = stats.held > before.held && carried >= LEARN_FULL * rate as f64;
+        let higher = (mbps * LEARN_STEP).min(LEARN_MAX_MBPS);
+        if full && self.mbps.is_none_or(|m| m < higher) {
+            debug!(mbps = %format!("{higher:.1}"), "carried at the whole share: the upload learned from carrying goes up");
+            self.mbps = Some(higher);
+        }
+    }
+}
+
+/// The faster of what serving measured and what carrying learned.
+fn faster(measured: Option<f64>, learned: Option<f64>) -> Option<f64> {
+    match (measured, learned) {
+        (Some(a), Some(b)) => Some(a.max(b)),
+        (a, b) => a.or(b),
+    }
 }
 
 /// The bytes a carrier moved, as they count against a data plan: each was
@@ -188,6 +270,7 @@ pub(crate) struct CarrierSide {
     controls: watch::Sender<Controls>,
     /// The fastest measured serving, read for the upload share.
     pub measured: Measured,
+    learned: Arc<Mutex<Learned>>,
     _task: AbortOnDropHandle<()>,
 }
 
@@ -224,6 +307,7 @@ impl CarrierSide {
         .context("starting the carrier endpoint")?;
         let (controls, watching) = watch::channel(Controls::of(config));
         let measured: Measured = Arc::default();
+        let learned: Arc<Mutex<Learned>> = Arc::default();
         // It dials only through relays the owner's policy takes.
         let policy = relays.clone();
         let dial = osp_carrier::relay_dial(endpoint.clone(), move |url| {
@@ -237,6 +321,7 @@ impl CarrierSide {
             Owner {
                 controls: watching,
                 measured: measured.clone(),
+                learned: learned.clone(),
                 db: db.clone(),
             },
             dial,
@@ -248,6 +333,7 @@ impl CarrierSide {
             carrier,
             controls,
             measured,
+            learned,
             _task: AbortOnDropHandle::new(task),
         }))
     }
@@ -267,9 +353,14 @@ impl CarrierSide {
         self.controls.send_replace(controls);
     }
 
-    /// The fastest measured serving, once known.
+    /// The upload measured, by serving or by carrying, once known.
     pub fn measured(&self) -> Option<f64> {
-        self.measured.get().and_then(|f| f())
+        let learned = self
+            .learned
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .mbps();
+        faster(self.measured.get().and_then(|f| f()), learned)
     }
 }
 
@@ -340,9 +431,11 @@ async fn keep_carrying(
     let Owner {
         mut controls,
         measured,
+        learned,
         db,
     } = owner;
-    let measure = || measured.get().and_then(|f| f());
+    let lock = || learned.lock().unwrap_or_else(|e| e.into_inner());
+    let measure = || faster(measured.get().and_then(|f| f()), lock().mbps());
     // What the carrier had carried when last written down.
     let mut counted = 0u64;
     let mut over_budget = false;
@@ -406,6 +499,13 @@ async fn keep_carrying(
             // What it carried since last time goes towards the month.
             match carrier.stats().await {
                 Ok(stats) => {
+                    let measured = measure();
+                    lock().judge(
+                        &stats,
+                        limits.bytes_per_sec,
+                        now.upload(measured),
+                        tokio::time::Instant::now(),
+                    );
                     let new = stats.bytes.saturating_sub(counted);
                     counted = stats.bytes;
                     let month = (new > 0)
@@ -711,5 +811,119 @@ mod tests {
             }
             .stopped()
         );
+    }
+
+    /// The carrier's counts after `bytes` carried and `held` held, with
+    /// `full` sends to a backed-up link.
+    fn counts(bytes: u64, held: u64, full: u64) -> Stats {
+        Stats {
+            bytes,
+            held,
+            link_full: full,
+            ..Stats::default()
+        }
+    }
+
+    /// One spell of `LEARN_OVER` carried at `share` of the rate the
+    /// current figure gives, holding packets if `held`.
+    fn spell(l: &mut Learned, c: &Controls, at: &mut tokio::time::Instant, share: f64, held: bool) {
+        let limits = c.limits(l.mbps());
+        let rate = limits.bytes_per_sec.unwrap();
+        let (before, held_before) = l.since.as_ref().map_or((0, 0), |(_, s)| (s.bytes, s.held));
+        *at += LEARN_OVER;
+        let bytes = before + (rate as f64 * share * LEARN_OVER.as_secs_f64()) as u64;
+        let stats = counts(bytes, held_before + u64::from(held), 0);
+        l.judge(&stats, Some(rate), c.upload(l.mbps()), *at);
+    }
+
+    #[test]
+    fn carrying_at_the_whole_share_raises_the_upload_from_the_assumed() {
+        let c = home();
+        let mut l = Learned::default();
+        let mut at = tokio::time::Instant::now();
+        l.judge(&Stats::default(), Some(625_000), c.upload(None), at);
+        assert_eq!(l.mbps(), None, "the first look only starts the clock");
+        spell(&mut l, &c, &mut at, 1.0, true);
+        assert_eq!(l.mbps(), Some(12.5));
+        assert_eq!(c.upload(l.mbps()), (12.5, UploadFrom::Measured));
+        // From 10 Mbit/s to past 100 in a minute of full carrying.
+        for _ in 0..14 {
+            spell(&mut l, &c, &mut at, 1.0, true);
+        }
+        assert!(l.mbps().unwrap() > 100.0, "{:?}", l.mbps());
+        for _ in 0..40 {
+            spell(&mut l, &c, &mut at, 1.0, true);
+        }
+        assert_eq!(l.mbps(), Some(LEARN_MAX_MBPS));
+    }
+
+    #[test]
+    fn carrying_under_the_share_or_without_waiting_teaches_nothing() {
+        let c = home();
+        let mut l = Learned::default();
+        let mut at = tokio::time::Instant::now();
+        l.judge(&Stats::default(), Some(625_000), c.upload(None), at);
+        spell(&mut l, &c, &mut at, 0.5, true);
+        assert_eq!(l.mbps(), None, "half the share, though some packets waited");
+        spell(&mut l, &c, &mut at, 1.0, false);
+        assert_eq!(l.mbps(), None, "the whole share, but nothing waited for it");
+        // A spell too short isn't judged, and the clock keeps running.
+        let stats = counts(10_000_000, 99, 0);
+        l.judge(&stats, Some(625_000), c.upload(None), at + LEARN_OVER / 2);
+        assert_eq!(l.mbps(), None);
+    }
+
+    #[test]
+    fn a_backed_up_link_lowers_it_but_not_under_the_assumed() {
+        let c = home();
+        let mut l = Learned::default();
+        let mut at = tokio::time::Instant::now();
+        l.judge(&Stats::default(), Some(625_000), c.upload(None), at);
+        for _ in 0..3 {
+            spell(&mut l, &c, &mut at, 1.0, true);
+        }
+        let high = l.mbps().unwrap();
+        let (_, before) = l.since.clone().unwrap();
+        at += LEARN_OVER;
+        let mut stats = before.clone();
+        stats.link_full += 1;
+        stats.held += 1;
+        stats.bytes += 10_000_000;
+        l.judge(&stats, Some(1), c.upload(l.mbps()), at);
+        assert_eq!(l.mbps(), Some(high / LEARN_STEP), "backed up: down, not up");
+        for _ in 0..10 {
+            at += LEARN_OVER;
+            stats.link_full += 1;
+            l.judge(&stats, Some(1), c.upload(l.mbps()), at);
+        }
+        assert_eq!(l.mbps(), Some(ASSUMED_UPLOAD_MBPS));
+    }
+
+    #[test]
+    fn an_upload_the_owner_set_or_capped_isnt_learned_over() {
+        for c in [
+            Controls {
+                upload_mbps: 8,
+                ..home()
+            },
+            Controls {
+                max_upload_mbps: 8,
+                ..home()
+            },
+        ] {
+            let mut l = Learned::default();
+            let mut at = tokio::time::Instant::now();
+            l.judge(&Stats::default(), Some(500_000), c.upload(None), at);
+            spell(&mut l, &c, &mut at, 1.0, true);
+            assert_eq!(l.mbps(), None);
+        }
+    }
+
+    #[test]
+    fn the_faster_of_serving_and_carrying() {
+        assert_eq!(faster(None, None), None);
+        assert_eq!(faster(Some(30.0), None), Some(30.0));
+        assert_eq!(faster(None, Some(12.5)), Some(12.5));
+        assert_eq!(faster(Some(30.0), Some(12.5)), Some(30.0));
     }
 }

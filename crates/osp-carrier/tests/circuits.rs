@@ -442,3 +442,65 @@ async fn a_video_goes_over_circuits_and_passes_its_hash_check() {
     }
     assert!(m.carrier.stats().await.unwrap().bytes >= 4 << 20);
 }
+
+#[tokio::test]
+async fn a_hop_over_its_share_slows_the_video_rather_than_losing_it() {
+    use iroh_blobs::{BlobsProtocol, store::mem::MemStore};
+
+    // Robin's hop P is a home node with 250 kB/s to share: under what a
+    // circuit carries here, so the share sets the pace.
+    let book = Book::default();
+    let share = 250_000;
+    let p = carrier(
+        &book,
+        Limits {
+            bytes_per_sec: Some(share),
+            ..Limits::home()
+        },
+    )
+    .await;
+    let q = carrier(&book, Limits::seed()).await;
+
+    let alice = SecretKey::generate();
+    let store = MemStore::new();
+    let data = video(2 << 20);
+    let hash = store.add_bytes(data.clone()).await.unwrap().hash;
+    let (_h, link) = host(&q).await;
+    let slot = link.slot();
+    let circuit_endpoint =
+        osp_carrier::host_endpoint(link, alice.clone(), vec![iroh_blobs::ALPN.to_vec()])
+            .await
+            .unwrap();
+    let _router = iroh::protocol::Router::builder(circuit_endpoint)
+        .accept(iroh_blobs::ALPN, BlobsProtocol::new(&store, None))
+        .spawn();
+
+    let (_link_endpoint, circuit) = viewer(&[&p, &q], slot).await.unwrap();
+    let ends = osp_carrier::viewer_endpoint(circuit, alice.public())
+        .await
+        .unwrap();
+    let conn = ends
+        .connect(EndpointAddr::new(alice.public()), iroh_blobs::ALPN)
+        .await
+        .unwrap();
+    let started = std::time::Instant::now();
+    let mine = MemStore::new();
+    timeout(Duration::from_secs(60), mine.remote().fetch(conn, hash))
+        .await
+        .unwrap()
+        .unwrap();
+    let took = started.elapsed();
+    assert_eq!(mine.get_bytes(hash).await.unwrap(), data);
+    let stats = p.carrier.stats().await.unwrap();
+    // A second of the share goes at once; the rest at the share.
+    let least = Duration::from_secs_f64(((2 << 20) - share) as f64 / share as f64 * 0.9);
+    assert!(took >= least, "{took:?}, {stats:?}");
+    // Most packets over the share wait for it. Some still go when the
+    // queue is full: the ends' QUIC grows its window until one does, here
+    // on loopback most of all, and slows down then. Dropping each packet
+    // over the share, as before, lost about 1,170 here and held none.
+    assert!(
+        stats.held > 0 && stats.dropped * 2 < stats.held,
+        "{stats:?}"
+    );
+}
