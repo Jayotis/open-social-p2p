@@ -67,7 +67,7 @@ n0 is measured for comparison and isn't graded. Changing a mark needs a dated no
 2. **First byte: failed, by about 2 s.** It came 4.0 s after relay-only's. In each carrier fetch, V's direct try at H failed after about 0.8 s, then 3.8–4.6 s passed before the carrier download started. That gap covers asking for offers and building the circuit. Once started, the first byte took 1.9 s, against 1.1 s for relay only.
 3. **Circuit offers: not measured.** V logged no `circuit offers` line during the run, so there was no time for the step by itself. The 3.8–4.6 s gap above, which includes it, is under 5 s.
 
-Relay only and n0 only were within 2 % of each other, so the project's relay isn't the slow part. The extra time is in the carrier path itself.
+Relay only and n0 only were within 2 % of each other. *Corrected 2026-11-22:* the "n0 only" step never reached n0. The script swapped a `relay = ` line the nodes' configs don't have (they name the project's relay under `[network.relay]`), so that step was the project's relay again with the fallback turned off. The comparison says nothing about the project's relay against n0. The cause found below stands: the extra time was in the carrier path.
 
 **The cause: P's upload share.** P is a home node set up before `osp init` asked the upload speed, so it carried at half of an assumed 10 Mbit/s, 625 kB/s, about the 0.55 MB/s seen once the layers' bytes are taken off. Packets over that were dropped, so the ends' QUIC kept seeing losses. Three single fetches through carriers ruled the rest out:
 
@@ -78,6 +78,24 @@ Relay only and n0 only were within 2 % of each other, so the project's relay isn
 | P's figure set by hand | direct, on the home network | 100 Mbit/s | 44.9 s |
 
 The path's length didn't matter: V's leg going direct halved the round trip and changed nothing. With P's figure raised, the carrier path beat relay only (about 58 s). V's processor wasn't the limit either, at most half used. Two changes followed, the maintainer's (the design note's part 5, amended): with no figure from the owner, carrying raises the upload figure while it carries at its whole share and no link backs up, starting from 10 Mbit/s; and a packet over the share waits its turn instead of being dropped. Stage D runs again on every node's own settings.
+
+## Stage D results, second run
+
+**Failed all three marks, 2026-11-22, but the carrier path is 1.6 times faster than in the first run.** Run on `7bb85dd` (the paced share and the upload learned from carrying), on every node's own settings, except that P was V's seed carrier. Same nine fetches in the same order. Every carrier fetch went over two hops. Each figure is the median of three, counted as in the first run.
+
+| Way | Whole file | First byte |
+|---|---|---|
+| Through carriers | 132.2 s | 17.1 s |
+| Relay only | 70.7 s | 9.3 s |
+| Relay only, fallback off (meant as n0; see the correction above) | 63.8 s | 7.9 s |
+
+1. **Whole file: failed.** The carrier fetch took 1.9 times relay-only's time (the downloads alone: 112.9 s against 64.2 s, about 1.0 MB/s against 1.8 MB/s), where the mark allows 1.1 times. That's down from 3.4 times in the first run.
+2. **First byte: failed.** It came 7.8 s after relay-only's. Counting from the moment V's direct try at H failed, which is the same moment in every way, the first byte took 6.2 s through carriers when no middle was tried (the third fetch), against 1.2 s for relay only.
+3. **Until the circuit is usable: failed in two of three.** V took the download from the sync of a followed account, so it never asked the trackers, and the mark's start line (`asking the trackers who hosts it`) wasn't logged. The nearest start is the carrier step's own (`through carriers next`). From there to `the circuit is ready` took 27.2 s, 9.5 s and 4.2 s.
+
+**Where the first byte and mark 3 went: middles that were gone.** In the first two fetches V picked a machine for the middle turn (`turn=Probation`, then `turn=Fresh`), tried a three-hop circuit through it, and only then built the two-hop one. One middle didn't answer and the setup timed out after 22.8 s; the other answered `Gone` after 5.4 s. V still held both from earlier tests, and M had been taken down after the middle-turn test; which of the two was M wasn't checked. Without a middle, building the circuit took 4.0–4.3 s, under the 5 s mark. A gone middle is ordinary on a real network too, so a failed middle costs the whole setup timeout before the two-hop try starts.
+
+**Where the whole file went: P's learned upload stopped rising.** P learned 24.4 Mbit/s during the first fetch, four steps up from the assumed 10, and stayed there through the other two. Half of that is 1.53 MB/s, but the downloads came at about 1.0 MB/s, two-thirds of the share, under the 80 % a spell needs before the figure goes up. P's log was at its normal level, so this is read from the figures and isn't confirmed. With P's figure set to 100 Mbit/s by hand in the first run, the same path took 44.9 s.
 
 ## The newcomer's middle turn
 
