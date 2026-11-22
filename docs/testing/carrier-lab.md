@@ -51,6 +51,22 @@ Measured, each from the fetch command: the time until the whole file is stored (
 
 n0 is measured for comparison and isn't graded. Changing a mark needs a dated note here saying what changed and why.
 
+## Stage D results
+
+**Failed marks 1 and 2, 2026-11-21.** Nine fetches, carriers first, then relay only, then n0 only. Every carrier fetch went over two hops (`fetched through carriers hops=2`). Each figure is the median of three. First byte is counted from the start of the fetch step, which includes a sync, so it's the same extra time for all three ways.
+
+| Way | Whole file | First byte |
+|---|---|---|
+| Through carriers | 213.1 s | 11.6 s |
+| Relay only | 63.5 s | 7.6 s |
+| n0 only | 64.5 s | 8.9 s |
+
+1. **Whole file: failed.** The carrier fetch took 3.4 times relay-only's time (about 0.53 MB/s against 1.8 MB/s), where the mark allows 1.1 times. The three carrier fetches were close together (210–216 s), so this is the path's speed and not a bad round.
+2. **First byte: failed, by about 2 s.** It came 4.0 s after relay-only's. In each carrier fetch, V's direct try at H failed after about 0.8 s, then 3.8–4.6 s passed before the carrier download started. That gap covers asking for offers and building the circuit. Once started, the first byte took 1.9 s, against 1.1 s for relay only.
+3. **Circuit offers: not measured.** V logged no `circuit offers` line during the run, so there was no time for the step by itself. The 3.8–4.6 s gap above, which includes it, is under 5 s.
+
+Relay only and n0 only were within 2 % of each other, so the project's relay isn't the slow part. The extra time is in the carrier path itself.
+
 ## The newcomer's middle turn
 
 **Passed, 2026-11-21.** `osp machine hello` doesn't add a machine to the table V picks middles from, so Middle arrived through ordinary meeting. Then Empty posted a fresh 20 s clip (4.0 MB) and Robin fetched it.
