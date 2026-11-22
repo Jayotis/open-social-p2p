@@ -142,6 +142,28 @@ So the share was too low and dropped packets while it climbed, and the ends' QUI
 
 **n0 wasn't run.** The script's check that both nodes had left the project's relay looked for `osp2p.com` anywhere in the configs, and the hide list's address (`hide_url`) has it too. V's status showed it on n0's relay, so the step would have been n0. The check looks for `relay1.osp2p.com` now. The configs were put back at the end.
 
+## The relayed leg probe, after the fourth run
+
+The first run's three fetches left one case out: V's leg to P through the project's relay with P's figure out of the way. Two carrier fetches on 2026-11-22, P's figure set by hand to 100 Mbit/s, two hops, otherwise as in stage D. The first went with V → P through the project's relay, the second with P's firewall letting V's address in. A capture on V counted its UDP packets to P's home address to confirm each path. With the first run's three, that fills the table:
+
+| V → P | P's upload figure | Download | First byte after the circuit is ready |
+| --- | --- | --- | --- |
+| through the project's relay | assumed 10 Mbit/s | 202 s | |
+| direct, on the home network | assumed 10 Mbit/s | 200 s | |
+| direct, on the home network | 100 Mbit/s | 44.9 s | |
+| through the project's relay | 100 Mbit/s | 90.9 s | 2.7 s |
+| direct, on the home network (again) | 100 Mbit/s | 47.4 s | 1.9 s |
+
+- **Relayed: about 1.25 MB/s,** the same as the fourth run's carrier fetches at P's learned 30.5 Mbit/s. V sent 47 packets to P's home address, only hole-punching tries.
+- **Direct: about 2.4 MB/s,** close to the first run's 44.9 s. V sent 60,675 packets to P's home address.
+- **P's counters:** no packets held, none dropped with the share's queue full, none sent to a backed-up link in either fetch. One packet was dropped in all, during the direct one.
+
+So with the share out of the way, V's relayed leg to P is what holds the carrier path to about 1.2 MB/s. The share stopped being the limit once P's figure passed about 24 Mbit/s.
+
+**The first byte is a different matter.** Counted from the download's start, it took 1.8 s relayed and 1.9 s direct, against 1.1–1.2 s for relay only, so the relayed leg doesn't explain mark 2. The direct leg did make the circuit faster to build: 2.6 s against 4.1 s. In the relayed fetch the circuit was ready about 0.9 s before V's direct try at H had failed, and the download waited for it.
+
+Nothing on the transport changes from this probe.
+
 ## The newcomer's middle turn
 
 **Passed, 2026-11-21.** `osp machine hello` doesn't add a machine to the table V picks middles from, so Middle arrived through ordinary meeting. Then Empty posted a fresh 20 s clip (4.0 MB) and Robin fetched it.
