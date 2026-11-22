@@ -971,49 +971,14 @@ async fn a_fresh_machine_carries_in_the_middle_and_is_offered_on() {
     let dir = tempfile::tempdir().unwrap();
     let (_relay, relay) = local_relay().await;
     let net = SimNet::new(4);
-    let directory = directory(&dir.path().join("directory"), &net).await;
-
-    let seed = async |name: &str| {
-        let home = dir.path().join(name);
-        let mut config = config(name, &relay);
-        config.carrier.seed = true;
-        Node::init(&home, &config).unwrap();
-        start(&home, &net).await
-    };
-    let kim = seed("Kim").await;
-    let quinn = seed("Quinn").await;
-    let known = |node: &Node| SeedCarrier {
-        machine: node.machine_id().unwrap(),
-    };
-
-    let meeting = SimSettings {
-        meeting: quick(),
-        first_read_wait: Duration::from_millis(200),
-        read_every: Duration::from_secs(1),
-        ..sim(&net)
-    };
-    let home = dir.path().join("mo");
-    Node::init(&home, &knowing("Mo", &relay, &directory, None)).unwrap();
-    let mo = Node::spawn_sim(&home, meeting.clone()).await.unwrap();
-    let home = dir.path().join("jimmy");
-    let mut jimmy_config = knowing("Jimmy", &relay, &directory, None);
-    jimmy_config.carrier.known = vec![known(&kim)];
-    jimmy_config.carrier.hops = Some(true);
-    jimmy_config.sync.prefetch = false;
-    Node::init(&home, &jimmy_config).unwrap();
-    let jimmy = Node::spawn_sim(&home, meeting).await.unwrap();
+    let Middled {
+        directory,
+        kim,
+        quinn,
+        mo,
+        jimmy,
+    } = middled(dir.path(), &relay, &net).await;
     let mo_machine = mo.machine_id().unwrap();
-    // Not only met: Mo's carrier starts after its machine does, so its
-    // first record may name none.
-    timeout(Duration::from_secs(60), async {
-        while !jimmy.carriers_in_table().contains(&mo_machine) {
-            let _ = jimmy.meet_round_now().await;
-            let _ = mo.meet_round_now().await;
-            tokio::time::sleep(Duration::from_millis(250)).await;
-        }
-    })
-    .await
-    .expect("Jimmy's machine never heard of Mo's carrier");
 
     let home = dir.path().join("alice");
     let mut alice_config = config("Alice", &relay);
@@ -1085,6 +1050,128 @@ async fn a_fresh_machine_carries_in_the_middle_and_is_offered_on() {
 
     for node in [sam, jimmy, mo, alice, kim, quinn, directory] {
         node.shutdown().await.unwrap();
+    }
+}
+
+/// As above, but Mo's node is gone by the time Jimmy opens Alice's photo,
+/// as two middles were in stage D's second run. The circuit without Mo,
+/// built at the same time, carries it, without waiting out the carriers'
+/// setup timeout, and Mo's machine isn't credited for a job it didn't do.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_middle_thats_gone_costs_no_more_than_the_circuit_without_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_relay, relay) = local_relay().await;
+    let net = SimNet::new(4);
+    let Middled {
+        directory,
+        kim,
+        quinn,
+        mo,
+        jimmy,
+    } = middled(dir.path(), &relay, &net).await;
+    mo.shutdown().await.unwrap();
+
+    let home = dir.path().join("alice");
+    let mut alice_config = config("Alice", &relay);
+    alice_config.endpoints.enabled = true;
+    alice_config.carrier.known = vec![known(&quinn)];
+    alice_config.carrier.hops = Some(true);
+    Node::init(&home, &alice_config).unwrap();
+    let alice = start(&home, &net).await;
+    let me = stranger(&net).await;
+    let asked = post_large_photo(&alice, dir.path()).await;
+    offer_of(&me, &alice, asked, true).await;
+    follow(&jimmy, &alice).await;
+
+    let carried = async |node: &Node| node.carrier_stats().await.unwrap().bytes;
+    let before = [carried(&kim).await, carried(&quinn).await];
+    let started = std::time::Instant::now();
+    let size = jimmy.open_blob(&asked.1).await.unwrap();
+    let took = started.elapsed();
+    assert!(
+        took < osp_carrier::SETUP_TIMEOUT,
+        "waited out the gone middle: {took:?}"
+    );
+    let after = [carried(&kim).await, carried(&quinn).await];
+    for (i, name) in ["Kim", "Quinn"].iter().enumerate() {
+        assert!(
+            after[i] >= before[i] + size,
+            "{name}'s machine didn't carry it: {before:?} {after:?}"
+        );
+    }
+    let (probation, _) = jimmy.carrier_picks().unwrap();
+    assert!(
+        probation.is_empty(),
+        "Mo's machine carried nothing: {probation:?}"
+    );
+
+    for node in [jimmy, alice, kim, quinn, directory] {
+        node.shutdown().await.unwrap();
+    }
+}
+
+fn known(node: &Node) -> SeedCarrier {
+    SeedCarrier {
+        machine: node.machine_id().unwrap(),
+    }
+}
+
+/// Two seed carriers, Kim's and Quinn's; Mo's ordinary new node; and
+/// Jimmy's, which knows Kim's and has met Mo's carrier through a directory.
+struct Middled {
+    directory: Node,
+    kim: Node,
+    quinn: Node,
+    mo: Node,
+    jimmy: Node,
+}
+
+async fn middled(dir: &Path, relay: &RelayUrl, net: &SimNet) -> Middled {
+    let directory = directory(&dir.join("directory"), net).await;
+    let seed = async |name: &str| {
+        let home = dir.join(name);
+        let mut config = config(name, relay);
+        config.carrier.seed = true;
+        Node::init(&home, &config).unwrap();
+        start(&home, net).await
+    };
+    let kim = seed("Kim").await;
+    let quinn = seed("Quinn").await;
+
+    let meeting = SimSettings {
+        meeting: quick(),
+        first_read_wait: Duration::from_millis(200),
+        read_every: Duration::from_secs(1),
+        ..sim(net)
+    };
+    let home = dir.join("mo");
+    Node::init(&home, &knowing("Mo", relay, &directory, None)).unwrap();
+    let mo = Node::spawn_sim(&home, meeting.clone()).await.unwrap();
+    let home = dir.join("jimmy");
+    let mut jimmy_config = knowing("Jimmy", relay, &directory, None);
+    jimmy_config.carrier.known = vec![known(&kim)];
+    jimmy_config.carrier.hops = Some(true);
+    jimmy_config.sync.prefetch = false;
+    Node::init(&home, &jimmy_config).unwrap();
+    let jimmy = Node::spawn_sim(&home, meeting).await.unwrap();
+    let mo_machine = mo.machine_id().unwrap();
+    // Not only met: Mo's carrier starts after its machine does, so its
+    // first record may name none.
+    timeout(Duration::from_secs(60), async {
+        while !jimmy.carriers_in_table().contains(&mo_machine) {
+            let _ = jimmy.meet_round_now().await;
+            let _ = mo.meet_round_now().await;
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    })
+    .await
+    .expect("Jimmy's machine never heard of Mo's carrier");
+    Middled {
+        directory,
+        kim,
+        quinn,
+        mo,
+        jimmy,
     }
 }
 

@@ -42,4 +42,6 @@ tracing.workspace = true
 osp-node = { path = ".", features = ["sim"] }
 iroh-relay = { workspace = true, features = ["server"] }
 tempfile.workspace = true
+# Paused time for tests of waits (`hops::race`).
+tokio = { workspace = true, features = ["test-util"] }
 tracing-subscriber.workspace = true
