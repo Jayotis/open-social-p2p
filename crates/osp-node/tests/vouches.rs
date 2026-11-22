@@ -587,9 +587,20 @@ async fn the_owner_sees_who_vouched_and_gathers_their_side_when_asked() {
     follow(&alice, &kim).await;
     call(&alice, ClientRequest::Sync).await;
     reshare(&alice, shared).await;
-    wait_for("Kim's node to hear of Alice's reshare", || async {
-        resharers(&kim, shared).await == Some(1)
-    })
+    // Her name comes from her profile, which Kim's node gets apart from
+    // the reshare: CI once saw the reshare first.
+    wait_for(
+        "Kim's node to hear of Alice's reshare and know her name",
+        || async {
+            resharers(&kim, shared).await == Some(1)
+                && vouches(&kim, false)
+                    .await
+                    .0
+                    .first()
+                    .and_then(|v| v.name.clone())
+                    .is_some()
+        },
+    )
     .await;
     let (vouchers, side, gathered, _) = vouches(&kim, false).await;
     assert_eq!(vouchers.len(), 1);
