@@ -17,11 +17,11 @@
 use std::{
     collections::{HashMap, HashSet},
     sync::Mutex,
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::{Context, Result, anyhow};
-use iroh::{EndpointId, SecretKey, TransportAddr};
+use iroh::{Endpoint, EndpointId, SecretKey, TransportAddr};
 use iroh_blobs::util::connection_pool::ConnectionPool;
 use osp_carrier::{Descriptor, SETUP_TIMEOUT, ViewerCircuit};
 use osp_proto::{BlobHash, social::CircuitOffer};
@@ -32,6 +32,7 @@ use crate::{
     db::BlobClass,
     machine::carrier_of,
     node::Core,
+    picks::Middle,
     store::{self, Source, Sources},
     viewing::in_own_order,
 };
@@ -43,6 +44,86 @@ pub(crate) type Offers = Vec<(EndpointId, CircuitOffer)>;
 /// A cached descriptor is asked for again this long before its circuit key
 /// runs out, so a circuit isn't built on a key about to go.
 const FRESH_FOR: u64 = 5 * 60;
+
+/// With a machine in the middle, its circuit is built alongside the one
+/// without it, and used if it's ready within this: stage D's mark for a
+/// circuit to be usable (`docs/testing/carrier-lab.md`). After it, whichever
+/// is ready first carries, so a middle that's gone or slow costs no more
+/// than the circuit without it. Each still has the carriers' whole
+/// `SETUP_TIMEOUT` to answer.
+const PREFER_MIDDLE_FOR: Duration = Duration::from_secs(5);
+
+/// A circuit ready to fetch over: the endpoint its first hop was dialled
+/// from, and the one whose only path is the circuit.
+struct Circuit {
+    link: Endpoint,
+    ends: Endpoint,
+}
+
+impl Circuit {
+    async fn close(self) {
+        self.ends.close().await;
+        self.link.close().await;
+    }
+}
+
+/// How the two builds `race` waited on came out.
+struct Raced<T> {
+    /// The circuit to fetch over, and whether it's the one with the middle.
+    chosen: Result<(T, bool)>,
+    /// The other, if it was built too: to close.
+    unused: Option<T>,
+    /// Why the circuit through the middle failed, if it did. Not set when
+    /// it was only slower.
+    middle_failed: Option<anyhow::Error>,
+}
+
+/// Waits on `with` the middle and `without` it, both started: `with` if it's
+/// ready within `prefer_for`, else the first ready after that. One that
+/// fails leaves the other to wait for. The one not chosen is dropped if
+/// it's still building.
+async fn race<T>(
+    with: impl Future<Output = Result<T>>,
+    without: impl Future<Output = Result<T>>,
+    prefer_for: Duration,
+) -> Raced<T> {
+    tokio::pin!(with, without);
+    let preferred = tokio::time::sleep(prefer_for);
+    tokio::pin!(preferred);
+    let (mut w, mut wo): (Option<Result<T>>, Option<Result<T>>) = (None, None);
+    let mut waited = false;
+    loop {
+        match (&w, &wo) {
+            (Some(Ok(_)), _) | (Some(Err(_)), Some(_)) => break,
+            (None, Some(Ok(_))) if waited => break,
+            _ => {}
+        }
+        tokio::select! {
+            r = &mut with, if w.is_none() => w = Some(r),
+            r = &mut without, if wo.is_none() => wo = Some(r),
+            _ = &mut preferred, if !waited => waited = true,
+        }
+    }
+    match (w, wo) {
+        (Some(Ok(circuit)), other) => Raced {
+            chosen: Ok((circuit, true)),
+            unused: other.and_then(Result::ok),
+            middle_failed: None,
+        },
+        (w, Some(Ok(circuit))) => Raced {
+            chosen: Ok((circuit, false)),
+            unused: None,
+            middle_failed: w.and_then(Result::err),
+        },
+        (w, wo) => Raced {
+            chosen: Err(wo
+                .and_then(Result::err)
+                .unwrap_or_else(|| anyhow!("no circuit was built"))),
+            unused: None,
+            middle_failed: w.and_then(Result::err),
+        },
+    }
+}
 
 /// The seed carriers' descriptors, as their machine records last gave them.
 #[derive(Default)]
@@ -156,9 +237,11 @@ impl Core {
     /// Fetches `blob` from `host`'s node through a circuit to what `offer`
     /// names: this node's own hop, perhaps a machine in the middle (the
     /// `picks` module), then the host's hop, then the host's circuit
-    /// endpoint. Nothing goes any other way. A circuit with a machine in the
-    /// middle that fails is tried once more without it. A fetch that passes
-    /// the hash check credits the hops.
+    /// endpoint. Nothing goes any other way. With a machine in the middle,
+    /// the circuit without it is built at the same time, and carries the
+    /// fetch if the middle's is late or fails (`open_preferring_middle`); a
+    /// fetch over the middle's that fails is tried once more without it. A
+    /// fetch that passes the hash check credits the hops that carried it.
     pub(crate) async fn fetch_over_circuit(
         &self,
         blob: &BlobHash,
@@ -182,24 +265,46 @@ impl Core {
             2 => self.middle_hop(&known, &[my_hop, their_hop]),
             _ => None,
         };
-        if let Some(m) = &middle {
-            hops.insert(1, m.descriptor.clone());
-        }
-        let mut fetched = self
-            .fetch_through_hops(blob, host, offer, &hops, (class, declared))
-            .await;
-        if let (Err(e), Some(m)) = (&fetched, &middle) {
-            debug!(machine = %m.machine.fmt_short(), "the circuit through a machine in the middle failed; without it: {e:#}");
-            self.middle_failed(m);
-            hops.remove(1);
-            fetched = self
-                .fetch_through_hops(blob, host, offer, &hops, (class, declared))
-                .await;
-        }
-        let size = fetched.inspect_err(|_| {
+        let job = (class, declared);
+        let fetched = match &middle {
+            None => self
+                .fetch_through_hops(blob, host, offer, &hops, job)
+                .await
+                .map(|size| (size, false)),
+            Some(m) => {
+                let mut through = hops.clone();
+                through.insert(1, m.descriptor.clone());
+                // Boxed: two circuits' builds at once are a large future.
+                match Box::pin(self.open_preferring_middle(blob, offer, &through, &hops, m)).await {
+                    Ok((circuit, true)) => {
+                        match self.download_over(circuit, blob, host, offer, job).await {
+                            Ok(size) => Ok((size, true)),
+                            Err(e) => {
+                                debug!(machine = %m.machine.fmt_short(), "the fetch through a machine in the middle failed; without it: {e:#}");
+                                self.middle_failed(m);
+                                self.fetch_through_hops(blob, host, offer, &hops, job)
+                                    .await
+                                    .map(|size| (size, false))
+                            }
+                        }
+                    }
+                    Ok((circuit, false)) => self
+                        .download_over(circuit, blob, host, offer, job)
+                        .await
+                        .map(|size| (size, false)),
+                    Err(e) => Err(e),
+                }
+            }
+        };
+        let (size, through_middle) = fetched.inspect_err(|_| {
             // Asked for again next time, in case the hop restarted.
             self.seed_descriptors.0.lock().unwrap().remove(&my_hop);
         })?;
+        // Only the hops that carried it are credited.
+        let middle = middle.filter(|_| through_middle);
+        if let Some(m) = &middle {
+            hops.insert(1, m.descriptor.clone());
+        }
         let machines: Vec<EndpointId> = hops
             .iter()
             .filter_map(|d| d.verify(unix_now()).ok().map(|i| i.machine))
@@ -225,56 +330,156 @@ impl Core {
         host: EndpointId,
         offer: &CircuitOffer,
         hops: &[Descriptor],
-        (class, declared): (BlobClass, u64),
+        job: (BlobClass, u64),
     ) -> Result<u64> {
-        let first = hops[0].verify(unix_now())?;
+        let link = self.link_endpoint().await?;
+        let circuit = match self.build_circuit(&link, blob, offer, hops).await {
+            Ok(ends) => Circuit { link, ends },
+            Err(e) => {
+                link.close().await;
+                return Err(e);
+            }
+        };
+        self.download_over(circuit, blob, host, offer, job).await
+    }
+
+    /// Builds the circuit through `through`, which has a machine in the
+    /// middle, and the one through `without`, at once. The middle's is used
+    /// if it's ready within `PREFER_MIDDLE_FOR`, else whichever is ready
+    /// first after that. A middle whose circuit fails is noted
+    /// (`middle_failed`); one that is only slower than the other isn't. The
+    /// circuit not used is closed. Whether the middle's is the one returned.
+    async fn open_preferring_middle(
+        &self,
+        blob: &BlobHash,
+        offer: &CircuitOffer,
+        through: &[Descriptor],
+        without: &[Descriptor],
+        middle: &Middle,
+    ) -> Result<(Circuit, bool)> {
+        let (with_link, without_link) = tokio::join!(self.link_endpoint(), self.link_endpoint());
+        let (with_link, without_link) = match (with_link, without_link) {
+            (Ok(a), Ok(b)) => (a, b),
+            (Ok(link), Err(e)) | (Err(e), Ok(link)) => {
+                link.close().await;
+                return Err(e);
+            }
+            (Err(e), Err(_)) => return Err(e),
+        };
+        let raced = race(
+            Box::pin(self.build_circuit(&with_link, blob, offer, through)),
+            Box::pin(self.build_circuit(&without_link, blob, offer, without)),
+            PREFER_MIDDLE_FOR,
+        )
+        .await;
+        let machine = middle.machine.fmt_short();
+        if let Some(e) = &raced.middle_failed {
+            debug!(%machine, "the circuit through a machine in the middle failed; without it: {e:#}");
+            self.middle_failed(middle);
+        }
+        if let Some(ends) = raced.unused {
+            ends.close().await;
+        }
+        match raced.chosen {
+            Ok((ends, true)) => {
+                without_link.close().await;
+                Ok((
+                    Circuit {
+                        link: with_link,
+                        ends,
+                    },
+                    true,
+                ))
+            }
+            Ok((ends, false)) => {
+                if raced.middle_failed.is_none() {
+                    debug!(%machine, "the circuit without the machine in the middle was ready first; it carries this one");
+                }
+                with_link.close().await;
+                Ok((
+                    Circuit {
+                        link: without_link,
+                        ends,
+                    },
+                    false,
+                ))
+            }
+            Err(e) => {
+                with_link.close().await;
+                without_link.close().await;
+                Err(e)
+            }
+        }
+    }
+
+    /// An endpoint for a circuit's first link: with a key made for this
+    /// circuit, published nowhere, so the first hop learns an address
+    /// that's fetching, not an account.
+    async fn link_endpoint(&self) -> Result<Endpoint> {
         let relays = self.tracker.relays().clone();
         let relay = relay_mode(&self.config)?.context("relays are off")?;
-        // A key made for this circuit, published nowhere, so the first hop
-        // learns an address that's fetching, not an account.
-        let link_endpoint =
-            relayed_endpoint(&self.config, relay, &relays, SecretKey::generate(), vec![])
-                .await
-                .context("starting the endpoint for the circuit")?;
+        relayed_endpoint(&self.config, relay, &relays, SecretKey::generate(), vec![])
+            .await
+            .context("starting the endpoint for the circuit")
+    }
+
+    /// Dials `hops`' first from `link` and builds the circuit to `offer`'s
+    /// slot: the endpoint whose only path is the circuit.
+    async fn build_circuit(
+        &self,
+        link: &Endpoint,
+        blob: &BlobHash,
+        offer: &CircuitOffer,
+        hops: &[Descriptor],
+    ) -> Result<Endpoint> {
+        let first = hops[0].verify(unix_now())?;
+        let relays = self.tracker.relays().clone();
         let started = tokio::time::Instant::now();
-        let fetched = async {
-            let dial = osp_carrier::relay_dial(link_endpoint.clone(), move |url| {
-                relays.permits(&TransportAddr::Relay(url.clone()))
-            });
-            let conn = tokio::time::timeout(SETUP_TIMEOUT, dial(first))
-                .await
-                .map_err(|_| anyhow!("the first hop didn't answer in time"))??;
-            let circuit = ViewerCircuit::build(conn, hops, offer.slot).await?;
-            let ends = osp_carrier::viewer_endpoint(circuit, offer.endpoint).await?;
-            debug!(
-                blob = %blob.fmt_short(),
-                hops = hops.len(),
-                took_ms = started.elapsed().as_millis() as u64,
-                "the circuit is ready"
-            );
-            let pool = store::new_pool(&ends);
-            let source = Source {
-                node: host,
-                endpoint: offer.endpoint,
-                from_direct: false,
-            };
-            let size = self
-                .store
-                .download_through(
-                    blob,
-                    Sources::one_at_a_time(vec![source]),
-                    class,
-                    declared,
-                    &pool,
-                )
-                .await;
-            drop(pool);
-            ends.close().await;
-            size
-        }
-        .await;
-        link_endpoint.close().await;
-        fetched
+        let dial = osp_carrier::relay_dial(link.clone(), move |url| {
+            relays.permits(&TransportAddr::Relay(url.clone()))
+        });
+        let conn = tokio::time::timeout(SETUP_TIMEOUT, dial(first))
+            .await
+            .map_err(|_| anyhow!("the first hop didn't answer in time"))??;
+        let circuit = ViewerCircuit::build(conn, hops, offer.slot).await?;
+        let ends = osp_carrier::viewer_endpoint(circuit, offer.endpoint).await?;
+        debug!(
+            blob = %blob.fmt_short(),
+            hops = hops.len(),
+            took_ms = started.elapsed().as_millis() as u64,
+            "the circuit is ready"
+        );
+        Ok(ends)
+    }
+
+    /// Fetches `blob` from `host` over `circuit`, then closes it.
+    async fn download_over(
+        &self,
+        circuit: Circuit,
+        blob: &BlobHash,
+        host: EndpointId,
+        offer: &CircuitOffer,
+        (class, declared): (BlobClass, u64),
+    ) -> Result<u64> {
+        let pool = store::new_pool(&circuit.ends);
+        let source = Source {
+            node: host,
+            endpoint: offer.endpoint,
+            from_direct: false,
+        };
+        let size = self
+            .store
+            .download_through(
+                blob,
+                Sources::one_at_a_time(vec![source]),
+                class,
+                declared,
+                &pool,
+            )
+            .await;
+        drop(pool);
+        circuit.close().await;
+        size
     }
 
     /// As `fetch_over_circuit`, when this node fetches through carriers and
@@ -359,6 +564,76 @@ impl Core {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A build that takes `secs` and comes out as `ok`, named `name`.
+    async fn build(name: &'static str, secs: f64, ok: bool) -> Result<&'static str> {
+        tokio::time::sleep(Duration::from_secs_f64(secs)).await;
+        match ok {
+            true => Ok(name),
+            false => Err(anyhow!("{name} failed")),
+        }
+    }
+
+    async fn raced(with: (f64, bool), without: (f64, bool)) -> (Raced<&'static str>, f64) {
+        let started = tokio::time::Instant::now();
+        let r = race(
+            build("middle", with.0, with.1),
+            build("two", without.0, without.1),
+            PREFER_MIDDLE_FOR,
+        )
+        .await;
+        // To a tenth of a second: timers are rounded to milliseconds.
+        let took = (started.elapsed().as_secs_f64() * 10.0).round() / 10.0;
+        (r, took)
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_middle_ready_in_time_is_used_even_after_the_other() {
+        let (r, took) = raced((4.5, true), (1.0, true)).await;
+        assert_eq!(r.chosen.unwrap(), ("middle", true));
+        assert_eq!(r.unused, Some("two"), "built, so it's closed");
+        assert!(r.middle_failed.is_none());
+        assert_eq!(took, 4.5);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_middle_ready_first_doesnt_wait_for_the_other() {
+        let (r, took) = raced((2.0, true), (4.0, true)).await;
+        assert_eq!(r.chosen.unwrap(), ("middle", true));
+        assert_eq!(r.unused, None, "still building, so dropped");
+        assert_eq!(took, 2.0);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_slow_middle_loses_to_the_other_without_failing() {
+        // Stage D: a middle that never answered held the fetch 22.8 s.
+        let (r, took) = raced((20.0, false), (4.2, true)).await;
+        assert_eq!(r.chosen.unwrap(), ("two", false));
+        assert!(r.middle_failed.is_none(), "only slower: not failed");
+        assert_eq!(took, 5.0, "the middle's 5 s, then the one ready");
+        let (r, took) = raced((30.0, true), (7.0, true)).await;
+        assert_eq!(r.chosen.unwrap(), ("two", false));
+        assert_eq!(took, 7.0, "after the 5 s, the first ready");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_middle_that_fails_is_noted_and_the_other_carries() {
+        // Stage D: a middle answered `Gone` after 5.4 s.
+        let (r, took) = raced((1.0, false), (4.2, true)).await;
+        assert_eq!(r.chosen.unwrap(), ("two", false));
+        assert!(r.middle_failed.is_some());
+        assert_eq!(took, 4.2, "no wait for the 5 s once the middle failed");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_middle_carries_when_the_other_fails_even_late() {
+        let (r, took) = raced((9.0, true), (1.0, false)).await;
+        assert_eq!(r.chosen.unwrap(), ("middle", true));
+        assert_eq!(took, 9.0);
+        let (r, _) = raced((2.0, false), (3.0, false)).await;
+        assert!(r.chosen.unwrap_err().to_string().contains("two failed"));
+        assert!(r.middle_failed.is_some());
+    }
 
     #[test]
     fn a_files_hosts_are_asked_for_offers_once_at_a_time() {

@@ -204,6 +204,10 @@ pub struct Stats {
     /// Packets that waited for the upload share before going on: the share,
     /// not the path, set how fast they went.
     pub held: u64,
+    /// How long, in all, packets were waiting for the upload share, in ms.
+    /// While some wait, what's carried goes at the share exactly: more was
+    /// asked of it than it allows.
+    pub held_ms: u64,
     /// Packets sent on to a link whose datagram buffer was backed up: the
     /// path, or the owner's connection, couldn't take them as fast.
     pub link_full: u64,
@@ -384,6 +388,10 @@ struct Pacer {
     /// Each with the bytes it carried, which is what the share counts.
     held: VecDeque<(LinkId, Bytes, usize)>,
     held_bytes: usize,
+    /// Since when packets have been waiting, while they are.
+    waiting_since: Option<Instant>,
+    /// How long packets waited in all, up to the last time none were.
+    waited: Duration,
 }
 
 /// What the pacer did with a packet.
@@ -425,7 +433,25 @@ impl Pacer {
         }
         self.held_bytes += bytes;
         self.held.push_back((link, frame, bytes));
+        self.waiting_since.get_or_insert(now);
         Paced::Held
+    }
+
+    /// How long packets have waited for the share in all, by `now`.
+    fn waited_by(&self, now: Instant) -> Duration {
+        let waiting = self
+            .waiting_since
+            .map_or(Duration::ZERO, |since| now.saturating_duration_since(since));
+        self.waited + waiting
+    }
+
+    /// Ends the time waited, once none are waiting.
+    fn none_waiting(&mut self, now: Instant) {
+        if self.held.is_empty()
+            && let Some(since) = self.waiting_since.take()
+        {
+            self.waited += now.saturating_duration_since(since);
+        }
     }
 
     /// The packets whose turn has come by `now`, in order, with the bytes
@@ -434,7 +460,9 @@ impl Pacer {
         let Some(rate) = rate else {
             // No share any more: everything held goes.
             self.held_bytes = 0;
-            return self.held.drain(..).collect();
+            let out = self.held.drain(..).collect();
+            self.none_waiting(now);
+            return out;
         };
         let rate = rate as f64;
         let mut out = Vec::new();
@@ -447,6 +475,7 @@ impl Pacer {
             self.held_bytes -= bytes;
             out.extend(self.held.pop_front());
         }
+        self.none_waiting(now);
         out
     }
 
@@ -572,6 +601,7 @@ impl State {
                 let mut s = self.stats.clone();
                 s.circuits = self.circuits.len();
                 s.links = self.links.len();
+                s.held_ms = self.pacer.waited_by(Instant::now()).as_millis() as u64;
                 let _ = reply.send(s);
             }
         }
@@ -1352,6 +1382,31 @@ mod tests {
             held += 1;
         }
         assert_eq!(held, 2_500);
+    }
+
+    #[test]
+    fn the_time_packets_waited_is_counted_only_while_some_do() {
+        let mut p = Pacer::default();
+        let now = Instant::now();
+        let ms = |d: u64| now + Duration::from_millis(d);
+        assert_eq!(p.offer(RATE, 1, frame(1), 100_000, now), Paced::Now);
+        assert_eq!(p.waited_by(ms(500)), Duration::ZERO, "nothing waited");
+        // 10 kB at 100 kB/s: its turn comes 100 ms on.
+        assert_eq!(p.offer(RATE, 1, frame(2), 10_000, ms(10)), Paced::Held);
+        assert_eq!(
+            p.waited_by(ms(60)),
+            Duration::from_millis(50),
+            "still waiting"
+        );
+        assert_eq!(p.due(Some(RATE as u64), ms(110)).len(), 1);
+        assert_eq!(
+            p.waited_by(ms(150)),
+            Duration::from_millis(100),
+            "none since"
+        );
+        assert_eq!(p.offer(RATE, 1, frame(3), 50_000, ms(200)), Paced::Held);
+        assert_eq!(p.due(None, ms(250)).len(), 1);
+        assert_eq!(p.waited_by(ms(2000)), Duration::from_millis(150));
     }
 
     #[test]
