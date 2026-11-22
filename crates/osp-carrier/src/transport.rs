@@ -23,7 +23,7 @@ use iroh::{
     Endpoint, EndpointAddr, EndpointId, SecretKey, TransportAddr,
     address_lookup::{AddressLookup, EndpointData, EndpointInfo, Error, Item},
     endpoint::{
-        Builder, QuicTransportConfig,
+        Builder, QuicTransportConfig, QuicTransportConfigBuilder,
         presets::{Minimal, Preset},
         transports::{CustomEndpoint, CustomSender, CustomTransport, RecvInfo, Transmit},
     },
@@ -67,10 +67,31 @@ fn here() -> CustomAddr {
     CustomAddr::from_parts(TRANSPORT_ID, &[HERE])
 }
 
-/// QUIC's settings for an end over a circuit: iroh's, with path MTU
-/// discovery off.
+/// How much one stream may have on its way to this end before it reads any:
+/// QUIC's receive window per stream. A stream can't go faster than this per
+/// round trip, so QUIC's default, 1.25 MB, held a carrier fetch at a 0.8 s
+/// round trip to about 1.2 MB/s (`docs/testing/carrier-lab.md`). Too large
+/// breaks relayed paths instead: with 8 MiB, a round trip's burst met the
+/// project relay's per-client limit (4 MB/s, bursting to 8 MB) and the
+/// viewer's relay queue, and the fetch failed. 3 MiB allows about 3.9 MB/s
+/// at 0.8 s, and a burst well inside the relay's.
+pub const STREAM_WINDOW: u32 = 3 << 20;
+/// The same for a whole connection: two streams' worth, so two transfers
+/// can each have their whole window, and memory per connection is bounded.
+pub const CONNECTION_WINDOW: u32 = 2 * STREAM_WINDOW;
+
+/// OSP's receive windows ([`STREAM_WINDOW`], [`CONNECTION_WINDOW`]), for a
+/// node's own endpoints and the ends of its circuits alike.
+pub fn media_windows(config: QuicTransportConfigBuilder) -> QuicTransportConfigBuilder {
+    config
+        .stream_receive_window(STREAM_WINDOW.into())
+        .receive_window(CONNECTION_WINDOW.into())
+}
+
+/// QUIC's settings for an end over a circuit: iroh's, with OSP's receive
+/// windows and path MTU discovery off.
 fn quic_config() -> QuicTransportConfig {
-    QuicTransportConfig::builder()
+    media_windows(QuicTransportConfig::builder())
         .mtu_discovery_config(None)
         .build()
 }

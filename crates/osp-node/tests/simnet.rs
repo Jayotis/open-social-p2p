@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 
 use iroh::{
     Endpoint, EndpointAddr, EndpointId, RelayMode, SecretKey, TransportAddr,
-    endpoint::{Connection, RecvStream, SendStream, presets},
+    endpoint::{Connection, QuicTransportConfig, RecvStream, SendStream, presets},
     protocol::{AcceptError, ProtocolHandler, Router},
 };
 use iroh_blobs::{
@@ -415,6 +415,38 @@ async fn post_noise_photo(node: &Node, dir: &std::path::Path) -> Hash {
     Hash::from_bytes(*items[0].attachments[0].attachment.blob.as_bytes())
 }
 
+/// Posts a 40 s clip of noise, which the node's video settings (1.5 Mbit/s
+/// at most) make about 7 MB, and returns its blob and size: well over the
+/// first [`osp_carrier::STREAM_WINDOW`] of a transfer, which isn't measured.
+/// A photo is at most about 3 MB, so it is never measured.
+async fn post_noise_clip(node: &Node, dir: &std::path::Path) -> (Hash, u64) {
+    let clip = dir.join("noise.mp4");
+    let status = tokio::process::Command::new("ffmpeg")
+        .args(["-hide_banner", "-loglevel", "error", "-y"])
+        .args(["-f", "lavfi", "-i"])
+        .arg("testsrc=duration=40:size=1280x720:rate=30,noise=alls=100:allf=t")
+        .args(["-c:v", "libx264", "-preset", "ultrafast", "-crf", "10"])
+        .arg(&clip)
+        .status()
+        .await
+        .expect("ffmpeg must be installed");
+    assert!(status.success());
+    let post = ClientRequest::Post {
+        content: "noise".into(),
+        attachments: vec![clip],
+        uploads: vec![],
+        upload: None,
+    };
+    call(node, post).await;
+    let ClientResponse::Feed { items } = call(node, ClientRequest::Feed { limit: 1 }).await else {
+        panic!("no feed");
+    };
+    let clip = &items[0].attachments[0].attachment;
+    let size = clip.size;
+    assert!(size > 6_000_000, "the clip came out at {size} bytes");
+    (Hash::from_bytes(*clip.blob.as_bytes()), size)
+}
+
 async fn status(node: &Node) -> StatusInfo {
     let ClientResponse::Status(status) = call(node, ClientRequest::Status).await else {
         panic!("no status");
@@ -422,40 +454,50 @@ async fn status(node: &Node) -> StatusInfo {
     status
 }
 
-/// A node with no upload cap that uploads at `mbps`, with a photo posted,
-/// and another node on the network to fetch it.
-async fn serving_photo(
+/// A node with no upload cap that uploads at `mbps`, with a clip posted,
+/// and another node on the network to fetch it, with OSP's receive windows:
+/// the most a fetcher lets the node send before anything arrives.
+async fn serving_clip(
     dir: &std::path::Path,
     net: &SimNet,
     mbps: u64,
-) -> (Node, Hash, Connection, Endpoint) {
+) -> (Node, Hash, u64, Connection, Endpoint) {
     let link = Link {
         up_bps: mbps * MBPS,
         ..delay(10)
     };
     let node = start(dir, "a", net, link).await;
-    let photo = post_noise_photo(&node, dir).await;
+    let (clip, size) = post_noise_clip(&node, dir).await;
     // The fewest places until it has measured anything.
     let before = status(&node).await;
     assert_eq!(
         (before.transfer_places, before.upload_measured_mbps),
         (2, None)
     );
-    let other = endpoint(net, delay(10)).await;
+    let key = SecretKey::generate();
+    let other = Endpoint::builder(presets::Minimal)
+        .relay_mode(RelayMode::Disabled)
+        .clear_ip_transports()
+        .add_custom_transport(net.link(delay(10)).transport(key.public()))
+        .secret_key(key)
+        .transport_config(osp_carrier::media_windows(QuicTransportConfig::builder()).build())
+        .bind()
+        .await
+        .unwrap();
     let conn = other
         .connect(sim_addr(node.node_id()), iroh_blobs::ALPN)
         .await
         .unwrap();
-    (node, photo, conn, other)
+    (node, clip, size, conn, other)
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_node_with_no_upload_cap_measures_a_slow_upload() {
     let dir = tempfile::tempdir().unwrap();
     let net = SimNet::new(1);
-    let (node, photo, conn, _other) = serving_photo(dir.path(), &net, 2).await;
-    // 12 s or so at 2 Mbit/s.
-    MemStore::new().remote().fetch(conn, photo).await.unwrap();
+    let (node, clip, _, conn, _other) = serving_clip(dir.path(), &net, 2).await;
+    // 30 s or so at 2 Mbit/s.
+    MemStore::new().remote().fetch(conn, clip).await.unwrap();
 
     // Measured at about the line's speed, a little under for the overhead.
     // Counting what QUIC takes at once at the start would read far faster.
@@ -470,15 +512,15 @@ async fn a_node_with_no_upload_cap_measures_a_slow_upload() {
 async fn a_node_with_no_upload_cap_measures_ranges_with_gaps_by_what_it_sends() {
     let dir = tempfile::tempdir().unwrap();
     let net = SimNet::new(1);
-    let (node, photo, conn, _other) = serving_photo(dir.path(), &net, 1).await;
-    let ClientResponse::Feed { items } = call(&node, ClientRequest::Feed { limit: 1 }).await else {
-        panic!("no feed");
-    };
-    let size = items[0].attachments[0].attachment.size;
-    // The start and end of the photo, with the bytes between as a gap, as
-    // a node asks for what is left of a blob: 18 s or so at 1 Mbit/s.
-    let ranges = ChunkRanges::bytes(0..1_750_000) | ChunkRanges::bytes(size - 500_000..size);
-    let request = GetRequest::blob_ranges(photo, ranges);
+    let (node, clip, size, conn, _other) = serving_clip(dir.path(), &net, 1).await;
+    // The start and end of the clip, with the bytes between as a gap, as a
+    // node asks for what is left of a blob: 45 s or so at 1 Mbit/s. The
+    // start is long enough that 2 MB of it are sent past the part that
+    // isn't measured.
+    let start = osp_carrier::STREAM_WINDOW as u64 + 2_000_000;
+    assert!(start + 500_000 < size - 500_000, "no gap in {size} bytes");
+    let ranges = ChunkRanges::bytes(0..start) | ChunkRanges::bytes(size - 500_000..size);
+    let request = GetRequest::blob_ranges(clip, ranges);
     let got = MemStore::new().remote().execute_get(conn, request);
     got.complete().await.unwrap();
 
@@ -492,15 +534,15 @@ async fn a_node_with_no_upload_cap_measures_ranges_with_gaps_by_what_it_sends() 
 async fn a_node_with_no_upload_cap_takes_on_more_once_it_measures_a_fast_upload() {
     let dir = tempfile::tempdir().unwrap();
     let net = SimNet::new(1);
-    let (node, photo, conn, _other) = serving_photo(dir.path(), &net, 30).await;
-    // Each copy takes a second or so at 30 Mbit/s: one after another until
-    // a measurement ends.
+    let (node, clip, _, conn, _other) = serving_clip(dir.path(), &net, 30).await;
+    // Each copy takes two seconds or so at 30 Mbit/s: one after another
+    // until a measurement ends.
     let start = Instant::now();
     let measured = loop {
         assert!(start.elapsed() < Duration::from_secs(30), "never measured");
         MemStore::new()
             .remote()
-            .fetch(conn.clone(), photo)
+            .fetch(conn.clone(), clip)
             .await
             .unwrap();
         if let Some(mbps) = status(&node).await.upload_measured_mbps {

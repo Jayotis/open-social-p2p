@@ -22,7 +22,7 @@ use std::{
 
 use anyhow::{Context, Result, anyhow};
 use iroh::{Endpoint, EndpointId, SecretKey, TransportAddr};
-use iroh_blobs::util::connection_pool::ConnectionPool;
+use iroh_blobs::util::connection_pool::{ConnectionPool, ConnectionRef};
 use osp_carrier::{Descriptor, SETUP_TIMEOUT, ViewerCircuit};
 use osp_proto::{BlobHash, social::CircuitOffer};
 use tracing::{debug, info};
@@ -70,7 +70,8 @@ impl Circuit {
 /// A circuit built to an offer, with what fetching over it needs: the hops
 /// without the middle, for a second try and for credit; the middle, if one
 /// was picked, and whether the circuit goes through it; and this node's own
-/// hop, whose descriptor is forgotten if the fetch fails.
+/// hop, whose descriptor is forgotten if the fetch fails. And the
+/// connection to the host over it, if it was opened ahead of the fetch.
 struct Built {
     circuit: Circuit,
     hops: Vec<Descriptor>,
@@ -78,6 +79,15 @@ struct Built {
     through_middle: bool,
     known: Known,
     my_hop: EndpointId,
+    connected: Option<Connected>,
+}
+
+/// A connection to the host over a circuit, opened before anything is asked
+/// for over it: the pool it's in, which the fetch uses, and a hold on it, so
+/// the pool doesn't close it as unused meanwhile.
+struct Connected {
+    pool: ConnectionPool,
+    _held: ConnectionRef,
 }
 
 /// How the two builds `race` waited on came out.
@@ -324,6 +334,7 @@ impl Core {
             through_middle,
             known,
             my_hop,
+            connected: None,
         })
     }
 
@@ -350,10 +361,14 @@ impl Core {
             through_middle,
             known,
             my_hop,
+            connected,
         } = built;
         let (_, declared) = job;
         let fetched = match (&middle, through_middle) {
-            (Some(m), true) => match self.download_over(circuit, blob, host, offer, job).await {
+            (Some(m), true) => match self
+                .download_over(circuit, connected, blob, host, offer, job)
+                .await
+            {
                 Ok(size) => Ok((size, true)),
                 Err(e) => {
                     debug!(machine = %m.machine.fmt_short(), "the fetch through a machine in the middle failed; without it: {e:#}");
@@ -364,7 +379,7 @@ impl Core {
                 }
             },
             _ => self
-                .download_over(circuit, blob, host, offer, job)
+                .download_over(circuit, connected, blob, host, offer, job)
                 .await
                 .map(|size| (size, false)),
         };
@@ -402,7 +417,8 @@ impl Core {
         job: (BlobClass, u64),
     ) -> Result<u64> {
         let circuit = self.open(blob, offer, hops).await?;
-        self.download_over(circuit, blob, host, offer, job).await
+        self.download_over(circuit, None, blob, host, offer, job)
+            .await
     }
 
     /// A circuit through `hops` to `offer`'s slot, from an endpoint of its own.
@@ -531,16 +547,21 @@ impl Core {
         Ok(ends)
     }
 
-    /// Fetches `blob` from `host` over `circuit`, then closes it.
+    /// Fetches `blob` from `host` over `circuit`, then closes it. Over the
+    /// connection already opened to it, if there is one.
     async fn download_over(
         &self,
         circuit: Circuit,
+        connected: Option<Connected>,
         blob: &BlobHash,
         host: EndpointId,
         offer: &CircuitOffer,
         (class, declared): (BlobClass, u64),
     ) -> Result<u64> {
-        let pool = store::new_pool(&circuit.ends);
+        let (pool, held) = match connected {
+            Some(c) => (c.pool, Some(c._held)),
+            None => (store::new_pool(&circuit.ends), None),
+        };
         let source = Source {
             node: host,
             endpoint: offer.endpoint,
@@ -556,6 +577,7 @@ impl Core {
                 &pool,
             )
             .await;
+        drop(held);
         drop(pool);
         circuit.close().await;
         size
@@ -596,6 +618,33 @@ impl Core {
             .ok()
     }
 
+    /// As `circuit_offered`, and then the connection to the host opened over
+    /// it straight away, for the circuit built while other sources are
+    /// tried: if they fail, the fetch over it doesn't wait for QUIC's
+    /// handshake too (stage D's first byte, `docs/testing/carrier-lab.md`).
+    /// Nothing is asked for over it. If it can't be opened now, the fetch
+    /// opens it.
+    async fn circuit_connected(&self, blob: &BlobHash, offer: &CircuitOffer) -> Option<Built> {
+        let mut built = self.circuit_offered(blob, offer).await?;
+        let pool = store::new_pool(&built.circuit.ends);
+        let started = tokio::time::Instant::now();
+        match pool.get_or_connect(offer.endpoint).await {
+            Ok(held) => {
+                debug!(
+                    blob = %blob.fmt_short(),
+                    connect_ms = started.elapsed().as_millis() as u64,
+                    "connected to the host over the circuit, ahead of the fetch"
+                );
+                built.connected = Some(Connected { pool, _held: held });
+            }
+            Err(e) => debug!(
+                blob = %blob.fmt_short(),
+                "couldn't connect to the host over the circuit ahead; the fetch will try: {e}"
+            ),
+        }
+        Some(built)
+    }
+
     /// As `try_over_circuit`'s second step: the fetch over `built`.
     async fn fetch_offered(
         &self,
@@ -620,10 +669,11 @@ impl Core {
     /// sources are reached only through it (ADR 0024).
     ///
     /// The first offer's circuit is built while the other sources are
-    /// tried, so a try that fails doesn't then wait for it: stage D's first
-    /// byte (`docs/testing/carrier-lab.md`). Only the circuit is built, and
-    /// nothing is downloaded over it unless the try fails. If it succeeds,
-    /// the circuit is closed, or its build dropped.
+    /// tried, and the connection to the host opened over it, so a try that
+    /// fails doesn't then wait for either: stage D's first byte
+    /// (`docs/testing/carrier-lab.md`). Nothing is asked for over it unless
+    /// the try fails. If it succeeds, the circuit and its connection are
+    /// closed, or their build dropped.
     pub(crate) async fn download_offered(
         &self,
         blob: &BlobHash,
@@ -651,13 +701,14 @@ impl Core {
             let (tried, built) = try_while_building(
                 self.store.download_with(blob, others, class, declared, via),
                 // Boxed: a circuit's build, with a middle's beside it, is large.
-                Box::pin(self.circuit_offered(blob, first)),
+                Box::pin(self.circuit_connected(blob, first)),
             )
             .await;
             match tried {
                 Ok(size) => {
                     // Not needed: closed if ready, else its build dropped.
                     if let Some(Some(b)) = built {
+                        drop(b.connected);
                         b.circuit.close().await;
                     }
                     return Ok(size);
