@@ -869,6 +869,20 @@ pub struct CarrierStatus {
     pub circuits: usize,
     pub bytes: u64,
     pub busy: u64,
+    /// Since the node started: packets that waited for the upload share,
+    /// and for how long in all (ms); packets dropped with the share's queue
+    /// full; packets sent to a link that was backed up; and all packets
+    /// dropped, those with the full queue among them.
+    #[serde(default)]
+    pub held: u64,
+    #[serde(default)]
+    pub held_ms: u64,
+    #[serde(default)]
+    pub share_full: u64,
+    #[serde(default)]
+    pub link_full: u64,
+    #[serde(default)]
+    pub dropped: u64,
     /// The owner's answer on the hops this node picks seeing its address:
     /// unset if not asked yet, when its own leg stays on relays.
     #[serde(default)]

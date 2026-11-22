@@ -503,4 +503,6 @@ async fn a_hop_over_its_share_slows_the_video_rather_than_losing_it() {
         stats.held > 0 && stats.dropped * 2 < stats.held,
         "{stats:?}"
     );
+    // The full queue's drops are counted apart, and among all drops.
+    assert!(stats.share_full <= stats.dropped, "{stats:?}");
 }

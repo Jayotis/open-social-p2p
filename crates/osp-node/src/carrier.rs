@@ -229,9 +229,13 @@ impl Learned {
         }
         let waited = Duration::from_millis(stats.held_ms.saturating_sub(before.held_ms));
         let wanted_more = waited.as_secs_f64() >= LEARN_HELD * took.as_secs_f64();
+        // A full queue for the share drops packets, and the ends' QUIC
+        // backs off from the loss, so it may not wait long again: the drop
+        // is enough to go on (the probe after stage D's third run).
+        let share_full = stats.share_full.saturating_sub(before.share_full);
         let higher = (mbps * LEARN_STEP).min(LEARN_MAX_MBPS);
-        if wanted_more && self.mbps.is_none_or(|m| m < higher) {
-            debug!(mbps = %format!("{higher:.1}"), waited_ms = waited.as_millis() as u64, "packets waited for the share with no link backed up: the upload learned from carrying goes up");
+        if (wanted_more || share_full > 0) && self.mbps.is_none_or(|m| m < higher) {
+            debug!(mbps = %format!("{higher:.1}"), waited_ms = waited.as_millis() as u64, share_full, "the share held packets back or its queue was full, with no link backed up: the upload learned from carrying goes up");
             self.mbps = Some(higher);
         }
     }
@@ -588,9 +592,7 @@ impl crate::node::Core {
             (None, _) => Some(self.why_not_carrying().to_string()),
         };
         let now = crate::hops::unix_now() as i64;
-        let (circuits, bytes, busy) = stats
-            .as_ref()
-            .map_or((0, 0, 0), |s| (s.circuits, s.bytes, s.busy));
+        let s = stats.clone().unwrap_or_default();
         let (month_bytes, _) = carried_this_month(&self.db)?;
         let month_budget = controls.monthly_budget();
         let over_budget = month_budget.is_some_and(|b| month_bytes >= b);
@@ -616,9 +618,14 @@ impl crate::node::Core {
             }
             .to_string(),
             bytes_per_sec: limits.bytes_per_sec,
-            circuits,
-            bytes,
-            busy,
+            circuits: s.circuits,
+            bytes: s.bytes,
+            busy: s.busy,
+            held: s.held,
+            held_ms: s.held_ms,
+            share_full: s.share_full,
+            link_full: s.link_full,
+            dropped: s.dropped,
             hops: *self.hops.borrow(),
             seeds: self.config.carrier.known.len(),
             standing: self.db.carriers_at_standing(now)?.len(),
@@ -880,6 +887,31 @@ mod tests {
             spell(&mut l, &c, &mut at, 0.66, 0.7);
         }
         assert!(l.mbps().unwrap() > 24.0, "{:?}", l.mbps());
+    }
+
+    /// The probe after stage D's third run: the share's queue was full and
+    /// dropped packets, and the ends' QUIC, backing off, then left them
+    /// waiting under half the time. The drops are enough to raise it; with
+    /// a link backed up as well, it goes down instead.
+    #[test]
+    fn a_full_queue_for_the_share_raises_it_unless_a_link_backed_up() {
+        let c = home();
+        let mut l = Learned::default();
+        let mut at = tokio::time::Instant::now();
+        l.judge(&Stats::default(), Some(625_000), c.upload(None), at);
+        let (_, mut stats) = l.since.clone().unwrap();
+        for want in [12.5, 15.625] {
+            at += LEARN_OVER;
+            stats.share_full += 120;
+            stats.held_ms += 500;
+            l.judge(&stats, Some(625_000), c.upload(l.mbps()), at);
+            assert_eq!(l.mbps(), Some(want), "dropped from a full queue: up");
+        }
+        at += LEARN_OVER;
+        stats.share_full += 120;
+        stats.link_full += 1;
+        l.judge(&stats, Some(625_000), c.upload(l.mbps()), at);
+        assert_eq!(l.mbps(), Some(12.5), "a link backed up too: down");
     }
 
     #[test]

@@ -2688,6 +2688,14 @@ async fn carrier(home: &Path, change: Option<CarrierCommand>, json: bool) -> Res
             c.busy
         );
         println!(
+            "Packets:   {} waited for the share ({:.1} s in all), {} dropped with the share's queue full, {} sent to a backed-up link, {} dropped in all",
+            c.held,
+            c.held_ms as f64 / 1000.0,
+            c.share_full,
+            c.link_full,
+            c.dropped
+        );
+        println!(
             "Standing:  {} machine(s) earned it with your node, {} on probation",
             c.standing, c.probation
         );
