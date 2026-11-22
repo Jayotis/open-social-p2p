@@ -142,10 +142,11 @@ const MIN_TRANSFERS: usize = 2;
 const MEASURE_OVER: Duration = Duration::from_secs(5);
 /// The first this many bytes of each transfer aren't measured: QUIC takes
 /// them at once, into its send buffer, faster than a home connection can
-/// send them. It's as much as the node fetching lets us send ahead, QUIC's
-/// default stream window; after that, each byte is taken as one arrives.
-/// A small blob is all taken at once, so it is never measured.
-const SEND_AHEAD: u64 = 1_250_000;
+/// send them. It's as much as the node fetching lets us send ahead, OSP's
+/// stream window ([`osp_carrier::STREAM_WINDOW`]); after that, each byte is
+/// taken as one arrives. A small blob is all taken at once, so it is never
+/// measured.
+const SEND_AHEAD: u64 = osp_carrier::STREAM_WINDOW as u64;
 /// Most at once for any one node.
 const MAX_TRANSFERS_PER_NODE: usize = 2;
 /// How long a request over one of those limits waits for a place. After

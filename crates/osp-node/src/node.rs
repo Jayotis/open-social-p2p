@@ -1539,7 +1539,7 @@ fn builder_publishing(
     relays: &RelayPolicy,
     publish: bool,
 ) -> Result<Builder> {
-    let transport = QuicTransportConfig::builder()
+    let transport = osp_carrier::media_windows(QuicTransportConfig::builder())
         .max_concurrent_bidi_streams(MAX_STREAMS_PER_CONN.into())
         // None of our protocols use one-way streams. Nobody would read them,
         // so whatever a peer sent on them would sit in memory.
