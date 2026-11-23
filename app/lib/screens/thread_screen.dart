@@ -629,8 +629,9 @@ class _ReplyCard extends StatelessWidget {
               ),
               Padding(
                 padding: const EdgeInsets.only(right: 12),
-                // Their words, as plain text, never as a link.
-                child: SelectableText(reply.text),
+                // Their words, as plain text, never as a link; selectable,
+                // but read as text, not as a text field.
+                child: SelectionArea(child: Text(reply.text)),
               ),
             ],
           ),

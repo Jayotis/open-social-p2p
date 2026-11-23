@@ -277,9 +277,9 @@ class PostCard extends StatelessWidget {
           if (post.text.isNotEmpty)
             Padding(
               padding: const EdgeInsets.fromLTRB(Space.m, 0, Space.m, Space.s),
-              child: SelectableText(
-                post.text,
-                style: theme.textTheme.bodyLarge,
+              // Selectable, but read as text, not as a text field.
+              child: SelectionArea(
+                child: Text(post.text, style: theme.textTheme.bodyLarge),
               ),
             ),
           for (final media in post.media)

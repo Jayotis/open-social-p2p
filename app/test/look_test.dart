@@ -446,6 +446,16 @@ void main() {
       );
     });
 
+    testWidgets('You', (tester) async {
+      await show(tester, Brightness.dark, AppShell(node: node), text: big);
+      await tester.tap(find.byTooltip('You'));
+      await tester.pumpAndSettle();
+      await expectLater(
+        find.byType(MaterialApp),
+        matchesGoldenFile('goldens/you_large.png'),
+      );
+    });
+
     testWidgets('a profile', (tester) async {
       await show(
         tester,
@@ -458,5 +468,43 @@ void main() {
         matchesGoldenFile('goldens/profile_large.png'),
       );
     });
+  });
+
+  // Accessibility basics (P11 part 7): Flutter's own checks over each place,
+  // in both looks. Tap targets big enough on Android and iPhone, everything
+  // tappable has a name a screen reader says, and text stands out from what's
+  // behind it.
+  group('accessibility', () {
+    Future<void> tab(WidgetTester tester, Brightness b, String tooltip) async {
+      await show(tester, b, AppShell(node: node));
+      await tester.tap(find.byTooltip(tooltip));
+      await tester.pumpAndSettle();
+    }
+
+    final places = <String, Future<void> Function(WidgetTester, Brightness)>{
+      'Home': (tester, b) => show(tester, b, AppShell(node: node)),
+      'the Universe': (tester, b) => tab(tester, b, 'Universe'),
+      'You': (tester, b) => tab(tester, b, 'You'),
+      'Activity': (tester, b) => tab(tester, b, 'Activity'),
+      'a profile': (tester, b) => show(
+        tester,
+        b,
+        ProfileScreen(node: node, identity: 'id-Kim', name: 'Kim'),
+      ),
+    };
+
+    for (final b in Brightness.values) {
+      for (final MapEntry(key: place, value: open) in places.entries) {
+        testWidgets('$place, ${b.name}', (tester) async {
+          final semantics = tester.ensureSemantics();
+          await open(tester, b);
+          await expectLater(tester, meetsGuideline(androidTapTargetGuideline));
+          await expectLater(tester, meetsGuideline(iOSTapTargetGuideline));
+          await expectLater(tester, meetsGuideline(labeledTapTargetGuideline));
+          await expectLater(tester, meetsGuideline(textContrastGuideline));
+          semantics.dispose();
+        });
+      }
+    }
   });
 }

@@ -381,10 +381,13 @@ class _ProfileScreenState extends State<ProfileScreen> {
             ),
           if (profile.summary case final summary?) ...[
             const SizedBox(height: Space.m),
-            SelectableText(
-              summary,
-              style: theme.textTheme.bodyLarge,
-              textAlign: TextAlign.center,
+            // Selectable, but read as text, not as a text field.
+            SelectionArea(
+              child: Text(
+                summary,
+                style: theme.textTheme.bodyLarge,
+                textAlign: TextAlign.center,
+              ),
             ),
           ],
           if (profile.links.isNotEmpty) ...[

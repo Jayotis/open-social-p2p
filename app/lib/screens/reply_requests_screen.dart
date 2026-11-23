@@ -187,8 +187,9 @@ class _RequestCard extends StatelessWidget {
               ),
             ],
             const SizedBox(height: 8),
-            // Their words, as plain text, never as a link.
-            SelectableText(r.text),
+            // Their words, as plain text, never as a link; selectable, but
+            // read as text, not as a text field.
+            SelectionArea(child: Text(r.text)),
             const SizedBox(height: 4),
             Text(
               'The name is the one their profile gives. Your node checked '
