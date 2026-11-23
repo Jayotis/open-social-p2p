@@ -164,6 +164,42 @@ So with the share out of the way, V's relayed leg to P is what holds the carrier
 
 Nothing on the transport changes from this probe.
 
+## The receive window, before the fifth run
+
+**About 1 MB in flight per round trip on every path, 2026-11-22.** The download debug lines (#282) gave each path's round trip and speed. On the carrier path and on relay only alike, speed × round trip came to about 1 MB, the size of QUIC's default receive window (1.25 MB). So V's window, not the relayed leg as such, set the pace.
+
+**An 8 MiB window confirmed it, and broke the relayed path.** A lab build on V (not kept) raised the stream receive window to 8 MiB, with P's figure at 100 Mbit/s. The carrier fetch went at about 2.3 MB/s for its first 10 s, against 1.2 MB/s before. Then it failed after 28 MB (`no provider could send it`), with H logging `The relay is rate-limiting this endpoint` and V `no available capacity`. The project's relay allows a client 4 MB/s with an 8 MB burst, and 8 MiB in flight goes past the burst.
+
+So #283 set 3 MiB a stream and 6 MiB a connection (`osp_carrier::media_windows`), on each node's own endpoint and on the ends of its circuits. It also opens the connection to the host over the circuit while the direct try runs, for mark 2.
+
+## Stage D results, fifth run
+
+**Failed all three marks, 2026-11-22. The window made relay only 1.7 times faster, and the carrier path didn't keep up.** Run on `edd5375` (#283), on every node's own settings, except that P was V's seed carrier. P's and V's logs were at debug. Same fetches in the same order. Each figure is the median of three, counted as before. This is stage D's last run (the maintainer's boundary), and the marks weren't changed for it.
+
+| Way | Whole file | First byte |
+|---|---|---|
+| Through carriers | 114.9 s | 61.5 s (13.4 s from the first carrier download) |
+| Relay only | 38.7 s | 7.8 s |
+| n0 only | failed twice | 0.2 s into the download |
+
+1. **Whole file: failed.** The carrier fetch took 3.0 times relay-only's time, where the mark allows 1.1 times. Relay only got much faster: its downloads took 33.0–33.4 s (about 3.4 MB/s, against 2.0 MB/s in the fourth run). Only two of the carrier fetches went through carriers, and they didn't speed up as much:
+   - **Fetch 1 never got a circuit.** V had been restarted for the deploy 2.5 min before. It couldn't reach P (`reaching machine …: timed out`) until 11 min after that restart, so this fetch fell back to the relays after a 60 s wait (`no hop of this node's own could be had`).
+   - **Fetch 2** went over two hops: its download took 102.9 s, about 1.1 MB/s.
+   - **Fetch 3** went over two hops in two downloads. The first carried 69.3 MB in 36.8 s (1.9 MB/s), and then its connection over the circuit closed (`connection lost: closed`), with nothing in P's or H's log at that moment. V built a new circuit in 4.0 s and the other 44.5 MB came in 26.4 s (1.7 MB/s).
+2. **First byte: failed.** The table's carrier figure is counted as before, from the download that finished. That is fetch 3's second download, and the fallback in fetch 1. Counted from each fetch's first carrier download instead, when playing could start, the first byte came 12.6 s and 13.4 s after the fetch began, still 4.8–5.6 s after relay-only's. The connection opened ahead did its part (`connected to the host over the circuit, ahead of the fetch` in both): the carrier download had `connect_ms=0` and its first byte 1.0 s after starting, against 1.1–1.2 s for relay only. What was left is the circuit itself. It was ready 4.3–4.5 s after V began trying sources, and connecting over it took 0.8 s more, while relay only moved on about 1 s in.
+3. **Until the circuit is usable: failed in one of three.** In fetches 2 and 3 the circuit was ready 4.3 s and 4.5 s after the download started, before the carrier step began. Fetch 3's rebuilt circuit took 4.0 s. Fetch 1 had no circuit at all. As in the fourth run, V took the download from a sync, so the trackers line wasn't logged.
+
+**Data in flight per round trip** (speed × V's round trip):
+- **Relay only:** about 2.1 MB (3.4 MB/s at 605–662 ms), past the old 1 MB.
+- **Carrier fetch 2:** 0.9 MB (1.1 MB/s at 787 ms).
+- **Carrier fetch 3:** 1.6 MB and 1.4 MB (at 807–827 ms).
+
+The carrier path's speed isn't set by V's window any more. On P, the share's learned upload rose from 30.5 to 59.6 Mbit/s during fetch 3, each rise with packets dropped from the share's full queue. V's path counted 479–512 lost packets in each relay-only download and 37–124 through carriers.
+
+**The 8 MiB failure didn't come back.** V logged no `no available capacity`. H logged `The relay is rate-limiting this endpoint` once, during fetch 1's relayed download, and that download still finished in 33.3 s. A capture on V counted 206 UDP packets to P's home address, all 35-byte hole-punching tries from the moment V reached P. So V's leg to P went through the project's relay.
+
+**n0: two fetches failed the same way, and the third wasn't run.** Both nodes were on n0's relays this time (the check fixed after the fourth run). V took the download from the first source in its list, another node holding the video (`c45240d144`, not H). It connected in 73 ms and had the first byte after 0.2 s. Both times the transfer then stopped at 83.7 MB: the path went silent (round trip read 60 s, no losses), and the attempt ran to its 30 min limit. V didn't move on to H. The script then waited without a limit for the file. After the second identical failure it was stopped by hand, and the configs were put back by hand. n0 isn't graded.
+
 ## The newcomer's middle turn
 
 **Passed, 2026-11-21.** `osp machine hello` doesn't add a machine to the table V picks middles from, so Middle arrived through ordinary meeting. Then Empty posted a fresh 20 s clip (4.0 MB) and Robin fetched it.
