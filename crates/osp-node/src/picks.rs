@@ -275,22 +275,36 @@ impl Core {
 
     /// This node's own hop: one of the machines at standing with it, then
     /// the seed carriers, each in an order of its own, the first whose
-    /// descriptor can be had. The host's hop `theirs` last, so the two ends
-    /// meet in one hop only when nothing else answers.
-    pub(crate) async fn own_hop(&self, known: &Known, theirs: EndpointId) -> Result<Descriptor> {
+    /// descriptor can be had; the one the link is kept to first. The host's
+    /// hop `theirs` last, so the two ends meet in one hop only when nothing
+    /// else answers.
+    pub(crate) async fn own_hop(
+        &self,
+        known: &Known,
+        theirs: Option<EndpointId>,
+    ) -> Result<Descriptor> {
         let mut standing: Vec<EndpointId> = known
             .standing
             .iter()
-            .filter(|m| !known.seeds.contains(*m) && **m != theirs)
+            .filter(|m| !known.seeds.contains(*m) && Some(**m) != theirs)
             .copied()
             .collect();
         in_own_order(&mut standing);
         standing.truncate(STANDING_TRIED);
         let mut seeds = self.seeds_in_own_order();
-        seeds.sort_by_key(|s| *s == theirs);
+        seeds.sort_by_key(|s| Some(*s) == theirs);
+        let mut order: Vec<EndpointId> = standing.into_iter().chain(seeds).collect();
+        // The hop the link is kept to first, if it's one of them and not the
+        // host's: a circuit on it starts with `CREATE` (`OwnLink`).
+        if let Some(kept) = self.own_link.machine()
+            && Some(kept) != theirs
+            && let Some(at) = order.iter().position(|m| *m == kept)
+        {
+            order[..=at].rotate_right(1);
+        }
         let me = self.machine().map(|m| m.id()).ok();
         let mut last = anyhow!("no seed carrier is known");
-        for machine in standing.into_iter().chain(seeds) {
+        for machine in order {
             if Some(machine) == me {
                 continue;
             }

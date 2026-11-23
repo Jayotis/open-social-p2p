@@ -12,7 +12,11 @@ use std::{
 use anyhow::{Context, Result, anyhow, bail, ensure};
 use bytes::Bytes;
 use iroh::endpoint::Connection;
-use tokio::{sync::mpsc, task::JoinSet, time::timeout};
+use tokio::{
+    sync::mpsc,
+    task::{AbortHandle, JoinSet},
+    time::timeout,
+};
 use tracing::debug;
 
 use crate::{
@@ -190,7 +194,33 @@ pub struct ViewerSender {
     conn: Connection,
     id: CircuitId,
     onion: Arc<Mutex<Onion>>,
+    tasks: Arc<Mutex<Vec<AbortHandle>>>,
     _tasks: JoinSet<()>,
+}
+
+/// Ends a [`ViewerCircuit`] from outside it, wherever it went: tells the
+/// first hop, and stops reading the link, so the link can carry the next
+/// circuit. Say Jimmy's node keeps its link to its own hop open between
+/// fetches: each circuit's reader must be gone before the next is built on
+/// the link, or it would take the next one's frames.
+#[derive(Clone)]
+pub struct CircuitCloser {
+    conn: Connection,
+    id: CircuitId,
+    tasks: Arc<Mutex<Vec<AbortHandle>>>,
+}
+
+impl CircuitCloser {
+    pub fn close(&self) {
+        let frame = Frame::Destroy {
+            circuit: self.id,
+            reason: DestroyReason::Closed,
+        };
+        let _ = self.conn.send_datagram(Bytes::from(frame.encode()));
+        for task in self.tasks.lock().expect("tasks lock").drain(..) {
+            task.abort();
+        }
+    }
 }
 
 fn unix_now() -> u64 {
@@ -206,8 +236,8 @@ impl ViewerCircuit {
     /// it to the host connection holding `slot`. Each hop gets its setup in
     /// turn, so no hop is handed the path.
     ///
-    /// One circuit to a link: it reads every datagram on `conn`. A viewer
-    /// uses a fresh endpoint, and so a fresh link, for each circuit anyway.
+    /// One circuit to a link at a time: it reads every datagram on `conn`
+    /// until it's dropped or [`CircuitCloser::close`]d.
     pub async fn build(conn: Connection, hops: &[Descriptor], slot: Slot) -> Result<Self> {
         ensure!(
             !hops.is_empty() && hops.len() <= MAX_HOPS,
@@ -219,7 +249,15 @@ impl ViewerCircuit {
             infos[0].endpoint == conn.remote_id(),
             "the link isn't to the first hop"
         );
+        let started = tokio::time::Instant::now();
+        let step = |what: &str| {
+            debug!(
+                ms = started.elapsed().as_millis() as u64,
+                "building a circuit: {what}"
+            )
+        };
         wait_for_room(&conn, SETUP_TIMEOUT).await?;
+        step("the link has room");
         for pair in infos.windows(2) {
             ensure!(
                 pair[0].machine != pair[1].machine,
@@ -229,8 +267,9 @@ impl ViewerCircuit {
 
         let (frames_tx, mut frames) = mpsc::channel(INBOX);
         let mut tasks = JoinSet::new();
+        let aborts: Arc<Mutex<Vec<AbortHandle>>> = Arc::default();
         let reader = conn.clone();
-        tasks.spawn(async move {
+        let reading = tasks.spawn(async move {
             while let Ok(bytes) = reader.read_datagram().await {
                 if let Ok(frame) = Frame::decode(&bytes)
                     && frames_tx.send(frame).await.is_err()
@@ -239,6 +278,7 @@ impl ViewerCircuit {
                 }
             }
         });
+        aborts.lock().expect("tasks lock").push(reading);
 
         let id = {
             let mut b = [0; 4];
@@ -265,6 +305,7 @@ impl ViewerCircuit {
                 _ => continue,
             }
         }
+        step("the first hop created it");
         onion.push(layer);
 
         let ask = |onion: &mut Onion, relay: &Relay| -> Result<()> {
@@ -286,7 +327,10 @@ impl ViewerCircuit {
                 },
             )?;
             match answer(&mut frames, id, &mut onion).await? {
-                Relay::Extended => onion.push(layer),
+                Relay::Extended => {
+                    onion.push(layer);
+                    step("extended to the next hop");
+                }
                 Relay::Busy => bail!("a hop couldn't extend: busy"),
                 other => bail!("an unexpected answer to EXTEND: {other:?}"),
             }
@@ -296,11 +340,12 @@ impl ViewerCircuit {
             Relay::Connected => {}
             other => bail!("an unexpected answer to CONNECT_HOST: {other:?}"),
         }
+        step("joined to the host's slot");
 
         let onion = Arc::new(Mutex::new(onion));
         let (packets_tx, packets) = mpsc::channel(INBOX);
         let theirs = onion.clone();
-        tasks.spawn(async move {
+        let unwrapping = tasks.spawn(async move {
             while let Some(frame) = frames.recv().await {
                 match frame {
                     Frame::Data {
@@ -319,11 +364,13 @@ impl ViewerCircuit {
                 }
             }
         });
+        aborts.lock().expect("tasks lock").push(unwrapping);
         Ok(Self {
             sender: ViewerSender {
                 conn,
                 id,
                 onion,
+                tasks: aborts,
                 _tasks: tasks,
             },
             packets,
@@ -342,6 +389,15 @@ impl ViewerCircuit {
 
     pub fn close(&self) {
         self.sender.close()
+    }
+
+    /// What ends this circuit later, once it has gone into an endpoint.
+    pub fn closer(&self) -> CircuitCloser {
+        CircuitCloser {
+            conn: self.sender.conn.clone(),
+            id: self.sender.id,
+            tasks: self.sender.tasks.clone(),
+        }
     }
 
     /// The sending half, and the packets from the host.

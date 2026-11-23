@@ -324,6 +324,8 @@ pub(crate) struct Core {
     pub host_circuit: Option<crate::host_circuit::HostCircuit>,
     /// The seed carriers' descriptors, as their records last gave them.
     pub seed_descriptors: crate::hops::SeedDescriptors,
+    /// The link kept to this node's own hop, between circuits.
+    pub own_link: crate::hops::OwnLink,
     /// The day this node last gave a fresh machine the middle (ADR 0017).
     pub fresh_turns: crate::picks::FreshTurns,
     /// Asks for work offers, when this node has room (ADR 0043 part 4d-2).
@@ -748,6 +750,7 @@ impl Node {
             carrier,
             host_circuit,
             seed_descriptors,
+            own_link: Default::default(),
             fresh_turns: Default::default(),
             work_asks: Default::default(),
             offers_asked: Default::default(),
@@ -886,6 +889,9 @@ impl Node {
         if core.machine.is_some() {
             tasks.push(tokio::spawn(crate::work_offers::ask_loop(core.clone())));
         }
+        if core.machine.is_some() && !core.config.carrier.known.is_empty() {
+            tasks.push(tokio::spawn(crate::hops::keep_own_link(core.clone())));
+        }
         if core.host_circuit.is_some() {
             tasks.push(tokio::spawn(crate::host_circuit::keep_linked(
                 core.clone(),
@@ -940,6 +946,12 @@ impl Node {
     /// until the node's status shows it.
     pub async fn carrier_stats(&self) -> Option<osp_carrier::Stats> {
         self.core.carrier.as_ref()?.carrier()?.stats().await.ok()
+    }
+
+    /// How many circuits went on the link kept to this node's own hop since
+    /// it started.
+    pub fn own_link_used(&self) -> usize {
+        self.core.own_link.used()
     }
 
     pub fn viewing_endpoints_made(&self) -> usize {
@@ -1287,6 +1299,7 @@ impl Node {
             task.abort();
         }
         self.core.viewing.close_all().await;
+        self.core.own_link.close().await;
         if let Some(carrier) = &self.core.carrier {
             carrier.endpoint.close().await;
         }
