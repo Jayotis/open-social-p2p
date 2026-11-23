@@ -80,6 +80,12 @@ impl TorSide {
         self.tor.stop();
     }
 
+    /// Says the node is stopping: Tor runs on until `stop`, and isn't
+    /// started again if it stops before then.
+    pub fn stopping(&self) {
+        self.tor.stopping();
+    }
+
     /// An endpoint on this Tor with `key`, with an onion service of its own,
     /// which the node's connection records don't see (ADR 0015). The transport
     /// holds the onion service up.
