@@ -556,10 +556,11 @@ async fn a_hop_over_its_share_slows_the_video_rather_than_losing_it() {
 }
 
 /// Alice's node sends Jimmy's circuit more packets than its inbox holds,
-/// and Jimmy's end reads none of them until the last is sent. Those over
-/// the inbox are dropped at his end, and each one is counted: a full inbox
-/// never drops a packet unseen again (stage D's sixth run broke on losses
-/// nothing counted).
+/// and Jimmy's end reads none of them until the last is sent. Each packet
+/// his link brought in is either read or counted as dropped at the full
+/// inbox: none goes unseen (stage D's sixth run broke on losses nothing
+/// counted). Not every packet sent need reach his link: on a busy machine
+/// some are lost on the way, where QUIC doesn't send datagrams again.
 #[tokio::test]
 async fn a_full_viewer_inbox_counts_each_packet_it_drops() {
     let book = Book::default();
@@ -569,6 +570,7 @@ async fn a_full_viewer_inbox_counts_each_packet_it_drops() {
     let endpoint = endpoint(vec![]).await;
     let hops = [p.descriptor().await, q.descriptor().await];
     let conn = endpoint.connect(p.endpoint.addr(), ALPN).await.unwrap();
+    let link = conn.clone();
     let mut circuit = ViewerCircuit::build(conn, &hops, host.slot())
         .await
         .unwrap();
@@ -576,38 +578,35 @@ async fn a_full_viewer_inbox_counts_each_packet_it_drops() {
         HostEvent::Opened(id) => id,
         other => panic!("expected the circuit to open, got {other:?}"),
     };
+    // What the link brought in to build the circuit: `CREATED` and the
+    // answers to `EXTEND` and `CONNECT_HOST`.
+    let setup = link.stats().frame_rx.datagram;
+    assert_eq!(setup, 3);
 
     let before = inbox_drops().viewer;
-    // Sent in small batches, so the links' own queues keep up and the
-    // packets reach Jimmy's end: it's his inbox that overflows.
-    const SENT: usize = 3000;
-    for batch in 0..SENT / 50 {
-        for i in 0..50 {
-            host.send(opened, vec![(batch * 50 + i) as u8; 1000])
-                .unwrap();
+    const SENT: u64 = 3000;
+    for i in 0..SENT {
+        host.send(opened, vec![i as u8; 1000]).unwrap();
+        if i % 10 == 9 {
+            tokio::time::sleep(Duration::from_millis(5)).await;
         }
-        tokio::time::sleep(Duration::from_millis(5)).await;
     }
-    // Every packet sent came to his end: kept in the inbox or counted.
+    // Read until nothing more comes for a while.
     let mut kept = 0;
-    let dropped = timeout(WAIT, async {
-        loop {
-            while let Ok(Some(_)) = timeout(Duration::from_millis(500), circuit.recv()).await {
-                kept += 1;
-            }
-            let dropped = (inbox_drops().viewer - before) as usize;
-            if kept + dropped >= SENT {
-                return dropped;
-            }
-        }
-    })
-    .await
-    .unwrap_or_else(|_| {
-        panic!(
-            "{kept} kept and {} counted, of {SENT} sent",
-            inbox_drops().viewer - before
-        )
-    });
-    assert!(dropped > 0, "the inbox overflowed: {kept} kept");
-    assert_eq!(kept + dropped, SENT);
+    while let Ok(Some(_)) = timeout(Duration::from_secs(1), circuit.recv()).await {
+        kept += 1;
+    }
+    // Other tests in this binary only add to the count, and none of them
+    // fills an inbox.
+    let dropped = inbox_drops().viewer - before;
+    let came = link.stats().frame_rx.datagram - setup;
+    assert_eq!(
+        kept + dropped,
+        came,
+        "{kept} read and {dropped} counted, of {came} the link brought in ({SENT} sent)"
+    );
+    // The inbox holds 1024, and as many again wait to be unwrapped.
+    if came > 2 * 1024 {
+        assert!(dropped > 0, "{came} came, {kept} read, none counted");
+    }
 }
