@@ -93,7 +93,13 @@ pub async fn viewer(path: &[&Node], slot: osp_carrier::Slot) -> Result<(Endpoint
     Ok((endpoint, circuit))
 }
 
+/// How long `round_trip` waits for a packet before sending it again.
+const RESEND: Duration = Duration::from_millis(500);
+
 /// A packet each way, and checks Alice's node is told the circuit came.
+/// Datagrams can go missing even on loopback, so each packet is sent again
+/// until it arrives, as the ends' QUIC would, and a late copy of an earlier
+/// one is skipped.
 pub async fn round_trip(circuit: &mut ViewerCircuit, host: &mut HostLink) {
     let opened = match timeout(WAIT, host.recv()).await.unwrap().unwrap() {
         HostEvent::Opened(id) => id,
@@ -101,16 +107,40 @@ pub async fn round_trip(circuit: &mut ViewerCircuit, host: &mut HostLink) {
     };
     for i in 0..20u8 {
         let packet = vec![i; 1200];
-        circuit.send(packet.clone()).unwrap();
-        match timeout(WAIT, host.recv()).await.unwrap().unwrap() {
-            HostEvent::Packet(id, got) => {
-                assert_eq!(id, opened);
-                assert_eq!(got, packet);
+        timeout(WAIT, async {
+            loop {
+                circuit.send(packet.clone()).unwrap();
+                match timeout(RESEND, host.recv()).await {
+                    Err(_) => continue,
+                    Ok(event) => match event.unwrap() {
+                        HostEvent::Packet(id, got) => {
+                            assert_eq!(id, opened);
+                            if got == packet {
+                                break;
+                            }
+                        }
+                        other => panic!("expected a packet, got {other:?}"),
+                    },
+                }
             }
-            other => panic!("expected a packet, got {other:?}"),
-        }
+        })
+        .await
+        .unwrap();
         let reply = vec![i ^ 0xff; 1200];
-        host.send(opened, reply.clone()).unwrap();
-        assert_eq!(timeout(WAIT, circuit.recv()).await.unwrap().unwrap(), reply);
+        timeout(WAIT, async {
+            loop {
+                host.send(opened, reply.clone()).unwrap();
+                match timeout(RESEND, circuit.recv()).await {
+                    Err(_) => continue,
+                    Ok(got) => {
+                        if got.unwrap() == reply {
+                            break;
+                        }
+                    }
+                }
+            }
+        })
+        .await
+        .unwrap();
     }
 }

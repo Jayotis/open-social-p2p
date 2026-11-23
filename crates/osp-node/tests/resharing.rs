@@ -336,7 +336,26 @@ async fn a_hosting_reshare_is_listed_and_serves_a_newcomer_with_its_author_offli
         .filter(|(from, to)| jimmys.contains(to) && !checkers.contains(from))
         .map(|(from, _)| *from)
         .collect();
-    assert_eq!(to_jimmy.len(), 1, "{to_jimmy:?}");
+    // It failed once with two senders: say who each was, and to which of
+    // Jimmy's endpoints, so the next failure shows the second.
+    let who = |id: &EndpointId| match id {
+        id if Some(*id) == alice.machine_id() => "Alice's machine",
+        id if own.contains(id) => "Alice's own",
+        id if Some(*id) == jimmy.machine_id() => "Jimmy's machine",
+        id if jimmys.contains(id) => "Jimmy's own",
+        _ => "neither's (a viewing endpoint?)",
+    };
+    let named: Vec<String> = senders
+        .iter()
+        .filter(|(from, _)| to_jimmy.contains(from))
+        .map(|(from, to)| format!("{} {from} -> {} {to}", who(from), who(to)))
+        .collect();
+    assert_eq!(
+        to_jimmy.len(),
+        1,
+        "{named:?}; Alice made {} viewing endpoints",
+        alice.viewing_endpoints_made()
+    );
     assert!(own.is_disjoint(&to_jimmy));
     let from_own: Vec<_> = senders
         .iter()
