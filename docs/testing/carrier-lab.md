@@ -247,6 +247,20 @@ No other node's counters moved. The first break needed more than 1,024 holes in 
 
 **The descriptor:** at the start it came from the cache in 0 ms. After the first break, it was asked of P's carrier endpoint again, which took 2.5 s, about the 2.8 s gap before fetch 3's build in the sixth run. A carrier fetch that fails forgets the hop's descriptor, so the next build waits for it. The 9.0 s gap of the sixth run's first fetch didn't recur here.
 
+## The queue probe, after the counter probe
+
+**Nothing in the nodes' own queues dropped the packets, 2026-11-23.** #292 counts what could go missing unseen: a packet dropped at a full circuit-end inbox (`viewer_inbox_full`, `host_inbox_full`, exact), and a send that found less room in a link's datagram queue than its frame (`send_queue_full`, at a carrier and at each end). Then QUIC discards the oldest waiting and says nothing, so that counts the pressure, not how many went. V, P, Q (relay1's node) and H's machine ran it. One carrier fetch, P's upload set to 100 Mbit/s by hand so its share stayed out of the way (put back after), and V's busiest thread read each second.
+
+- **The fetch broke twice again,** both times `too many gaps in stream buffer`, after 16.2 MB and 29.8 MB, and the relay carried the rest.
+- **Every new counter stayed at 0** on every node: no inbox drops at V or H, and no send that found a queue full. P counted no drops of its own. Q counted 374 packets sent to a backed-up link, with no drops.
+- **V logged 196 `Dropping received relay packet: no available capacity`** during the second break: iroh dropping packets from the relay before V's QUIC saw them. None during the first.
+- **V's processor:** its busiest thread peaked at 85 % of a core, and none stayed at its limit.
+- **relay1's server** has dropped 55 packets since it started, in all.
+
+**The same loss in a test on one machine.** In the new test, the host sends 3,000 packets to a viewer whose end reads nothing until the last is sent. P carried all 3,000 on, and then the viewer's link connection took in only 1,900–2,000 of them in some runs. Each one it took in was read or counted at the inbox, exactly. So the loss is between P's QUIC and the viewer's, and in the test that's the socket (QUIC doesn't send a datagram again). In the lab the links go through the relay, and V's `no available capacity` is the same kind of loss: more arriving than its endpoint takes in at once.
+
+So the packets go missing between one QUIC and the next, below anything a node counts, when a burst arrives faster than the receiving endpoint drains it. The ends' QUIC then sees more than 1,024 holes within its 3 MiB window and gives up. It isn't V's processor at its limit, and it happens on an ordinary machine too, so it isn't only the emulated VM.
+
 ## The newcomer's middle turn
 
 **Passed, 2026-11-21.** `osp machine hello` doesn't add a machine to the table V picks middles from, so Middle arrived through ordinary meeting. Then Empty posted a fresh 20 s clip (4.0 MB) and Robin fetched it.

@@ -655,6 +655,7 @@ impl crate::node::Core {
         let (month_bytes, _) = carried_this_month(&self.db)?;
         let month_budget = controls.monthly_budget();
         let over_budget = month_budget.is_some_and(|b| month_bytes >= b);
+        let ends = osp_carrier::inbox_drops();
         Ok(osp_proto::rpc::CarrierStatus {
             carrying: stats.is_some() && !controls.stopped() && !over_budget,
             month_bytes,
@@ -685,6 +686,11 @@ impl crate::node::Core {
             share_full: s.share_full,
             link_full: s.link_full,
             dropped: s.dropped,
+            send_queue_full: s.send_queue_full,
+            viewer_inbox_full: ends.viewer,
+            host_inbox_full: ends.host,
+            viewer_send_queue_full: ends.viewer_send_queue_full,
+            host_send_queue_full: ends.host_send_queue_full,
             hops: *self.hops.borrow(),
             seeds: self.config.carrier.known.len(),
             standing: self.db.carriers_at_standing(now)?.len(),

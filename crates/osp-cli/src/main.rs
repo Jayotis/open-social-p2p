@@ -2696,6 +2696,14 @@ async fn carrier(home: &Path, change: Option<CarrierCommand>, json: bool) -> Res
             c.dropped
         );
         println!(
+            "Queues:    {} sends found a link's send queue full; at this node's circuit ends, {} packets dropped with the viewer's inbox full, {} with the host's, and {} and {} sends found the queue full",
+            c.send_queue_full,
+            c.viewer_inbox_full,
+            c.host_inbox_full,
+            c.viewer_send_queue_full,
+            c.host_send_queue_full
+        );
+        println!(
             "Standing:  {} machine(s) earned it with your node, {} on probation",
             c.standing, c.probation
         );
