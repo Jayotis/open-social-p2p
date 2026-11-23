@@ -261,6 +261,17 @@ No other node's counters moved. The first break needed more than 1,024 holes in 
 
 So the packets go missing between one QUIC and the next, below anything a node counts, when a burst arrives faster than the receiving endpoint drains it. The ends' QUIC then sees more than 1,024 holes within its 3 MiB window and gives up. It isn't V's processor at its limit, and it happens on an ordinary machine too, so it isn't only the emulated VM.
 
+## The window probe, after the queue probe
+
+**The carrier download finished whole, 2026-11-23.** #293 gives the circuit ends' QUIC a 1 MiB stream window in place of 3 MiB, so a burst lost between two hops leaves fewer holes than the 1,024 noq allows. V, H's machine, P and Q (relay1's node) ran it. One carrier fetch, P's upload set to 100 Mbit/s by hand as in the queue probe (put back after).
+
+- **No break:** the carrier download carried all 113.8 MB in 109.3 s, 8.3 Mbit/s, 2.7 times the 3.1 Mbit/s mark. The first byte came 1.0 s after the request. The whole fetch took 119.9 s, with the circuit built in 4.3 s.
+- **What the ends' QUIC saw:** 14 packets lost of 9,631 sent, one congestion event, round trip 817 ms.
+- **The counters:** P and Q each carried about 113 MB. No node counted a drop, a backed-up link or a full queue, and V logged no `no available capacity`.
+- **V's processor:** `osp` used up to 1.7 of the VM's 4 cores, about 0.9 on average; its busiest thread peaked at 59 % of a core.
+
+One fetch, so it shows the smaller window can carry the whole file, not that it always will. Stage D's seventh run measures it.
+
 ## The newcomer's middle turn
 
 **Passed, 2026-11-21.** `osp machine hello` doesn't add a machine to the table V picks middles from, so Middle arrived through ordinary meeting. Then Empty posted a fresh 20 s clip (4.0 MB) and Robin fetched it.
