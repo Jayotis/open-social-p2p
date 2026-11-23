@@ -91,6 +91,46 @@ It has no directory and no machines: on real nodes both need machine names, and 
 
 **Result (2026-11-14, Pixel 3 XL, app build 9):** Rae's Universe opened at Local with 21 people and 14 lines, no groups, every name readable, the two friend groups apart and the reshare between them drawn. 14 lines, not 17: three reshares are between people Rae doesn't follow, so her node never gets them. A 1.5 s pan drew 88 frames, every one at the screen's 16.7 ms, none missed. Standing at someone framed them with their lines brighter, and stepping back went up one step with the map unmoved. On a lab node with 13 people and 10 machines, the machines' list read in plain words.
 
+## A full node: 5,000 people
+
+A node keeps at most 5,000 people found through directories (`MAX_FOUND_PEOPLE`), so that's the largest Universe a phone draws today.
+
+**The world.** `osp-crowd` makes 5,000 made-up people with the clustering test's shape (friend groups of 20, regions of 10 groups, most reshares within a group, some within a region, a few anywhere), each with 1 to 5 posts and up to 5 reshares, a fifth of them quiet for over 100 days. The people aren't nodes: the program signs their profiles, posts and reshares itself, and a made-up directory lists them on the simulated network. The owner's node reads it there under a machine name, so every entry goes through the node's own checks. Then the node restarts on the real network, keeps what it found, and prints a pairing code. Run it again on the same directory to start the same node.
+
+```sh
+cargo run --release -p osp-sim --bin osp-crowd -- --dir <empty directory>
+```
+
+The node read all 5,000 in 24 s. The owner reshares 10 posts in three groups, so the world has a near side.
+
+**Result (2026-11-23, Pixel 3 XL, app build 527, node on a desktop):** the top opened with 248 groups and 48 people. It opens as deep as 300 points allow, which here is every friend group, so the groups' counts ("20") overlap and can't be read. A tap on a group opened its sheet with every name readable, and Open on the map framed the group with its names. A search for "Velo" lit up 22 people across the world.
+
+| Gesture | Frames | Over 25 ms | Longest |
+| --- | --- | --- | --- |
+| Pan at the top | 126 | 0 | 16.7 ms |
+| Pan inside a group | 88 | 0 | 16.7 ms |
+| Pan with a search lit up | 83 | 3 | 33 ms |
+| Open the tab | 33 | 3–4 | 33 ms |
+| Tap a group (its sheet) | 71 | 14 | 50 ms |
+| Open a group on the map | 64 | 12 | 483 ms |
+| Zoom out, to the group's parent | 79 | 2 | 100 ms |
+| Zoom out, to the top | 70 | 8 | 350 ms |
+| Show a search on the map | 30 | 9 | 100 ms |
+| Fly to the search's results | 35 | 5 | 433 ms |
+
+Pinching wasn't measured: `adb` gives one finger only.
+
+The node answered each snapshot in about 1.25 s, the top or a group alike. About 1.0 s of that is checking signatures again: everyone's profile and every reshare, 20,249 checks at about 50 µs each, on every snapshot, though each was checked when it came in.
+
+**Limits, from this round:**
+- Panning never misses a frame, at any size. Met.
+- A move to another region has no frame longer than 500 ms on the Pixel 3 XL. Met, just (483 ms).
+- A full node answers a snapshot within 1.5 s on a desktop. Met (1.25 s). An SBC, the usual node, wasn't measured; at a few times slower, a move would wait several seconds.
+
+**Still open:**
+- The top of a full node is unreadable: 248 overlapping counts. Fewer, larger regions at the top, or counts shown only where they fit.
+- Snapshots check every signature again. Keeping what was checked, or the people and lines read from it until the database changes, would take about four fifths off each answer.
+
 ## A newcomer exploring
 
 ADR 0035's gate: on a fresh node with no follows, against the lab's world, the maintainer reaches people and posts by browsing alone, without typing a search. Every person and post the node holds is reachable from the map or the field's list.
