@@ -18,12 +18,22 @@ use std::{
     time::Duration,
 };
 
-use tokio::sync::watch;
+use tokio::sync::{Semaphore, watch};
 
 use anyhow::{Context, Result};
-use iroh::{Endpoint, RelayMode, SecretKey, TransportAddr, endpoint::presets};
+use iroh::{
+    Endpoint, RelayMode, SecretKey, TransportAddr,
+    endpoint::{Connection, presets},
+};
 use n0_future::task::AbortOnDropHandle;
 use osp_carrier::{Carrier, Dial, Limits, Stats};
+use osp_proto::{
+    framing::{read_frame_max, write_frame},
+    social::{
+        CARRIER_DESCRIPTOR_ALPN, CarrierDescriptorRequest, CarrierDescriptorResponse,
+        MAX_REQUEST_LEN,
+    },
+};
 use tracing::{debug, info, warn};
 
 use crate::{
@@ -35,6 +45,11 @@ use crate::{
     node::own_relay_map,
     relays::RelayPolicy,
 };
+
+/// Asks for the carrier's descriptor answered at once, at most.
+const MAX_DESCRIPTOR_ANSWERS: usize = 16;
+/// How long one is given.
+const DESCRIPTOR_ANSWER_WAIT: Duration = Duration::from_secs(10);
 
 /// The upload a node with no figure for it is taken to have, in Mbit/s: a
 /// slow home's, so carrying starts small until the owner says.
@@ -311,10 +326,21 @@ impl CarrierSide {
             vec![
                 osp_carrier::ALPN.to_vec(),
                 osp_proto::social::WORK_OFFERS_ALPN.to_vec(),
+                CARRIER_DESCRIPTOR_ALPN.to_vec(),
             ],
         )
         .await
         .context("starting the carrier endpoint")?;
+        let carrier = Arc::new(OnceLock::new());
+        let work = crate::work_offers::answerer(db.clone(), machine.acquaintances.clone());
+        let descriptors = descriptor_answerer(carrier.clone());
+        let others: osp_carrier::Others =
+            Arc::new(
+                move |conn: Connection| match conn.alpn() == CARRIER_DESCRIPTOR_ALPN {
+                    true => descriptors(conn),
+                    false => work(conn),
+                },
+            );
         let (controls, watching) = watch::channel(Controls::of(config));
         let measured: Measured = Arc::default();
         let learned: Arc<Mutex<Learned>> = Arc::default();
@@ -323,7 +349,6 @@ impl CarrierSide {
         let dial = osp_carrier::relay_dial(endpoint.clone(), move |url| {
             policy.permits(&TransportAddr::Relay(url.clone()))
         });
-        let carrier = Arc::new(OnceLock::new());
         let task = tokio::spawn(keep_carrying(
             endpoint.clone(),
             machine.key().clone(),
@@ -335,7 +360,7 @@ impl CarrierSide {
                 db: db.clone(),
             },
             dial,
-            crate::work_offers::answerer(db.clone(), machine.acquaintances.clone()),
+            others,
             carrier.clone(),
         ));
         Ok(Some(Self {
@@ -372,6 +397,40 @@ impl CarrierSide {
             .mbps();
         faster(self.measured.get().and_then(|f| f()), learned)
     }
+}
+
+/// The carrier endpoint's answers to [`CARRIER_DESCRIPTOR_ALPN`]: the
+/// carrier's descriptor now, once it runs.
+fn descriptor_answerer(cell: Arc<OnceLock<Carrier>>) -> osp_carrier::Others {
+    let answers = Arc::new(Semaphore::new(MAX_DESCRIPTOR_ANSWERS));
+    Arc::new(move |conn: Connection| {
+        let Ok(permit) = answers.clone().try_acquire_owned() else {
+            conn.close(0u32.into(), b"busy");
+            return;
+        };
+        let cell = cell.clone();
+        tokio::spawn(async move {
+            let _permit = permit;
+            let answered = tokio::time::timeout(DESCRIPTOR_ANSWER_WAIT, async {
+                let (mut send, mut recv) = conn.accept_bi().await?;
+                let _: CarrierDescriptorRequest =
+                    read_frame_max(&mut recv, MAX_REQUEST_LEN).await?;
+                let carrier = cell.get().context("not carrying yet")?;
+                let descriptor = carrier.descriptor().await?;
+                let carrier = crate::machine::descriptor_text(&descriptor);
+                write_frame(&mut send, &CarrierDescriptorResponse { carrier }).await?;
+                send.finish()?;
+                conn.closed().await;
+                anyhow::Ok(())
+            })
+            .await;
+            match answered {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => debug!("an ask for the carrier's descriptor: {e:#}"),
+                Err(_) => debug!("an ask for the carrier's descriptor took too long"),
+            }
+        });
+    })
 }
 
 /// The relays a link between carriers goes through, or None with relays

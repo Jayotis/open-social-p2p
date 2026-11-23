@@ -16,6 +16,7 @@
 
 use std::{
     collections::{HashMap, HashSet},
+    path::PathBuf,
     sync::Mutex,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -24,13 +25,19 @@ use anyhow::{Context, Result, anyhow};
 use iroh::{Endpoint, EndpointId, SecretKey, TransportAddr};
 use iroh_blobs::util::connection_pool::{ConnectionPool, ConnectionRef};
 use osp_carrier::{Descriptor, SETUP_TIMEOUT, ViewerCircuit};
-use osp_proto::{BlobHash, social::CircuitOffer};
+use osp_proto::{
+    BlobHash,
+    framing::{read_frame, write_frame},
+    social::{
+        CARRIER_DESCRIPTOR_ALPN, CarrierDescriptorRequest, CarrierDescriptorResponse, CircuitOffer,
+    },
+};
 use tracing::{debug, info};
 
 use crate::{
     carrier::{relay_mode, relayed_endpoint},
     db::BlobClass,
-    machine::carrier_of,
+    machine::{carrier_of, descriptor_from_text, descriptor_text},
     node::Core,
     picks::{Known, Middle},
     store::{self, Source, Sources},
@@ -44,6 +51,10 @@ pub(crate) type Offers = Vec<(EndpointId, CircuitOffer)>;
 /// A cached descriptor is asked for again this long before its circuit key
 /// runs out, so a circuit isn't built on a key about to go.
 const FRESH_FOR: u64 = 5 * 60;
+
+/// How long a carrier endpoint is given to say its descriptor, before its
+/// machine is asked over Tor instead. A relay's round trip, normally.
+const ASK_CARRIER_WAIT: Duration = Duration::from_secs(10);
 
 /// With a machine in the middle, its circuit is built alongside the one
 /// without it, and used if it's ready within this: stage D's mark for a
@@ -170,9 +181,95 @@ async fn try_while_building<T, B>(
     (tried, built)
 }
 
-/// The seed carriers' descriptors, as their machine records last gave them.
+/// Carriers' descriptors, each with when its circuit key runs out. `fresh`
+/// holds what this node goes by, until a refused circuit forgets it. `held`
+/// is the last one of each, kept after that: what names the carrier
+/// endpoint to ask for its descriptor now (`Core::hop_descriptor`). The seed
+/// carriers' are kept in `file` across restarts too, as a restarted node
+/// otherwise has only Tor to ask, and Tor can be minutes behind a carrier
+/// that restarted.
 #[derive(Default)]
-pub(crate) struct SeedDescriptors(Mutex<HashMap<EndpointId, (Descriptor, u64)>>);
+pub(crate) struct SeedDescriptors {
+    fresh: Mutex<HashMap<EndpointId, (Descriptor, u64)>>,
+    held: Mutex<HashMap<EndpointId, (Descriptor, u64)>>,
+    file: Option<(PathBuf, Vec<EndpointId>)>,
+}
+
+impl SeedDescriptors {
+    /// The seed carriers `seeds`' descriptors kept in `path`, if any. A line
+    /// is a machine, when its key runs out and the descriptor's text; one
+    /// that doesn't check out is left out.
+    pub(crate) fn load(path: PathBuf, seeds: Vec<EndpointId>) -> Self {
+        let mut held = HashMap::new();
+        for line in std::fs::read_to_string(&path).unwrap_or_default().lines() {
+            let mut words = line.split(' ');
+            let (Some(machine), Some(until), Some(text)) =
+                (words.next(), words.next(), words.next())
+            else {
+                continue;
+            };
+            let (Ok(machine), Ok(until)) = (machine.parse::<EndpointId>(), until.parse::<u64>())
+            else {
+                continue;
+            };
+            if seeds.contains(&machine)
+                && let Some(descriptor) = descriptor_from_text(text, &machine, until)
+            {
+                held.insert(machine, (descriptor, until));
+            }
+        }
+        Self {
+            fresh: Mutex::default(),
+            held: Mutex::new(held),
+            file: Some((path, seeds)),
+        }
+    }
+
+    /// `machine`'s descriptor to go by, if its key is good past `until`.
+    fn fresh(&self, machine: &EndpointId, until: u64) -> Option<Descriptor> {
+        let fresh = self.fresh.lock().unwrap();
+        let (descriptor, valid_until) = fresh.get(machine)?;
+        (*valid_until > until).then(|| descriptor.clone())
+    }
+
+    /// The last descriptor held for `machine`, however old, with when its
+    /// key runs out.
+    fn held(&self, machine: &EndpointId) -> Option<(Descriptor, u64)> {
+        self.held.lock().unwrap().get(machine).cloned()
+    }
+
+    /// Goes by `descriptor` for `machine` from now on, and keeps it.
+    fn keep(&self, machine: EndpointId, descriptor: &Descriptor, until: u64) {
+        let entry = (descriptor.clone(), until);
+        self.fresh.lock().unwrap().insert(machine, entry.clone());
+        let mut held = self.held.lock().unwrap();
+        if held
+            .insert(machine, entry)
+            .is_some_and(|(_, was)| was == until)
+        {
+            return;
+        }
+        let Some((path, seeds)) = &self.file else {
+            return;
+        };
+        if !seeds.contains(&machine) {
+            return;
+        }
+        let text: String = held
+            .iter()
+            .filter(|(m, _)| seeds.contains(m))
+            .map(|(m, (d, until))| format!("{m} {until} {}\n", descriptor_text(d)))
+            .collect();
+        if let Err(e) = std::fs::write(path, text) {
+            debug!("couldn't keep the seed carriers' descriptors: {e:#}");
+        }
+    }
+
+    /// Goes by `machine`'s descriptor no more, but keeps it held.
+    fn forget(&self, machine: &EndpointId) {
+        self.fresh.lock().unwrap().remove(machine);
+    }
+}
 
 /// Files whose hosts are being asked for circuit offers now, so a second
 /// fetch of one, such as an open while it's fetched ahead of time, doesn't
@@ -246,23 +343,103 @@ impl Core {
         machine: EndpointId,
         cached: bool,
     ) -> Result<Descriptor> {
-        let now = unix_now();
         if cached
-            && let Some((descriptor, until)) = self.seed_descriptors.0.lock().unwrap().get(&machine)
-            && *until > now + FRESH_FOR
+            && let Some(descriptor) = self
+                .seed_descriptors
+                .fresh(&machine, unix_now() + FRESH_FOR)
         {
-            return Ok(descriptor.clone());
+            return Ok(descriptor);
         }
         let greeting = self.machine()?.hello(machine).await?;
         let descriptor = carrier_of(&greeting.info, unix_now())
             .context("its machine record names no carrier that checks out")?;
         let until = descriptor.verify(unix_now())?.valid_until;
-        self.seed_descriptors
-            .0
-            .lock()
-            .unwrap()
-            .insert(machine, (descriptor.clone(), until));
+        self.seed_descriptors.keep(machine, &descriptor, until);
         Ok(descriptor)
+    }
+
+    /// The descriptor of `machine`, which this node is about to link or
+    /// build a circuit through: as [`seed_descriptor`](Self::seed_descriptor),
+    /// but asked first of the carrier endpoint the last one held names,
+    /// through its relay. Say Alice's hop Q restarted: the machines that
+    /// greet it over Tor can't reach it for minutes (their Tor holds its old
+    /// onion descriptor), but its carrier endpoint keeps its key and is back
+    /// on its relay in seconds. The link or circuit shows Q this node's
+    /// address anyway, so the ask through the relay gives away nothing more.
+    pub(crate) async fn hop_descriptor(
+        &self,
+        machine: EndpointId,
+        cached: bool,
+    ) -> Result<Descriptor> {
+        if cached
+            && let Some(descriptor) = self
+                .seed_descriptors
+                .fresh(&machine, unix_now() + FRESH_FOR)
+        {
+            return Ok(descriptor);
+        }
+        if let Some(held) = self.seed_descriptors.held(&machine) {
+            match tokio::time::timeout(ASK_CARRIER_WAIT, self.ask_carrier(machine, &held)).await {
+                Ok(Ok((descriptor, until))) => {
+                    self.seed_descriptors.keep(machine, &descriptor, until);
+                    return Ok(descriptor);
+                }
+                Ok(Err(e)) => {
+                    debug!(hop = %crate::machine::words(&machine), "its carrier endpoint didn't say its descriptor; over Tor instead: {e:#}")
+                }
+                Err(_) => {
+                    debug!(hop = %crate::machine::words(&machine), "its carrier endpoint didn't say its descriptor in time; over Tor instead")
+                }
+            }
+        }
+        self.seed_descriptor(machine, false).await
+    }
+
+    /// Asks the carrier endpoint `held` names, from a key made for the ask,
+    /// for `machine`'s descriptor now, and checks it: signed by `machine`,
+    /// good now, and naming the endpoint that said it.
+    async fn ask_carrier(
+        &self,
+        machine: EndpointId,
+        (held, until): &(Descriptor, u64),
+    ) -> Result<(Descriptor, u64)> {
+        // It may have run out, but it still names the endpoint: its
+        // signature is checked at a time it was good.
+        let info = held.verify(*until)?;
+        anyhow::ensure!(
+            info.machine == machine,
+            "a held descriptor for another machine"
+        );
+        let relay: iroh::RelayUrl = info.relay.parse().context("its descriptor's relay")?;
+        let relays = self.tracker.relays().clone();
+        anyhow::ensure!(
+            relays.permits(&TransportAddr::Relay(relay.clone())),
+            "a relay this node doesn't use: {relay}"
+        );
+        let mode = relay_mode(&self.config)?.context("relays are off")?;
+        let endpoint =
+            relayed_endpoint(&self.config, mode, &relays, SecretKey::generate(), vec![]).await?;
+        let asked = async {
+            let addr = iroh::EndpointAddr::new(info.endpoint).with_relay_url(relay);
+            let conn = endpoint.connect(addr, CARRIER_DESCRIPTOR_ALPN).await?;
+            let (mut send, mut recv) = conn.open_bi().await?;
+            write_frame(&mut send, &CarrierDescriptorRequest {}).await?;
+            send.finish()?;
+            let resp: CarrierDescriptorResponse = read_frame(&mut recv).await?;
+            conn.close(0u32.into(), b"done");
+            anyhow::Ok(resp.carrier)
+        }
+        .await;
+        endpoint.close().await;
+        let now = unix_now();
+        let descriptor = descriptor_from_text(&asked?, &machine, now)
+            .context("the descriptor it said doesn't check out for its machine")?;
+        let now_info = descriptor.verify(now)?;
+        anyhow::ensure!(
+            now_info.endpoint == info.endpoint,
+            "it said a descriptor for another endpoint"
+        );
+        Ok((descriptor, now_info.valid_until))
     }
 
     /// The seed carriers known, in an order of this node's own, so ends
@@ -341,7 +518,7 @@ impl Core {
     /// A seed carrier's descriptor is asked for again next time, in case the
     /// hop restarted.
     fn forget_descriptor(&self, machine: &EndpointId) {
-        self.seed_descriptors.0.lock().unwrap().remove(machine);
+        self.seed_descriptors.forget(machine);
     }
 
     /// Fetches `blob` from `host` over `built`, then credits the hops that

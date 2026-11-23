@@ -294,7 +294,7 @@ impl Core {
             if Some(machine) == me {
                 continue;
             }
-            match self.seed_descriptor(machine, true).await {
+            match self.hop_descriptor(machine, true).await {
                 Ok(descriptor) => return Ok(descriptor),
                 Err(e) => last = e,
             }

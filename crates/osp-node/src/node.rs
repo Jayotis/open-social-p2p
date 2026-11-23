@@ -694,6 +694,10 @@ impl Node {
         let hide_on = config.lists.hide == Some(true);
         let hide_asked = config.lists.hide.is_some();
         let hops = config.carrier.hops;
+        let seed_descriptors = crate::hops::SeedDescriptors::load(
+            home.seed_descriptors(),
+            config.carrier.known.iter().map(|s| s.machine).collect(),
+        );
         let core = Arc::new(Core {
             home,
             config,
@@ -743,7 +747,7 @@ impl Node {
             machine,
             carrier,
             host_circuit,
-            seed_descriptors: Default::default(),
+            seed_descriptors,
             fresh_turns: Default::default(),
             work_asks: Default::default(),
             offers_asked: Default::default(),
@@ -1274,6 +1278,10 @@ impl Node {
 
     /// Stops background work, closes connections and flushes the blob store.
     pub async fn shutdown(self) -> Result<()> {
+        // First, so a Tor that the same stop signal ended isn't started again.
+        if let Some(tor) = &self.core.tor {
+            tor.stop();
+        }
         for task in &self.tasks {
             task.abort();
         }

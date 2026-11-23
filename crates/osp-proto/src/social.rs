@@ -343,7 +343,7 @@ pub struct CircuitOffer {
     pub endpoint: PublicKey,
 }
 
-/// ALPN of the one request a carrier endpoint answers besides carrier links
+/// ALPN of a request a carrier endpoint answers besides carrier links
 /// (ADR 0043 stage B part 4d-2): "know a machine that could work for me?".
 /// Say Mo's machine finished its first middle job for Jimmy's node. Alice's
 /// node holds Jimmy's machine at standing, has room for a newcomer, and asks
@@ -370,6 +370,26 @@ pub struct WorkOffer {
     /// Its carrier descriptor as the offering node last had it, as unpadded
     /// base64url of its bytes, as a machine record carries it. It may have
     /// run out: the asker asks the machine itself then.
+    pub carrier: String,
+}
+
+/// ALPN of "your descriptor now?", on a carrier endpoint (ADR 0043's design
+/// note). Say Alice's node links to her hop Q. After Q restarts, other
+/// machines' Tor holds Q's old onion descriptor for minutes, but Q's carrier
+/// endpoint keeps its key, and is back on its relay in seconds. So Alice's
+/// node asks there, with the descriptor it last held, for the current one,
+/// which Q's machine record carries too. Only a node about to link or build
+/// a circuit through Q asks: either shows Q its address anyway.
+pub const CARRIER_DESCRIPTOR_ALPN: &[u8] = b"osp/carrier-descriptor/0";
+
+/// "Your descriptor now?", on a carrier endpoint. The asker isn't named.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct CarrierDescriptorRequest {}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CarrierDescriptorResponse {
+    /// The carrier's descriptor, signed by its machine key, as unpadded
+    /// base64url of its bytes, as a machine record carries it.
     pub carrier: String,
 }
 
