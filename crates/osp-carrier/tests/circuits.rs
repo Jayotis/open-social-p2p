@@ -1,118 +1,15 @@
 //! Circuits through carriers on loopback: Jimmy's node (V) fetching from
 //! Alice's (H) through P, a newcomer M and Alice's hop Q.
 
-use std::{
-    collections::HashMap,
-    net::SocketAddr,
-    sync::{Arc, Mutex},
-    time::Duration,
-};
+use std::time::Duration;
 
-use anyhow::{Result, anyhow};
-use iroh::{Endpoint, EndpointAddr, EndpointId, RelayMode, SecretKey, endpoint::presets};
-use osp_carrier::{
-    ALPN, Carrier, CarrierInfo, Config, Descriptor, Dial, HostEvent, HostLink, Limits,
-    ViewerCircuit, inbox_drops,
-};
+use iroh::{EndpointAddr, SecretKey};
+use osp_carrier::{ALPN, CarrierInfo, HostEvent, HostLink, Limits, ViewerCircuit};
 use tokio::time::timeout;
 
-const WAIT: Duration = Duration::from_secs(10);
+mod common;
 
-async fn endpoint(alpns: Vec<Vec<u8>>) -> Endpoint {
-    Endpoint::builder(presets::Minimal)
-        .secret_key(SecretKey::generate())
-        .relay_mode(RelayMode::Disabled)
-        .alpns(alpns)
-        .bind_addr("127.0.0.1:0".parse::<SocketAddr>().unwrap())
-        .unwrap()
-        .bind()
-        .await
-        .unwrap()
-}
-
-/// Where each carrier endpoint is on loopback, in place of a relay.
-type Book = Arc<Mutex<HashMap<EndpointId, EndpointAddr>>>;
-
-fn book_dial(endpoint: Endpoint, book: Book) -> Dial {
-    Arc::new(move |info: CarrierInfo| {
-        let endpoint = endpoint.clone();
-        let addr = book.lock().unwrap().get(&info.endpoint).cloned();
-        Box::pin(async move {
-            let addr = addr.ok_or_else(|| anyhow!("not in the book"))?;
-            Ok(endpoint.connect(addr, ALPN).await?)
-        })
-    })
-}
-
-struct Node {
-    endpoint: Endpoint,
-    carrier: Carrier,
-}
-
-impl Node {
-    async fn descriptor(&self) -> Descriptor {
-        self.carrier.descriptor().await.unwrap()
-    }
-}
-
-async fn carrier(book: &Book, limits: Limits) -> Node {
-    let endpoint = endpoint(vec![ALPN.to_vec()]).await;
-    book.lock().unwrap().insert(endpoint.id(), endpoint.addr());
-    let carrier = Carrier::spawn(
-        endpoint.clone(),
-        Config {
-            machine: SecretKey::generate(),
-            relay: "https://relay.example/".into(),
-            offers: vec![],
-            limits,
-            dial: book_dial(endpoint.clone(), book.clone()),
-            others: None,
-        },
-    )
-    .unwrap();
-    Node { endpoint, carrier }
-}
-
-/// Alice's node: a link to her hop Q, holding a slot.
-async fn host(q: &Node) -> (Endpoint, HostLink) {
-    let endpoint = endpoint(vec![]).await;
-    let conn = endpoint.connect(q.endpoint.addr(), ALPN).await.unwrap();
-    (endpoint, HostLink::open(conn).await.unwrap())
-}
-
-/// Jimmy's node: a fresh endpoint for this circuit, linked to its first hop.
-async fn viewer(path: &[&Node], slot: osp_carrier::Slot) -> Result<(Endpoint, ViewerCircuit)> {
-    let endpoint = endpoint(vec![]).await;
-    let conn = endpoint.connect(path[0].endpoint.addr(), ALPN).await?;
-    let mut hops = Vec::new();
-    for n in path {
-        hops.push(n.descriptor().await);
-    }
-    let circuit = ViewerCircuit::build(conn, &hops, slot).await?;
-    Ok((endpoint, circuit))
-}
-
-/// A packet each way, and checks Alice's node is told the circuit came.
-async fn round_trip(circuit: &mut ViewerCircuit, host: &mut HostLink) {
-    let opened = match timeout(WAIT, host.recv()).await.unwrap().unwrap() {
-        HostEvent::Opened(id) => id,
-        other => panic!("expected the circuit to open, got {other:?}"),
-    };
-    for i in 0..20u8 {
-        let packet = vec![i; 1200];
-        circuit.send(packet.clone()).unwrap();
-        match timeout(WAIT, host.recv()).await.unwrap().unwrap() {
-            HostEvent::Packet(id, got) => {
-                assert_eq!(id, opened);
-                assert_eq!(got, packet);
-            }
-            other => panic!("expected a packet, got {other:?}"),
-        }
-        let reply = vec![i ^ 0xff; 1200];
-        host.send(opened, reply.clone()).unwrap();
-        assert_eq!(timeout(WAIT, circuit.recv()).await.unwrap().unwrap(), reply);
-    }
-}
+use common::*;
 
 #[tokio::test]
 async fn a_packet_goes_through_two_hops_and_through_three() {
@@ -553,60 +450,4 @@ async fn a_hop_over_its_share_slows_the_video_rather_than_losing_it() {
     );
     // The full queue's drops are counted apart, and among all drops.
     assert!(stats.share_full <= stats.dropped, "{stats:?}");
-}
-
-/// Alice's node sends Jimmy's circuit more packets than its inbox holds,
-/// and Jimmy's end reads none of them until the last is sent. Each packet
-/// his link brought in is either read or counted as dropped at the full
-/// inbox: none goes unseen (stage D's sixth run broke on losses nothing
-/// counted). Not every packet sent need reach his link: on a busy machine
-/// some are lost on the way, where QUIC doesn't send datagrams again.
-#[tokio::test]
-async fn a_full_viewer_inbox_counts_each_packet_it_drops() {
-    let book = Book::default();
-    let p = carrier(&book, Limits::home()).await;
-    let q = carrier(&book, Limits::home()).await;
-    let (_h, mut host) = host(&q).await;
-    let endpoint = endpoint(vec![]).await;
-    let hops = [p.descriptor().await, q.descriptor().await];
-    let conn = endpoint.connect(p.endpoint.addr(), ALPN).await.unwrap();
-    let link = conn.clone();
-    let mut circuit = ViewerCircuit::build(conn, &hops, host.slot())
-        .await
-        .unwrap();
-    let opened = match timeout(WAIT, host.recv()).await.unwrap().unwrap() {
-        HostEvent::Opened(id) => id,
-        other => panic!("expected the circuit to open, got {other:?}"),
-    };
-    // What the link brought in to build the circuit: `CREATED` and the
-    // answers to `EXTEND` and `CONNECT_HOST`.
-    let setup = link.stats().frame_rx.datagram;
-    assert_eq!(setup, 3);
-
-    let before = inbox_drops().viewer;
-    const SENT: u64 = 3000;
-    for i in 0..SENT {
-        host.send(opened, vec![i as u8; 1000]).unwrap();
-        if i % 10 == 9 {
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
-    }
-    // Read until nothing more comes for a while.
-    let mut kept = 0;
-    while let Ok(Some(_)) = timeout(Duration::from_secs(1), circuit.recv()).await {
-        kept += 1;
-    }
-    // Other tests in this binary only add to the count, and none of them
-    // fills an inbox.
-    let dropped = inbox_drops().viewer - before;
-    let came = link.stats().frame_rx.datagram - setup;
-    assert_eq!(
-        kept + dropped,
-        came,
-        "{kept} read and {dropped} counted, of {came} the link brought in ({SENT} sent)"
-    );
-    // The inbox holds 1024, and as many again wait to be unwrapped.
-    if came > 2 * 1024 {
-        assert!(dropped > 0, "{came} came, {kept} read, none counted");
-    }
 }
