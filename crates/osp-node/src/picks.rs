@@ -310,7 +310,10 @@ impl Core {
             }
             match self.hop_descriptor(machine, true).await {
                 Ok(descriptor) => return Ok(descriptor),
-                Err(e) => last = e,
+                Err(e) => {
+                    debug!(hop = %crate::machine::words(&machine), "not this node's own hop now: {e:#}");
+                    last = e;
+                }
             }
         }
         Err(last.context("no hop of this node's own could be had"))

@@ -229,6 +229,24 @@ Relay only carried the file in 33.4–34.3 s each time, as in the fifth run.
 
 **n0: failed as in the fifth run, and the third fetch wasn't run.** Both fetches went to `c45240d144` and stopped at 83.7 MB until the 30 min limit. The run was stopped by hand before the third, since it wasn't graded and the next run puts debug logs on more of the hops. The configs were put back by hand.
 
+## The counter probe, after the sixth run
+
+**The carriers' counters don't account for the loss, 2026-11-23.** One carrier fetch, V on #291 (each hop's descriptor logs where it came from and how long it took), with every lab node's `osp carrier` counters read before and after. P and Q (relay1's node) were the hops, as in the sixth run, each carrying about 40 MB. The fetch went as fetches 2 and 3 did: the carrier download broke after 12.6 MB (`too many gaps in stream buffer`) and again after 21.5 MB (`connection lost: closed`), then the relay carried the rest. The whole file took 70.6 s.
+
+| Hop | Held for the share | Dropped, share full | Sent to a backed-up link | Dropped in all |
+|---|---|---|---|---|
+| P | 3,028 (1.2 s) | 106 | 0 | 106 |
+| Q | 0 | 0 | 0 | 0 |
+
+No other node's counters moved. The first break needed more than 1,024 holes in V's stream within 12.6 MB, and the carriers dropped 106 packets over the whole fetch. So most of the loss is where no counter looks: noq's datagram queues, which drop silently (on the send side the oldest waiting datagrams go to make room, on the receive side what isn't read in time), V's own queue between reading the link and its circuit's QUIC (`INBOX`, 1,024 packets, also dropped silently), or the relay between them. V is the emulated arm64 VM, and in the sixth run it logged `no available capacity` from the relay, so V not keeping up is the first suspect. It isn't confirmed. The first circuit went on a fresh link and broke the same way, so the kept link isn't the cause. P's learned upload rose from 47.7 to 74.5 Mbit/s.
+
+**Two more fetches, the same day.** Both broke twice in the same two ways before the relay finished them.
+
+- **The first:** no carrier counted a drop or a backed-up link, on any node.
+- **The second, with CPU read each second:** P counted 1,075 packets sent to a backed-up link, and no drops, and its learned upload went down from 74.5 to 59.6 Mbit/s. V's `osp` used up to 2.7 of the VM's 4 cores while the carrier downloads ran (8–15 Mbit/s), and 1–2 cores for the relay download (about 25 Mbit/s). The emulator's process on the desktop peaked at 2.8 cores. So the VM wasn't out of cores, but the carrier path costs V several times the processor per byte that the relay path does, and one thread at its limit wouldn't show in these totals. A link backed up at P without P dropping anything fits noq making room in a full send queue by dropping the oldest datagrams, which no counter sees.
+
+**The descriptor:** at the start it came from the cache in 0 ms. After the first break, it was asked of P's carrier endpoint again, which took 2.5 s, about the 2.8 s gap before fetch 3's build in the sixth run. A carrier fetch that fails forgets the hop's descriptor, so the next build waits for it. The 9.0 s gap of the sixth run's first fetch didn't recur here.
+
 ## The newcomer's middle turn
 
 **Passed, 2026-11-21.** `osp machine hello` doesn't add a machine to the table V picks middles from, so Middle arrived through ordinary meeting. Then Empty posted a fresh 20 s clip (4.0 MB) and Robin fetched it.
