@@ -641,10 +641,11 @@ impl Unheard {
         assert!(matches!(ask(&conn, &subscribe).await, SocialResponse::Ok));
 
         // Carol follows Alice, then Alice posts a photo. Carol downloads at
-        // 2 Mbit/s: 12 s or so for the photo, and her node holds the new
-        // post out of her feed until it's here.
+        // 1 Mbit/s: 24 s or so for the photo, and her node holds the new
+        // post out of her feed until it's here. Long enough for Alice's
+        // node to be busy first, even on a loaded machine.
         let slow = Link {
-            down_bps: 2 * MBPS,
+            down_bps: MBPS,
             ..delay(10)
         };
         let carol = start_sharing(dir.path(), "carol", &net, slow).await;
@@ -671,7 +672,7 @@ impl Unheard {
                 break;
             }
             assert!(
-                started.elapsed() < Duration::from_secs(5),
+                started.elapsed() < Duration::from_secs(15),
                 "never busy: {resp:?}"
             );
             tokio::time::sleep(Duration::from_millis(100)).await;

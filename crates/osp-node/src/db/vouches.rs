@@ -38,6 +38,10 @@ pub(crate) struct NewVouch<'a> {
     /// The date of the post, by which the oldest go first.
     pub post_ms: i64,
     pub now_ms: i64,
+    /// The voucher's profile, kept with the vouch if newer than the one
+    /// kept: the side is gathered only from vouchers with a profile.
+    pub profile: &'a SignedObject,
+    pub profile_ms: i64,
 }
 
 /// A credit this node's owner gave an early finder of one of their posts.
@@ -80,9 +84,9 @@ impl Db {
     }
 
     /// Keeps a vouch, replacing one of the same kind by the same voucher for
-    /// the same post but keeping when that was first heard of. Then, past
-    /// `max` of that kind, drops those of the oldest posts, and the profiles
-    /// of vouchers left with none.
+    /// the same post but keeping when that was first heard of, and with it
+    /// the voucher's profile, at once. Then, past `max` of that kind, drops
+    /// those of the oldest posts, and the profiles of vouchers left with none.
     pub fn add_vouch(&self, vouch: &NewVouch, max: usize) -> Result<()> {
         let conn = self.conn();
         let tx = conn.unchecked_transaction()?;
@@ -101,6 +105,7 @@ impl Db {
                 vouch.post_ms,
             ],
         )?;
+        keep_profile(&tx, &vouch.voucher, vouch.profile, vouch.profile_ms)?;
         tx.execute(
             "DELETE FROM vouches WHERE rowid IN (
                  SELECT rowid FROM vouches WHERE kind = ?1
@@ -176,27 +181,6 @@ impl Db {
             [],
         )?;
         tx.commit()?;
-        Ok(())
-    }
-
-    /// Keeps a voucher's profile, if it's newer than the one kept.
-    pub fn keep_voucher_profile(
-        &self,
-        actor: &PublicKey,
-        profile: &SignedObject,
-        published_ms: i64,
-    ) -> Result<()> {
-        self.conn().execute(
-            "INSERT INTO voucher_profiles (actor, profile, published_ms) VALUES (?1, ?2, ?3)
-             ON CONFLICT(actor) DO UPDATE SET
-                 profile = excluded.profile, published_ms = excluded.published_ms
-             WHERE excluded.published_ms > voucher_profiles.published_ms",
-            params![
-                actor.to_string(),
-                serde_json::to_string(profile)?,
-                published_ms
-            ],
-        )?;
         Ok(())
     }
 
@@ -700,6 +684,27 @@ pub(crate) struct CreditRecord {
     told: bool,
 }
 
+/// Keeps a voucher's profile, if it's newer than the one kept.
+fn keep_profile(
+    conn: &rusqlite::Connection,
+    actor: &PublicKey,
+    profile: &SignedObject,
+    published_ms: i64,
+) -> Result<()> {
+    conn.execute(
+        "INSERT INTO voucher_profiles (actor, profile, published_ms) VALUES (?1, ?2, ?3)
+         ON CONFLICT(actor) DO UPDATE SET
+             profile = excluded.profile, published_ms = excluded.published_ms
+         WHERE excluded.published_ms > voucher_profiles.published_ms",
+        params![
+            actor.to_string(),
+            serde_json::to_string(profile)?,
+            published_ms
+        ],
+    )?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use iroh::SecretKey;
@@ -727,10 +732,10 @@ mod tests {
             signed: &signed,
             post_ms,
             now_ms,
+            profile: &signed,
+            profile_ms: now_ms,
         };
         db.add_vouch(&vouch, max).unwrap();
-        db.keep_voucher_profile(&who.public(), &signed, now_ms)
-            .unwrap();
     }
 
     #[test]
