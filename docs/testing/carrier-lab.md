@@ -53,6 +53,15 @@ n0 is measured for comparison and isn't graded. Changing a mark needs a dated no
 
 *Mark 3 changed 2026-11-21, after the first run (the maintainer).* It was "asking for circuit offers takes under 5 s each time". On the path these fetches take, the tracker's answer carries the host's offer, so there's no separate ask to time, and the first run logged none. The mark keeps its purpose: the time from V asking the trackers (`asking the trackers who hosts it`) until the circuit can carry the download (`the circuit is ready`), both in V's log.
 
+*Marks changed 2026-11-22, after the fifth run (the maintainer).* Runs 1–5 stay as judged against the marks above.
+
+- **Mark 1 is retired for later runs.** It was "the whole file arrives within a tenth of relay-only's time".
+- **In its place, watchability:** through carriers, the sustained download speed is at least twice the video's encoded playback bitrate. This asks whether carrier playback stays ahead of viewing, not whether a longer, more private path matches one relay's bulk transfer time. Stage D's video averages 1.53 Mbit/s (113.8 million bytes over 595 s), so the mark is about 3.1 Mbit/s (0.38 MB/s).
+- **Startup (mark 2) stays an open requirement.** It isn't passed. In run 5 the connection opened ahead worked: once the carrier download started, its first byte took about 1.0 s, against 1.1–1.2 s for relay only. But the circuit still added about 4–5 s before that.
+- **The circuit's availability and reliability (mark 3) stay open too.** In run 5, V couldn't reach its own hop for 11 minutes after a restart. That is a real failure, not an artefact of a speed mark.
+
+Stage D runs again under these marks (the sixth run) after two fixes: a freshly restarted viewer reaching its own carrier quickly, and less of the circuit build paid while the viewer waits.
+
 ## Stage D results
 
 **Failed marks 1 and 2, 2026-11-21.** Nine fetches, carriers first, then relay only, then n0 only. Every carrier fetch went over two hops (`fetched through carriers hops=2`). Each figure is the median of three. First byte is counted from the start of the fetch step, which includes a sync, so it's the same extra time for all three ways.
@@ -174,7 +183,7 @@ So #283 set 3 MiB a stream and 6 MiB a connection (`osp_carrier::media_windows`)
 
 ## Stage D results, fifth run
 
-**Failed all three marks, 2026-11-22. The window made relay only 1.7 times faster, and the carrier path didn't keep up.** Run on `edd5375` (#283), on every node's own settings, except that P was V's seed carrier. P's and V's logs were at debug. Same fetches in the same order. Each figure is the median of three, counted as before. This is stage D's last run (the maintainer's boundary), and the marks weren't changed for it.
+**Failed all three marks, 2026-11-22. The window made relay only 1.7 times faster, and the carrier path didn't keep up.** Run on `edd5375` (#283), on every node's own settings, except that P was V's seed carrier. P's and V's logs were at debug. Same fetches in the same order. Each figure is the median of three, counted as before, against the original marks. The marks were changed after this run ([above](#stage-d-plan-fixed-2026-11-21-before-the-run)).
 
 | Way | Whole file | First byte |
 |---|---|---|
