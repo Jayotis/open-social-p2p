@@ -12,7 +12,7 @@ use anyhow::{Result, anyhow};
 use iroh::{Endpoint, EndpointAddr, EndpointId, RelayMode, SecretKey, endpoint::presets};
 use osp_carrier::{
     ALPN, Carrier, CarrierInfo, Config, Descriptor, Dial, HostEvent, HostLink, Limits,
-    ViewerCircuit,
+    ViewerCircuit, inbox_drops,
 };
 use tokio::time::timeout;
 
@@ -553,4 +553,61 @@ async fn a_hop_over_its_share_slows_the_video_rather_than_losing_it() {
     );
     // The full queue's drops are counted apart, and among all drops.
     assert!(stats.share_full <= stats.dropped, "{stats:?}");
+}
+
+/// Alice's node sends Jimmy's circuit more packets than its inbox holds,
+/// and Jimmy's end reads none of them until the last is sent. Those over
+/// the inbox are dropped at his end, and each one is counted: a full inbox
+/// never drops a packet unseen again (stage D's sixth run broke on losses
+/// nothing counted).
+#[tokio::test]
+async fn a_full_viewer_inbox_counts_each_packet_it_drops() {
+    let book = Book::default();
+    let p = carrier(&book, Limits::home()).await;
+    let q = carrier(&book, Limits::home()).await;
+    let (_h, mut host) = host(&q).await;
+    let endpoint = endpoint(vec![]).await;
+    let hops = [p.descriptor().await, q.descriptor().await];
+    let conn = endpoint.connect(p.endpoint.addr(), ALPN).await.unwrap();
+    let mut circuit = ViewerCircuit::build(conn, &hops, host.slot())
+        .await
+        .unwrap();
+    let opened = match timeout(WAIT, host.recv()).await.unwrap().unwrap() {
+        HostEvent::Opened(id) => id,
+        other => panic!("expected the circuit to open, got {other:?}"),
+    };
+
+    let before = inbox_drops().viewer;
+    // Sent in small batches, so the links' own queues keep up and the
+    // packets reach Jimmy's end: it's his inbox that overflows.
+    const SENT: usize = 3000;
+    for batch in 0..SENT / 50 {
+        for i in 0..50 {
+            host.send(opened, vec![(batch * 50 + i) as u8; 1000])
+                .unwrap();
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    // Every packet sent came to his end: kept in the inbox or counted.
+    let mut kept = 0;
+    let dropped = timeout(WAIT, async {
+        loop {
+            while let Ok(Some(_)) = timeout(Duration::from_millis(500), circuit.recv()).await {
+                kept += 1;
+            }
+            let dropped = (inbox_drops().viewer - before) as usize;
+            if kept + dropped >= SENT {
+                return dropped;
+            }
+        }
+    })
+    .await
+    .unwrap_or_else(|_| {
+        panic!(
+            "{kept} kept and {} counted, of {SENT} sent",
+            inbox_drops().viewer - before
+        )
+    });
+    assert!(dropped > 0, "the inbox overflowed: {kept} kept");
+    assert_eq!(kept + dropped, SENT);
 }

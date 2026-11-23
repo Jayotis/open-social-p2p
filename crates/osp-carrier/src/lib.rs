@@ -29,7 +29,10 @@ mod service;
 mod transport;
 
 pub use descriptor::{CarrierInfo, Descriptor, MAX_DESCRIPTOR_BYTES};
-pub use ends::{CircuitCloser, HostEvent, HostLink, HostSender, ViewerCircuit, ViewerSender};
+pub use ends::{
+    CircuitCloser, HostEvent, HostLink, HostSender, InboxDrops, ViewerCircuit, ViewerSender,
+    inbox_drops,
+};
 pub use frame::{CircuitId, DestroyReason, Frame, Relay, SLOT_LEN, Slot};
 pub use layer::{
     CarrierKeys, CircuitKey, Direction, Layer, MAX_PACKETS, Onion, SETUP_LEN, Setup, WINDOW,

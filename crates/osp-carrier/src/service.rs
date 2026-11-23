@@ -215,6 +215,12 @@ pub struct Stats {
     /// Packets sent on to a link whose datagram buffer was backed up: the
     /// path, or the owner's connection, couldn't take them as fast.
     pub link_full: u64,
+    /// Sends that found less room in the link's datagram queue than their
+    /// frame needs. QUIC then makes room by discarding the oldest datagrams
+    /// still waiting, and says nothing of it, so this counts the pressure:
+    /// at least one went each time, but not how many, and another sender on
+    /// the link may have taken the room between the look and the send.
+    pub send_queue_full: u64,
 }
 
 /// A running carrier. Dropping it stops it.
@@ -682,6 +688,9 @@ impl State {
         l.buffer = l.buffer.max(space);
         if space < l.buffer / 2 {
             self.stats.link_full += 1;
+        }
+        if space < frame.len() {
+            self.stats.send_queue_full += 1;
         }
         if let Err(e) = l.conn.send_datagram(frame) {
             self.stats.dropped += 1;

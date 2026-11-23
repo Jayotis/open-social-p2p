@@ -883,6 +883,21 @@ pub struct CarrierStatus {
     pub link_full: u64,
     #[serde(default)]
     pub dropped: u64,
+    /// Since the node started, where packets can go missing without a
+    /// drop of the carrier's own: its sends that found a link's datagram
+    /// queue full (QUIC then discards the oldest waiting, uncounted); and
+    /// at this node's circuit ends, packets dropped with the viewer's or
+    /// the host's inbox full, and the ends' sends that found the queue full.
+    #[serde(default)]
+    pub send_queue_full: u64,
+    #[serde(default)]
+    pub viewer_inbox_full: u64,
+    #[serde(default)]
+    pub host_inbox_full: u64,
+    #[serde(default)]
+    pub viewer_send_queue_full: u64,
+    #[serde(default)]
+    pub host_send_queue_full: u64,
     /// The owner's answer on the hops this node picks seeing its address:
     /// unset if not asked yet, when its own leg stays on relays.
     #[serde(default)]

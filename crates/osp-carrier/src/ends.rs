@@ -5,7 +5,10 @@
 //! The circuit transport puts iroh's QUIC on them.
 
 use std::{
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicU64, Ordering},
+    },
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -13,7 +16,7 @@ use anyhow::{Context, Result, anyhow, bail, ensure};
 use bytes::Bytes;
 use iroh::endpoint::Connection;
 use tokio::{
-    sync::mpsc,
+    sync::mpsc::{self, error::TrySendError},
     task::{AbortHandle, JoinSet},
     time::timeout,
 };
@@ -27,6 +30,52 @@ use crate::{
 /// Packets waiting to be read, at either end. More are dropped, as a full
 /// socket buffer drops them.
 const INBOX: usize = 1024;
+
+/// Packets dropped at this node's circuit ends because the inbox was full:
+/// the end's QUIC wasn't reading them as fast as they came. Since the
+/// process started, for every end at once. Stage D's sixth run broke on
+/// packets lost where nothing counted.
+static VIEWER_INBOX_FULL: AtomicU64 = AtomicU64::new(0);
+static HOST_INBOX_FULL: AtomicU64 = AtomicU64::new(0);
+/// Sends at this node's circuit ends that found less room in the link's
+/// datagram queue than the frame needs, as the carrier's `send_queue_full`
+/// counts them: QUIC then discards the oldest waiting, without a word.
+static VIEWER_SEND_QUEUE_FULL: AtomicU64 = AtomicU64::new(0);
+static HOST_SEND_QUEUE_FULL: AtomicU64 = AtomicU64::new(0);
+
+/// What went missing at this node's circuit ends since the process
+/// started, for every end at once: packets dropped with the inbox full, at
+/// the viewer ends of its circuits and at its host links; and sends that
+/// found the link's queue full, at each.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct InboxDrops {
+    pub viewer: u64,
+    pub host: u64,
+    pub viewer_send_queue_full: u64,
+    pub host_send_queue_full: u64,
+}
+
+pub fn inbox_drops() -> InboxDrops {
+    InboxDrops {
+        viewer: VIEWER_INBOX_FULL.load(Ordering::Relaxed),
+        host: HOST_INBOX_FULL.load(Ordering::Relaxed),
+        viewer_send_queue_full: VIEWER_SEND_QUEUE_FULL.load(Ordering::Relaxed),
+        host_send_queue_full: HOST_SEND_QUEUE_FULL.load(Ordering::Relaxed),
+    }
+}
+
+/// Sends `frame` on `conn`, counting in `full` a send that finds less room
+/// in its datagram queue than the frame needs.
+fn send_counted(
+    conn: &Connection,
+    frame: Bytes,
+    full: &AtomicU64,
+) -> Result<(), iroh::endpoint::SendDatagramError> {
+    if conn.datagram_send_buffer_space() < frame.len() {
+        full.fetch_add(1, Ordering::Relaxed);
+    }
+    conn.send_datagram(frame)
+}
 
 /// What comes to a host over its link to its hop.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -76,8 +125,12 @@ impl HostLink {
                     Ok(Frame::Destroy { circuit, .. }) => HostEvent::Closed(circuit),
                     _ => continue,
                 };
-                if tx.try_send(ev).is_err() && tx.is_closed() {
-                    return;
+                match tx.try_send(ev) {
+                    Ok(()) => {}
+                    Err(TrySendError::Full(_)) => {
+                        HOST_INBOX_FULL.fetch_add(1, Ordering::Relaxed);
+                    }
+                    Err(TrySendError::Closed(_)) => return,
                 }
             }
         });
@@ -154,7 +207,11 @@ impl HostSender {
             pn: 0,
             payload: packet,
         };
-        self.conn.send_datagram(Bytes::from(frame.encode()))?;
+        send_counted(
+            &self.conn,
+            Bytes::from(frame.encode()),
+            &HOST_SEND_QUEUE_FULL,
+        )?;
         Ok(())
     }
 
@@ -355,8 +412,10 @@ impl ViewerCircuit {
                         payload,
                     } if circuit == id => {
                         let relay = theirs.lock().expect("onion lock").unwrap(pn, payload);
-                        if let Ok(Relay::Data(packet)) = relay {
-                            let _ = packets_tx.try_send(packet);
+                        if let Ok(Relay::Data(packet)) = relay
+                            && let Err(TrySendError::Full(_)) = packets_tx.try_send(packet)
+                        {
+                            VIEWER_INBOX_FULL.fetch_add(1, Ordering::Relaxed);
                         }
                     }
                     Frame::Destroy { circuit, .. } if circuit == id => return,
@@ -420,7 +479,11 @@ impl ViewerSender {
             pn,
             payload,
         };
-        self.conn.send_datagram(Bytes::from(frame.encode()))?;
+        send_counted(
+            &self.conn,
+            Bytes::from(frame.encode()),
+            &VIEWER_SEND_QUEUE_FULL,
+        )?;
         Ok(())
     }
 
