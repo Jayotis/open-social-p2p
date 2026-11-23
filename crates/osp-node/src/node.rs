@@ -1278,9 +1278,10 @@ impl Node {
 
     /// Stops background work, closes connections and flushes the blob store.
     pub async fn shutdown(self) -> Result<()> {
-        // First, so a Tor that the same stop signal ended isn't started again.
+        // Tor runs on while the connections over it close, but isn't started
+        // again if it stops now: a stop signal may have reached it too.
         if let Some(tor) = &self.core.tor {
-            tor.stop();
+            tor.stopping();
         }
         for task in &self.tasks {
             task.abort();
@@ -1301,6 +1302,9 @@ impl Node {
                 .shutdown()
                 .await
                 .context("shutting down the other endpoints' protocols")?;
+        }
+        if let Some(tor) = &self.core.tor {
+            tor.stop();
         }
         if self.serving_socket {
             let _ = std::fs::remove_file(self.core.home.socket());

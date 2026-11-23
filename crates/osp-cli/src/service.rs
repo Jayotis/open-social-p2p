@@ -88,6 +88,9 @@ Documentation=https://github.com/Jayotis/open-social-p2p
 ExecStart=\"{}\" --home \"{}\" daemon
 Restart=on-failure
 RestartSec=10
+# The stop signal goes to the node alone: it closes its connections over its
+# Tor, then stops it. Anything left is killed after the stop timeout.
+KillMode=mixed
 NoNewPrivileges=yes
 # Interactive programs come first; transcoding and serving just take a little longer.
 Nice=10
@@ -151,5 +154,13 @@ mod tests {
         let unit = unit_file(Path::new("/opt/osp/bin/osp"), Path::new("/home/a b/100%")).unwrap();
         assert!(unit.contains("ExecStart=\"/opt/osp/bin/osp\" --home \"/home/a b/100%%\" daemon"));
         assert!(unit_quote(Path::new("/home/x\"y")).is_err());
+    }
+
+    /// A stop signals the node alone, so its Tor outlives the node's last
+    /// connections and isn't started again.
+    #[test]
+    fn a_stop_signals_the_node_alone() {
+        let unit = unit_file(Path::new("/opt/osp/bin/osp"), Path::new("/home/a")).unwrap();
+        assert!(unit.lines().any(|l| l == "KillMode=mixed"));
     }
 }
