@@ -560,22 +560,25 @@ class _UniverseTabState extends State<UniverseTab>
               Positioned.fill(
                 child: Listener(
                   onPointerSignal: _wheel,
-                  child: GestureDetector(
-                    key: const Key('universe-map'),
-                    behavior: HitTestBehavior.opaque,
-                    onScaleStart: _scaleStart,
-                    onScaleUpdate: _scaleUpdate,
-                    onScaleEnd: (_) => _scaleEnd(),
-                    onTapUp: s == null ? null : (d) => _tap(d.localPosition, s),
-                    // The map as a whole, then each light on screen as its
-                    // own button, so a screen reader can go star by star.
-                    child: Semantics(
-                      container: true,
-                      label: _describe(s, scene.layer, lights),
-                      customSemanticsActions: {
-                        _zoomIn: () => _zoom(2),
-                        _zoomOut: () => _zoom(0.5),
-                      },
+                  // The map as a whole, then each light on screen as its own
+                  // button, so a screen reader can go star by star. Outside
+                  // the gestures, so the map's tap is named too.
+                  child: Semantics(
+                    container: true,
+                    label: _describe(s, scene.layer, lights),
+                    customSemanticsActions: {
+                      _zoomIn: () => _zoom(2),
+                      _zoomOut: () => _zoom(0.5),
+                    },
+                    child: GestureDetector(
+                      key: const Key('universe-map'),
+                      behavior: HitTestBehavior.opaque,
+                      onScaleStart: _scaleStart,
+                      onScaleUpdate: _scaleUpdate,
+                      onScaleEnd: (_) => _scaleEnd(),
+                      onTapUp: s == null
+                          ? null
+                          : (d) => _tap(d.localPosition, s),
                       // Rebuilt as the camera moves, so the buttons a screen
                       // reader finds are where the lights are drawn.
                       child: ListenableBuilder(
