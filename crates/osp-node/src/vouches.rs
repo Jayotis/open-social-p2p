@@ -103,6 +103,8 @@ impl Core {
                 signed: announce,
                 post_ms,
                 now_ms: now,
+                profile,
+                profile_ms,
             },
             MAX_RESHARE_VOUCHES,
         )?;
@@ -111,8 +113,6 @@ impl Core {
             self.db
                 .note_activity(&format!("reshared:{}", a.object), true, false, now)?;
         }
-        self.db
-            .keep_voucher_profile(&a.actor, profile, profile_ms)?;
         debug!(
             resharer = %a.actor.fmt_short(),
             post = %a.object.fmt_short(),
@@ -205,11 +205,11 @@ impl Core {
                 signed: credit,
                 post_ms: osp_proto::parse_rfc3339_ms(&f.published).unwrap_or(now),
                 now_ms: now,
+                profile,
+                profile_ms,
             },
             MAX_CREDITS_KEPT,
         )?;
-        self.db
-            .keep_voucher_profile(&f.actor, profile, profile_ms)?;
         info!(
             author = %f.actor.fmt_short(),
             post = %f.post.fmt_short(),
