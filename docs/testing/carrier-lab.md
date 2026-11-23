@@ -209,6 +209,26 @@ The carrier path's speed isn't set by V's window any more. On P, the share's lea
 
 **n0: two fetches failed the same way, and the third wasn't run.** Both nodes were on n0's relays this time (the check fixed after the fourth run). V took the download from the first source in its list, another node holding the video (`c45240d144`, not H). It connected in 73 ms and had the first byte after 0.2 s. Both times the transfer then stopped at 83.7 MB: the path went silent (round trip read 60 s, no losses), and the attempt ran to its 30 min limit. V didn't move on to H. The script then waited without a limit for the file. After the second identical failure it was stopped by hand, and the configs were put back by hand. n0 isn't graded.
 
+## Stage D results, sixth run
+
+**Watchability passed in one of three, 2026-11-23: the other two carrier downloads broke partway, and the fetch finished over the relay.** Run on `246f62d` (#286: a restarted node reaches its own hop quickly; #287: Tor outlives the node's connections; #288: the link to the own hop kept between circuits), on every node's own settings, except that P was V's seed carrier. P's and V's logs were at debug. Same fetches in the same order. Judged against the marks as changed after the fifth run. Each figure is the median of three. Times are counted from V's `downloading` line, the same moment in every way.
+
+| Way | Whole file | First byte |
+|---|---|---|
+| Through carriers | 83.5 s | 6.8 s |
+| Relay only | 39.3 s | 2.2 s |
+| n0 only | failed twice | 0.2 s into the download |
+
+1. **Watchability: passed in fetch 1 only.** Fetch 1's carrier download carried the whole file at 10.9 Mbit/s, 3.5 times the 3.1 Mbit/s mark. In fetches 2 and 3 the carrier download broke twice each, after 22.0 MB and 4.7 MB, then 5.6 MB and 8.9 MB, at 3.6–7.7 Mbit/s while it ran. Each time V built a new circuit, and after the second break it took the rest over the relay. The script's `watch:` lines for those two (23.6 and 27.8 Mbit/s) measured that relay download, not a carrier one: it took the first finished download after the carrier step began. It now checks that the download went through carriers.
+2. **Startup: open, not met.** The carrier path's first byte came 4.1 s, 6.8 s and 16.0 s after the download started, against 2.0–2.2 s for relay only. Fetch 2 was 1.9 s behind relay only, within the old mark's 2 s.
+3. **The circuit: built faster, but not always started at once.** On the kept link the build took 1.6–2.0 s (five builds), against 4.3–4.5 s in the fifth run. Fetch 1's circuit was built on a fresh link, raced against a three-hop one through a middle that answered `Gone`, and took 4.3 s. Counted from the download's start, the circuit was ready after 13.3 s, 2.0 s and 4.8 s. In fetches 1 and 3, 9.0 s and 2.8 s passed before the build began, with nothing in V's log. Before building, V finds its own hop's descriptor, and a failed carrier fetch makes it ask again next time. That fits the gaps (fetch 1 was the first since the restart, and fetch 3 followed fetch 2's failures), but it isn't confirmed, because the ask isn't logged when it succeeds. Nothing went the 11 minutes without a hop seen in the fifth run.
+
+**Why the carrier downloads broke.** Fetch 2's two ended with `connection lost: closed`, as fetch 3 did in the fifth run. Fetch 3's two ended with V's own QUIC giving up: `too many gaps in stream buffer`. That is noq's limit of 1,024 separate pieces waiting in one stream's receive buffer, so many of the packets on their way to V never came. The loss counts in V's download lines don't show it, because they count what V sent. On P, `osp carrier` counted 3,650 packets dropped with the share's queue full, and 462 sent to a backed-up link, since its start before the run. During fetch 2, P lowered its learned upload from 47.7 to 38.1 Mbit/s after a link backed up. V logged 186 `no available capacity` drops from the project's relay at one moment in fetch 2, and none in fetch 3. Fetch 1 went on a fresh link, which then became the kept one, and all four that broke went on that kept link. With one success, that doesn't tell the kept link apart from P's lowered share, and the fifth run's break was on a fresh link. Where the packets were lost isn't confirmed.
+
+Relay only carried the file in 33.4–34.3 s each time, as in the fifth run.
+
+**n0: failed as in the fifth run, and the third fetch wasn't run.** Both fetches went to `c45240d144` and stopped at 83.7 MB until the 30 min limit. The run was stopped by hand before the third, since it wasn't graded and the next run puts debug logs on more of the hops. The configs were put back by hand.
+
 ## The newcomer's middle turn
 
 **Passed, 2026-11-21.** `osp machine hello` doesn't add a machine to the table V picks middles from, so Middle arrived through ordinary meeting. Then Empty posted a fresh 20 s clip (4.0 MB) and Robin fetched it.
