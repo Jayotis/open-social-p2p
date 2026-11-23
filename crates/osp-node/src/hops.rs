@@ -440,17 +440,25 @@ impl Core {
         machine: EndpointId,
         cached: bool,
     ) -> Result<Descriptor> {
+        // Stage D's sixth run had 9 s before a circuit's build with nothing
+        // logged: each way here says where the descriptor came from, and
+        // how long it took.
+        let hop = crate::machine::words(&machine);
+        let started = tokio::time::Instant::now();
+        let ms = || started.elapsed().as_millis() as u64;
         if cached
             && let Some(descriptor) = self
                 .seed_descriptors
                 .fresh(&machine, unix_now() + FRESH_FOR)
         {
+            debug!(%hop, from = "cache", ms = ms(), "a hop's descriptor");
             return Ok(descriptor);
         }
         if let Some(held) = self.seed_descriptors.held(&machine) {
             match tokio::time::timeout(ASK_CARRIER_WAIT, self.ask_carrier(machine, &held)).await {
                 Ok(Ok((descriptor, until))) => {
                     self.seed_descriptors.keep(machine, &descriptor, until);
+                    debug!(%hop, from = "carrier", ms = ms(), "a hop's descriptor");
                     return Ok(descriptor);
                 }
                 Ok(Err(e)) => {
@@ -461,7 +469,12 @@ impl Core {
                 }
             }
         }
-        self.seed_descriptor(machine, false).await
+        let over_tor = self.seed_descriptor(machine, false).await;
+        match &over_tor {
+            Ok(_) => debug!(%hop, from = "tor", ms = ms(), "a hop's descriptor"),
+            Err(e) => debug!(%hop, ms = ms(), "a hop's descriptor couldn't be had: {e:#}"),
+        }
+        over_tor
     }
 
     /// Asks the carrier endpoint `held` names, from a key made for the ask,
