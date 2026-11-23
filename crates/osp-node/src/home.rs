@@ -82,6 +82,11 @@ impl Home {
         self.root.join("circuit.key")
     }
 
+    /// The seed carriers' descriptors last held, kept across restarts.
+    pub fn seed_descriptors(&self) -> PathBuf {
+        self.root.join("seed-descriptors")
+    }
+
     pub fn db(&self) -> PathBuf {
         self.root.join("osp.db")
     }

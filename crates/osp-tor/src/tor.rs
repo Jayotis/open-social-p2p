@@ -119,8 +119,15 @@ impl fmt::Debug for Tor {
 }
 
 enum Request {
-    Add { id: u64, service: Box<Service> },
-    Remove { id: u64 },
+    Add {
+        id: u64,
+        service: Box<Service>,
+    },
+    Remove {
+        id: u64,
+    },
+    /// The node is stopping: stop Tor, and don't start it again.
+    Stop,
 }
 
 struct Service {
@@ -211,6 +218,11 @@ impl Tor {
             .send_if_modified(|d| d.replace(restarts) != Some(restarts));
     }
 
+    /// Stops Tor for good, when the node stops: it isn't started again.
+    pub fn stop(&self) {
+        let _ = self.requests.send(Request::Stop);
+    }
+
     /// Sets up an onion service for `key` whose streams to `port` go to
     /// `target`, and keeps it up until the returned value is dropped.
     pub(crate) fn serve(&self, key: SecretKey, port: u16, target: SocketAddr) -> OnionService {
@@ -268,9 +280,14 @@ impl Supervisor {
             loop {
                 tokio::select! {
                     _ = tokio::time::sleep_until(until) => break,
+                    // A service stop's signal reaches Tor as well as the
+                    // node, so Tor is often gone first. Starting it again
+                    // would publish onion services that die with the node,
+                    // and other machines' Tor would hold their dead
+                    // descriptors for minutes once the node is back.
                     request = self.requests.recv() => match request {
+                        Some(Request::Stop) | None => return,
                         Some(request) => self.note(request),
-                        None => return,
                     },
                 }
             }
@@ -324,8 +341,8 @@ impl Supervisor {
                     None => bail!("Tor closed its control port"),
                 },
                 request = self.requests.recv() => match request {
+                    Some(Request::Stop) | None => return Ok(()),
                     Some(request) => self.apply(request, &mut control).await,
-                    None => return Ok(()),
                 },
                 _ = tokio::time::sleep_until(next_check) => {
                     let progress = control.bootstrap_progress().await?;
@@ -360,6 +377,7 @@ impl Supervisor {
             Request::Remove { id } => {
                 self.services.remove(&id);
             }
+            Request::Stop => {}
         }
         self.count_services();
     }
@@ -375,6 +393,7 @@ impl Supervisor {
                     }
                 }
             }
+            Request::Stop => {}
         }
         self.note(request);
     }
@@ -563,5 +582,27 @@ mod tests {
         assert!(text.contains("DataDirectory \"/home/a \\\"b\\\"/tor/data\"\n"));
         assert!(text.contains("__OwningControllerProcess 42\n"));
         assert!(torrc_text(Path::new("/home/a\nControlPort 9051"), 1).is_err());
+    }
+
+    /// Say Alice's node is stopping, and the stop signal ended its Tor
+    /// first: Tor isn't started again in the pause before the next try.
+    #[tokio::test]
+    async fn a_stopped_tor_is_not_started_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let tor = Tor::start(Source::Launch {
+            // Exits at once, as Tor does on the stop signal.
+            binary: "/bin/false".into(),
+            dir: dir.path().join("tor"),
+        });
+        let mut state = tor.state();
+        tokio::time::timeout(Duration::from_secs(10), state.wait_for(|s| s.restarts == 1))
+            .await
+            .expect("Tor's first stop")
+            .unwrap();
+        tor.stop();
+        // Past the pause after a first stop (2 s), when it'd start again.
+        tokio::time::sleep(PAUSES.0 + Duration::from_secs(1)).await;
+        assert_eq!(tor.state().borrow().restarts, 1);
+        assert!(tor._task.is_finished());
     }
 }

@@ -161,7 +161,7 @@ impl Core {
         blobs: &BlobsProtocol,
         hop: EndpointId,
     ) -> Result<(Live, u64)> {
-        let descriptor = self.seed_descriptor(hop, false).await?;
+        let descriptor = self.hop_descriptor(hop, false).await?;
         let info = descriptor.verify(unix_now())?;
         let relays = self.tracker.relays().clone();
         let relay = relay_mode(&self.config)?.context("relays are off")?;

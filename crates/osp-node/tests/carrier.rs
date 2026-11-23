@@ -494,6 +494,61 @@ async fn a_host_names_its_seed_carrier_and_is_reached_through_it() {
     kim.shutdown().await.unwrap();
 }
 
+/// Kim's node restarts, and so does Alice's, but Kim's machine name can't be
+/// reached, as a restarted machine's onion service can't for minutes. Alice's
+/// node still links to Kim's carrier, from the descriptor it last held: it
+/// asks Kim's carrier endpoint, which keeps its key, for the one with Kim's
+/// new circuit key. The stranger fetches through the link with it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_host_links_again_to_a_restarted_hop_whose_machine_name_cant_be_reached() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_relay, relay) = local_relay().await;
+    let net = SimNet::new(3);
+    let kim_home = dir.path().join("kim");
+    let mut kim_config = config("Kim", &relay);
+    kim_config.carrier.seed = true;
+    Node::init(&kim_home, &kim_config).unwrap();
+    let kim = start(&kim_home, &net).await;
+    let seed = kim.machine_id().unwrap();
+
+    let alice_home = dir.path().join("alice");
+    let mut alice_config = config("Alice", &relay);
+    alice_config.endpoints.enabled = true;
+    alice_config.carrier.known = vec![SeedCarrier { machine: seed }];
+    alice_config.carrier.hops = Some(true);
+    Node::init(&alice_home, &alice_config).unwrap();
+    let alice = start(&alice_home, &net).await;
+    let asked = post_photo(&alice, dir.path()).await;
+    let me = stranger(&net).await;
+    let before = offer_of(&me, &alice, asked, true).await.unwrap();
+
+    alice.shutdown().await.unwrap();
+    kim.shutdown().await.unwrap();
+    let kim = start(&kim_home, &net).await;
+    assert!(net.set_online(seed, false));
+    let alice = start(&alice_home, &net).await;
+
+    let after = offer_of(&me, &alice, asked, true).await.unwrap();
+    let key = |offer: &CircuitOffer| {
+        let bytes = data_encoding::BASE64URL_NOPAD
+            .decode(offer.carrier.as_bytes())
+            .unwrap();
+        let info = Descriptor::from_bytes(&bytes)
+            .unwrap()
+            .verify(now())
+            .unwrap();
+        assert_eq!(info.machine, seed);
+        info.circuit_key
+    };
+    // Kim's new circuit key: the carrier endpoint said it.
+    assert_ne!(key(&after), key(&before));
+    let photo = try_fetch_through(&relay, &after, asked.1).await.unwrap();
+    assert_eq!(iroh_blobs::Hash::new(&photo).as_bytes(), asked.1.as_bytes());
+
+    alice.shutdown().await.unwrap();
+    kim.shutdown().await.unwrap();
+}
+
 /// The hop next to Alice's node sees its address, so her node links to one
 /// only with her yes (ADR 0043 §8). Not asked yet, it names none. Once she
 /// says yes it does, at once; and with no, the link goes, and her media is
