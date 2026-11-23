@@ -16,15 +16,16 @@
 
 use std::{
     collections::{HashMap, HashSet},
+    net::SocketAddr,
     path::PathBuf,
-    sync::Mutex,
+    sync::{Arc, Mutex, Weak},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use anyhow::{Context, Result, anyhow};
-use iroh::{Endpoint, EndpointId, SecretKey, TransportAddr};
+use anyhow::{Context, Result, anyhow, bail};
+use iroh::{Endpoint, EndpointId, SecretKey, TransportAddr, endpoint::Connection};
 use iroh_blobs::util::connection_pool::{ConnectionPool, ConnectionRef};
-use osp_carrier::{Descriptor, SETUP_TIMEOUT, ViewerCircuit};
+use osp_carrier::{CarrierInfo, CircuitCloser, Descriptor, SETUP_TIMEOUT, ViewerCircuit};
 use osp_proto::{
     BlobHash,
     framing::{read_frame, write_frame},
@@ -64,17 +65,85 @@ const ASK_CARRIER_WAIT: Duration = Duration::from_secs(10);
 /// `SETUP_TIMEOUT` to answer.
 const PREFER_MIDDLE_FOR: Duration = Duration::from_secs(5);
 
-/// A circuit ready to fetch over: the endpoint its first hop was dialled
-/// from, and the one whose only path is the circuit.
+/// A link this node's own hop is kept for, at most (`OwnLink`): then its
+/// key is replaced.
+const KEEP_LINK_FOR: Duration = Duration::from_secs(24 * 60 * 60);
+/// How often the kept link is looked at, and made again if it's gone.
+const KEEP_LINK_CHECK: Duration = Duration::from_secs(60);
+
+/// A circuit ready to fetch over: its link to the first hop, what ends it,
+/// and the endpoint whose only path is the circuit.
 struct Circuit {
-    link: Endpoint,
+    link: Link,
+    closer: CircuitCloser,
     ends: Endpoint,
 }
 
-impl Circuit {
+/// A link to a circuit's first hop: the endpoint it was dialled from, with a
+/// key made for it and published nowhere, and the connection.
+pub(crate) struct Link {
+    endpoint: Endpoint,
+    conn: Connection,
+    /// The first hop's machine, and its carrier endpoint.
+    machine: EndpointId,
+    to: EndpointId,
+    made: tokio::time::Instant,
+    /// This node's addresses when it was made (`Core::own_addrs`).
+    addrs: Vec<SocketAddr>,
+    /// Held while the link is: `OwnLink` tells a lent link by it.
+    token: Arc<()>,
+}
+
+impl Link {
+    /// Whether it can carry another circuit: still open, younger than
+    /// `KEEP_LINK_FOR`, and made at the addresses this node has now.
+    fn usable(&self, addrs: &[SocketAddr]) -> bool {
+        self.conn.close_reason().is_none()
+            && self.made.elapsed() < KEEP_LINK_FOR
+            && self.addrs == addrs
+    }
+
     async fn close(self) {
-        self.ends.close().await;
-        self.link.close().await;
+        self.conn.close(0u32.into(), b"done");
+        self.endpoint.close().await;
+    }
+}
+
+/// The link to this node's own hop, kept open between circuits (the
+/// maintainer's choice after stage D's fifth run, 2026-11-23). Say Jimmy's
+/// node fetches a video through carriers: about half of building the
+/// circuit was reaching his own hop P (the relay dial, QUIC's handshake and
+/// the wait for room), the same for every fetch. With the link kept, a
+/// circuit starts with `CREATE`. P sees Jimmy's address on each fetch
+/// anyway; it can now tie his fetches to one key, and sees when his node is
+/// up, so the key is replaced each day and when his addresses change. One
+/// circuit uses it at a time; another at once dials a link of its own.
+#[derive(Default)]
+pub(crate) struct OwnLink {
+    kept: Mutex<Option<Link>>,
+    /// The kept link while a circuit has it: none is made beside it.
+    lent: Mutex<Weak<()>>,
+    /// Circuits built on the kept link since the node started.
+    used: std::sync::atomic::AtomicUsize,
+}
+
+impl OwnLink {
+    /// The machine of the hop the link is kept to, while it's kept.
+    pub(crate) fn machine(&self) -> Option<EndpointId> {
+        self.kept.lock().unwrap().as_ref().map(|l| l.machine)
+    }
+
+    /// How many circuits were built on the kept link since the node started.
+    pub(crate) fn used(&self) -> usize {
+        self.used.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Closes the kept link, as the node stops.
+    pub(crate) async fn close(&self) {
+        let kept = self.kept.lock().unwrap().take();
+        if let Some(link) = kept {
+            link.close().await;
+        }
     }
 }
 
@@ -482,7 +551,7 @@ impl Core {
         let theirs = offered_hop(offer, unix_now())?;
         let their_hop = theirs.verify(unix_now())?.machine;
         let known = self.known_carriers()?;
-        let mine = self.own_hop(&known, their_hop).await?;
+        let mine = self.own_hop(&known, Some(their_hop)).await?;
         let my_hop = mine.verify(unix_now())?.machine;
         let hops = match my_hop == their_hop {
             // Both ends picked it: one hop, and nothing in the middle, which
@@ -598,18 +667,21 @@ impl Core {
             .await
     }
 
-    /// A circuit through `hops` to `offer`'s slot, from an endpoint of its own.
+    /// A circuit through `hops` to `offer`'s slot, on the link kept to
+    /// this node's own hop, or on a link of its own.
     async fn open(
         &self,
         blob: &BlobHash,
         offer: &CircuitOffer,
         hops: &[Descriptor],
     ) -> Result<Circuit> {
-        let link = self.link_endpoint().await?;
-        match self.build_circuit(&link, blob, offer, hops).await {
-            Ok(ends) => Ok(Circuit { link, ends }),
+        let started = tokio::time::Instant::now();
+        let first = hops[0].verify(unix_now())?;
+        let link = self.link_to(&first, blob).await?;
+        match self.build_circuit(&link, blob, offer, hops, started).await {
+            Ok((ends, closer)) => Ok(Circuit { link, closer, ends }),
             Err(e) => {
-                link.close().await;
+                self.keep_or_close(link, false).await;
                 Err(e)
             }
         }
@@ -629,18 +701,26 @@ impl Core {
         without: &[Descriptor],
         middle: &Middle,
     ) -> Result<(Circuit, bool)> {
-        let (with_link, without_link) = tokio::join!(self.link_endpoint(), self.link_endpoint());
+        // Both start at this node's own hop: the one without the middle may
+        // have the kept link, the other dials one of its own.
+        let started = tokio::time::Instant::now();
+        let first = without[0].verify(unix_now())?;
+        let addrs = self.own_addrs();
+        let (with_link, without_link) = tokio::join!(
+            self.dial_link(&first, Some(blob), addrs),
+            self.link_to(&first, blob)
+        );
         let (with_link, without_link) = match (with_link, without_link) {
             (Ok(a), Ok(b)) => (a, b),
             (Ok(link), Err(e)) | (Err(e), Ok(link)) => {
-                link.close().await;
+                self.keep_or_close(link, false).await;
                 return Err(e);
             }
             (Err(e), Err(_)) => return Err(e),
         };
         let raced = race(
-            Box::pin(self.build_circuit(&with_link, blob, offer, through)),
-            Box::pin(self.build_circuit(&without_link, blob, offer, without)),
+            Box::pin(self.build_circuit(&with_link, blob, offer, through, started)),
+            Box::pin(self.build_circuit(&without_link, blob, offer, without, started)),
             PREFER_MIDDLE_FOR,
         )
         .await;
@@ -649,36 +729,39 @@ impl Core {
             debug!(%machine, "the circuit through a machine in the middle failed; without it: {e:#}");
             self.middle_failed(middle);
         }
-        if let Some(ends) = raced.unused {
+        if let Some((ends, closer)) = raced.unused {
             ends.close().await;
+            closer.close();
         }
         match raced.chosen {
-            Ok((ends, true)) => {
-                without_link.close().await;
+            Ok(((ends, closer), true)) => {
+                self.keep_or_close(without_link, false).await;
                 Ok((
                     Circuit {
                         link: with_link,
+                        closer,
                         ends,
                     },
                     true,
                 ))
             }
-            Ok((ends, false)) => {
+            Ok(((ends, closer), false)) => {
                 if raced.middle_failed.is_none() {
                     debug!(%machine, "the circuit without the machine in the middle was ready first; it carries this one");
                 }
-                with_link.close().await;
+                self.keep_or_close(with_link, false).await;
                 Ok((
                     Circuit {
                         link: without_link,
+                        closer,
                         ends,
                     },
                     false,
                 ))
             }
             Err(e) => {
-                with_link.close().await;
-                without_link.close().await;
+                self.keep_or_close(with_link, false).await;
+                self.keep_or_close(without_link, false).await;
                 Err(e)
             }
         }
@@ -695,33 +778,185 @@ impl Core {
             .context("starting the endpoint for the circuit")
     }
 
-    /// Dials `hops`' first from `link` and builds the circuit to `offer`'s
-    /// slot: the endpoint whose only path is the circuit.
+    /// Dials `first`, a circuit's first hop, from an endpoint made for the
+    /// link.
+    async fn dial_link(
+        &self,
+        first: &CarrierInfo,
+        blob: Option<&BlobHash>,
+        addrs: Vec<SocketAddr>,
+    ) -> Result<Link> {
+        let started = tokio::time::Instant::now();
+        let endpoint = self.link_endpoint().await?;
+        let relays = self.tracker.relays().clone();
+        let dial = osp_carrier::relay_dial(endpoint.clone(), move |url| {
+            relays.permits(&TransportAddr::Relay(url.clone()))
+        });
+        let conn = match tokio::time::timeout(SETUP_TIMEOUT, dial(first.clone())).await {
+            Ok(Ok(conn)) => conn,
+            Ok(Err(e)) => {
+                endpoint.close().await;
+                return Err(e);
+            }
+            Err(_) => {
+                endpoint.close().await;
+                bail!("the first hop didn't answer in time");
+            }
+        };
+        debug!(
+            blob = blob.map(|b| b.fmt_short()),
+            connect_ms = started.elapsed().as_millis() as u64,
+            "building a circuit: connected to the first hop"
+        );
+        Ok(Link {
+            endpoint,
+            conn,
+            machine: first.machine,
+            to: first.endpoint,
+            made: tokio::time::Instant::now(),
+            addrs,
+            token: Arc::new(()),
+        })
+    }
+
+    /// The link for a circuit whose first hop is `first`: the one kept to
+    /// this node's own hop, if it's to `first` and still good, else a new
+    /// one. A kept link that's stale is closed.
+    async fn link_to(&self, first: &CarrierInfo, blob: &BlobHash) -> Result<Link> {
+        let addrs = self.own_addrs();
+        let (kept, stale) = {
+            let mut slot = self.own_link.kept.lock().unwrap();
+            match slot.take() {
+                Some(link) if link.to == first.endpoint && link.usable(&addrs) => {
+                    *self.own_link.lent.lock().unwrap() = Arc::downgrade(&link.token);
+                    self.own_link
+                        .used
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    (Some(link), None)
+                }
+                Some(link) if !link.usable(&addrs) => (None, Some(link)),
+                // Kept to another hop: left for it.
+                other => {
+                    *slot = other;
+                    (None, None)
+                }
+            }
+        };
+        if let Some(stale) = stale {
+            stale.close().await;
+        }
+        match kept {
+            Some(link) => {
+                debug!(blob = %blob.fmt_short(), "building a circuit: on the link kept to this node's own hop");
+                Ok(link)
+            }
+            None => self.dial_link(first, Some(blob), addrs).await,
+        }
+    }
+
+    /// Keeps `link` as the link to this node's own hop if none is kept and
+    /// it's still good, else closes it. With `moved`, it also takes the
+    /// place of one kept to another hop. A circuit's link comes back here
+    /// once the circuit is ended.
+    async fn keep_or_close(&self, link: Link, moved: bool) {
+        let refused = {
+            let mut slot = self.own_link.kept.lock().unwrap();
+            let room = match slot.as_ref() {
+                None => true,
+                Some(kept) => moved && kept.to != link.to,
+            };
+            if room && self.fetches_through_carriers() && link.usable(&self.own_addrs()) {
+                slot.replace(link)
+            } else {
+                Some(link)
+            }
+        };
+        if let Some(link) = refused {
+            link.close().await;
+        }
+    }
+
+    /// Ends `circuit`, and keeps its link or closes it. Its first hop is
+    /// the own hop this node's fetches went through, so the link kept moves
+    /// there: one kept at start may be to the hop of the hosts it fetches
+    /// from, which a circuit leaves out.
+    async fn close_circuit(&self, circuit: Circuit) {
+        circuit.ends.close().await;
+        circuit.closer.close();
+        self.keep_or_close(circuit.link, true).await;
+    }
+
+    /// This node's own addresses, as its carrier endpoint finds them: what
+    /// a hop sees it at. A kept link made at others is replaced.
+    fn own_addrs(&self) -> Vec<SocketAddr> {
+        let mut addrs: Vec<SocketAddr> = self
+            .carrier
+            .as_ref()
+            .map(|c| c.endpoint.addr().ip_addrs().copied().collect())
+            .unwrap_or_default();
+        addrs.sort();
+        addrs
+    }
+
+    /// Makes the link kept to this node's own hop if there's none, and none
+    /// is lent: at start, and again once it closed, its day is up or this
+    /// node's addresses changed. Without carriers, the one kept goes.
+    async fn keep_own_link(&self) -> Result<()> {
+        if !self.fetches_through_carriers() {
+            let kept = self.own_link.kept.lock().unwrap().take();
+            if let Some(link) = kept {
+                link.close().await;
+            }
+            return Ok(());
+        }
+        let addrs = self.own_addrs();
+        let stale = {
+            let mut slot = self.own_link.kept.lock().unwrap();
+            match slot.as_ref() {
+                Some(link) if link.usable(&addrs) => return Ok(()),
+                Some(_) => slot.take(),
+                None if self.own_link.lent.lock().unwrap().upgrade().is_some() => return Ok(()),
+                None => None,
+            }
+        };
+        if let Some(stale) = stale {
+            stale.close().await;
+        }
+        let known = self.known_carriers()?;
+        let first = self.own_hop(&known, None).await?.verify(unix_now())?;
+        let link = self.dial_link(&first, None, addrs).await?;
+        debug!(hop = %crate::machine::words(&link.machine), "a link is kept to this node's own hop");
+        self.keep_or_close(link, false).await;
+        Ok(())
+    }
+
+    /// Builds the circuit to `offer`'s slot through `hops` on `link`, to
+    /// their first: the endpoint whose only path is the circuit, and what
+    /// ends the circuit. `started` is when getting the link began.
     async fn build_circuit(
         &self,
-        link: &Endpoint,
+        link: &Link,
         blob: &BlobHash,
         offer: &CircuitOffer,
         hops: &[Descriptor],
-    ) -> Result<Endpoint> {
-        let first = hops[0].verify(unix_now())?;
-        let relays = self.tracker.relays().clone();
-        let started = tokio::time::Instant::now();
-        let dial = osp_carrier::relay_dial(link.clone(), move |url| {
-            relays.permits(&TransportAddr::Relay(url.clone()))
-        });
-        let conn = tokio::time::timeout(SETUP_TIMEOUT, dial(first))
-            .await
-            .map_err(|_| anyhow!("the first hop didn't answer in time"))??;
-        let circuit = ViewerCircuit::build(conn, hops, offer.slot).await?;
-        let ends = osp_carrier::viewer_endpoint(circuit, offer.endpoint).await?;
+        started: tokio::time::Instant,
+    ) -> Result<(Endpoint, CircuitCloser)> {
+        let circuit = ViewerCircuit::build(link.conn.clone(), hops, offer.slot).await?;
+        let closer = circuit.closer();
+        let ends = match osp_carrier::viewer_endpoint(circuit, offer.endpoint).await {
+            Ok(ends) => ends,
+            Err(e) => {
+                closer.close();
+                return Err(e);
+            }
+        };
         debug!(
             blob = %blob.fmt_short(),
             hops = hops.len(),
             took_ms = started.elapsed().as_millis() as u64,
             "the circuit is ready"
         );
-        Ok(ends)
+        Ok((ends, closer))
     }
 
     /// Fetches `blob` from `host` over `circuit`, then closes it. Over the
@@ -756,7 +991,7 @@ impl Core {
             .await;
         drop(held);
         drop(pool);
-        circuit.close().await;
+        self.close_circuit(circuit).await;
         size
     }
 
@@ -886,7 +1121,7 @@ impl Core {
                     // Not needed: closed if ready, else its build dropped.
                     if let Some(Some(b)) = built {
                         drop(b.connected);
-                        b.circuit.close().await;
+                        self.close_circuit(b.circuit).await;
                     }
                     return Ok(size);
                 }
@@ -915,6 +1150,20 @@ impl Core {
         self.store
             .download_with(blob, sources, class, declared, via)
             .await
+    }
+}
+
+/// Keeps a link open to this node's own hop while it fetches through
+/// carriers (`OwnLink`), looking every `KEEP_LINK_CHECK`.
+pub(crate) async fn keep_own_link(core: Arc<Core>) {
+    if let Some(tor) = &core.tor {
+        tor.ready().await;
+    }
+    loop {
+        if let Err(e) = core.keep_own_link().await {
+            debug!("no link kept to this node's own hop for now: {e:#}");
+        }
+        tokio::time::sleep(KEEP_LINK_CHECK).await;
     }
 }
 

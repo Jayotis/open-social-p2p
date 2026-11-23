@@ -190,6 +190,54 @@ async fn a_carrier_at_its_limit_says_busy() {
     assert_eq!(p.carrier.stats().await.unwrap().busy, 1);
 }
 
+/// Jimmy's node keeps its link to its hop P open between fetches. A circuit
+/// ended by its closer frees its place at P and stops reading the link, so
+/// the next circuit on the same link is taken, and gets its own packets.
+#[tokio::test]
+async fn a_closed_circuits_link_carries_the_next() {
+    let book = Book::default();
+    let p = carrier(
+        &book,
+        Limits {
+            per_neighbour: 1,
+            ..Limits::home()
+        },
+    )
+    .await;
+    let q = carrier(&book, Limits::home()).await;
+    let (_h, mut host) = host(&q).await;
+    let endpoint = endpoint(vec![]).await;
+    let hops = [p.descriptor().await, q.descriptor().await];
+    let conn = endpoint.connect(p.endpoint.addr(), ALPN).await.unwrap();
+
+    let mut first = ViewerCircuit::build(conn.clone(), &hops, host.slot())
+        .await
+        .unwrap();
+    round_trip(&mut first, &mut host).await;
+    let closer = first.closer();
+    // As the circuit's endpoint would hold it on: only the closer ends it.
+    let _kept = first;
+    closer.close();
+    timeout(WAIT, async {
+        while p.carrier.stats().await.unwrap().circuits > 0 {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("P let the first circuit go");
+    // Alice's node hears the first one end before the second comes.
+    assert!(matches!(
+        timeout(WAIT, host.recv()).await.unwrap().unwrap(),
+        HostEvent::Closed(_)
+    ));
+
+    let mut second = ViewerCircuit::build(conn, &hops, host.slot())
+        .await
+        .unwrap();
+    round_trip(&mut second, &mut host).await;
+    assert_eq!(p.carrier.stats().await.unwrap().busy, 0);
+}
+
 #[tokio::test]
 async fn new_circuits_a_minute_are_limited() {
     let book = Book::default();

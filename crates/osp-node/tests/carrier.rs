@@ -783,6 +783,86 @@ async fn a_viewer_fetches_through_its_hop_and_the_hosts_and_falls_back_to_the_re
     }
 }
 
+/// Jimmy's node keeps its link to its own hop, Kim's node, open between
+/// fetches, so a circuit starts with `CREATE` (`OwnLink`): it's made when
+/// his node starts, carries each of his two opens in turn, and is still
+/// the only link from his node afterwards. Each circuit is ended at Kim's
+/// carrier when its fetch is done, though the link stays.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_viewer_keeps_its_link_to_its_own_hop_between_fetches() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_relay, relay) = local_relay().await;
+    let net = SimNet::new(5);
+    let directory = directory(&dir.path().join("directory"), &net).await;
+
+    let kim_home = dir.path().join("kim");
+    let mut kim_config = config("Kim", &relay);
+    kim_config.carrier.seed = true;
+    Node::init(&kim_home, &kim_config).unwrap();
+    let kim = start(&kim_home, &net).await;
+    let seed = kim.machine_id().unwrap();
+
+    let alice_home = dir.path().join("alice");
+    let mut alice_config = knowing("Alice", &relay, &directory, Some(seed));
+    alice_config.directory.list_me = true;
+    Node::init(&alice_home, &alice_config).unwrap();
+    let alice = start(&alice_home, &net).await;
+    let first = post_made(&alice, dir.path(), "testsrc=s=64x64").await;
+    let second = post_made(&alice, dir.path(), "testsrc=s=96x96").await;
+    assert_ne!(first.1, second.1);
+    assert!(alice.ask_to_be_listed().await);
+    let me = stranger(&net).await;
+    offer_of(&me, &alice, first, true).await;
+
+    let jimmy_home = dir.path().join("Jimmy");
+    Node::init(
+        &jimmy_home,
+        &knowing("Jimmy", &relay, &directory, Some(seed)),
+    )
+    .unwrap();
+    let jimmy = start(&jimmy_home, &net).await;
+    find(&jimmy, first.0).await;
+    find(&jimmy, second.0).await;
+
+    // Alice's host link to her hop, and the links her node and Jimmy's
+    // keep to their own hop, Kim's node, as viewers.
+    let at_kim = async |links: usize, when: &str| {
+        let mut last = None;
+        let reached = timeout(WAIT, async {
+            loop {
+                let stats = kim.carrier_stats().await.unwrap();
+                if stats.links == links && stats.circuits == 0 {
+                    return;
+                }
+                last = Some(stats);
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        })
+        .await;
+        assert!(
+            reached.is_ok(),
+            "{when}: Kim's carrier never had {links} links and no circuit: {last:?}"
+        );
+    };
+    at_kim(3, "Jimmy's node started").await;
+    for photo in [first, second] {
+        let before = kim.carrier_stats().await.unwrap().bytes;
+        let size = jimmy.open_blob(&photo.1).await.unwrap();
+        assert!(kim.carrier_stats().await.unwrap().bytes >= before + size);
+        // Its circuit ended, its link still there: no other was made.
+        at_kim(3, "after a fetch").await;
+    }
+    assert_eq!(
+        jimmy.own_link_used(),
+        2,
+        "both circuits went on the kept link"
+    );
+
+    for node in [jimmy, alice, kim, directory] {
+        node.shutdown().await.unwrap();
+    }
+}
+
 /// Follows `author` with its ticket, and syncs.
 async fn follow(node: &Node, author: &Node) {
     let ClientResponse::Ticket { ticket } = call(author, ClientRequest::Invite).await else {
