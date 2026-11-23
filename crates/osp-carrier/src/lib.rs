@@ -42,7 +42,8 @@ pub use service::{
     Stats, relay_dial, request_slot, wait_for_room,
 };
 pub use transport::{
-    CONNECTION_WINDOW, STREAM_WINDOW, TRANSPORT_ID, host_endpoint, media_windows, viewer_endpoint,
+    CIRCUIT_STREAM_WINDOW, CONNECTION_WINDOW, STREAM_WINDOW, TRANSPORT_ID, host_endpoint,
+    media_windows, viewer_endpoint,
 };
 
 /// The protocol's name, which binds every key and signature to it.

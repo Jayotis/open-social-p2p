@@ -81,17 +81,32 @@ pub const STREAM_WINDOW: u32 = 3 << 20;
 pub const CONNECTION_WINDOW: u32 = 2 * STREAM_WINDOW;
 
 /// OSP's receive windows ([`STREAM_WINDOW`], [`CONNECTION_WINDOW`]), for a
-/// node's own endpoints and the ends of its circuits alike.
+/// node's own endpoints. The ends of its circuits have a smaller one
+/// ([`CIRCUIT_STREAM_WINDOW`]).
 pub fn media_windows(config: QuicTransportConfigBuilder) -> QuicTransportConfigBuilder {
     config
         .stream_receive_window(STREAM_WINDOW.into())
         .receive_window(CONNECTION_WINDOW.into())
 }
 
-/// QUIC's settings for an end over a circuit: iroh's, with OSP's receive
-/// windows and path MTU discovery off.
+/// A stream's receive window at the ends of a circuit, below
+/// [`STREAM_WINDOW`]. A burst lost between two hops' QUIC isn't sent again
+/// (datagrams), and each lost packet leaves a hole in the stream until the
+/// ends' QUIC sends it again. noq gives up on a stream with more than 1,024
+/// pieces waiting around holes (`too many gaps in stream buffer`), and with
+/// 3 MiB in flight, about 2,700 packets of 1,200 bytes, stage D's sixth run
+/// and the probes after it hit that. 1 MiB is under 1,000 packets, so a
+/// stream can't get there, and allows about 1.3 MB/s at a 0.8 s round trip,
+/// more than three times the stage D video's 0.38 MB/s watchability mark.
+pub const CIRCUIT_STREAM_WINDOW: u32 = 1 << 20;
+
+/// QUIC's settings for an end over a circuit: iroh's, with path MTU
+/// discovery off, packets kept at QUIC's 1,200 bytes, and a stream window
+/// that no lost burst can push past noq's limit ([`CIRCUIT_STREAM_WINDOW`]).
 fn quic_config() -> QuicTransportConfig {
-    media_windows(QuicTransportConfig::builder())
+    QuicTransportConfig::builder()
+        .stream_receive_window(CIRCUIT_STREAM_WINDOW.into())
+        .receive_window((2 * CIRCUIT_STREAM_WINDOW).into())
         .mtu_discovery_config(None)
         .build()
 }
