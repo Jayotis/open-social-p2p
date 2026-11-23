@@ -272,6 +272,26 @@ So the packets go missing between one QUIC and the next, below anything a node c
 
 One fetch, so it shows the smaller window can carry the whole file, not that it always will. Stage D's seventh run measures it.
 
+## Stage D results, seventh run
+
+**Watchability passed in all three, 2026-11-23, and no carrier download broke.** Run on #293 (the 1 MiB window at the circuit ends) on V, H's machine, P and Q (relay1's node); every node on its own settings, except that P was V's seed carrier. P's upload was back to what it learned (24.4 Mbit/s). Same fetches in the same order as the sixth run. Each figure is the median of three, counted from V's first `downloading` line, as in the sixth run.
+
+| Way | Whole file | First byte |
+|---|---|---|
+| Through carriers | 112.5 s | 3.9 s |
+| Relay only | 34.2 s | 2.2 s |
+| n0 only | stopped after one failed fetch | |
+
+1. **Watchability: passed, 3 of 3.** The carrier downloads carried the whole file at 7.9, 8.6 and 8.6 Mbit/s, 2.6–2.8 times the 3.1 Mbit/s mark, each on one circuit with no break. V's QUIC counted 7, 0 and 2 packets lost of 11,000–17,000 sent, with no congestion event. In the sixth run two of three broke twice each.
+2. **Startup: open, not met.** The carrier path's first byte came 3.8 s, 3.9 s and 6.2 s after the download started, against 2.1–2.2 s for relay only. The first two were 1.6–1.7 s behind, within the old mark's 2 s. Each time V first tried the host directly, which failed as unreachable after 0.8–1.0 s while the circuit was built beside it. Then it connected to the host over the circuit (0.8–1.0 s) before the fetch.
+3. **The circuit: built at once, on the kept link.** The build began with the download each time, with no gap before it. It was ready in 1.9 s, 1.9 s and 3.4 s. The third drew a middle for a three-hop circuit and went over two hops.
+
+Relay only carried the file in 34.0–34.2 s each time, as in the sixth run.
+
+**n0: the first fetch timed out, and the rest was stopped by hand.** It went to `c45240d144` as before. The way isn't graded, and the stall is the n0 download bug in the backlog. The configs were put back by hand.
+
+**Stage D is closed, 2026-11-23 (the maintainer's plan, set before this run).** The marks as changed after the fifth run: watchability passed, and startup and the circuit's availability stay open requirements, not passed. Pacing the hops' forwarding, so a burst isn't lost between two hops' QUIC, is in the backlog.
+
 ## The newcomer's middle turn
 
 **Passed, 2026-11-21.** `osp machine hello` doesn't add a machine to the table V picks middles from, so Middle arrived through ordinary meeting. Then Empty posted a fresh 20 s clip (4.0 MB) and Robin fetched it.
