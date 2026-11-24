@@ -707,3 +707,94 @@ async fn a_key_from_secure_storage_is_used_and_never_written() {
     }
     node.shutdown().await.unwrap();
 }
+
+/// The review code (`osp pair --for-review`): it outlives a restart, pairs
+/// as many devices as it was made for, and ending the review unpairs those
+/// devices only, not the owner's.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_review_code_pairs_a_few_devices_until_the_review_ends() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut config = Config::local_test("Demo");
+    config.endpoints.enabled = true;
+    let home = dir.path().join("demo");
+    Node::init(&home, &config).unwrap();
+    let node = Node::spawn(&home).await.unwrap();
+
+    for (days, devices) in [(0, 2), (91, 2), (30, 0), (30, 11)] {
+        let refused = node
+            .handle(ClientRequest::NewReviewPairing { days, devices })
+            .await;
+        assert!(
+            matches!(refused, ClientResponse::Error { .. }),
+            "{refused:?}"
+        );
+    }
+    let ClientResponse::Pairing {
+        ticket,
+        expires_in_secs,
+    } = node
+        .handle(ClientRequest::NewReviewPairing {
+            days: 30,
+            devices: 2,
+        })
+        .await
+    else {
+        panic!("no review code");
+    };
+    assert_eq!(expires_in_secs, 30 * 24 * 3600);
+
+    // The node restarts on another port; the code still works.
+    node.shutdown().await.unwrap();
+    let node = Node::spawn(&home).await.unwrap();
+    let mut ticket: osp_proto::PairingTicket = ticket.parse().unwrap();
+    ticket.node = node.direct_addr().await.unwrap();
+    let ticket = ticket.to_string();
+
+    let phone = |name: &str| {
+        let dir = dir.path().join(name);
+        async move {
+            Client::open(&dir, ClientOptions::local_test())
+                .await
+                .unwrap()
+        }
+    };
+    let (first, second, third) = (
+        phone("first").await,
+        phone("second").await,
+        phone("third").await,
+    );
+    first.pair(&ticket, "Reviewer 1").await.unwrap();
+    second.pair(&ticket, "Reviewer 2").await.unwrap();
+    assert!(third.pair(&ticket, "Reviewer 3").await.is_err());
+    // The owner's own phone, with an ordinary code.
+    let own = phone("own").await;
+    own.pair(&new_pairing(&node).await, "Own phone")
+        .await
+        .unwrap();
+
+    let ClientResponse::Devices { devices } = node.handle(ClientRequest::Devices).await else {
+        panic!("no devices");
+    };
+    let review: Vec<_> = devices.iter().map(|d| d.review).collect();
+    assert_eq!(review, [true, true, false]);
+
+    let ended = node.handle(ClientRequest::EndReview).await;
+    assert!(
+        matches!(
+            ended,
+            ClientResponse::ReviewEnded {
+                code: false,
+                unpaired: 2
+            }
+        ),
+        "{ended:?}"
+    );
+    assert!(first.request(&ClientRequest::Status).await.is_err());
+    assert!(second.request(&ClientRequest::Status).await.is_err());
+    assert_eq!(status(&own).await.devices, 1);
+
+    for client in [first, second, third, own] {
+        client.shutdown().await;
+    }
+    node.shutdown().await.unwrap();
+}

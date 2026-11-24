@@ -575,7 +575,12 @@ impl Node {
                 }),
             None => None,
         };
-        let pairings = Pairings::default();
+        // A review code outlives restarts; the others last minutes.
+        let pairings: Pairings = Arc::new(std::sync::Mutex::new(
+            crate::client::stored_review_pairing(&db)?
+                .into_iter()
+                .collect(),
+        ));
         let endpoints = match config.endpoints.enabled {
             true => {
                 let gate = DirectGate::new(db.clone(), config.endpoints.direct, pairings.clone());

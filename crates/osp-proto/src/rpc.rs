@@ -133,6 +133,16 @@ pub enum ClientRequest {
     /// Start pairing a new device (local socket only). The ticket works once,
     /// within a few minutes.
     NewPairing,
+    /// Make a pairing code for an app reviewer (local socket only): it lasts
+    /// `days` and pairs up to `devices` devices, which are marked as the
+    /// reviewer's. It replaces any review code made before.
+    NewReviewPairing {
+        days: u32,
+        devices: u32,
+    },
+    /// End a review (local socket only): forget the review code and unpair
+    /// the devices it paired.
+    EndReview,
     /// List paired devices (local socket only).
     Devices,
     /// Forget a paired device and close its connections (local socket only).
@@ -583,6 +593,12 @@ pub enum ClientResponse {
     },
     Devices {
         devices: Vec<DeviceInfo>,
+    },
+    /// A review ended: whether a review code was still usable, and how many
+    /// of the reviewer's devices were unpaired.
+    ReviewEnded {
+        code: bool,
+        unpaired: usize,
     },
     /// Pairing worked: whose node this is.
     Paired {
@@ -1396,6 +1412,9 @@ pub struct DeviceInfo {
     pub paired: String,
     /// Whether it has a live connection to the node right now.
     pub connected: bool,
+    /// Whether the review code paired it (`osp pair --for-review`).
+    #[serde(default)]
+    pub review: bool,
 }
 
 /// What the owner can block (ADR 0042 §5).
