@@ -103,32 +103,29 @@ cargo run --release -p osp-sim --bin osp-crowd -- --dir <empty directory>
 
 The node read all 5,000 in 24 s. The owner reshares 10 posts in three groups, so the world has a near side.
 
-**Result (2026-11-23, Pixel 3 XL, app build 527, node on a desktop):** the top opened with 248 groups and 48 people. It opens as deep as 300 points allow, which here is every friend group, so the groups' counts ("20") overlap and can't be read. A tap on a group opened its sheet with every name readable, and Open on the map framed the group with its names. A search for "Velo" lit up 22 people across the world.
+**Result (2026-11-23, Pixel 3 XL, app build 534, node on a desktop):** the top opens with 90 groups and 23 people, each group's count readable; a count that would cover another is left out. A tap on a group opens its sheet with every name readable, and Open on the map frames the group with its names. Zooming out of a group leads back to the same top. A search for "Velo" lights up 22 people across the world.
 
 | Gesture | Frames | Over 25 ms | Longest |
 | --- | --- | --- | --- |
-| Pan at the top | 126 | 0 | 16.7 ms |
-| Pan inside a group | 88 | 0 | 16.7 ms |
-| Pan with a search lit up | 83 | 3 | 33 ms |
-| Open the tab | 33 | 3–4 | 33 ms |
-| Tap a group (its sheet) | 71 | 14 | 50 ms |
-| Open a group on the map | 64 | 12 | 483 ms |
-| Zoom out, to the group's parent | 79 | 2 | 100 ms |
-| Zoom out, to the top | 70 | 8 | 350 ms |
-| Show a search on the map | 30 | 9 | 100 ms |
-| Fly to the search's results | 35 | 5 | 433 ms |
+| Pan at the top | 86 | 1 | 33 ms |
+| Pan inside a group | 85 | 1 | 33 ms |
+| Pan with a search lit up | 85 | 1 | 33 ms |
+| Open the tab | 37 | 0 | 17 ms |
+| Tap a group (its sheet) | 32 | 0 | 17 ms |
+| Open a group on the map | 66 | 1 | 33 ms |
+| Zoom out, to the group's parent | 63 | 2 | 33 ms |
+| Zoom out, to the top | 37 | 2 | 33 ms |
+| Show a search on the map | 39 | 3 | 50 ms |
+| Fly to the search's results | 39 | 0 | 17 ms |
 
 Pinching wasn't measured: `adb` gives one finger only.
 
-The node answered each snapshot in about 1.25 s, the top or a group alike. About 1.0 s of that was checking signatures again: everyone's profile and every reshare, 20,249 checks at about 50 µs each, on every snapshot, though each was checked when it came in. A snapshot now reads what the node stored without checking it again, and takes about 0.4 s (2026-11-23, desktop).
+The node answers each snapshot in about 0.4 s, the top or a group alike. The first look (app build 527) had the top open as deep as 300 points allow: 248 groups whose counts overlapped. Each answer took 1.25 s, 1.0 s of it checking every stored signature again, and moves between regions stalled up to 483 ms. Since then a snapshot reads what the node stored without checking it again, and the top, or a part's root group, opens to 120 points (ADR 0034 §3).
 
 **Limits, from this round:**
-- Panning never misses a frame, at any size. Met.
-- A move to another region has no frame longer than 500 ms on the Pixel 3 XL. Met, just (483 ms).
+- Panning never misses a frame, at any size. Missed by one: one 33 ms frame in each pan this round, none in the first look's.
+- A move to another region has no frame longer than 500 ms on the Pixel 3 XL. Met (50 ms).
 - A full node answers a snapshot within 1.5 s on a desktop. Met (0.4 s). An SBC, the usual node, isn't measured yet.
-
-**Still open:**
-- The top of a full node is unreadable: 248 overlapping counts. Now it opens to 120 points (ADR 0034 §3), and a count that would cover another is left out; not yet seen on the phone.
 
 ## A newcomer exploring
 
