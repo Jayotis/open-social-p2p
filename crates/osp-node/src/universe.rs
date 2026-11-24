@@ -36,7 +36,7 @@ use crate::{
 const DAY_MS: i64 = 24 * 60 * 60 * 1000;
 
 /// How many points the top opens to, the owner and the sky's share
-/// included: ADR 0034's "120 top-level groups", so a full node's top stays
+/// included, and a part's root group too: ADR 0034's "120 top-level groups", so a full node's top stays
 /// readable. More only when the world has more separate parts than that,
 /// up to `MAX_POINTS`.
 const TOP_POINTS: usize = 120;
@@ -469,10 +469,8 @@ impl Core {
                     _ => 0,
                 };
                 let budget = MAX_POINTS - 1 - sky_share;
-                let target = match region {
-                    Region::Top => TOP_POINTS - 1 - sky_share,
-                    _ => budget,
-                };
+                // At the top, and a part's root group (world.rs).
+                let target = TOP_POINTS - 1 - sky_share;
                 let opened = world.open(region, &me, budget, target).unwrap_or(Opened {
                     // Someone unplaced: alone in the sky, with the owner.
                     region,

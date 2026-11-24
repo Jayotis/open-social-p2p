@@ -181,9 +181,10 @@ impl World {
     }
 
     /// Opens `region` into at most `budget` points: groups shown closed and
-    /// people. Groups open only while the points fit in `target`, which is
-    /// at most `budget`: the top asks for fewer than it could hold, to stay
-    /// readable, but never drops a separate part of the world for that.
+    /// people. At the top, or a part's root group, groups open only while
+    /// the points fit in `target`, which is at most `budget`: fewer than it
+    /// could hold, to stay readable, but never dropping a separate part of
+    /// the world for that.
     /// `kim` is the owner, whose way down opens first at the top. None if
     /// it stands at someone the world doesn't place: the caller shows them
     /// in the sky.
@@ -241,8 +242,20 @@ impl World {
                 (Region::Top, vec![], start, kims_way, vec![], None)
             }
         };
+        // The top, and a part's own top (its root group, where zooming out
+        // of a group leads), open to `target`: that's where groups crowd.
+        let at_a_top = match region {
+            Region::Top => true,
+            Region::Group(id) => self
+                .group(id)
+                .is_some_and(|g| self.tree.groups[g as usize].parent.is_none()),
+            _ => false,
+        };
         let budget = budget.saturating_sub(extra.len());
-        let target = target.saturating_sub(extra.len()).min(budget);
+        let target = match at_a_top {
+            true => target.saturating_sub(extra.len()).min(budget),
+            false => budget,
+        };
         let mut shown = self.open_from(start, &toward, budget, target);
         for p in extra {
             if !shown.contains(&Child::Person(p)) {
@@ -487,6 +500,20 @@ mod tests {
         let top = world.open(Region::Top, &made[0], 300, 120).unwrap();
         assert!(points(&top) <= 120);
         assert!(points(&top) > 60, "only {}", points(&top));
+        // The one part's root, where zooming out of a group leads, the same.
+        let root = Region::Group(world.id(world.tree.roots[0]));
+        let opened = world.open(root, &made[0], 300, 120).unwrap();
+        assert!(points(&opened) <= 120, "{}", points(&opened));
+        // A group below opens as far as the budget allows, whatever the target.
+        let below = world.tree.groups[world.tree.roots[0] as usize].children[0];
+        let Child::Group(below) = below else {
+            panic!("the root holds people")
+        };
+        let below = Region::Group(world.id(below));
+        let within = world.open(below, &made[0], 300, 120).unwrap();
+        let full = world.open(below, &made[0], 300, 300).unwrap();
+        assert_eq!(within.groups, full.groups);
+        assert_eq!(within.people, full.people);
 
         // 200 pairs, no line between them: 200 roots.
         let made: Vec<PublicKey> = (0..400).map(key).collect();
