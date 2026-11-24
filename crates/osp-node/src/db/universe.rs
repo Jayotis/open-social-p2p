@@ -40,8 +40,8 @@ impl Db {
             .collect())
     }
 
-    /// The posts with media published from `since_ms` on. Unchecked here;
-    /// the caller verifies each and reads its attachments.
+    /// The posts with media published from `since_ms` on, each checked when
+    /// it was stored.
     pub fn recent_media_posts(&self, since_ms: i64) -> Result<Vec<SignedObject>> {
         let conn = self.conn();
         let mut stmt = conn.prepare(&format!(
@@ -131,7 +131,7 @@ impl Db {
     /// `since_ms` on: reshares in the outboxes and directories' lists it
     /// has, reshares and found-early credits vouching for its owner, the
     /// credits its owner gave, and the vouches that place its owner's side.
-    /// Unchecked here; the caller verifies each.
+    /// Each was checked when it was stored.
     pub fn public_acts(&self, since_ms: i64) -> Result<Vec<SignedObject>> {
         let conn = self.conn();
         let mut out = Vec::new();

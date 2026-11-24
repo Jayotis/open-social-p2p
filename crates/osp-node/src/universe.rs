@@ -276,7 +276,7 @@ impl Core {
             ));
         }
         for held in self.db.held_people(&me)? {
-            let Ok(Payload::Person(person)) = held.profile.verify() else {
+            let Ok(Payload::Person(person)) = held.profile.stored_payload() else {
                 continue;
             };
             let actor = person.actor;
@@ -377,7 +377,7 @@ impl Core {
             Layer::Video => {
                 let mut counts: HashMap<PublicKey, u64> = HashMap::new();
                 for obj in self.db.recent_media_posts(since)? {
-                    let Ok(Payload::Note(note)) = obj.verify() else {
+                    let Ok(Payload::Note(note)) = obj.stored_payload() else {
                         continue;
                     };
                     if note.attachment.iter().any(|a| a.kind == MediaKind::Video) {
@@ -789,10 +789,10 @@ fn fit(mut snapshot: Snapshot) -> Result<Snapshot> {
     Ok(snapshot)
 }
 
-/// A reshare or found-early credit, checked: its kind, from whom to whom,
-/// and its date.
+/// A reshare or found-early credit, as checked when it was stored: its
+/// kind, from whom to whom, and its date.
 fn public_act(obj: &SignedObject) -> Option<(LineKind, PublicKey, PublicKey, i64)> {
-    let (kind, from, to, published) = match obj.verify().ok()? {
+    let (kind, from, to, published) = match obj.stored_payload().ok()? {
         Payload::Announce(a) => (LineKind::Reshared, a.actor, a.object_actor, a.published),
         Payload::FoundEarly(f) => (LineKind::CreditedEarly, f.actor, f.finder, f.published),
         _ => return None,
