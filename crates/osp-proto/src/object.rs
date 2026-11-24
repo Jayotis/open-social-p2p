@@ -149,6 +149,21 @@ impl SignedObject {
         Ok(self.verify_with_key()?.0)
     }
 
+    /// The parsed payload of an object this node already checked with
+    /// `verify` before storing it, read back without checking its signature
+    /// again; only that its `actor` is the signer. For a node's own
+    /// database, read many times over (the Universe's snapshot): never for
+    /// anything that came from elsewhere since.
+    pub fn stored_payload(&self) -> Result<Payload> {
+        let payload: Payload =
+            serde_json::from_slice(&self.payload).context("payload is not a valid object")?;
+        ensure!(
+            payload.actor() == self.signer,
+            "payload actor does not match signer"
+        );
+        Ok(payload)
+    }
+
     /// Like `verify`, and also returns the certificate of the key that
     /// signed the object, or `None` if the identity key signed it itself.
     pub fn verify_with_key(&self) -> Result<(Payload, Option<Key>)> {
@@ -296,6 +311,28 @@ mod tests {
             attachment: vec![],
             in_reply_to: None,
         })
+    }
+
+    #[test]
+    fn stored_payload_reads_without_the_signature_but_not_another_actor() {
+        let alice = SecretKey::generate();
+        let payload = note(&alice, "hello");
+        let obj = SignedObject::sign(&alice, &payload).unwrap();
+        assert_eq!(obj.stored_payload().unwrap(), payload);
+
+        // The signature isn't checked again...
+        let mut resealed = obj.clone();
+        resealed.sig = SecretKey::generate()
+            .sign(&signing_input(&obj.payload))
+            .to_bytes()
+            .to_vec();
+        assert!(resealed.verify().is_err());
+        assert_eq!(resealed.stored_payload().unwrap(), payload);
+
+        // ...but a payload naming someone other than the signer still fails.
+        let mut other = obj.clone();
+        other.signer = SecretKey::generate().public();
+        assert!(other.stored_payload().is_err());
     }
 
     #[test]

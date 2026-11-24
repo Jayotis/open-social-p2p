@@ -120,16 +120,15 @@ The node read all 5,000 in 24 s. The owner reshares 10 posts in three groups, so
 
 Pinching wasn't measured: `adb` gives one finger only.
 
-The node answered each snapshot in about 1.25 s, the top or a group alike. About 1.0 s of that is checking signatures again: everyone's profile and every reshare, 20,249 checks at about 50 µs each, on every snapshot, though each was checked when it came in.
+The node answered each snapshot in about 1.25 s, the top or a group alike. About 1.0 s of that was checking signatures again: everyone's profile and every reshare, 20,249 checks at about 50 µs each, on every snapshot, though each was checked when it came in. A snapshot now reads what the node stored without checking it again, and takes about 0.4 s (2026-11-23, desktop).
 
 **Limits, from this round:**
 - Panning never misses a frame, at any size. Met.
 - A move to another region has no frame longer than 500 ms on the Pixel 3 XL. Met, just (483 ms).
-- A full node answers a snapshot within 1.5 s on a desktop. Met (1.25 s). An SBC, the usual node, wasn't measured; at a few times slower, a move would wait several seconds.
+- A full node answers a snapshot within 1.5 s on a desktop. Met (0.4 s). An SBC, the usual node, isn't measured yet.
 
 **Still open:**
 - The top of a full node is unreadable: 248 overlapping counts. Fewer, larger regions at the top, or counts shown only where they fit.
-- Snapshots check every signature again. Keeping what was checked, or the people and lines read from it until the database changes, would take about four fifths off each answer.
 
 ## A newcomer exploring
 
