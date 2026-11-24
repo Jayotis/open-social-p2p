@@ -1438,6 +1438,10 @@ class _Map extends CustomPainter {
       }
     }
 
+    // How many each cell and group holds, placed after the lights where
+    // they don't cover one another.
+    final counts = <(Offset, double, int)>[];
+
     // The sky's cells, each many people as one light.
     for (final c in s.sky) {
       final at = camera.toScreen(Offset(c.atX, c.atY));
@@ -1453,7 +1457,7 @@ class _Map extends CustomPainter {
         colors.distantStar,
         (0.35 + 0.4 * share) * _shade(c.lit, found),
       );
-      _count(canvas, at, r, c.people);
+      counts.add((at, r, c.people));
     }
 
     // Lines between people, faint, the newest first.
@@ -1494,7 +1498,7 @@ class _Map extends CustomPainter {
         colors.group,
         (0.45 + g.bright / 100 * 0.5) * _shade(g.lit, found),
       );
-      _count(canvas, at, r, g.people);
+      counts.add((at, r, g.people));
     }
 
     // People, one by one. The owner is her node's star.
@@ -1547,9 +1551,7 @@ class _Map extends CustomPainter {
 
     if (event case final e?) _drawEvent(canvas, size, e, s, home);
 
-    // Names where there's room: the one stood at first, then those the
-    // owner follows or knows, then the rest in the snapshot's order. Her
-    // star and her own name under it take their space.
+    // Her star and her own name under it take their space first.
     final own = labels.of(ownName, colors.onSky, text.scale(16));
     final taken = <Rect>[
       Rect.fromCircle(center: home, radius: 14),
@@ -1559,6 +1561,22 @@ class _Map extends CustomPainter {
         height: own.height + 4,
       ),
     ];
+
+    // Then the counts, the largest first: one that would cover another is
+    // left out, as a name is.
+    counts.sort((a, b) => b.$3.compareTo(a.$3));
+    for (final (at, r, people) in counts) {
+      final label = labels.of('$people', colors.onSky, text.scale(10));
+      final box =
+          (at + Offset(-label.width / 2, r * 0.5 + 2)) &
+          Size(label.width, label.height);
+      if (taken.any((t) => t.overlaps(box))) continue;
+      taken.add(box.inflate(2));
+      label.paint(canvas, box.topLeft);
+    }
+
+    // Names where there's room: the one stood at first, then those the
+    // owner follows or knows, then the rest in the snapshot's order.
     int rank(UniversePerson p) => p == standing
         ? 0
         : _foundPerson(p)
@@ -1862,11 +1880,6 @@ class _Map extends CustomPainter {
           ],
         ).createShader(Rect.fromCircle(center: at, radius: r)),
     );
-  }
-
-  void _count(Canvas canvas, Offset at, double r, int people) {
-    final label = labels.of('$people', colors.onSky, text.scale(10));
-    label.paint(canvas, at + Offset(-label.width / 2, r * 0.5 + 2));
   }
 
   @override

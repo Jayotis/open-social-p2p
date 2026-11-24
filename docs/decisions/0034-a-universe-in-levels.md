@@ -58,6 +58,8 @@ These are starting values, to be measured in P11 on the test phones:
 - the phone keeps the last snapshots, so the Universe opens at once from the cache, then refines;
 - the node reclusters in the background and answers from the last tree meanwhile. It never makes the phone wait for the whole graph.
 
+Measured in P11 (2026-11-23, 5,000 people on the Pixel 3 XL): opened to 300 points, the top of a full node was 248 groups whose counts overlapped. The top now opens to **120 points**, the sky's share among them. It holds more only when the world has more separate parts than that, up to 300; a part is never left out to keep the top small. Groups and people inside them still open to 300. The phone sends a region, not a zoom: how deep a region opens comes from the budget alone, for now.
+
 ### 4. Stable places
 
 - **Tree nodes keep their IDs.** After reclustering, a group keeps its ID while more than half its people are still in it. A group that splits keeps a link to its parent, and the phone animates the split. A merge works the same way in reverse. Inserting or removing a level in the tree keeps the IDs below it.

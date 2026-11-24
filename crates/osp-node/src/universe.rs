@@ -35,6 +35,12 @@ use crate::{
 
 const DAY_MS: i64 = 24 * 60 * 60 * 1000;
 
+/// How many points the top opens to, the owner and the sky's share
+/// included: ADR 0034's "120 top-level groups", so a full node's top stays
+/// readable. More only when the world has more separate parts than that,
+/// up to `MAX_POINTS`.
+const TOP_POINTS: usize = 120;
+
 /// At the top, the sky's share of the points while it has people: the
 /// placed world keeps the rest.
 const SKY_SHARE: usize = 60;
@@ -134,7 +140,8 @@ impl Core {
             name: None,
         }];
         let mut drawn: HashMap<PublicKey, u32> = HashMap::from([(me, 0)]);
-        if let Some(opened) = world.open(Region::Top, &me, MAX_CARD_POINTS - 1) {
+        if let Some(opened) = world.open(Region::Top, &me, MAX_CARD_POINTS - 1, MAX_CARD_POINTS - 1)
+        {
             for g in &opened.groups {
                 points.push(CardPoint {
                     at: on_grid(world.placed.group_at[*g as usize]),
@@ -462,7 +469,11 @@ impl Core {
                     _ => 0,
                 };
                 let budget = MAX_POINTS - 1 - sky_share;
-                let opened = world.open(region, &me, budget).unwrap_or(Opened {
+                let target = match region {
+                    Region::Top => TOP_POINTS - 1 - sky_share,
+                    _ => budget,
+                };
+                let opened = world.open(region, &me, budget, target).unwrap_or(Opened {
                     // Someone unplaced: alone in the sky, with the owner.
                     region,
                     path: vec![Region::Top],
@@ -472,7 +483,8 @@ impl Core {
                 });
                 if region == Region::Top {
                     let used = opened.groups.len() + opened.people.len();
-                    lights = sky.open(Cell::ALL, MAX_POINTS - 1 - used);
+                    let room = TOP_POINTS.saturating_sub(1 + used).max(sky_share);
+                    lights = sky.open(Cell::ALL, room);
                 }
                 opened
             }

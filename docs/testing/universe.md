@@ -128,7 +128,7 @@ The node answered each snapshot in about 1.25 s, the top or a group alike. About
 - A full node answers a snapshot within 1.5 s on a desktop. Met (1.25 s). An SBC, the usual node, wasn't measured; at a few times slower, a move would wait several seconds.
 
 **Still open:**
-- The top of a full node is unreadable: 248 overlapping counts. Fewer, larger regions at the top, or counts shown only where they fit.
+- The top of a full node is unreadable: 248 overlapping counts. Now it opens to 120 points (ADR 0034 §3), and a count that would cover another is left out; not yet seen on the phone.
 - Snapshots check every signature again. Keeping what was checked, or the people and lines read from it until the database changes, would take about four fifths off each answer.
 
 ## A newcomer exploring
