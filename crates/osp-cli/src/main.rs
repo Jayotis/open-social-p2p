@@ -384,6 +384,21 @@ enum Command {
         /// Don't draw a QR code
         #[arg(long)]
         no_qr: bool,
+        /// Make a code for an app store's reviewer instead: it lasts days and
+        /// pairs a few devices, which `--end-review` unpairs. Use it only on
+        /// a demo node, never your own
+        #[arg(long, conflicts_with = "end_review")]
+        for_review: bool,
+        /// How many days the review code lasts
+        #[arg(long, default_value_t = 30, requires = "for_review")]
+        days: u32,
+        /// How many devices the review code pairs
+        #[arg(long, default_value_t = 3, requires = "for_review")]
+        devices: u32,
+        /// End the review: the review code stops working and the devices it
+        /// paired are unpaired
+        #[arg(long)]
+        end_review: bool,
     },
     /// List paired phones
     Devices,
@@ -720,7 +735,17 @@ async fn main() -> Result<()> {
             }
             return print(resp, cli.json);
         }
-        Command::Pair { no_qr } => return pair(&home, no_qr, cli.json).await,
+        Command::Pair {
+            for_review: true,
+            no_qr,
+            days,
+            devices,
+            ..
+        } => return pair_for_review(&home, no_qr, days, devices, cli.json).await,
+        Command::Pair {
+            end_review: true, ..
+        } => ClientRequest::EndReview,
+        Command::Pair { no_qr, .. } => return pair(&home, no_qr, cli.json).await,
         Command::Unpair { device } => {
             let id = find_device(&home, &device).await?;
             ClientRequest::Unpair { device: id }
@@ -1821,6 +1846,40 @@ async fn pair(home: &Path, no_qr: bool, json: bool) -> Result<()> {
     bail!("the pairing code expired; run `osp pair` again")
 }
 
+/// Shows the review code, which the reviewer uses later, so no waiting.
+async fn pair_for_review(
+    home: &Path,
+    no_qr: bool,
+    days: u32,
+    devices: u32,
+    json: bool,
+) -> Result<()> {
+    let resp = send(home, ClientRequest::NewReviewPairing { days, devices }).await?;
+    let ClientResponse::Pairing { ticket, .. } = &resp else {
+        return print(resp, json);
+    };
+    if json {
+        return print(resp, json);
+    }
+    if !no_qr {
+        qr2term::print_qr(ticket).context("drawing QR code")?;
+    }
+    println!("{ticket}\n");
+    println!(
+        "This review code pairs up to {devices} device{} within {days} day{}, \
+         and replaces any review code before it.",
+        plural(devices as usize),
+        plural(days as usize),
+    );
+    println!("Whoever has it can read and post as this node: give it only to the reviewer.");
+    println!("When the review is over, `osp pair --end-review` unpairs their devices.");
+    Ok(())
+}
+
+fn plural(n: usize) -> &'static str {
+    if n == 1 { "" } else { "s" }
+}
+
 async fn devices(home: &Path) -> Result<Vec<DeviceInfo>> {
     match send(home, ClientRequest::Devices).await? {
         ClientResponse::Devices { devices } => Ok(devices),
@@ -2505,14 +2564,30 @@ fn print(resp: ClientResponse, json: bool) -> Result<()> {
         ClientResponse::Synced { new_objects: 0 } => println!("Up to date."),
         ClientResponse::Synced { new_objects } => println!("{new_objects} new objects"),
         ClientResponse::Pairing { ticket, .. } => println!("{ticket}"),
+        ClientResponse::ReviewEnded { code, unpaired } => {
+            let code = if code {
+                "The review code no longer works"
+            } else {
+                "No review code was left"
+            };
+            println!(
+                "{code}; unpaired {unpaired} reviewer device{}.",
+                plural(unpaired)
+            );
+        }
         ClientResponse::Devices { devices } => {
             if devices.is_empty() {
                 println!("No paired devices. Pair your phone with `osp pair`.");
             }
             for d in devices {
                 let connected = if d.connected { ", connected now" } else { "" };
+                let review = if d.review {
+                    ", with the review code"
+                } else {
+                    ""
+                };
                 println!("{}  {}", d.name.as_deref().unwrap_or("(no name)"), d.id);
-                println!("    paired {}{connected}", d.paired);
+                println!("    paired {}{review}{connected}", d.paired);
             }
         }
         ClientResponse::Peers { peers } => print_peers(&peers),

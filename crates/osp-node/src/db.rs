@@ -106,6 +106,10 @@ CREATE TABLE IF NOT EXISTS devices (
 );
 ";
 
+/// A paired device: its ID, name, when it was paired (RFC 3339) and whether
+/// the review code paired it.
+pub type DeviceRow = (EndpointId, Option<String>, String, bool);
+
 /// Changes to the schema above, applied in order to every database, old or
 /// new. SQLite's `user_version` records how many have run. Only ever append.
 const MIGRATIONS: &[&str] = &[
@@ -705,6 +709,15 @@ const MIGRATIONS: &[&str] = &[
         day   INTEGER PRIMARY KEY,
         bytes INTEGER NOT NULL
     );",
+    // A pairing code for an app reviewer (`osp pair --for-review`): it lasts
+    // days, not minutes, so it outlives restarts, and pairs a few devices.
+    // Those devices are marked, so ending the review unpairs them.
+    "CREATE TABLE review_pairing (
+        secret_hash  TEXT PRIMARY KEY,
+        expires_ms   INTEGER NOT NULL,
+        devices_left INTEGER NOT NULL
+    );
+    ALTER TABLE devices ADD COLUMN review INTEGER NOT NULL DEFAULT 0;",
 ];
 
 /// How many days of `served_days` are kept: the summary's 30, and today.
@@ -3999,14 +4012,86 @@ impl Db {
 
     // ---- devices ----
 
-    /// Records a paired device, or renames one paired before.
-    pub fn add_device(&self, node: &EndpointId, name: &str) -> Result<()> {
+    /// Records a paired device, or renames one paired before. A device
+    /// paired with the review code is marked as the reviewer's; pairing again
+    /// with an ordinary code makes it the owner's.
+    pub fn add_device(&self, node: &EndpointId, name: &str, review: bool) -> Result<()> {
         self.conn().execute(
-            "INSERT INTO devices (node, name, paired_ms) VALUES (?1, ?2, ?3)
-             ON CONFLICT(node) DO UPDATE SET name = excluded.name",
-            params![node.to_string(), name, now_ms()],
+            "INSERT INTO devices (node, name, paired_ms, review) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(node) DO UPDATE SET name = excluded.name, review = excluded.review",
+            params![node.to_string(), name, now_ms(), review],
         )?;
         Ok(())
+    }
+
+    /// Makes `secret_hash` the review code, replacing any before it.
+    pub fn set_review_pairing(
+        &self,
+        secret_hash: &blake3::Hash,
+        expires_ms: i64,
+        devices: u32,
+    ) -> Result<()> {
+        let mut conn = self.conn();
+        let tx = conn.transaction()?;
+        tx.execute("DELETE FROM review_pairing", [])?;
+        tx.execute(
+            "INSERT INTO review_pairing (secret_hash, expires_ms, devices_left) VALUES (?1, ?2, ?3)",
+            params![secret_hash.to_hex().as_str(), expires_ms, devices],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// The review code, if one is still usable at `now_ms`: its secret's
+    /// hash, when it expires and how many more devices it pairs. One that
+    /// expired is forgotten.
+    pub fn review_pairing(&self, now_ms: i64) -> Result<Option<(blake3::Hash, i64, u32)>> {
+        let conn = self.conn();
+        conn.execute(
+            "DELETE FROM review_pairing WHERE expires_ms <= ?1 OR devices_left <= 0",
+            params![now_ms],
+        )?;
+        let row = conn
+            .query_row(
+                "SELECT secret_hash, expires_ms, devices_left FROM review_pairing",
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, u32>(2)?,
+                    ))
+                },
+            )
+            .optional()?;
+        row.map(|(hash, expires, left)| Ok((blake3::Hash::from_hex(&hash)?, expires, left)))
+            .transpose()
+    }
+
+    /// One more device paired with the review code; it's forgotten once it
+    /// has paired as many as it was made for.
+    pub fn use_review_pairing(&self, secret_hash: &blake3::Hash) -> Result<()> {
+        let conn = self.conn();
+        let hash = secret_hash.to_hex();
+        conn.execute(
+            "UPDATE review_pairing SET devices_left = devices_left - 1 WHERE secret_hash = ?1",
+            params![hash.as_str()],
+        )?;
+        conn.execute("DELETE FROM review_pairing WHERE devices_left <= 0", [])?;
+        Ok(())
+    }
+
+    /// Ends a review: forgets the review code, and returns whether there was
+    /// one and the devices paired with it, for unpairing.
+    pub fn end_review(&self) -> Result<(bool, Vec<EndpointId>)> {
+        let conn = self.conn();
+        let code = conn.execute("DELETE FROM review_pairing", [])? > 0;
+        let mut stmt = conn.prepare("SELECT node FROM devices WHERE review = 1")?;
+        let devices = stmt
+            .query_map([], |row| row.get::<_, String>(0))?
+            .map(|node| Ok(node?.parse()?))
+            .collect::<Result<_>>()?;
+        Ok((code, devices))
     }
 
     pub fn remove_device(&self, node: &EndpointId) -> Result<bool> {
@@ -4017,21 +4102,23 @@ impl Db {
         Ok(n > 0)
     }
 
-    /// Paired devices with their names and pairing times, oldest first.
-    pub fn devices(&self) -> Result<Vec<(EndpointId, Option<String>, String)>> {
+    /// Paired devices with their names, pairing times and whether the
+    /// review code paired them, oldest first.
+    pub fn devices(&self) -> Result<Vec<DeviceRow>> {
         let conn = self.conn();
         let mut stmt =
-            conn.prepare("SELECT node, name, paired_ms FROM devices ORDER BY paired_ms")?;
+            conn.prepare("SELECT node, name, paired_ms, review FROM devices ORDER BY paired_ms")?;
         let rows = stmt.query_map([], |row| {
             Ok((
                 row.get::<_, String>(0)?,
                 row.get::<_, Option<String>>(1)?,
                 row.get::<_, i64>(2)?,
+                row.get::<_, bool>(3)?,
             ))
         })?;
         rows.map(|r| {
-            let (node, name, paired) = r?;
-            Ok((node.parse()?, name, format_ms(paired)))
+            let (node, name, paired, review) = r?;
+            Ok((node.parse()?, name, format_ms(paired), review))
         })
         .collect()
     }
@@ -5466,7 +5553,7 @@ mod tests {
         let db = Db::open(&dir.path().join("t.db")).unwrap();
         let now = now_ms();
         let phone = some_addr().id;
-        db.add_device(&phone, "phone").unwrap();
+        db.add_device(&phone, "phone", false).unwrap();
         db.update_peer(&phone, true, now, count).unwrap();
         assert!(db.peers(now).unwrap().is_empty());
 
@@ -7281,6 +7368,7 @@ mod tests {
                      DROP TABLE carriers_worked; DROP TABLE carrier_probation;
                      DROP TABLE carrier_tips; DROP TABLE carrier_suggestions;
                      DROP TABLE carried_days;
+                     DROP TABLE review_pairing; ALTER TABLE devices DROP COLUMN review;
                      PRAGMA user_version = 24;",
                 )
                 .unwrap();

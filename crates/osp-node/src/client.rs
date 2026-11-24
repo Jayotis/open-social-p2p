@@ -44,10 +44,18 @@ const MAX_UNKNOWN_REQUESTS: usize = 8;
 /// Give up on an unknown device's request after this long.
 const UNKNOWN_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// Longest a review code lasts (`osp pair --for-review`).
+const MAX_REVIEW_DAYS: u32 = 90;
+/// Most devices one review code pairs.
+const MAX_REVIEW_DEVICES: u32 = 10;
+
 /// A pairing secret not used yet. Only its hash is kept.
 pub(crate) struct PendingPairing {
     secret_hash: blake3::Hash,
     expires: Instant,
+    /// The review code, which pairs several devices and is kept in the
+    /// database (`review_pairing`), where its count is.
+    review: bool,
 }
 
 impl PendingPairing {
@@ -231,18 +239,36 @@ async fn serve_stream(
     Ok(())
 }
 
+fn new_secret() -> Result<[u8; 16]> {
+    let mut secret = [0u8; 16];
+    getrandom::fill(&mut secret)
+        .map_err(|e| anyhow::anyhow!("no secure random numbers available: {e}"))?;
+    Ok(secret)
+}
+
 fn reply(result: Result<ClientResponse>) -> ClientResponse {
     result.unwrap_or_else(|e| ClientResponse::Error {
         message: format!("{e:#}"),
     })
 }
 
+/// The review code kept in the database, if one is still usable, as a
+/// pending pairing: read when the node starts, and after each use.
+pub(crate) fn stored_review_pairing(db: &crate::db::Db) -> Result<Option<PendingPairing>> {
+    let now_ms = crate::db::now_ms();
+    Ok(db
+        .review_pairing(now_ms)?
+        .map(|(secret_hash, expires_ms, _)| PendingPairing {
+            secret_hash,
+            expires: Instant::now() + Duration::from_millis((expires_ms - now_ms).max(0) as u64),
+            review: true,
+        }))
+}
+
 impl Core {
     /// Hands out a one-time pairing ticket.
     pub(crate) async fn new_pairing(&self) -> Result<ClientResponse> {
-        let mut secret = [0u8; 16];
-        getrandom::fill(&mut secret)
-            .map_err(|e| anyhow::anyhow!("no secure random numbers available: {e}"))?;
+        let secret = new_secret()?;
         {
             let mut pending = self.lock_pairings();
             let now = Instant::now();
@@ -250,8 +276,72 @@ impl Core {
             pending.push(PendingPairing {
                 secret_hash: blake3::hash(&secret),
                 expires: now + PAIRING_TTL,
+                review: false,
             });
         }
+        let ticket = self.pairing_ticket(secret).await;
+        Ok(ClientResponse::Pairing {
+            ticket,
+            expires_in_secs: PAIRING_TTL.as_secs(),
+        })
+    }
+
+    /// Hands out the review code: it lasts `days` and pairs up to `devices`
+    /// devices, for an app store's reviewer, replacing any made before.
+    pub(crate) async fn new_review_pairing(
+        &self,
+        days: u32,
+        devices: u32,
+    ) -> Result<ClientResponse> {
+        ensure!(
+            (1..=MAX_REVIEW_DAYS).contains(&days),
+            "a review code lasts 1 to {MAX_REVIEW_DAYS} days"
+        );
+        ensure!(
+            (1..=MAX_REVIEW_DEVICES).contains(&devices),
+            "a review code pairs 1 to {MAX_REVIEW_DEVICES} devices"
+        );
+        let secret = new_secret()?;
+        let lasts = Duration::from_secs(u64::from(days) * 24 * 3600);
+        let secret_hash = blake3::hash(&secret);
+        self.db.set_review_pairing(
+            &secret_hash,
+            crate::db::now_ms() + lasts.as_millis() as i64,
+            devices,
+        )?;
+        {
+            let mut pending = self.lock_pairings();
+            let now = Instant::now();
+            pending.retain(|p| p.expires > now && !p.review);
+            pending.push(PendingPairing {
+                secret_hash,
+                expires: now + lasts,
+                review: true,
+            });
+        }
+        info!(days, devices, "made a review pairing code");
+        let ticket = self.pairing_ticket(secret).await;
+        Ok(ClientResponse::Pairing {
+            ticket,
+            expires_in_secs: lasts.as_secs(),
+        })
+    }
+
+    /// Ends a review: the review code stops working and the devices it
+    /// paired are unpaired.
+    pub(crate) fn end_review(&self) -> Result<ClientResponse> {
+        self.lock_pairings().retain(|p| !p.review);
+        let (code, devices) = self.db.end_review()?;
+        for device in &devices {
+            self.unpair(device)?;
+        }
+        Ok(ClientResponse::ReviewEnded {
+            code,
+            unpaired: devices.len(),
+        })
+    }
+
+    async fn pairing_ticket(&self, secret: [u8; 16]) -> String {
         let relays = self.config.network.relay != RelayChoice::Disabled;
         // A phone pairs with the direct endpoint, if the node has one.
         let endpoint = match &self.endpoints {
@@ -263,10 +353,7 @@ impl Core {
             secret,
             relays: phone_relays(&self.config.network),
         };
-        Ok(ClientResponse::Pairing {
-            ticket: ticket.to_string(),
-            expires_in_secs: PAIRING_TTL.as_secs(),
-        })
+        ticket.to_string()
     }
 
     fn pair_device(&self, device: EndpointId, secret: &str, name: &str) -> Result<ClientResponse> {
@@ -275,7 +362,7 @@ impl Core {
             .decode(secret.as_bytes())
             .unwrap_or_default();
         let hash = blake3::hash(&secret);
-        {
+        let review = {
             let mut pending = self.lock_pairings();
             let now = Instant::now();
             pending.retain(|p| p.expires > now);
@@ -284,11 +371,17 @@ impl Core {
                 .iter()
                 .position(|p| p.secret_hash == hash)
                 .context("this pairing code is wrong, used or expired; run `osp pair` again")?;
-            pending.remove(i);
-        }
+            let review = pending.remove(i).review;
+            if review {
+                // It stays for the devices it has left.
+                self.db.use_review_pairing(&hash)?;
+                pending.extend(stored_review_pairing(&self.db)?);
+            }
+            review
+        };
         let name: String = name.trim().chars().take(MAX_DEVICE_NAME).collect();
-        self.db.add_device(&device, &name)?;
-        info!(device = %device.fmt_short(), %name, "paired a device");
+        self.db.add_device(&device, &name, review)?;
+        info!(device = %device.fmt_short(), %name, review, "paired a device");
         Ok(ClientResponse::Paired {
             identity: self.signer.identity(),
             name: self.own_name(),
@@ -308,11 +401,12 @@ impl Core {
             .db
             .devices()?
             .into_iter()
-            .map(|(id, name, paired)| DeviceInfo {
+            .map(|(id, name, paired, review)| DeviceInfo {
                 id,
                 name,
                 paired,
                 connected: live.contains(&id),
+                review,
             })
             .collect())
     }

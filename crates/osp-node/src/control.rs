@@ -209,6 +209,14 @@ impl Core {
                 ensure!(local, "devices can only be paired from the node itself");
                 self.new_pairing().await?
             }
+            ClientRequest::NewReviewPairing { days, devices } => {
+                ensure!(local, "devices can only be paired from the node itself");
+                self.new_review_pairing(days, devices).await?
+            }
+            ClientRequest::EndReview => {
+                ensure!(local, "devices can only be unpaired from the node itself");
+                self.end_review()?
+            }
             ClientRequest::Devices => {
                 ensure!(local, "devices can only be listed from the node itself");
                 ClientResponse::Devices {
