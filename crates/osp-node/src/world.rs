@@ -181,10 +181,19 @@ impl World {
     }
 
     /// Opens `region` into at most `budget` points: groups shown closed and
-    /// people. `kim` is the owner, whose way down opens first at the top.
-    /// None if it stands at someone the world doesn't place: the caller
-    /// shows them in the sky.
-    pub fn open(&self, region: Region, kim: &PublicKey, budget: usize) -> Option<Opened> {
+    /// people. Groups open only while the points fit in `target`, which is
+    /// at most `budget`: the top asks for fewer than it could hold, to stay
+    /// readable, but never drops a separate part of the world for that.
+    /// `kim` is the owner, whose way down opens first at the top. None if
+    /// it stands at someone the world doesn't place: the caller shows them
+    /// in the sky.
+    pub fn open(
+        &self,
+        region: Region,
+        kim: &PublicKey,
+        budget: usize,
+        target: usize,
+    ) -> Option<Opened> {
         let kims_way: HashSet<u32> = self.chain_of(kim).into_iter().collect();
         let groups_path = |chain: &[u32]| -> Vec<Region> {
             std::iter::once(Region::Top)
@@ -233,7 +242,8 @@ impl World {
             }
         };
         let budget = budget.saturating_sub(extra.len());
-        let mut shown = self.open_from(start, &toward, budget);
+        let target = target.saturating_sub(extra.len()).min(budget);
+        let mut shown = self.open_from(start, &toward, budget, target);
         for p in extra {
             if !shown.contains(&Child::Person(p)) {
                 shown.push(Child::Person(p));
@@ -260,10 +270,17 @@ impl World {
         })
     }
 
-    /// `start` with groups opened into their children while they fit in
-    /// `budget`: those in `toward` first, then the largest. So at one zoom a
-    /// dense area opens deeper than a sparse one beside it (ADR 0034 §2).
-    fn open_from(&self, mut shown: Vec<Child>, toward: &HashSet<u32>, budget: usize) -> Vec<Child> {
+    /// `start`, at most `budget` of it, with groups opened into their
+    /// children while they fit in `target`: those in `toward` first, then
+    /// the largest. So at one zoom a dense area opens deeper than a sparse
+    /// one beside it (ADR 0034 §2).
+    fn open_from(
+        &self,
+        mut shown: Vec<Child>,
+        toward: &HashSet<u32>,
+        budget: usize,
+        target: usize,
+    ) -> Vec<Child> {
         shown.truncate(budget);
         loop {
             // The group to open: on the way first, then the largest, then
@@ -276,7 +293,7 @@ impl World {
                     Child::Person(_) => None,
                 })
                 .filter(|(_, g)| {
-                    shown.len() - 1 + self.tree.groups[*g as usize].children.len() <= budget
+                    shown.len() - 1 + self.tree.groups[*g as usize].children.len() <= target
                 })
                 .max_by_key(|(_, g)| {
                     let people = self.tree.groups[*g as usize].people;
@@ -430,7 +447,7 @@ mod tests {
     #[test]
     fn a_small_world_opens_at_local() {
         let (world, made) = world(2, 8);
-        let top = world.open(Region::Top, &made[0], 300).unwrap();
+        let top = world.open(Region::Top, &made[0], 300, 300).unwrap();
         assert_eq!(top.level, Level::Local);
         assert!(top.groups.is_empty());
         assert_eq!(top.people.len(), 16);
@@ -442,7 +459,7 @@ mod tests {
     #[test]
     fn a_large_world_opens_within_its_budget_down_to_everyone() {
         let (world, made) = world(400, 20);
-        let top = world.open(Region::Top, &made[0], 300).unwrap();
+        let top = world.open(Region::Top, &made[0], 300, 300).unwrap();
         assert_eq!(top.level, Level::Universe);
         assert!(points(&top) <= 300);
         let mut reached = HashSet::new();
@@ -452,7 +469,7 @@ mod tests {
             reached.extend(o.people.iter().copied());
             for g in &o.groups {
                 let inside = world
-                    .open(Region::Group(world.id(*g)), &made[0], 300)
+                    .open(Region::Group(world.id(*g)), &made[0], 300, 300)
                     .unwrap();
                 assert_eq!(inside.region, Region::Group(world.id(*g)));
                 assert_eq!(inside.path.first(), Some(&Region::Top));
@@ -462,12 +479,41 @@ mod tests {
         assert_eq!(reached.len(), 8_000);
     }
 
+    /// Asked for fewer points than it may hold, the top opens only that
+    /// far; but a world of more separate parts than that shows them all.
+    #[test]
+    fn the_top_opens_to_its_target_but_keeps_every_part() {
+        let (world, made) = world(400, 20);
+        let top = world.open(Region::Top, &made[0], 300, 120).unwrap();
+        assert!(points(&top) <= 120);
+        assert!(points(&top) > 60, "only {}", points(&top));
+
+        // 200 pairs, no line between them: 200 roots.
+        let made: Vec<PublicKey> = (0..400).map(key).collect();
+        let mut keys = made.clone();
+        keys.sort();
+        let at = |k: &PublicKey| keys.binary_search(k).unwrap() as u32;
+        let lines = (0..200)
+            .map(|p| (at(&made[2 * p]), at(&made[2 * p + 1]), 1.0))
+            .collect();
+        let input = Input {
+            keys: keys.clone(),
+            lines,
+            kim: Some(at(&made[0])),
+            stamp: [7; 32],
+        };
+        let pairs = World::build(input, &mut Places::default());
+        let top = pairs.open(Region::Top, &made[0], 300, 120).unwrap();
+        assert_eq!(top.groups.len() + top.people.len() / 2, 200);
+        assert!(points(&top) <= 300);
+    }
+
     /// Kim's own way down opens first, so the top shows her friends one by
     /// one around her while the rest of the world is coarser.
     #[test]
     fn the_top_opens_around_kim() {
         let (world, made) = world(400, 20);
-        let top = world.open(Region::Top, &made[0], 300).unwrap();
+        let top = world.open(Region::Top, &made[0], 300, 300).unwrap();
         let kim = world.placed(&made[0]).unwrap().0;
         assert!(top.people.contains(&kim));
         let friends = (1..20).filter(|p| {
@@ -483,7 +529,7 @@ mod tests {
     #[test]
     fn dense_and_sparse_regions_open_to_different_depths() {
         let (world, made) = world(400, 20);
-        let top = world.open(Region::Top, &made[0], 300).unwrap();
+        let top = world.open(Region::Top, &made[0], 300, 300).unwrap();
         // Some people shown one by one, some groups closed.
         assert!(!top.people.is_empty() && !top.groups.is_empty());
         let depth = |g: u32| world.chain(g).len();
@@ -506,7 +552,9 @@ mod tests {
         let (world, made) = world(400, 20);
         let jimmy = made[4_005];
         let (i, _) = world.placed(&jimmy).unwrap();
-        let at = world.open(Region::Person(jimmy), &made[0], 300).unwrap();
+        let at = world
+            .open(Region::Person(jimmy), &made[0], 300, 300)
+            .unwrap();
         assert_eq!(at.level, Level::Close);
         assert!(at.people.contains(&i));
         for (p, _) in world.graph.neighbours(i) {
@@ -519,7 +567,7 @@ mod tests {
         // Each step up holds the one below.
         for pair in at.path.windows(2) {
             let Region::Group(id) = pair[1] else { panic!() };
-            let up = world.open(pair[0], &made[0], 300).unwrap();
+            let up = world.open(pair[0], &made[0], 300, 300).unwrap();
             let g = world.group(id).unwrap();
             let shown = up.groups.contains(&g) || {
                 let mut inside = false;
@@ -538,7 +586,11 @@ mod tests {
         let (input, _) = input(2, 8, &[]);
         let lonely = key(999_999);
         let small = World::build(input, &mut Places::default());
-        assert!(small.open(Region::Person(lonely), &made[0], 300).is_none());
+        assert!(
+            small
+                .open(Region::Person(lonely), &made[0], 300, 300)
+                .is_none()
+        );
     }
 
     #[test]
@@ -549,11 +601,15 @@ mod tests {
         let (after, _) = input(2, 8, &[(0, 8), (1, 9), (2, 10), (3, 11), (4, 12), (5, 13)]);
         let after = World::build(after, &mut places);
         if let Some((gone, into)) = after.placed.merged.first() {
-            let opened = after.open(Region::Group(*gone), &made[0], 300).unwrap();
+            let opened = after
+                .open(Region::Group(*gone), &made[0], 300, 300)
+                .unwrap();
             assert_eq!(opened.region, Region::Group(*into));
         }
         // A group no world had opens the top.
-        let opened = before.open(Region::Group(u64::MAX), &made[0], 300).unwrap();
+        let opened = before
+            .open(Region::Group(u64::MAX), &made[0], 300, 300)
+            .unwrap();
         assert_eq!(opened.region, Region::Top);
     }
 
@@ -572,7 +628,7 @@ mod tests {
         let (mut opens, mut most, mut depths) = (0, 0, HashSet::new());
         let mut open = vec![Region::Top];
         while let Some(region) = open.pop() {
-            let o = world.open(region, &made[0], 300).unwrap();
+            let o = world.open(region, &made[0], 300, 300).unwrap();
             opens += 1;
             most = most.max(points(&o));
             assert!(points(&o) <= 300);
