@@ -502,6 +502,16 @@ class HomeNode extends ChangeNotifier with WidgetsBindingObserver {
     lastError = describeError(e);
   }
 
+  /// What the node answers a phone it doesn't know (`client.rs`).
+  static const _unknownPhone = "isn't paired with this node"; // not shown
+
+  /// The node answers, but doesn't know this phone any more, as after it
+  /// was removed from the node's devices. The phone keeps its pairing until
+  /// one made again works (`PairScreen.again`).
+  bool get forgottenByNode =>
+      reachability == Reachability.offline &&
+      (lastError?.contains(_unknownPhone) ?? false);
+
   /// Asks the node for its health. Cheap; runs every 20 seconds. Over Tor the
   /// node syncs in the background without keeping the phone waiting, so what
   /// arrived is picked up here too.
@@ -564,13 +574,15 @@ class HomeNode extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   Future<NodeInfo> pair(String ticket) async {
+    final before = paired;
     final info = await app.pair(
       ticket: ticket.trim(),
       deviceName: await _deviceName(),
     );
     paired = info;
     notice = null;
-    firstRun = true;
+    // Pairing again with the same identity's node isn't a first run.
+    firstRun = before?.identity != info.identity;
     notifyListeners();
     _start();
     _startNotices();

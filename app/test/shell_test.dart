@@ -12,6 +12,7 @@ import 'package:osp_app/screens/compose_screen.dart';
 import 'package:osp_app/screens/events_screen.dart';
 import 'package:osp_app/screens/found_people_screen.dart';
 import 'package:osp_app/screens/node_summary_screen.dart';
+import 'package:osp_app/screens/pair_screen.dart';
 import 'package:osp_app/screens/people_screen.dart';
 import 'package:osp_app/screens/search_screen.dart';
 import 'package:osp_app/screens/trust_screen.dart';
@@ -27,8 +28,12 @@ import 'plain_words.dart';
 class FakeApp implements OspApp {
   NodeStatus status_ = nodeStatus();
 
+  /// What the node answers instead, if set.
+  Object? statusError;
+
   @override
-  Future<NodeStatus> status() async => status_;
+  Future<NodeStatus> status() async =>
+      statusError == null ? status_ : throw statusError!;
 
   @override
   Future<String> invite() async => 'OSP1invite';
@@ -421,6 +426,35 @@ void main() {
     );
     expect(find.text('It uses 1.3 GB of space for OSP.'), findsOne);
     expectPlainWords(tester);
+  });
+
+  testWidgets("a node that doesn't know this phone any more is paired with "
+      'again, and the pairing stays until then', (tester) async {
+    await start(tester, Place.home);
+    // Removed from the node's devices: it answers, but not this phone.
+    app.statusError = Exception("this device isn't paired with this node");
+    await node.checkStatus();
+    await tester.pumpAndSettle();
+    expect(find.text("Your node doesn't know this phone any more."), findsOne);
+    expect(find.text('Retry'), findsNothing);
+    expectPlainWords(tester);
+
+    await tester.tap(find.text('Pair again'));
+    await tester.pumpAndSettle();
+    expect(find.byType(PairScreen), findsOne);
+    expect(find.text('Pair this phone again'), findsOne);
+    expect(find.textContaining('the phone keeps what it has'), findsOne);
+    expectPlainWords(tester);
+    expect(node.paired?.identity, 'id-Alice');
+
+    // Some other failure is the usual "can't reach it".
+    await tester.pageBack();
+    await tester.pumpAndSettle();
+    app.statusError = Exception('no answer in time');
+    await node.checkStatus();
+    await tester.pumpAndSettle();
+    expect(find.textContaining("Can't reach your node."), findsOne);
+    expect(find.text('Pair again'), findsNothing);
   });
 
   testWidgets('the icon in the top bar says how your node is', (tester) async {

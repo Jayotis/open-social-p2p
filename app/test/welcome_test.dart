@@ -35,6 +35,15 @@ class FakeApp implements OspApp {
   @override
   SavedFeed? savedFeed() => null;
 
+  /// The node a pairing code pairs with.
+  NodeInfo pairsWith = alicesNode;
+
+  @override
+  Future<NodeInfo> pair({
+    required String ticket,
+    required String deviceName,
+  }) async => pairsWith;
+
   @override
   dynamic noSuchMethod(Invocation invocation) =>
       throw UnimplementedError('${invocation.memberName}');
@@ -157,6 +166,25 @@ void main() {
     await tester.pumpAndSettle();
     expect(app.answers, [false]);
     expect(node.hideListDue, isFalse);
+  });
+
+  test('pairing again with the same node is no first run; with another '
+      "owner's node it is", () async {
+    await node.pair('OSPPAIR-first');
+    expect(node.firstRun, isTrue);
+    node.finishFirstRun();
+    // The node forgot this phone, and it pairs again.
+    await node.pair('OSPPAIR-again');
+    expect(node.firstRun, isFalse);
+    app.pairsWith = const NodeInfo(
+      name: 'Kim',
+      identity: 'id-Kim',
+      paired: '2026-11-26T00:00:00Z',
+    );
+    await node.pair('OSPPAIR-kims');
+    expect(node.firstRun, isTrue);
+    // The refreshes each pairing started end before the node is disposed.
+    await pumpEventQueue();
   });
 
   test('the app shows the same terms as docs/terms-short.md', () {
