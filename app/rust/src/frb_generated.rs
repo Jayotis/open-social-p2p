@@ -5017,6 +5017,7 @@ impl SseDecode for crate::api::osp::NodeStatus {
         let mut var_servedLatelyBytes = <i64>::sse_decode(deserializer);
         let mut var_spaceBytes = <i64>::sse_decode(deserializer);
         let mut var_carrier = <Option<crate::api::osp::CarrierState>>::sse_decode(deserializer);
+        let mut var_lookedForPeople = <bool>::sse_decode(deserializer);
         return crate::api::osp::NodeStatus {
             name: var_name,
             version: var_version,
@@ -5038,6 +5039,7 @@ impl SseDecode for crate::api::osp::NodeStatus {
             served_lately_bytes: var_servedLatelyBytes,
             space_bytes: var_spaceBytes,
             carrier: var_carrier,
+            looked_for_people: var_lookedForPeople,
         };
     }
 }
@@ -6429,6 +6431,7 @@ impl flutter_rust_bridge::IntoDart for crate::api::osp::NodeStatus {
             self.served_lately_bytes.into_into_dart().into_dart(),
             self.space_bytes.into_into_dart().into_dart(),
             self.carrier.into_into_dart().into_dart(),
+            self.looked_for_people.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
@@ -7721,6 +7724,7 @@ impl SseEncode for crate::api::osp::NodeStatus {
         <i64>::sse_encode(self.served_lately_bytes, serializer);
         <i64>::sse_encode(self.space_bytes, serializer);
         <Option<crate::api::osp::CarrierState>>::sse_encode(self.carrier, serializer);
+        <bool>::sse_encode(self.looked_for_people, serializer);
     }
 }
 

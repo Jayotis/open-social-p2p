@@ -559,6 +559,11 @@ impl Core {
         let (transfer_places, upload_measured_mbps) = self.store.serving();
         let storage = self.db.storage_summary()?;
         let space_bytes = storage.iter().map(|s| s.bytes).sum::<u64>() + self.db.size_bytes()?;
+        let directories_answered_secs_ago = self
+            .directories_answered_at
+            .lock()
+            .expect("poisoned")
+            .map(|at| at.elapsed().as_secs());
         Ok(StatusInfo {
             name: self.own_name(),
             identity: self.signer.identity(),
@@ -595,6 +600,7 @@ impl Core {
                 false => None,
             },
             found_people: self.db.found_count()?,
+            directories_answered_secs_ago,
             shared: {
                 let (posts, served_bytes) = self.db.shared_served()?;
                 SharedStatus {

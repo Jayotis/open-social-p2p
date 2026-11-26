@@ -1802,9 +1802,14 @@ async fn block_target(home: &Path, what: BlockCommand) -> Result<BlockTarget> {
     })
 }
 
-/// Shows a pairing QR code, then waits until a new device appears.
+/// Shows a pairing QR code, then waits until a device pairs: a new one, or
+/// one paired before pairing again, which the node lists at the new time.
 async fn pair(home: &Path, no_qr: bool, json: bool) -> Result<()> {
-    let before: Vec<EndpointId> = devices(home).await?.iter().map(|d| d.id).collect();
+    let before: Vec<(EndpointId, String)> = devices(home)
+        .await?
+        .into_iter()
+        .map(|d| (d.id, d.paired))
+        .collect();
     let resp = send(home, ClientRequest::NewPairing).await?;
     let ClientResponse::Pairing {
         ticket,
@@ -1833,7 +1838,7 @@ async fn pair(home: &Path, no_qr: bool, json: bool) -> Result<()> {
         if let Some(d) = devices(home)
             .await?
             .into_iter()
-            .find(|d| !before.contains(&d.id))
+            .find(|d| !before.iter().any(|(id, at)| *id == d.id && *at == d.paired))
         {
             println!(
                 "Paired with {} ({}).",
@@ -2886,8 +2891,13 @@ fn print_status(s: &StatusInfo) {
             directory.people, directory.machines
         );
     }
-    if s.found_people > 0 {
-        println!("Found:     {} people through directories", s.found_people);
+    match (s.found_people, s.directories_answered_secs_ago) {
+        (0, None) => {}
+        (0, Some(ago)) => println!(
+            "Found:     nobody yet; a directory answered {} ago",
+            uptime(ago)
+        ),
+        (n, _) => println!("Found:     {n} people through directories"),
     }
     if s.shared.posts > 0 {
         println!(

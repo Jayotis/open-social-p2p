@@ -2311,6 +2311,11 @@ class _FoundPeople extends StatelessWidget {
         'Tap to try again.',
       ),
       null => ('Your node is finding people…', null),
+      // It has looked, and nobody is listed yet: not the same as not yet.
+      _ when count == 0 && (node.status?.lookedForPeople ?? false) => (
+        'Your node found nobody yet',
+        'It looks again every few minutes. Or paste someone’s invite code.',
+      ),
       _ when count == 0 => (
         'Your node is looking for people',
         'It checks every few minutes. Or paste someone’s invite code.',

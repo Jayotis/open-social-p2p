@@ -136,6 +136,7 @@ class FakeApp implements OspApp {
     hostedPosts: 0,
     servedLatelyBytes: 0,
     spaceBytes: 0,
+    lookedForPeople: true,
   );
 
   @override

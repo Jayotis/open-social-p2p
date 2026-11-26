@@ -104,6 +104,7 @@ final status_ = NodeStatus(
   hostedPosts: 4,
   servedLatelyBytes: 0,
   spaceBytes: 0,
+  lookedForPeople: true,
 );
 
 String ago(Duration d) => DateTime.now().toUtc().subtract(d).toIso8601String();

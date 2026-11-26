@@ -839,6 +839,11 @@ pub struct StatusInfo {
     /// How many people this node holds that it found through directories.
     #[serde(default)]
     pub found_people: u64,
+    /// How long ago a directory last answered this node's read, since the
+    /// node started; none before one has. With `found_people` at 0, the
+    /// directories were read and listed nobody, rather than not read yet.
+    #[serde(default)]
+    pub directories_answered_secs_ago: Option<u64>,
     /// Posts this node reshared with hosting, and what it served of them.
     #[serde(default)]
     pub shared: SharedStatus,

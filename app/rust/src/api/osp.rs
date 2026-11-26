@@ -152,6 +152,9 @@ pub struct NodeStatus {
     /// Carrying other nodes' encrypted video, and the question on the
     /// node's own address (ADR 0043 §8). None from a node before part 5.
     pub carrier: Option<CarrierState>,
+    /// A directory has answered the node since it started, so if it found
+    /// nobody, nobody is listed yet: it has looked, not only begun to.
+    pub looked_for_people: bool,
 }
 
 /// Carrying for other nodes (ADR 0043 §8), as the owner set it and as it
@@ -874,6 +877,7 @@ impl OspApp {
             served_lately_bytes: s.served_lately_bytes as i64,
             space_bytes: s.space_bytes as i64,
             carrier: s.carrier.map(|c| carrier_state(*c)),
+            looked_for_people: s.directories_answered_secs_ago.is_some(),
         })
     }
 
