@@ -439,7 +439,16 @@ async fn the_universe_holds_no_address_and_opening_it_sends_nothing() {
     let asked_before = settled(&kim).await;
     let viewing_before = kim.viewing_endpoints_made();
     let everyone = [&directory, &kim, &jimmy, &alice, &bob, &fred];
-    let who_vouched = || everyone.map(|n| n.who_vouched_askers().len());
+    // Kim's asks of who vouched: from her own endpoints here, and from a
+    // throwaway key, counted by `throwaways_made`. The others' nodes gather
+    // their own sides when they like, which isn't hers (#235).
+    let who_vouched = || {
+        everyone
+            .iter()
+            .flat_map(|n| n.who_vouched_askers())
+            .filter(|asker| own.contains(asker))
+            .count()
+    };
     let who_vouched_before = who_vouched();
     let sent = sent_from(&net, &own, Duration::from_secs(3), async {
         let mut since = None;
