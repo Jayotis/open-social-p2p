@@ -7,11 +7,14 @@ import '../node.dart';
 import '../src/rust/api/osp.dart';
 import 'scan_screen.dart';
 
-/// First run: pair this phone with its home node (ADR 0008).
+/// First run: pair this phone with its home node (ADR 0008). With [again],
+/// opened over the app when the node doesn't know this phone any more: the
+/// phone keeps its pairing until the new one works, then goes back.
 class PairScreen extends StatefulWidget {
-  const PairScreen({super.key, required this.node});
+  const PairScreen({super.key, required this.node, this.again = false});
 
   final HomeNode node;
+  final bool again;
 
   @override
   State<PairScreen> createState() => _PairScreenState();
@@ -36,7 +39,8 @@ class _PairScreenState extends State<PairScreen> {
     });
     try {
       await widget.node.pair(ticket);
-      // The app switches to the feed by itself once paired.
+      // The first time, the app switches to the feed by itself once paired.
+      if (widget.again && mounted) Navigator.of(context).pop();
     } catch (e) {
       if (mounted) setState(() => _error = describeError(e));
     } finally {
@@ -66,6 +70,7 @@ class _PairScreenState extends State<PairScreen> {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     return Scaffold(
+      appBar: widget.again ? AppBar(title: const Text('Pair again')) : null,
       body: SafeArea(
         child: ListView(
           padding: const EdgeInsets.all(24),
@@ -78,10 +83,18 @@ class _PairScreenState extends State<PairScreen> {
             ),
             const SizedBox(height: 16),
             Text(
-              'Pair with your node',
+              widget.again ? 'Pair this phone again' : 'Pair with your node',
               style: theme.textTheme.headlineSmall,
               textAlign: TextAlign.center,
             ),
+            if (widget.again) ...[
+              const SizedBox(height: 16),
+              const Text(
+                "Your node doesn't know this phone any more, as when it's "
+                "removed from the node's devices. Until a new code works, "
+                'the phone keeps what it has.',
+              ),
+            ],
             if (widget.node.notice case final notice?) ...[
               const SizedBox(height: 16),
               Card(

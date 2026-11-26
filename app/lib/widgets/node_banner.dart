@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../format.dart';
 import '../node.dart';
 import '../screens/node_summary_screen.dart';
+import '../screens/pair_screen.dart';
 
 /// A strip above Home when your node can't be reached, or reports a problem
 /// (ADR 0006: the phone shows prominently whether the node is reachable).
@@ -28,6 +29,21 @@ class NodeBanner extends StatelessWidget {
           color: scheme.surfaceContainerHighest,
           icon: Icons.sync,
           text: 'Connecting to your node…',
+        );
+      // It answers, but not this phone: pairing again is the way back, and
+      // the pairing stays until that works.
+      case Reachability.offline when node.forgottenByNode:
+        return _strip(
+          context,
+          color: scheme.errorContainer,
+          icon: Icons.link_off,
+          text: "Your node doesn't know this phone any more.",
+          actions: [
+            TextButton(
+              onPressed: () => open(PairScreen(node: node, again: true)),
+              child: const Text('Pair again'),
+            ),
+          ],
         );
       case Reachability.offline:
         final saved = node.savedAt != null
