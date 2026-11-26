@@ -34,6 +34,7 @@ class _ReplyRequestsScreenState extends State<ReplyRequestsScreen> {
   Future<void> _load() async {
     try {
       final requests = await _app.replyRequests();
+      await _lookUpPosts(requests);
       if (!mounted) return;
       setState(() {
         _requests = requests;
@@ -73,12 +74,33 @@ class _ReplyRequestsScreenState extends State<ReplyRequestsScreen> {
     await _load();
   }
 
-  /// The post a request answers, if it's in the feed.
+  /// The posts requests answer that the feed doesn't hold, such as older
+  /// ones, as the node has them.
+  final _posts = <String, Post>{};
+
+  /// The post a request answers, from the feed or the node.
   Post? _post(String id) {
     for (final p in widget.node.posts) {
       if (p.id == id) return p;
     }
-    return null;
+    return _posts[id];
+  }
+
+  /// Asks the node for each post a request answers that's neither in the
+  /// feed nor asked for already. Nothing leaves the node. One it can't
+  /// show is left out of its card, as before.
+  Future<void> _lookUpPosts(List<Reply> requests) async {
+    Future<void> lookUp(String id) async {
+      try {
+        _posts[id] = await _app.showPost(id: id);
+      } catch (_) {}
+    }
+
+    final missing = {
+      for (final r in requests)
+        if (_post(r.post) == null) r.post,
+    };
+    await Future.wait([for (final id in missing) lookUp(id)]);
   }
 
   @override

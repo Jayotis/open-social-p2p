@@ -114,6 +114,16 @@ class _WelcomeScreenState extends State<WelcomeScreen> {
             ],
           ),
         ),
+        // Always in view, so the full terms can be read before agreeing.
+        TextButton.icon(
+          onPressed: () => launchUrl(
+            Uri.parse(fullTermsPage),
+            mode: LaunchMode.externalApplication,
+          ),
+          icon: const Icon(Icons.open_in_new),
+          label: const Text('Read the full Terms of Use'),
+        ),
+        const SizedBox(height: Space.s),
         FilledButton(
           onPressed: widget.node.agreeToTerms,
           child: const Text('I agree'),
