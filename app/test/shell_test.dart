@@ -224,6 +224,7 @@ NodeStatus nodeStatus({
   int hostedPosts = 0,
   int servedLatelyBytes = 0,
   bool torStarting = false,
+  bool lookedForPeople = false,
 }) => NodeStatus(
   name: 'Alice',
   version: '0.1.0',
@@ -243,6 +244,7 @@ NodeStatus nodeStatus({
   hostedPosts: hostedPosts,
   servedLatelyBytes: servedLatelyBytes,
   spaceBytes: 1400 * 1000 * 1000,
+  lookedForPeople: lookedForPeople,
 );
 
 /// A snapshot with the owner, Alice, at the centre and [names] after her,
@@ -655,6 +657,19 @@ void main() {
     await start(tester, Place.universe);
     expect(find.text('Your node is looking for people'), findsOne);
     expectPlainWords(tester);
+  });
+
+  testWidgets('a node that looked and found nobody says so, not that it is '
+      'still looking', (tester) async {
+    app.status_ = nodeStatus(lookedForPeople: true);
+    node.status = app.status_;
+    await start(tester, Place.universe);
+    expect(find.text('Your node found nobody yet'), findsOne);
+    expect(find.text('Your node is looking for people'), findsNothing);
+    expectPlainWords(tester);
+    await tester.tap(find.text('Your node found nobody yet'));
+    await tester.pumpAndSettle();
+    expect(find.text('Invite and follow'), findsOne);
   });
 
   testWidgets('a node that found nobody offers an invite code', (tester) async {

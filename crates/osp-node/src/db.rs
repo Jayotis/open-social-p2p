@@ -4012,13 +4012,17 @@ impl Db {
 
     // ---- devices ----
 
-    /// Records a paired device, or renames one paired before. A device
+    /// Records a paired device, or for one paired before, its name and the
+    /// new pairing time. A device
     /// paired with the review code is marked as the reviewer's; pairing again
     /// with an ordinary code makes it the owner's.
     pub fn add_device(&self, node: &EndpointId, name: &str, review: bool) -> Result<()> {
         self.conn().execute(
+            // A device pairing again, say after its app forgot the node, was
+            // paired now: `osp pair` sees it by the time.
             "INSERT INTO devices (node, name, paired_ms, review) VALUES (?1, ?2, ?3, ?4)
-             ON CONFLICT(node) DO UPDATE SET name = excluded.name, review = excluded.review",
+             ON CONFLICT(node) DO UPDATE SET name = excluded.name, review = excluded.review,
+                 paired_ms = excluded.paired_ms",
             params![node.to_string(), name, now_ms(), review],
         )?;
         Ok(())
@@ -5575,6 +5579,25 @@ mod tests {
             )
             .unwrap();
         assert_eq!(left, 0);
+    }
+
+    /// A phone that forgot its node and paired again with the same key
+    /// (seen 2026-11-23): one device, paired at the new time.
+    #[test]
+    fn a_device_pairing_again_is_paired_at_the_new_time() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(&dir.path().join("t.db")).unwrap();
+        let phone = some_addr().id;
+        db.add_device(&phone, "phone", false).unwrap();
+        db.conn()
+            .execute("UPDATE devices SET paired_ms = paired_ms - ?1", [DAY_MS])
+            .unwrap();
+        let first = db.devices().unwrap();
+        db.add_device(&phone, "phone", false).unwrap();
+        let again = db.devices().unwrap();
+        assert_eq!(again.len(), 1);
+        assert_eq!(again[0].0, phone);
+        assert_ne!(again[0].2, first[0].2);
     }
 
     #[test]

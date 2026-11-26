@@ -343,6 +343,9 @@ pub(crate) struct Core {
     pub read_directories_now: Notify,
     /// When the last read of directories started, however it was started.
     pub directories_read_at: Mutex<Option<Instant>>,
+    /// When a directory last answered a read, since the node started: an
+    /// empty Universe after that has been looked at, not yet to be.
+    pub directories_answered_at: Mutex<Option<Instant>>,
     /// Whether the project's hide list is applied, as the owner last set it
     /// (ADR 0042 §6).
     pub hide_list_on: std::sync::atomic::AtomicBool,
@@ -764,6 +767,7 @@ impl Node {
             reading_directories: tokio::sync::Mutex::new(HashSet::new()),
             read_directories_now: Notify::new(),
             directories_read_at: Mutex::new(None),
+            directories_answered_at: Mutex::new(None),
             hide_list_on: std::sync::atomic::AtomicBool::new(hide_on),
             hide_list_asked: std::sync::atomic::AtomicBool::new(hide_asked),
             fetch_hide_list_now: Notify::new(),

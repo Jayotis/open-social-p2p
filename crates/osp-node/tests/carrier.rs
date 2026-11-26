@@ -129,6 +129,22 @@ async fn end(relay: &RelayUrl) -> Endpoint {
         .unwrap()
 }
 
+/// Sends with `send` until it goes, for up to `WAIT`. A link checked for
+/// full-size packets can carry less for a moment after its path changes,
+/// as a new path starts at 1200-byte packets until MTU discovery raises it,
+/// and the send says "datagram too large" (CI, 2026-11-22). In use, the
+/// transport counts that packet lost and the ends' QUIC sends it again.
+async fn send_until_sent(send: impl Fn() -> anyhow::Result<()>) {
+    let deadline = tokio::time::Instant::now() + WAIT;
+    loop {
+        match send() {
+            Ok(()) => return,
+            Err(e) if tokio::time::Instant::now() >= deadline => panic!("never sent: {e:#}"),
+            Err(_) => tokio::time::sleep(Duration::from_millis(50)).await,
+        }
+    }
+}
+
 /// Reaches the carrier a descriptor names, by its ID through its relay, as
 /// a node does.
 async fn link(from: &Endpoint, info: &CarrierInfo) -> iroh::endpoint::Connection {
@@ -176,12 +192,12 @@ async fn a_node_carries_under_its_machine_name_and_keeps_its_start() {
         other => panic!("expected the circuit to open, got {other:?}"),
     };
     let packet = vec![7; 1200];
-    circuit.send(packet.clone()).unwrap();
+    send_until_sent(|| circuit.send(packet.clone())).await;
     match timeout(WAIT, hosted.recv()).await.unwrap().unwrap() {
         HostEvent::Packet(id, got) => assert_eq!((id, got), (opened, packet)),
         other => panic!("expected a packet, got {other:?}"),
     }
-    hosted.send(opened, vec![9; 1200]).unwrap();
+    send_until_sent(|| hosted.send(opened, vec![9; 1200])).await;
     assert_eq!(
         timeout(WAIT, circuit.recv()).await.unwrap().unwrap(),
         vec![9; 1200]

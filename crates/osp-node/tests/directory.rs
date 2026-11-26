@@ -1084,6 +1084,28 @@ async fn a_node_with_no_follows_finds_a_stranger_and_searches_with_nobody_there(
     carol.shutdown().await.unwrap();
 }
 
+/// The P11 failure run's empty network: a directory that lists nobody.
+/// Once it has answered, the status says so, and the app says the node
+/// found nobody yet, not that it's still looking.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_directory_that_lists_nobody_is_said_to_have_answered() {
+    let dir = tempfile::tempdir().unwrap();
+    let net = SimNet::new(30);
+    let directory = start_directory(dir.path(), &net, AN_HOUR).await;
+    let carol = config_knowing("Carol", &directory, false);
+    let carol = start_with(dir.path(), "Carol", &net, carol).await;
+    assert_eq!(read_directories(&carol).await, 0);
+    let s = status(&carol).await;
+    assert_eq!(s.found_people, 0);
+    assert!(
+        s.directories_answered_secs_ago.is_some_and(|ago| ago < 60),
+        "{:?}",
+        s.directories_answered_secs_ago
+    );
+    carol.shutdown().await.unwrap();
+    directory.shutdown().await.unwrap();
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn left_alone_a_node_asks_to_be_listed_and_another_finds_it() {
     let dir = tempfile::tempdir().unwrap();

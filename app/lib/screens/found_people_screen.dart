@@ -56,10 +56,15 @@ class _FoundPeopleScreenState extends State<FoundPeopleScreen> {
             onRefresh: node.loadPeople,
             child: people.isEmpty
                 ? ListView(
-                    children: const [
+                    children: [
                       _Message(
-                        'Your node is looking for people. It checks again '
-                        'every few minutes: pull down to look now.',
+                        (node.status?.lookedForPeople ?? false)
+                            ? 'Your node looked and found nobody yet. It looks '
+                                  'again every few minutes: pull down to look '
+                                  'now.'
+                            : 'Your node is looking for people. It checks '
+                                  'again every few minutes: pull down to look '
+                                  'now.',
                       ),
                     ],
                   )

@@ -1186,6 +1186,10 @@ class NodeStatus {
   /// node's own address (ADR 0043 §8). None from a node before part 5.
   final CarrierState? carrier;
 
+  /// A directory has answered the node since it started, so if it found
+  /// nobody, nobody is listed yet: it has looked, not only begun to.
+  final bool lookedForPeople;
+
   const NodeStatus({
     required this.name,
     required this.version,
@@ -1207,6 +1211,7 @@ class NodeStatus {
     required this.servedLatelyBytes,
     required this.spaceBytes,
     this.carrier,
+    required this.lookedForPeople,
   });
 
   @override
@@ -1230,7 +1235,8 @@ class NodeStatus {
       hostedPosts.hashCode ^
       servedLatelyBytes.hashCode ^
       spaceBytes.hashCode ^
-      carrier.hashCode;
+      carrier.hashCode ^
+      lookedForPeople.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -1256,7 +1262,8 @@ class NodeStatus {
           hostedPosts == other.hostedPosts &&
           servedLatelyBytes == other.servedLatelyBytes &&
           spaceBytes == other.spaceBytes &&
-          carrier == other.carrier;
+          carrier == other.carrier &&
+          lookedForPeople == other.lookedForPeople;
 }
 
 /// One hop, from whoever the hop before reached, to `identity`.

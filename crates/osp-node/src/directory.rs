@@ -671,6 +671,7 @@ impl Core {
                         info!(directory = %short, "a directory answers again");
                     }
                     answered = true;
+                    *self.directories_answered_at.lock().expect("poisoned") = Some(Instant::now());
                     read.finished &= done;
                     read.entries += entries;
                 }

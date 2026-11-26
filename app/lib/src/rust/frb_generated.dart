@@ -3693,8 +3693,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   NodeStatus dco_decode_node_status(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 20)
-      throw Exception('unexpected arr length: expect 20 but see ${arr.length}');
+    if (arr.length != 21)
+      throw Exception('unexpected arr length: expect 21 but see ${arr.length}');
     return NodeStatus(
       name: dco_decode_String(arr[0]),
       version: dco_decode_String(arr[1]),
@@ -3716,6 +3716,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       servedLatelyBytes: dco_decode_i_64(arr[17]),
       spaceBytes: dco_decode_i_64(arr[18]),
       carrier: dco_decode_opt_box_autoadd_carrier_state(arr[19]),
+      lookedForPeople: dco_decode_bool(arr[20]),
     );
   }
 
@@ -5139,6 +5140,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_servedLatelyBytes = sse_decode_i_64(deserializer);
     var var_spaceBytes = sse_decode_i_64(deserializer);
     var var_carrier = sse_decode_opt_box_autoadd_carrier_state(deserializer);
+    var var_lookedForPeople = sse_decode_bool(deserializer);
     return NodeStatus(
       name: var_name,
       version: var_version,
@@ -5160,6 +5162,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       servedLatelyBytes: var_servedLatelyBytes,
       spaceBytes: var_spaceBytes,
       carrier: var_carrier,
+      lookedForPeople: var_lookedForPeople,
     );
   }
 
@@ -6610,6 +6613,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_i_64(self.servedLatelyBytes, serializer);
     sse_encode_i_64(self.spaceBytes, serializer);
     sse_encode_opt_box_autoadd_carrier_state(self.carrier, serializer);
+    sse_encode_bool(self.lookedForPeople, serializer);
   }
 
   @protected
