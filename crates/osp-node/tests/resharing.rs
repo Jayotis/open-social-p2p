@@ -1162,14 +1162,27 @@ async fn a_busy_source_is_retried_then_left_for_the_next_through_the_same_viewin
     let holding = hold_a_place(&net, &jimmy, photo).await;
 
     // With Kim's node off as well, there's no next source: it fails plainly.
+    // On a loaded machine the first connection to Jimmy may not come in
+    // time, and counts as unreachable (CI, once), so she tries again until
+    // he has said he's busy, as she would.
     assert!(net.set_online(kim.node_id(), false));
-    let err = alice.open_blob(&photo).await.unwrap_err();
-    assert!(
-        format!("{err:#}").contains("without showing who you are"),
-        "{err:#}"
-    );
-    let from_jimmy = downloads_from(&alice, &jimmy).await;
-    assert!(from_jimmy.busy > 0.5, "{from_jimmy:?}");
+    let started = std::time::Instant::now();
+    let from_jimmy = loop {
+        let err = alice.open_blob(&photo).await.unwrap_err();
+        assert!(
+            format!("{err:#}").contains("without showing who you are"),
+            "{err:#}"
+        );
+        let from_jimmy = downloads_from(&alice, &jimmy).await;
+        if from_jimmy.busy > 0.5 {
+            break from_jimmy;
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(90),
+            "{from_jimmy:?}"
+        );
+    };
+    assert_eq!(from_jimmy.completed, 0.0, "{from_jimmy:?}");
     assert_sent_nothing_from(&net, &own);
 
     // She tries again with Kim back, while the place is still held.
