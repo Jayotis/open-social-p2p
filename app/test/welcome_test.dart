@@ -89,6 +89,8 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('Terms of use'), findsOneWidget);
     expect(find.textContaining('explicit sexual material'), findsOneWidget);
+    // The full terms are a tap away before agreeing.
+    expect(find.text('Read the full Terms of Use'), findsOneWidget);
     expect(find.byType(PairScreen), findsNothing);
     expectPlainWords(tester);
 
@@ -121,6 +123,7 @@ void main() {
     await tester.pumpWidget(MaterialApp(home: WelcomeScreen(node: node)));
     expect(find.text('Welcome to OSP'), findsNothing);
     expect(find.text('Terms of use'), findsOneWidget);
+    expect(find.text('Read the full Terms of Use'), findsOneWidget);
     await tester.tap(find.text('I agree'));
     expect(node.termsDue, isFalse);
   });

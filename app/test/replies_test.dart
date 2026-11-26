@@ -404,6 +404,35 @@ void main() {
     expect(find.text('No replies waiting.'), findsOne);
   });
 
+  testWidgets("a waiting reply to a post the feed doesn't hold still says "
+      'which post', (tester) async {
+    // An older post, past the feed the phone has loaded.
+    app.posts['post-Kim'] = post('Kim', text: 'Last spring');
+    app.requests = [reply('Jimmy', 'Nice', state: 'request')];
+    await open(tester, ReplyRequestsScreen(node: node));
+    expect(find.text('On your post: "Last spring"'), findsOne);
+
+    // One the node can't show is left out of the card.
+    app.posts.clear();
+    app.requests = [
+      Reply(
+        id: 'reply-Sam',
+        post: 'post-gone',
+        identity: 'id-Sam',
+        name: 'Sam',
+        text: 'Hi',
+        published: '2026-01-01T00:00:00Z',
+        state: 'request',
+        why: "you don't follow them",
+        seq: 2,
+      ),
+    ];
+    await tester.tap(find.byTooltip('Refresh'));
+    await tester.pumpAndSettle();
+    expect(find.text('Hi'), findsOne);
+    expect(find.textContaining('On your post'), findsNothing);
+  });
+
   testWidgets("a like on someone's post shows at once and goes to the node", (
     tester,
   ) async {
