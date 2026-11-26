@@ -63,8 +63,8 @@ use crate::{
     peers::{self, Event},
 };
 
-/// Give up on a node that has sent nothing for this long, and ask the next:
-/// its connection may have dropped out. Longer than a busy node takes to
+/// Give up on a node that has sent no new bytes of the blob for this long,
+/// and ask the next: its connection may have dropped out. Longer than a busy node takes to
 /// refuse (`BUSY_WAIT`), so a refusal is still heard as one.
 const STALL_TIMEOUT: Duration = Duration::from_secs(30);
 /// Give up on a whole download after this long, however it's going, so a
@@ -809,7 +809,7 @@ impl ContentStore {
 
     /// Asks one node for `request`: part or all of what is still missing
     /// of a blob. It goes on until the node has sent all of it, or `stop`
-    /// says enough has arrived, or the node sends nothing for
+    /// says enough has arrived, or no new bytes of the blob come for
     /// `STALL_TIMEOUT`.
     async fn attempt(
         &self,
@@ -855,7 +855,14 @@ impl ContentStore {
                     .execute_get(conn.clone(), request)
                     .stream();
                 let requested = Instant::now();
+                // Only new bytes put this off: a progress item also comes for
+                // each 64-byte hash in the stream, so a path trickling those
+                // could otherwise hold the download with no data arriving.
                 let mut stalls_at = Instant::now() + STALL_TIMEOUT;
+                // For the log, if it stalls: items since the last new bytes,
+                // and when the last item of any kind came.
+                let mut items_without_bytes = 0u64;
+                let mut last_item: Option<Instant> = None;
                 let outcome = loop {
                     let mut wait = left().min(stalls_at.saturating_duration_since(Instant::now()));
                     if let Stop::PastPart(_) = stop {
@@ -875,7 +882,18 @@ impl ContentStore {
                                 };
                             }
                             // Stalled, or out of time.
-                            if Instant::now() >= stalls_at || left().is_zero() {
+                            let stalled = Instant::now() >= stalls_at;
+                            if stalled || left().is_zero() {
+                                debug!(
+                                    node = %node.fmt_short(),
+                                    %blob,
+                                    bytes = attempt.bytes,
+                                    stalled,
+                                    items_without_bytes,
+                                    last_item_ms_ago =
+                                        last_item.map(|t| t.elapsed().as_millis() as u64),
+                                    "download attempt: no new bytes"
+                                );
                                 break Outcome::Failed;
                             }
                         }
@@ -892,8 +910,14 @@ impl ContentStore {
                                 );
                             }
                             attempt.first_byte.get_or_insert_with(|| started.elapsed());
+                            last_item = Some(Instant::now());
+                            if bytes > attempt.bytes {
+                                stalls_at = Instant::now() + STALL_TIMEOUT;
+                                items_without_bytes = 0;
+                            } else {
+                                items_without_bytes += 1;
+                            }
                             attempt.bytes = bytes;
-                            stalls_at = Instant::now() + STALL_TIMEOUT;
                             match stop {
                                 Stop::PastDeclared { local, declared } => {
                                     if local + bytes > declared {
@@ -2465,6 +2489,32 @@ mod tests {
             self.provider_with(data, Some(events)).await
         }
 
+        /// Starts a node that keeps `data`, sends its first `blocks` blocks,
+        /// then sends nothing more and keeps the stream open, as a node
+        /// whose path went silent mid-blob.
+        async fn stopping_provider(&self, data: &[u8], blocks: usize) -> (Provider, Hash) {
+            let mask = EventMask {
+                throttle: ThrottleMode::Intercept,
+                ..EventMask::DEFAULT
+            };
+            let (events, mut rx) = EventSender::channel(8, mask);
+            tokio::spawn(async move {
+                let mut held = Vec::new();
+                while let Some(msg) = rx.recv().await {
+                    if let ProviderMessage::Throttle(msg) = msg {
+                        if held.len() < blocks {
+                            msg.tx.send(Ok(())).await.ok();
+                            held.push(None);
+                        } else {
+                            // Never answered, never dropped.
+                            held.push(Some(msg));
+                        }
+                    }
+                }
+            });
+            self.provider_with(data, Some(events)).await
+        }
+
         /// Like a busy node, holds each request for `wait` before it sends
         /// anything.
         async fn waiting_provider(&self, data: &[u8], wait: Duration) -> (Provider, Hash) {
@@ -2549,6 +2599,30 @@ mod tests {
             while let Ok((mut send, mut recv)) = conn.accept_bi().await {
                 recv.read_to_end(4 * KB as usize).await.ok();
                 send.write_all(&self.0).await.ok();
+                send.finish().ok();
+            }
+            Ok(())
+        }
+    }
+
+    /// Answers every blob request with a blob's encoding, its size at once,
+    /// then 64 bytes at a time with the wait between: one hash, or a
+    /// sliver of a block.
+    #[derive(Debug)]
+    struct Trickle(Vec<u8>, Duration);
+
+    impl ProtocolHandler for Trickle {
+        async fn accept(&self, conn: Connection) -> Result<(), AcceptError> {
+            while let Ok((mut send, mut recv)) = conn.accept_bi().await {
+                recv.read_to_end(4 * KB as usize).await.ok();
+                let (size, rest) = self.0.split_at(8);
+                send.write_all(size).await.ok();
+                for piece in rest.chunks(64) {
+                    tokio::time::sleep(self.1).await;
+                    if send.write_all(piece).await.is_err() {
+                        break;
+                    }
+                }
                 send.finish().ok();
             }
             Ok(())
@@ -3041,6 +3115,55 @@ mod tests {
         // Kept, only the half still missing came.
         let again = got_half_then_waited(true).await;
         assert!(again < 0.6, "{again}");
+    }
+
+    /// Stage D's n0 step (2026-11-22, 23): a node sent 83.7 MB of a video,
+    /// then no more of it, and the download waited out its 30 minutes on it
+    /// without asking the next node. One node here stops sending mid-blob;
+    /// the other trickles the blob's hashes and never a block of it, so
+    /// progress items come with no new bytes. Each is left for the next
+    /// node after `STALL_TIMEOUT`, which sends only what is missing.
+    #[tokio::test]
+    async fn a_node_that_stops_sending_new_bytes_is_left_for_the_next() {
+        let f = Fixture::new().await;
+        let store = f.open_with_quotas(64).await;
+        let quiet = async |data: Vec<u8>, stopping: Provider, hash: Hash| {
+            let size = data.len() as u64;
+            let (next, _) = f.provider(&data, None).await;
+            let sources = plain_sources(Vec::new(), vec![stopping.id(), next.id()]);
+            let started = Instant::now();
+            store
+                .download(&to_blob_hash(hash), sources, BlobClass::Cache, size)
+                .await
+                .unwrap();
+            let took = started.elapsed();
+            assert!(took < STALL_TIMEOUT + Duration::from_secs(15), "{took:?}");
+            assert_eq!(f.record(stopping.id()).failed.round(), 1.0);
+            let next = f.record(next.id());
+            assert_eq!(next.completed.round(), 1.0, "{next:?}");
+            next.received_bytes / size as f64
+        };
+        // 64 blocks of 16 KiB, a quarter of it.
+        let stops_data = noise(4);
+        let (stops, stops_hash) = f.stopping_provider(&stops_data, 64).await;
+        // Its eight hashes before the first block, one every 8 s, would put
+        // the stall off past a minute if any item counted.
+        let trickles_data = noise(4).into_iter().rev().collect::<Vec<_>>();
+        let media = MemStore::new();
+        let trickles_hash = media.add_bytes(trickles_data.clone()).await.unwrap().hash;
+        let encoded = media
+            .export_bao(trickles_hash, ChunkRanges::all())
+            .bao_to_vec()
+            .await
+            .unwrap();
+        let trickles = f.serve(Trickle(encoded, Duration::from_secs(8))).await;
+        let (after_stop, after_trickle) = tokio::join!(
+            quiet(stops_data, stops, stops_hash),
+            quiet(trickles_data, trickles, trickles_hash),
+        );
+        // What the first node sent was kept.
+        assert!(after_stop < 0.8, "{after_stop}");
+        assert!(after_trickle > 0.9, "{after_trickle}");
     }
 
     /// With no node left to ask, which happens when every node that sent
