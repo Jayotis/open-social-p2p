@@ -1915,6 +1915,15 @@ impl Db {
             profiles::forget_icon(&tx, &actor.to_string())?;
             remove_from_search(&tx, &actor.to_string())?;
         }
+        // Their hosting reshares of this node's posts aren't named any more.
+        // Only each reshare's ID is kept here, not which key signed it, so
+        // all of them go: a thief's would pass the rechecks by serving the
+        // file. Their own node signs its reshares again with the new key and
+        // tells this one again, and is noted again then (ADR 0025, 0010).
+        tx.execute(
+            "DELETE FROM resharer_hosts WHERE actor = ?1",
+            params![actor.to_string()],
+        )?;
         tx.commit()?;
         Ok(dropped.len())
     }
@@ -7182,6 +7191,40 @@ mod tests {
         );
         // The owner's copy, fetched again, is taken.
         assert!(db.insert_object_received(&post, &payload, 1).unwrap());
+    }
+
+    /// Jimmy, whose key was stolen, revokes it: the hosting reshares of
+    /// Kim's posts this node had noted of him aren't named any more, though
+    /// the thief's node would pass the rechecks. Sam's stay.
+    #[test]
+    fn a_revoked_resharer_is_no_longer_named_as_a_host() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(&dir.path().join("t.db")).unwrap();
+        let post = signed_note(&SecretKey::generate(), "oak", EARLIER).0.id();
+        let blob = BlobHash::from_bytes([7; 32]);
+        let host = |actor: &SecretKey| {
+            let key = SecretKey::generate();
+            ResharerHost {
+                node: SecretKey::generate().public(),
+                post,
+                actor: actor.public(),
+                announce: post,
+                media: EndpointBinding::new(actor, &key, EndpointKind::Media, 1),
+                discoverable: true,
+                fails: 0,
+                checked_ms: now_ms(),
+            }
+        };
+        let (jimmy, sam) = (SecretKey::generate(), SecretKey::generate());
+        let (jimmys, sams) = (host(&jimmy), host(&sam));
+        db.note_resharer_host(&jimmys, &[blob]).unwrap();
+        db.note_resharer_host(&sams, &[blob]).unwrap();
+        assert!(db.is_resharer_host(&post, &jimmys.node).unwrap());
+
+        let before = osp_proto::parse_rfc3339_ms(LATER).unwrap();
+        db.drop_revoked(&jimmy.public(), before, false).unwrap();
+        assert!(!db.is_resharer_host(&post, &jimmys.node).unwrap());
+        assert!(db.is_resharer_host(&post, &sams.node).unwrap());
     }
 
     #[test]
