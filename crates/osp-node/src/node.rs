@@ -56,6 +56,7 @@ use crate::{
     replying,
     social::{self, Heard, NamedHosts, PerHour, SocialProtocol},
     store::{self, ContentStore, Sources},
+    strangers::Limited,
     sync, threads,
     tor::TorSide,
     trust,
@@ -141,6 +142,9 @@ pub struct SimSettings {
     /// shorten them.
     pub hosting_after_listed: Duration,
     pub new_name_for: Duration,
+    /// The least time between two questions from one stranger's key about
+    /// one file at the media endpoint (ADR 0024). Tests that poll set none.
+    pub stranger_question_every: Duration,
     /// The node sends and receives through this simulated network instead
     /// of IP sockets (`simnet`). Its config should have relays disabled.
     #[cfg(feature = "sim")]
@@ -184,6 +188,7 @@ impl Default for SimSettings {
             max_new_name_hosts: directory::MAX_NEW_NAME_HOSTS,
             hosting_after_listed: directory::HOSTING_AFTER_LISTED,
             new_name_for: directory::NEW_NAME_FOR,
+            stranger_question_every: crate::strangers::QUESTION_EVERY,
             #[cfg(feature = "sim")]
             network: None,
             #[cfg(feature = "sim")]
@@ -351,6 +356,8 @@ pub(crate) struct Core {
     pub hide_list_on: std::sync::atomic::AtomicBool,
     /// Wakes the hide list's fetch, when it's turned on.
     pub fetch_hide_list_now: Notify,
+    /// What strangers may have of the media endpoint, all together (ADR 0024).
+    pub strangers: crate::strangers::Strangers,
     /// The owner's answer on whether the hops this node picks may see its
     /// address (ADR 0043 §8): only with yes do its own fetches and its media
     /// go through hops. Unset, it wasn't asked yet.
@@ -767,6 +774,7 @@ impl Node {
             directories_answered_at: Mutex::new(None),
             hide_list_on: std::sync::atomic::AtomicBool::new(hide_on),
             fetch_hide_list_now: Notify::new(),
+            strangers: Default::default(),
             hops: tokio::sync::watch::Sender::new(hops),
             viewing: Viewing::new(sim.viewing_reuse, sim.viewing_life),
             gathering: tokio::sync::Mutex::new(()),
@@ -794,15 +802,23 @@ impl Node {
         if let Some(own) = &core.endpoints {
             if let Some(media) = &own.media {
                 endpoint_routers.push(
+                    // Strangers share a limit there, whatever their keys
+                    // (ADR 0024).
                     Router::builder(media.endpoint.clone())
-                        .accept(iroh_blobs::ALPN, SharedBlobs(blobs.clone()))
+                        .accept(
+                            iroh_blobs::ALPN,
+                            Limited::new(core.clone(), SharedBlobs(blobs.clone())),
+                        )
                         .accept(
                             osp_proto::social::MEDIA_HOSTS_ALPN,
-                            hosting::MediaHostsProtocol::new(core.clone()),
+                            Limited::new(
+                                core.clone(),
+                                hosting::MediaHostsProtocol::new(core.clone()),
+                            ),
                         )
                         .accept(
                             osp_proto::social::REPLIES_ALPN,
-                            threads::RepliesProtocol::new(core.clone()),
+                            Limited::new(core.clone(), threads::RepliesProtocol::new(core.clone())),
                         )
                         .spawn(),
                 );

@@ -1,6 +1,6 @@
 # ADR 0024: Watching a found post without showing who you are
 
-**Status:** Accepted (2026-11-09), after the maintainer's review and the revisions below. Steps 1 and 2 built (2026-11-09). Its public sources are the creator's media endpoints and, since [ADR 0025](0025-shared-posts-are-found-and-hosted.md)'s step 1, the resharers a directory lists as hosting; moving to the next source is tested with the creator offline, after a busy source (once failing plainly, then on a retry), and after a source that stops partway (2026-11-13). Settles what [ADR 0015](0015-nodes-meet-first.md) left open ("a found post's media opens only once its author is followed").
+**Status:** Accepted (2026-11-09), after the maintainer's review and the revisions below. Steps 1 and 2 built (2026-11-09). Step 3 built (2026-11-26): strangers' connections to the media endpoint and their who-hosts questions, counted across keys (`strangers.rs`); followers and devices aren't held to them. Its public sources are the creator's media endpoints and, since [ADR 0025](0025-shared-posts-are-found-and-hosted.md)'s step 1, the resharers a directory lists as hosting; moving to the next source is tested with the creator offline, after a busy source (once failing plainly, then on a retry), and after a source that stops partway (2026-11-13). Settles what [ADR 0015](0015-nodes-meet-first.md) left open ("a found post's media opens only once its author is followed").
 
 Revised 2026-11-09, after the maintainer's review:
 
@@ -76,7 +76,7 @@ A viewer can make keys at will, so a source's limits on strangers count all of t
 
 - **Transfers:** strangers already share half a node's places for large files (`store.rs`), whatever key they come from. This doesn't change.
 - **Connections:** at most a fixed number of connections at once from endpoints the node doesn't know (32, a starting value), in aggregate.
-- **Who-hosts questions:** at most a fixed number an hour from unknown endpoints, in aggregate (600, a starting value), and at most one a minute from any one key.
+- **Who-hosts questions:** at most a fixed number an hour from unknown endpoints, in aggregate (600, a starting value), and at most one a minute from any one key about any one file. *(Amended 2026-11-26 by the maintainer: it said "one a minute from any one key". A viewing endpoint is kept for an author's posts for 10 minutes and asks about each file it fetches, so that would refuse a post's video after its thumbnail, or the author's next post opened within a minute.)*
 - **When they're full,** a stranger is refused as busy, as now, and followers and the node's own devices are unaffected.
 
 ## Consequences

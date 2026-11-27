@@ -2121,7 +2121,7 @@ async fn take_places(needed: Vec<Arc<Semaphore>>) -> Option<Vec<OwnedSemaphorePe
     tokio::time::timeout(BUSY_WAIT, all).await.ok().flatten()
 }
 
-fn is_follower_or_device(db: &Db, peer: Option<EndpointId>) -> bool {
+pub(crate) fn is_follower_or_device(db: &Db, peer: Option<EndpointId>) -> bool {
     peer.is_some_and(|p| {
         db.is_follower(&public_of(db, p)).unwrap_or(false) || db.is_device(&p).unwrap_or(false)
     })

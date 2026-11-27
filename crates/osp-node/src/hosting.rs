@@ -15,7 +15,10 @@
 //! Kim's again once a day, so a message missed while her node was off gets
 //! there, and she has his newest endpoint and listing choice.
 
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use anyhow::{Context, Result, bail};
 use iroh::{
@@ -87,11 +90,27 @@ impl ProtocolHandler for MediaHostsProtocol {
         let Ok((mut send, mut recv)) = conn.accept_bi().await else {
             return Ok(());
         };
+        let busy = || MediaHostsResponse::Error {
+            message: "this node is busy; try again later".to_string(),
+        };
         let resp = match self.requests.clone().try_acquire_owned() {
             Ok(_permit) => {
                 let answer = async {
                     let req: MediaHostsRequest = read_frame_max(&mut recv, MAX_REQUEST_LEN).await?;
-                    self.core.answer_media_hosts(&req)
+                    // Strangers' questions are counted together, and one a
+                    // minute from a key about a file (ADR 0024).
+                    let remote = conn.remote_id();
+                    let let_through = self.core.knows_peer(remote)
+                        || self.core.strangers.question(
+                            remote,
+                            req.blob,
+                            Instant::now(),
+                            self.core.sim.stranger_question_every,
+                        );
+                    match let_through {
+                        true => self.core.answer_media_hosts(&req),
+                        false => Ok(busy()),
+                    }
                 };
                 match tokio::time::timeout(STREAM_TIMEOUT, answer).await {
                     Ok(Ok(resp)) => resp,
@@ -101,9 +120,7 @@ impl ProtocolHandler for MediaHostsProtocol {
                     Err(_) => return Ok(()),
                 }
             }
-            Err(_) => MediaHostsResponse::Error {
-                message: "this node is busy; try again later".to_string(),
-            },
+            Err(_) => busy(),
         };
         let _ = tokio::time::timeout(STREAM_TIMEOUT, async {
             write_frame(&mut send, &resp).await?;

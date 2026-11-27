@@ -44,6 +44,7 @@ pub mod simnet;
 mod sky;
 mod social;
 mod store;
+mod strangers;
 mod sync;
 mod threads;
 mod tor;
