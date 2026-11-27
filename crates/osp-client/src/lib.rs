@@ -20,14 +20,18 @@ use std::{
     time::{Duration, Instant, UNIX_EPOCH},
 };
 
-use anyhow::{Context, Result, bail, ensure};
+use anyhow::{Context, Result, anyhow, bail, ensure};
 use iroh::{
     Endpoint, EndpointAddr, PublicKey,
     address_lookup::{DnsAddressLookup, MemoryLookup, PkarrResolver},
-    endpoint::{ConnectOptions, Connection, RecvStream, SendStream, presets},
+    endpoint::{
+        ConnectOptions, ConnectingError, Connection, ConnectionError, RecvStream, SendStream,
+        TransportErrorCode, VarInt, presets,
+    },
 };
 use osp_proto::{
-    BlobHash, CLIENT_ALPN, ObjectId, PairingRelays, PairingTicket, connected,
+    BlobHash, CLIENT_ALPN, NOT_ALLOWED, NOT_PAIRED, ObjectId, PairingRelays, PairingTicket,
+    connected,
     framing::{read_frame, write_frame},
     rpc::{
         ClientRequest, ClientResponse, FeedItem, IconChange, PersonInfo, ProfileInfo,
@@ -485,7 +489,8 @@ impl Client {
     }
 
     /// Sends one request to the home node and waits for its reply. A reply
-    /// of `Error` becomes an `Err` with the node's message.
+    /// of `Error` becomes an `Err` with the node's message, and a node that
+    /// turned this device away is said to with `NOT_PAIRED`.
     pub async fn request(&self, req: &ClientRequest) -> Result<ClientResponse> {
         let timeout = match req {
             // Someone else's thread is read from their node (ADR 0028),
@@ -496,9 +501,19 @@ impl Client {
             ClientRequest::HowConnected { .. } => CONNECTED_REPLY_TIMEOUT,
             _ => REPLY_TIMEOUT,
         };
-        let (mut send, mut recv) = self.send_request(req).await?;
-        send.finish()?;
-        check(read_reply(&mut recv, timeout).await?)
+        let replied = async {
+            let (mut send, mut recv) = self.send_request(req).await?;
+            send.finish()?;
+            read_reply(&mut recv, timeout).await
+        }
+        .await;
+        match replied {
+            Ok(resp) => check(resp),
+            // A node reached straight at its address closes the connection
+            // just after the handshake, so the request is what fails.
+            Err(_) if self.closed_as_unknown() => bail!(NOT_PAIRED),
+            Err(e) => Err(e),
+        }
     }
 
     /// Fetches the feed and saves a copy for offline use.
@@ -1072,23 +1087,47 @@ impl Client {
     /// Connects to the home node. `pass` is a pairing ticket's, offered with
     /// the protocol: a node doesn't otherwise know a phone that is pairing.
     async fn dial(&self, node: &EndpointAddr, pass: Option<Vec<u8>>) -> Result<Connection> {
+        let pairing = pass.is_some();
         let options = ConnectOptions::new().with_additional_alpns(pass.into_iter().collect());
         let connect = async {
             let connecting = self
                 .endpoint
                 .connect_with_opts(node.clone(), CLIENT_ALPN, options)
                 .await?;
-            anyhow::Ok(connecting.await?)
+            anyhow::Ok(connecting.await)
         };
-        tokio::time::timeout(CONNECT_TIMEOUT, connect)
+        let connected = tokio::time::timeout(CONNECT_TIMEOUT, connect)
             .await
             .map_err(|_| {
-                anyhow::anyhow!(
+                anyhow!(
                     "the home node didn't answer within {} seconds",
                     CONNECT_TIMEOUT.as_secs()
                 )
             })?
-            .context("can't reach the home node")
+            .context("can't reach the home node")?;
+        match connected {
+            Ok(conn) => Ok(conn),
+            // Reached, and turned away. A code that was used or ran out is
+            // turned away too, and that isn't this.
+            Err(ConnectingError::ConnectionError { source, .. })
+                if !pairing && turned_away(&source) =>
+            {
+                bail!(NOT_PAIRED)
+            }
+            Err(e) => Err(anyhow::Error::new(e).context("can't reach the home node")),
+        }
+    }
+
+    /// Whether the home node closed the last connection as one from a device
+    /// it doesn't know. Not while another request is dialing: that one finds
+    /// out.
+    fn closed_as_unknown(&self) -> bool {
+        let Ok(conn) = self.conn.try_lock() else {
+            return false;
+        };
+        conn.as_ref()
+            .and_then(Connection::close_reason)
+            .is_some_and(|why| turned_away(&why))
     }
 
     fn lock_pairing(&self) -> std::sync::MutexGuard<'_, Option<Pairing>> {
@@ -1164,6 +1203,23 @@ async fn read_reply(recv: &mut RecvStream, timeout: Duration) -> Result<ClientRe
                 timeout.as_secs()
             )
         })?
+}
+
+/// Whether a connection ended as the home node's direct endpoint ends one from
+/// a key it doesn't let in (`endpoints.rs` in osp-node): refused at the first
+/// packet through a relay, or closed with `NOT_ALLOWED` just after the
+/// handshake when it came straight to an address. The node always lets in
+/// its own devices, so this is one it forgot, as after `osp unpair`.
+fn turned_away(why: &ConnectionError) -> bool {
+    match why {
+        ConnectionError::ApplicationClosed(close) => {
+            close.error_code == VarInt::from_u32(NOT_ALLOWED)
+        }
+        ConnectionError::ConnectionClosed(close) => {
+            close.error_code == TransportErrorCode::CONNECTION_REFUSED
+        }
+        _ => false,
+    }
 }
 
 /// Turns an `Error` reply into an `Err`.

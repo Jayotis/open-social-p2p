@@ -52,7 +52,7 @@ use crate::{
 const MAX_DATED_AHEAD: Duration = Duration::from_secs(5 * 60);
 
 /// The code a node refused after the handshake is told.
-const NOT_ALLOWED: VarInt = VarInt::from_u32(403);
+const NOT_ALLOWED: VarInt = VarInt::from_u32(osp_proto::NOT_ALLOWED);
 
 /// Pairing secrets handed out and not used yet.
 pub(crate) type Pairings = Arc<Mutex<Vec<PendingPairing>>>;
