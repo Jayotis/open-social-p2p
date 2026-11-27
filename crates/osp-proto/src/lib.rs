@@ -43,6 +43,15 @@ pub const SOCIAL_ALPN: &[u8] = b"osp/social/2";
 /// ALPN a paired device uses to talk to its home node.
 pub const CLIENT_ALPN: &[u8] = b"osp/client/0";
 
+/// What a home node tells a device it doesn't know, and what a phone says
+/// when its node turns it away: the app looks for these words to offer
+/// pairing again.
+pub const NOT_PAIRED: &str = "this device isn't paired with this node";
+
+/// The code a node's direct endpoint closes a connection with when its key
+/// isn't let in, once the handshake has shown whose it is.
+pub const NOT_ALLOWED: u32 = 403;
+
 /// ALPN of the protocol between machine names (ADR 0015). Nothing else is
 /// served on a machine endpoint, and this is served on no other.
 pub const MACHINE_ALPN: &[u8] = b"osp/machine/1";

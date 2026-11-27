@@ -484,7 +484,8 @@ class HomeNode extends ChangeNotifier with WidgetsBindingObserver {
     lastError = describeError(e);
   }
 
-  /// What the node answers a phone it doesn't know (`client.rs`).
+  /// What the node answers a phone it doesn't know, and what the phone says
+  /// when its node turns it away (`NOT_PAIRED` in osp-proto).
   static const _unknownPhone = "isn't paired with this node"; // not shown
 
   /// The node answers, but doesn't know this phone any more, as after it

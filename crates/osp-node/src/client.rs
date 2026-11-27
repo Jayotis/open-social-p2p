@@ -174,7 +174,7 @@ async fn serve_stream(
         write_frame(&mut send, &resp).await?;
     } else if !paired {
         let resp = ClientResponse::Error {
-            message: "this device isn't paired with this node".to_string(),
+            message: osp_proto::NOT_PAIRED.to_string(),
         };
         write_frame(&mut send, &resp).await?;
     } else {
