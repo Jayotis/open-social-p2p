@@ -26,7 +26,7 @@ use std::{
     collections::{BTreeSet, HashMap, HashSet},
     fmt::Write as _,
     path::{Path, PathBuf},
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::{Context, Result, bail, ensure};
@@ -38,7 +38,8 @@ use osp_node::{
     simnet::{Link, SimNet, TorDelay},
 };
 use osp_proto::{
-    Announce, Note, ObjectId, Payload, Person, PublicKey, SOCIAL_ALPN, SecretKey, SignedObject,
+    Note, ObjectId, Payload, Person, PublicKey, SOCIAL_ALPN, SecretKey, SignedObject, Vouch,
+    VouchKind,
     connected::How,
     framing::{read_frame, write_frame},
     rpc::{ClientRequest, ClientResponse, SentStatus},
@@ -797,6 +798,10 @@ pub async fn run(s: &VouchScenario) -> Result<VouchReport> {
         .collect();
     wait_heard(&w, &posts, &expected).await?;
     info!("every reshare heard of");
+    // Each reshare vouches once it's stood 10 minutes (ADR 0029 section 7):
+    // the round signs them as of then, rather than wait.
+    wait_vouched(&w, &expected).await?;
+    info!("every resharer's vouch held");
     let hunters: Vec<usize> = (0..plan.people())
         .filter(|p| plan.role[*p] == Role::Hunter)
         .collect();
@@ -1218,7 +1223,7 @@ impl Operator {
             .map(|t| vouch(t, identity.public()))
             .collect::<Result<_>>()?;
         if let Some(t0) = throwaways.first() {
-            side.push(careless.sign_reshare_of(t0.public())?);
+            side.push(careless.sign_vouch_for(t0.public())?);
             let conn = endpoint
                 .connect(careless.node_id(), SOCIAL_ALPN)
                 .await
@@ -1305,16 +1310,17 @@ async fn ask(conn: &Connection, req: &SocialRequest) -> Result<SocialResponse> {
     read_frame(&mut recv).await
 }
 
-/// `voucher`'s reshare of a post of `of`'s.
+/// `voucher`'s vouch for `of`, for resharing, valid 30 days.
 fn vouch(voucher: &SecretKey, of: PublicKey) -> Result<SignedObject> {
+    let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis() as u64;
     SignedObject::sign(
         voucher,
-        &Payload::Announce(Announce {
+        &Payload::Vouch(Vouch {
             actor: voucher.public(),
-            object: ObjectId::of(of.as_bytes()),
-            object_actor: of,
-            published: osp_proto::now_rfc3339(),
-            hosting: false,
+            subject: of,
+            kind: VouchKind::Reshare,
+            valid_until: osp_proto::rfc3339_from_ms(now + 30 * 24 * 60 * 60 * 1000),
+            published: osp_proto::rfc3339_from_ms(now),
         }),
     )
 }
@@ -1375,6 +1381,33 @@ async fn sync_everyone(nodes: &[Node]) -> Result<()> {
     .await
 }
 
+/// Has every node sign its vouches as of 11 minutes from now, and send those
+/// not taken yet, until each author's node holds at least `expected`.
+async fn wait_vouched(w: &World, expected: &HashMap<usize, usize>) -> Result<()> {
+    let later = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis() as i64 + 11 * 60 * 1000;
+    let by = Instant::now() + HEARD_TIMEOUT;
+    loop {
+        each(&w.nodes, |_, node| async move {
+            node.vouch_now(later).await?;
+            Ok(())
+        })
+        .await?;
+        let short = expected
+            .iter()
+            .filter(|(a, n)| w.nodes[**a].held_reshare_vouches().map_or(0, |v| v.len()) < **n)
+            .count();
+        if short == 0 {
+            return Ok(());
+        }
+        ensure!(
+            Instant::now() < by,
+            "{short} authors don't hold their resharers' vouches in time"
+        );
+        info!(short, "authors still to hold their resharers' vouches");
+        tokio::time::sleep(Duration::from_secs(5)).await;
+    }
+}
+
 /// Waits until each author's node counts at least `expected` resharers.
 async fn wait_heard(w: &World, posts: &[ObjectId], expected: &HashMap<usize, usize>) -> Result<()> {
     let by = Instant::now() + HEARD_TIMEOUT;
@@ -1404,9 +1437,9 @@ async fn wait_heard(w: &World, posts: &[ObjectId], expected: &HashMap<usize, usi
     }
 }
 
-/// A node tells an author's node of a reshare, or a finder of a credit, at
-/// once, and if that fails, on its next pass, which is a day later after its
-/// first. Every `NUDGE_EVERY`, every node makes its next pass now.
+/// A node tells an author's node of a reshare, or a finder of their credit,
+/// at once, and if that fails, on its next pass, which is a day later after
+/// its first. Every `NUDGE_EVERY`, every node makes its next pass now.
 fn nudge(w: &World, nudged: &mut Instant) {
     if nudged.elapsed() >= NUDGE_EVERY {
         for node in &w.nodes {

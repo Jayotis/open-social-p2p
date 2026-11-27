@@ -1119,24 +1119,64 @@ impl Node {
         self.core.db.is_tombstoned(id)
     }
 
-    /// The posts whose authors credited this node's owner with finding them
-    /// early (ADR 0029). For tests.
-    pub fn found_early_credits(&self) -> Result<Vec<ObjectId>> {
-        self.core.db.vouch_posts(crate::db::VouchKind::FoundEarly)
+    /// The authors whose found-early credits for this node's owner it holds,
+    /// still valid (ADR 0029). For tests.
+    pub fn found_early_credits(&self) -> Result<Vec<PublicKey>> {
+        self.core
+            .db
+            .held_from(osp_proto::VouchKind::FoundEarly, crate::db::now_ms())
     }
 
-    /// A reshare by the owner of a post of `of`'s, signed but not posted: a
-    /// vouch for them (ADR 0029). For tests.
-    pub fn sign_reshare_of(&self, of: PublicKey) -> Result<SignedObject> {
+    /// Those whose vouches for resharing this node holds for its owner,
+    /// still valid (ADR 0029). For tests.
+    pub fn held_reshare_vouches(&self) -> Result<Vec<PublicKey>> {
+        self.core
+            .db
+            .held_from(osp_proto::VouchKind::Reshare, crate::db::now_ms())
+    }
+
+    /// A vouch by the owner for `of`, valid 30 days, signed but not sent
+    /// (ADR 0029). For tests.
+    pub fn sign_vouch_for(&self, of: PublicKey) -> Result<SignedObject> {
+        let now = crate::db::now_ms();
         self.core
             .signer
-            .sign(&osp_proto::Payload::Announce(osp_proto::Announce {
+            .sign(&osp_proto::Payload::Vouch(osp_proto::Vouch {
                 actor: self.core.signer.identity(),
-                object: ObjectId::of(b"a post for a test vouch"),
-                object_actor: of,
-                published: osp_proto::now_rfc3339(),
-                hosting: false,
+                subject: of,
+                kind: osp_proto::VouchKind::Reshare,
+                valid_until: osp_proto::rfc3339_from_ms(
+                    (now + crate::vouches::VOUCH_VALID.as_millis() as i64) as u64,
+                ),
+                published: osp_proto::rfc3339_from_ms(now as u64),
             }))
+    }
+
+    /// Signs the owner's vouches due at `now_ms`, as the node does when the
+    /// next is due, and sends those not taken yet. `now_ms` may be ahead of
+    /// the clock, so a test needn't wait 10 minutes or 20 days. Returns how
+    /// many were taken (ADR 0029). For tests.
+    pub async fn vouch_now(&self, now_ms: i64) -> Result<usize> {
+        self.core.issue_vouches(now_ms)?;
+        self.core.tell_vouched(now_ms).await
+    }
+
+    /// Signs the owner's vouches due at `now_ms`, as `vouch_now` does, but
+    /// sends none (ADR 0029). For tests.
+    pub fn sign_vouches_at(&self, now_ms: i64) -> Result<()> {
+        self.core.issue_vouches(now_ms).map(|_| ())
+    }
+
+    /// The owner's vouches: each person, kind, and when it runs out and is
+    /// renewed, in Unix milliseconds (ADR 0029). For tests.
+    pub fn given_vouches(&self) -> Result<Vec<(PublicKey, osp_proto::VouchKind, i64, i64)>> {
+        Ok(self
+            .core
+            .db
+            .given_vouches()?
+            .into_iter()
+            .map(|g| (g.subject, g.kind, g.valid_until_ms, g.renew_ms))
+            .collect())
     }
 
     /// Gathers the owner's side now, as the node does once a day (ADR 0029).
@@ -1157,9 +1197,9 @@ impl Node {
             .collect())
     }
 
-    /// Tells authors' nodes of reshares, and finders of credits, not told yet,
-    /// as the node does each day for those it couldn't tell at once (ADR
-    /// 0029). For tests.
+    /// Tells authors' nodes of reshares, and signs and sends the owner's
+    /// vouches due, as the node does each day for those it couldn't tell at
+    /// once (ADR 0029). For tests.
     pub fn tell_vouches_now(&self) {
         self.core.tell_vouches_now.notify_one();
     }
@@ -1216,13 +1256,7 @@ impl Node {
     /// Whom this node's owner credited with finding `post` early (ADR 0029).
     /// For tests.
     pub fn credited_finders(&self, post: &ObjectId) -> Result<Vec<PublicKey>> {
-        Ok(self
-            .core
-            .db
-            .credits_for(post)?
-            .into_iter()
-            .map(|c| c.finder)
-            .collect())
+        self.core.db.credits_for(post)
     }
 
     /// Asks the authors this node's owner reshared but doesn't follow whether

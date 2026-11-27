@@ -153,8 +153,9 @@ impl Db {
             "SELECT signed FROM vouches WHERE heard_ms >= ?1",
             Some(since_ms),
         )?;
-        // Neither keeps a date of its own: each act's date is in it.
-        read("SELECT signed FROM credits_given", None)?;
+        // None keeps a date of its own: each act's date is in it.
+        read("SELECT signed FROM held_vouches", None)?;
+        read("SELECT signed FROM given_vouches", None)?;
         read("SELECT signed FROM side_vouches", None)?;
         Ok(out)
     }

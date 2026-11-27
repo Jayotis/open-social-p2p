@@ -517,7 +517,7 @@ impl Core {
             bytes,
             trusted: manifest.trusted.len(),
             direct_contacts: manifest.direct_contacts.len(),
-            vouches: manifest.vouches.vouches.len(),
+            vouches: manifest.vouches.held.len(),
         })
     }
 

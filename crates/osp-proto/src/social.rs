@@ -121,18 +121,19 @@ pub enum SocialRequest {
     },
     /// "My owner reshared one of your posts" (ADR 0029), from the resharer's
     /// node, for every reshare, hosting or not. `announce` is the signed
-    /// `Announce`; `profile` is the resharer's signed profile, which must list
-    /// the sending node. The author's node keeps it as a vouch for its owner.
+    /// `Announce`; `profile` is the resharer's signed profile, which must
+    /// list the sending node. The author's node keeps it as a record of who
+    /// reshared: it isn't a vouch (section 7).
     Reshared {
         announce: SignedObject,
         profile: SignedObject,
     },
-    /// "My owner credits yours with finding one of their posts early" (ADR
-    /// 0029), from the post's author's node. `credit` is the signed
-    /// `FoundEarly`; `profile` is the author's signed profile, which must
-    /// list the sending node. The finder's node keeps it as a vouch.
-    FoundEarly {
-        credit: SignedObject,
+    /// "My owner vouches for yours" (ADR 0029 section 7): a signed `Vouch`
+    /// for this node's owner, new or renewed, and the voucher's signed
+    /// profile, which must list the sending node. The node keeps the one
+    /// valid longest of each voucher and kind.
+    Vouch {
+        vouch: SignedObject,
         profile: SignedObject,
     },
     /// "My owner likes one of your posts" (ADR 0038). `like` is a signed
@@ -193,8 +194,7 @@ pub struct PlacedAt {
 /// can be reached (ADR 0029).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CarriedVouch {
-    /// A signed `Announce` resharing the person's post, or a signed
-    /// `FoundEarly` crediting them.
+    /// A signed `Vouch` for the person, valid when sent.
     pub vouch: SignedObject,
     pub profile: SignedObject,
 }

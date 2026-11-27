@@ -29,8 +29,8 @@ pub use ticket::{
     FollowTicket, PairingRelays, PairingTicket, is_pairing_ticket, pairing_pass_hash,
 };
 pub use types::{
-    Announce, Attachment, BlobHash, BlobRef, Delete, EarlierKeys, ForwardDelete, FoundEarly, Key,
-    Like, MediaKind, Note, Payload, Person, ProfileLink, Undo,
+    Announce, Attachment, BlobHash, BlobRef, Delete, EarlierKeys, ForwardDelete, Key, Like,
+    MediaKind, Note, Payload, Person, ProfileLink, Undo, Vouch, VouchKind,
 };
 
 /// ALPN of the node-to-node social protocol. Version 1 added objects

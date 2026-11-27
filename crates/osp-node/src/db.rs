@@ -43,7 +43,7 @@ pub(crate) use likes::{HeldLike, SentLike};
 pub(crate) use replies::{Choice, Held, ReceivedReply, ReplyRow};
 pub(crate) use reply_backup::ReplyTables;
 pub(crate) use sent_replies::SentReply;
-pub(crate) use vouches::{GivenCredit, NewVouch, SideVouch, VouchKind, VouchTables};
+pub(crate) use vouches::{GivenVouch, HeldVouch, NewVouch, SideVouch, VouchTables};
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS objects (
@@ -729,6 +729,43 @@ const MIGRATIONS: &[&str] = &[
         noted_ms     INTEGER NOT NULL
     );
     CREATE INDEX withdrawn_people_by_noted ON withdrawn_people(noted_ms);",
+    // A vouch is its own signed object, and expires (ADR 0029 section 7).
+    // Held: the `Vouch` valid longest from each voucher and kind for this
+    // node's owner. Given: the owner's own, one per person and kind, when
+    // each is renewed, and whether that person's node has it. Credits given
+    // keep only who was credited for which post: the credit itself is a
+    // given vouch. Found-early credits held as rows of `vouches`, and sides
+    // gathered from reshares, no longer count, so they go.
+    "CREATE TABLE held_vouches (
+        voucher        TEXT NOT NULL,
+        kind           TEXT NOT NULL,
+        signed         TEXT NOT NULL,
+        valid_until_ms INTEGER NOT NULL,
+        heard_ms       INTEGER NOT NULL,
+        PRIMARY KEY (voucher, kind)
+    );
+    CREATE INDEX held_vouches_by_until ON held_vouches(valid_until_ms);
+    CREATE TABLE given_vouches (
+        subject        TEXT NOT NULL,
+        kind           TEXT NOT NULL,
+        signed         TEXT NOT NULL,
+        valid_until_ms INTEGER NOT NULL,
+        renew_ms       INTEGER NOT NULL,
+        told           INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (subject, kind)
+    );
+    CREATE TABLE credits_kept (
+        post   TEXT NOT NULL,
+        finder TEXT NOT NULL,
+        PRIMARY KEY (post, finder)
+    );
+    INSERT INTO credits_kept (post, finder)
+        SELECT post, finder FROM credits_given ORDER BY rowid;
+    DROP TABLE credits_given;
+    ALTER TABLE credits_kept RENAME TO credits_given;
+    DELETE FROM vouches WHERE kind = 'found_early';
+    DELETE FROM side_vouches;
+    DELETE FROM side_gathered;",
 ];
 
 /// Withdrawals from being listed kept (`withdrawn_people`), the newest: about
@@ -7611,6 +7648,7 @@ mod tests {
                      DROP TABLE carried_days;
                      DROP TABLE review_pairing; ALTER TABLE devices DROP COLUMN review;
                      DROP TABLE withdrawn_people;
+                     DROP TABLE held_vouches; DROP TABLE given_vouches;
                      PRAGMA user_version = 24;",
                 )
                 .unwrap();

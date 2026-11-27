@@ -34,7 +34,7 @@ A node tells an author's node of a reshare at once and, if that fails, on its ne
 
 **An SBC-sized node** is taken as 5 times slower than the desktop the run is on (a Ryzen 5 3600XT): roughly a Raspberry Pi 4's core against it. An estimate; no SBC was at hand. The desktop runs 300 nodes at once, so its own times are, if anything, high.
 
-Not simulated: Tor itself; reshares older than a day; nodes offline; an operator with more than one careless reshare, or with real people's reshares bought.
+Since section 7 (2026-11-27), the round has every node sign its vouches as of 11 minutes after the reshares, rather than wait the 10 minutes, and send them before sides are gathered. Not simulated: Tor itself; reshares older than a day; renewals and vouches running out (the node's tests cover them); nodes offline; an operator with more than one careless reshare, or with real people's reshares bought.
 
 ### Running it
 

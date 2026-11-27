@@ -579,8 +579,8 @@ async fn a_backup_brings_back_posts_follows_followers_and_media() {
     };
     call(&alice, direct).await;
 
-    // Carol reshares Alice's photo: a vouch for Alice (ADR 0029), which
-    // Carol's node tells only once.
+    // Carol reshares Alice's photo, which Carol's node tells only once, and
+    // once it has stood 10 minutes, her node vouches for Alice (ADR 0029).
     let reshare = ClientRequest::Reshare {
         id: alices_post,
         host: false,
@@ -590,6 +590,9 @@ async fn a_backup_brings_back_posts_follows_followers_and_media() {
         resharers(&alice, alices_post).await == Some(1)
     })
     .await;
+    let later = osp_proto::parse_rfc3339_ms(&osp_proto::now_rfc3339()).unwrap() + 11 * 60 * 1000;
+    carol.vouch_now(later).await.unwrap();
+    assert_eq!(alice.held_reshare_vouches().unwrap(), [carol.identity()]);
 
     // Carol replies to Alice's photo, and Alice to Bob's (ADR 0028). Alice
     // then keeps her photo's replies to her circle, and lets Bob in.
@@ -646,8 +649,9 @@ async fn a_backup_brings_back_posts_follows_followers_and_media() {
     assert_eq!(from_file.vouches, 1);
     let alice = Node::spawn(&home).await.unwrap();
 
-    // Carol's reshare still vouches for her.
+    // Carol's reshare is still counted, and her vouch still held.
     assert_eq!(resharers(&alice, alices_post).await, Some(1));
+    assert_eq!(alice.held_reshare_vouches().unwrap(), [carol.identity()]);
 
     // Carol's reply and the photo's policy are back, and so is her own reply.
     assert_eq!(
