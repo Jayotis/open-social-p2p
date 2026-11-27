@@ -466,6 +466,7 @@ pub(crate) async fn relayed_endpoint(
     let net = &config.network;
     let mut builder = Endpoint::builder(presets::Minimal)
         .relay_mode(relay_mode)
+        .dns_resolver(relays.dns().clone())
         .alpns(alpns)
         .secret_key(key);
     if net.relay_only {

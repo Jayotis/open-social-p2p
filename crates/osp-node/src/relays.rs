@@ -7,7 +7,11 @@
 //! any mode it could be a device on the home network. Every address from
 //! outside therefore passes through a [`RelayPolicy`] before iroh uses it.
 
-use std::{net::IpAddr, sync::Arc, time::Duration};
+use std::{
+    net::{IpAddr, Ipv4Addr, Ipv6Addr},
+    sync::Arc,
+    time::Duration,
+};
 
 use anyhow::{Context, Result};
 use iroh::{
@@ -17,9 +21,13 @@ use iroh::{
         AddressLookup, AddressLookupBuilder, AddressLookupBuilderError, EndpointData, EndpointInfo,
         Error, Item,
     },
+    dns::{BoxIter, DnsError, DnsResolver, Resolver, TxtRecordData},
     endpoint::presets,
 };
-use n0_future::{StreamExt, boxed::BoxStream};
+use n0_future::{
+    StreamExt,
+    boxed::{BoxFuture, BoxStream},
+};
 use tokio::sync::watch;
 use tracing::{debug, info, warn};
 
@@ -33,15 +41,24 @@ pub(crate) struct RelayPolicy {
     relay_only: bool,
     /// Relays also allowed while none of `own` lets the node in.
     fallback: Option<Arc<RelayFallback>>,
+    /// What the endpoints look names up with: no private addresses but for
+    /// `own`'s.
+    dns: DnsResolver,
 }
 
 impl RelayPolicy {
     pub fn new(own: Vec<RelayUrl>, relay_only: bool) -> Self {
         Self {
+            dns: public_answers(DnsResolver::new(), &own),
             own,
             relay_only,
             fallback: None,
         }
+    }
+
+    /// The resolver for endpoints under this policy.
+    pub fn dns(&self) -> &DnsResolver {
+        &self.dns
     }
 
     pub fn from_config(net: &NetworkConfig) -> Result<Self> {
@@ -249,9 +266,97 @@ async fn lets_in(own: RelayMap) -> bool {
     online
 }
 
-/// An https relay on the internet, not on this machine or a private network.
-/// A host name that resolves to a private address isn't caught; this only
-/// keeps peers from naming one outright.
+/// Leaves private addresses out of A and AAAA answers, for any host but
+/// those of the node's own relays (a lab's may be on the home network). A
+/// peer can name a relay whose host name points into Kim's network:
+/// `is_public_https` checks only the name, and this where it leads, at the
+/// lookup iroh connects by.
+#[derive(Debug, Clone)]
+struct PublicAnswers {
+    inner: DnsResolver,
+    own: Arc<Vec<String>>,
+}
+
+/// Longest the lookup under `PublicAnswers` takes. iroh's own timeout, from
+/// the outside, is shorter.
+const LOOKUP_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// `inner`, leaving out private addresses but for the hosts of `own`.
+fn public_answers(inner: DnsResolver, own: &[RelayUrl]) -> DnsResolver {
+    let own = own
+        .iter()
+        .filter_map(|u| u.host_str())
+        .map(|h| h.trim_end_matches('.').to_ascii_lowercase())
+        .collect();
+    DnsResolver::custom(PublicAnswers {
+        inner,
+        own: Arc::new(own),
+    })
+}
+
+impl PublicAnswers {
+    /// Whether every address `host` resolves to is kept, private or not.
+    fn keeps_all(&self, host: &str) -> bool {
+        let host = host.trim_end_matches('.').to_ascii_lowercase();
+        self.own.contains(&host)
+    }
+}
+
+impl Resolver for PublicAnswers {
+    fn lookup_ipv4(&self, host: String) -> BoxFuture<Result<BoxIter<Ipv4Addr>, DnsError>> {
+        let (inner, all) = (self.inner.clone(), self.keeps_all(&host));
+        Box::pin(async move {
+            let found = inner.lookup_ipv4(&host, LOOKUP_TIMEOUT).await?;
+            let kept: Vec<Ipv4Addr> = found
+                .filter(|a| all || is_public_ip(*a))
+                .filter_map(|a| match a {
+                    IpAddr::V4(v4) => Some(v4),
+                    IpAddr::V6(_) => None,
+                })
+                .collect();
+            if kept.is_empty() {
+                debug!(%host, "a name that leads only to private addresses");
+            }
+            Ok(Box::new(kept.into_iter()) as BoxIter<Ipv4Addr>)
+        })
+    }
+
+    fn lookup_ipv6(&self, host: String) -> BoxFuture<Result<BoxIter<Ipv6Addr>, DnsError>> {
+        let (inner, all) = (self.inner.clone(), self.keeps_all(&host));
+        Box::pin(async move {
+            let found = inner.lookup_ipv6(&host, LOOKUP_TIMEOUT).await?;
+            let kept: Vec<Ipv6Addr> = found
+                .filter(|a| all || is_public_ip(*a))
+                .filter_map(|a| match a {
+                    IpAddr::V6(v6) => Some(v6),
+                    IpAddr::V4(_) => None,
+                })
+                .collect();
+            Ok(Box::new(kept.into_iter()) as BoxIter<Ipv6Addr>)
+        })
+    }
+
+    fn lookup_txt(&self, host: String) -> BoxFuture<Result<BoxIter<TxtRecordData>, DnsError>> {
+        let inner = self.inner.clone();
+        Box::pin(async move {
+            let found: Vec<TxtRecordData> =
+                inner.lookup_txt(&host, LOOKUP_TIMEOUT).await?.collect();
+            Ok(Box::new(found.into_iter()) as BoxIter<TxtRecordData>)
+        })
+    }
+
+    fn clear_cache(&self) {
+        self.inner.clear_cache();
+    }
+
+    fn reset(&self) -> Box<dyn Resolver> {
+        self.inner.reset();
+        Box::new(self.clone())
+    }
+}
+
+/// An https relay on the internet, not on this machine or a private network,
+/// by its name: `PublicAnswers` checks where a host name leads.
 fn is_public_https(url: &RelayUrl) -> bool {
     if url.scheme() != "https" {
         return false;
@@ -362,6 +467,113 @@ mod tests {
     }
 
     const OWN: &str = "https://relay.mine.example/";
+
+    /// Answers every name with the same addresses.
+    #[derive(Debug, Clone)]
+    struct Fixed(Vec<IpAddr>);
+
+    impl Resolver for Fixed {
+        fn lookup_ipv4(&self, _: String) -> BoxFuture<Result<BoxIter<Ipv4Addr>, DnsError>> {
+            let v4: Vec<Ipv4Addr> = self
+                .0
+                .iter()
+                .filter_map(|a| match a {
+                    IpAddr::V4(v4) => Some(*v4),
+                    IpAddr::V6(_) => None,
+                })
+                .collect();
+            Box::pin(async move { Ok(Box::new(v4.into_iter()) as BoxIter<Ipv4Addr>) })
+        }
+
+        fn lookup_ipv6(&self, _: String) -> BoxFuture<Result<BoxIter<Ipv6Addr>, DnsError>> {
+            let v6: Vec<Ipv6Addr> = self
+                .0
+                .iter()
+                .filter_map(|a| match a {
+                    IpAddr::V6(v6) => Some(*v6),
+                    IpAddr::V4(_) => None,
+                })
+                .collect();
+            Box::pin(async move { Ok(Box::new(v6.into_iter()) as BoxIter<Ipv6Addr>) })
+        }
+
+        fn lookup_txt(&self, _: String) -> BoxFuture<Result<BoxIter<TxtRecordData>, DnsError>> {
+            Box::pin(async { Ok(Box::new(std::iter::empty()) as BoxIter<TxtRecordData>) })
+        }
+
+        fn clear_cache(&self) {}
+
+        fn reset(&self) -> Box<dyn Resolver> {
+            Box::new(self.clone())
+        }
+    }
+
+    /// A router, a public address, a unique-local one, a public one, loopback.
+    fn answers() -> DnsResolver {
+        let addrs = [
+            "192.168.2.1",
+            "8.8.8.8",
+            "fd00::1",
+            "2001:4860:4860::8888",
+            "127.0.0.1",
+        ];
+        DnsResolver::custom(Fixed(addrs.iter().map(|a| a.parse().unwrap()).collect()))
+    }
+
+    async fn v4(dns: &DnsResolver, host: &str) -> Vec<IpAddr> {
+        let timeout = Duration::from_secs(5);
+        dns.lookup_ipv4(host, timeout).await.unwrap().collect()
+    }
+
+    async fn v6(dns: &DnsResolver, host: &str) -> Vec<IpAddr> {
+        let timeout = Duration::from_secs(5);
+        dns.lookup_ipv6(host, timeout).await.unwrap().collect()
+    }
+
+    fn ips(addrs: &[&str]) -> Vec<IpAddr> {
+        addrs.iter().map(|a| a.parse().unwrap()).collect()
+    }
+
+    /// A peer names `https://relay.evil.example`, whose records point at
+    /// Kim's router: the node's lookups leave those out, but keep a lab
+    /// relay of its own on the home network.
+    #[tokio::test]
+    async fn a_name_leads_into_the_home_network_only_for_the_nodes_own_relays() {
+        let dns = public_answers(answers(), &[url(OWN)]);
+        assert_eq!(v4(&dns, "relay.evil.example").await, ips(&["8.8.8.8"]));
+        assert_eq!(
+            v6(&dns, "relay.evil.example").await,
+            ips(&["2001:4860:4860::8888"])
+        );
+        let all = ips(&["192.168.2.1", "8.8.8.8", "127.0.0.1"]);
+        assert_eq!(v4(&dns, "relay.mine.example").await, all);
+        assert_eq!(v4(&dns, "Relay.Mine.Example.").await, all);
+        assert_eq!(
+            v6(&dns, "relay.mine.example").await,
+            ips(&["fd00::1", "2001:4860:4860::8888"])
+        );
+    }
+
+    /// The endpoints the node builds look names up through its policy's
+    /// resolver.
+    #[tokio::test]
+    async fn the_nodes_endpoints_look_names_up_through_the_policy() {
+        let mut policy = RelayPolicy::new(vec![url(OWN)], false);
+        policy.dns = public_answers(answers(), &policy.own);
+        let net = crate::Config::local_test("Kim").network;
+        let endpoint = crate::node::endpoint_builder(
+            &net,
+            &iroh::address_lookup::MemoryLookup::new(),
+            &policy,
+        )
+        .unwrap()
+        .bind()
+        .await
+        .unwrap();
+        let dns = endpoint.dns_resolver().unwrap();
+        assert_eq!(v4(dns, "relay.evil.example").await, ips(&["8.8.8.8"]));
+        endpoint.close().await;
+    }
 
     #[test]
     fn relay_only_uses_nothing_but_its_own_relays() {
