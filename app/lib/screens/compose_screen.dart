@@ -17,7 +17,8 @@ const _maxAttachments = 4;
 const _mobileDataWarnBytes = 20 << 20;
 
 /// Writes a post. Photos and videos go to the home node as they are; the
-/// node makes the 720p version and strips their metadata before publishing.
+/// node makes smaller copies (photos up to 2048 pixels, videos 720p) and
+/// strips their metadata before publishing.
 ///
 /// With [unsent], it carries on sending a post that didn't finish instead.
 class ComposeScreen extends StatefulWidget {
@@ -397,8 +398,9 @@ class _ComposeScreenState extends State<ComposeScreen> {
             if (_files.isNotEmpty) ...[
               const SizedBox(height: 8),
               Text(
-                'Your node makes a 720p copy and removes location and camera details '
-                'before publishing. Videos can be up to 10 minutes.',
+                'Your node makes smaller copies (photos up to 2048 pixels, videos '
+                '720p) and removes location and camera details before publishing. '
+                'Videos can be up to 10 minutes.',
                 style: theme.textTheme.bodySmall,
               ),
               if (widget.node.onMobileData)
