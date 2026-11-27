@@ -158,11 +158,8 @@ class _AdvancedScreenState extends State<AdvancedScreen> {
                 ),
                 if (!h.inUse)
                   _Note(
-                    h.asked
-                        ? "The project's list isn't applied: what it holds "
-                              'can show here, and your node fetches and '
-                              'passes it on.'
-                        : "Off: you haven't chosen yet.",
+                    "The project's list isn't applied: what it holds can "
+                    'show here, and your node fetches and passes it on.',
                   )
                 else ...[
                   if (h.number case final n?)

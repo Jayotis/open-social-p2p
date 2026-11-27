@@ -42,7 +42,6 @@ class FakeApp implements OspApp {
   final excepted = <(String, bool)>[];
   final turned = <bool>[];
   HideListState hide = const HideListState(
-    asked: true,
     inUse: true,
     hasKey: true,
     number: 3,

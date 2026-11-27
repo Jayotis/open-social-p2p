@@ -13,22 +13,10 @@ import 'package:osp_app/uploads.dart';
 
 import 'plain_words.dart';
 
-/// Nothing on the Rust side is needed before pairing. After, only the
-/// hide list, as the node has it.
+/// Nothing on the Rust side is needed before pairing, the hide list
+/// included: the phone only tells its owner about it.
 class FakeApp implements OspApp {
-  HideListState state = hideState(asked: false, inUse: false);
-  final answers = <bool>[];
-
-  @override
-  Future<HideListState> hideList() async => state;
-
-  @override
-  Future<HideListState> setHideList({required bool inUse}) async {
-    answers.add(inUse);
-    return state = hideState(asked: true, inUse: inUse);
-  }
-
-  // Answering refreshes Home: nothing there.
+  // Pairing refreshes Home: nothing there.
   @override
   Future<List<Post>> feed({required int limit}) async => [];
 
@@ -48,15 +36,6 @@ class FakeApp implements OspApp {
   dynamic noSuchMethod(Invocation invocation) =>
       throw UnimplementedError('${invocation.memberName}');
 }
-
-HideListState hideState({required bool asked, required bool inUse}) =>
-    HideListState(
-      asked: asked,
-      inUse: inUse,
-      hasKey: true,
-      checked: inUse,
-      exceptions: const [],
-    );
 
 const alicesNode = NodeInfo(
   name: 'Alice',
@@ -107,16 +86,17 @@ void main() {
     await tester.pumpAndSettle();
     expect(node.termsDue, isFalse);
 
-    // Then whether to use the project's hide list (ADR 0042 §6).
+    // Then the project's hide list, which nodes use unless turned off: told,
+    // not asked (ADR 0042 §6).
     expect(find.byType(HideListScreen), findsOneWidget);
-    expect(find.text('Hide the worst material?'), findsOneWidget);
+    expect(find.text('The worst material is hidden'), findsOneWidget);
     // The list is only for the worst kinds, not adult material (ADR 0042 §6).
     expect(find.textContaining('involving children'), findsOneWidget);
-    expect(find.text('Use the list'), findsOneWidget);
-    expect(find.text('Not now'), findsOneWidget);
+    expect(find.textContaining('turn the list off'), findsOneWidget);
+    expect(find.text('Not now'), findsNothing);
     expect(find.byType(PairScreen), findsNothing);
     expectPlainWords(tester);
-    await tester.tap(find.text('Use the list'));
+    await tester.tap(find.text('Continue'));
     await tester.pumpAndSettle();
     expect(node.hideListDue, isFalse);
     expect(find.byType(PairScreen), findsOneWidget);
@@ -135,37 +115,6 @@ void main() {
     expect(find.text('Read the full Terms of Use'), findsOneWidget);
     await tester.tap(find.text('I agree'));
     expect(node.termsDue, isFalse);
-  });
-
-  test('the answer given before pairing goes to a node not asked yet, '
-      'and a node already asked keeps its own', () async {
-    await node.answerHideList(true);
-    expect(app.answers, isEmpty);
-    node.paired = alicesNode;
-    await node.loadHideList();
-    expect(app.answers, [true]);
-    expect(node.hideList!.inUse, isTrue);
-
-    // Asked at its setup already ("not now"): the node's answer stands.
-    app.answers.clear();
-    app.state = hideState(asked: true, inUse: false);
-    await node.loadHideList();
-    expect(app.answers, isEmpty);
-    expect(node.hideList!.inUse, isFalse);
-  });
-
-  testWidgets('a paired phone whose node was never asked asks once', (
-    tester,
-  ) async {
-    node.agreeToTerms();
-    node.paired = alicesNode;
-    await node.loadHideList();
-    expect(node.hideListDue, isTrue);
-    await tester.pumpWidget(MaterialApp(home: HideListScreen(node: node)));
-    await tester.tap(find.text('Not now'));
-    await tester.pumpAndSettle();
-    expect(app.answers, [false]);
-    expect(node.hideListDue, isFalse);
   });
 
   test('pairing again with the same node is no first run; with another '

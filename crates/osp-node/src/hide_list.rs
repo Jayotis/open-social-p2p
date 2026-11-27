@@ -79,7 +79,6 @@ impl Core {
             published: state.as_ref().map(|s| s.published.clone()),
             entries: state.as_ref().map(|s| s.entries),
             fetched: state.map(|s| osp_proto::rfc3339_from_ms(s.fetched_ms.max(0) as u64)),
-            asked: self.hide_list_asked.load(Ordering::Relaxed),
             exceptions: self
                 .db
                 .hide_exceptions()?
@@ -120,7 +119,6 @@ impl Core {
         };
         config.lists.hide = Some(on);
         config.save(&path)?;
-        self.hide_list_asked.store(true, Ordering::Relaxed);
         self.hide_list_on.store(on, Ordering::Relaxed);
         if on {
             self.fetch_hide_list_now.notify_one();

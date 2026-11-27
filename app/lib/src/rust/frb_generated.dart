@@ -3422,18 +3422,17 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   HideListState dco_decode_hide_list_state(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 9)
-      throw Exception('unexpected arr length: expect 9 but see ${arr.length}');
+    if (arr.length != 8)
+      throw Exception('unexpected arr length: expect 8 but see ${arr.length}');
     return HideListState(
-      asked: dco_decode_bool(arr[0]),
-      inUse: dco_decode_bool(arr[1]),
-      hasKey: dco_decode_bool(arr[2]),
-      number: dco_decode_opt_box_autoadd_u_32(arr[3]),
-      signed: dco_decode_opt_String(arr[4]),
-      entries: dco_decode_opt_box_autoadd_u_32(arr[5]),
-      fetched: dco_decode_opt_String(arr[6]),
-      checked: dco_decode_bool(arr[7]),
-      exceptions: dco_decode_list_hide_exception_person(arr[8]),
+      inUse: dco_decode_bool(arr[0]),
+      hasKey: dco_decode_bool(arr[1]),
+      number: dco_decode_opt_box_autoadd_u_32(arr[2]),
+      signed: dco_decode_opt_String(arr[3]),
+      entries: dco_decode_opt_box_autoadd_u_32(arr[4]),
+      fetched: dco_decode_opt_String(arr[5]),
+      checked: dco_decode_bool(arr[6]),
+      exceptions: dco_decode_list_hide_exception_person(arr[7]),
     );
   }
 
@@ -4659,7 +4658,6 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   @protected
   HideListState sse_decode_hide_list_state(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
-    var var_asked = sse_decode_bool(deserializer);
     var var_inUse = sse_decode_bool(deserializer);
     var var_hasKey = sse_decode_bool(deserializer);
     var var_number = sse_decode_opt_box_autoadd_u_32(deserializer);
@@ -4669,7 +4667,6 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_checked = sse_decode_bool(deserializer);
     var var_exceptions = sse_decode_list_hide_exception_person(deserializer);
     return HideListState(
-      asked: var_asked,
       inUse: var_inUse,
       hasKey: var_hasKey,
       number: var_number,
@@ -6213,7 +6210,6 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     SseSerializer serializer,
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_bool(self.asked, serializer);
     sse_encode_bool(self.inUse, serializer);
     sse_encode_bool(self.hasKey, serializer);
     sse_encode_opt_box_autoadd_u_32(self.number, serializer);
