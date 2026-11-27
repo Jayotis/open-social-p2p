@@ -2229,6 +2229,11 @@ fn print(resp: ClientResponse, json: bool) -> Result<()> {
     match resp {
         ClientResponse::Error { message } => bail!(message),
         ClientResponse::Ok => println!("Done."),
+        // Asked by phones only. Never the token.
+        ClientResponse::PhoneRelays { relays } => match relays {
+            Some(r) => println!("Phones use the relays {}.", r.urls.join(", ")),
+            None => println!("Phones use n0's relays."),
+        },
         ClientResponse::Thread {
             policy,
             replies,

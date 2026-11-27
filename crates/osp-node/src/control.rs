@@ -86,6 +86,9 @@ impl Core {
         let local = matches!(origin, Origin::Local);
         Ok(match req {
             ClientRequest::Status => ClientResponse::Status(self.status().await?),
+            ClientRequest::PhoneRelays => ClientResponse::PhoneRelays {
+                relays: self.phone_relays(),
+            },
             ClientRequest::Invite => ClientResponse::Ticket {
                 ticket: self.own_ticket().await.to_string(),
             },

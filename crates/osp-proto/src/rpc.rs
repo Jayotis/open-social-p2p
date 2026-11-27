@@ -17,6 +17,7 @@ use crate::{
     connected::Connection,
     object::ObjectId,
     social::ReplyPolicy,
+    ticket::PairingRelays,
     types::{Attachment, BlobHash, Person, ProfileLink},
     universe::{Event, Layer, Level, Snapshot},
 };
@@ -33,6 +34,10 @@ pub const MAX_PAIR_REQUEST_LEN: u32 = 4 * 1024;
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum ClientRequest {
     Status,
+    /// The relays and token this node gives a phone now, as its pairing code
+    /// would (ADR 0044), so a phone paired before they changed takes them.
+    /// Answered with `PhoneRelays`.
+    PhoneRelays,
     /// A follow ticket for this node's identity.
     Invite,
     /// A follow ticket for someone, for an OSP code (ADR 0039 §4): the
@@ -542,6 +547,11 @@ pub struct Upload {
 #[serde(tag = "result", rename_all = "snake_case")]
 pub enum ClientResponse {
     Status(StatusInfo),
+    /// The answer to `PhoneRelays`: none from a node without a relay token,
+    /// whose phones use n0's relays.
+    PhoneRelays {
+        relays: Option<PairingRelays>,
+    },
     Ticket {
         ticket: String,
     },
