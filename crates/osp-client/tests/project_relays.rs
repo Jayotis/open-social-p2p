@@ -1,6 +1,7 @@
 //! ADR 0044 step 5: a node with a relay token passes its relays and the
 //! token to its phone in the pairing code, and the phone reaches it through
-//! them, also after the app restarts.
+//! them, also after the app restarts. A phone paired before they changed
+//! takes the new ones from its node.
 //!
 //! The relay runs on loopback and lets in only those with the token. The
 //! node is relay-only, so the relay is the only way to it.
@@ -34,6 +35,20 @@ impl AccessControl for TokenGate {
         } else {
             self.0.lock().unwrap().push(request.endpoint_id());
             Access::Deny { reason: None }
+        }
+    }
+}
+
+/// Lets in those that bring one of the tokens it holds now.
+#[derive(Debug, Clone, Default)]
+struct Tokens(Arc<Mutex<Vec<String>>>);
+
+impl AccessControl for Tokens {
+    async fn on_connect(&self, request: &RelayRequest) -> Access {
+        let token = request.auth_token().unwrap_or_default();
+        match self.0.lock().unwrap().contains(&token) {
+            true => Access::Allow,
+            false => Access::Deny { reason: None },
         }
     }
 }
@@ -125,4 +140,56 @@ async fn a_node_without_a_token_gives_out_the_old_pairing_code() {
     let ticket = new_pairing(&node).await;
     assert!(ticket.starts_with("OSPPAIR1"), "{ticket}");
     assert_eq!(ticket.parse::<PairingTicket>().unwrap().relays, None);
+}
+
+/// The project changes its relay token, letting in both for a while. Kim's
+/// node takes the new one, and her phone, paired with the old one, takes it
+/// from her node, so it still gets in once the old one is refused.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_phone_takes_its_nodes_new_relay_token() {
+    let (old, new) = ("the old token", "the new token");
+    let tokens = Tokens::default();
+    tokens.0.lock().unwrap().push(old.into());
+    let mut relay = RelayConfig::new((Ipv4Addr::LOCALHOST, 0));
+    relay.access = Arc::new(tokens.clone());
+    let mut server = ServerConfig::default();
+    server.relay = Some(relay);
+    let _relay = Server::spawn(server).await.unwrap();
+    let url = format!("http://{}", _relay.http_addr().unwrap());
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut config = Config::local_test("Kim");
+    config.network.relay = RelayChoice::Custom(vec![url.clone()]);
+    config.network.relay_token = Some(old.into());
+    config.network.relay_only = true;
+    config.network.bind = None;
+    let home = dir.path().join("kim");
+    Node::init(&home, &config).unwrap();
+    let node = Node::spawn(&home).await.unwrap();
+    let ticket = new_pairing(&node).await;
+    let phone_dir = dir.path().join("phone");
+    let phone = Client::open(&phone_dir, phone_options()).await.unwrap();
+    phone.pair(&ticket, "Kim's phone").await.unwrap();
+    assert!(!phone.update_relays().await.unwrap(), "nothing changed yet");
+
+    // Both let in for now; Kim's node restarts with the new one.
+    tokens.0.lock().unwrap().push(new.into());
+    node.shutdown().await.unwrap();
+    config.network.relay_token = Some(new.into());
+    config.save(&osp_node::Home::new(&home).config()).unwrap();
+    let _node = Node::spawn(&home).await.unwrap();
+    assert!(phone.update_relays().await.unwrap());
+    let token = |phone: &Client| phone.pairing().and_then(|p| p.relays).map(|r| r.token);
+    assert_eq!(token(&phone).as_deref(), Some(new));
+    assert!(!phone.update_relays().await.unwrap());
+
+    // The old one refused: the phone gets in with the new one, from
+    // pairing.json after the app restarts.
+    tokens.0.lock().unwrap().retain(|t| t == new);
+    phone.shutdown().await;
+    drop(phone);
+    let phone = Client::open(&phone_dir, phone_options()).await.unwrap();
+    assert_eq!(token(&phone).as_deref(), Some(new));
+    assert_reaches_node(&phone).await;
+    phone.shutdown().await;
 }

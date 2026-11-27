@@ -38,7 +38,7 @@ use osp_proto::{
 };
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
-use tracing::debug;
+use tracing::{debug, info};
 
 pub use iroh::SecretKey;
 pub use osp_proto;
@@ -427,6 +427,43 @@ impl Client {
             bail!("unexpected reply to Pair");
         };
         Ok((identity, name, conn))
+    }
+
+    /// Takes the relays and token the home node gives its phones now, if they
+    /// changed since pairing (ADR 0044): saved in `pairing.json`, and the
+    /// endpoint moves to them. Whether they changed. A node from before this
+    /// request changes nothing.
+    pub async fn update_relays(&self) -> Result<bool> {
+        let Some(before) = self.pairing() else {
+            return Ok(false);
+        };
+        let relays = match self.request(&ClientRequest::PhoneRelays).await {
+            Ok(ClientResponse::PhoneRelays { relays }) => relays,
+            Ok(_) => bail!("unexpected reply to PhoneRelays"),
+            Err(e) if e.to_string() == osp_proto::framing::UPDATE_YOUR_NODE => return Ok(false),
+            Err(e) => return Err(e),
+        };
+        if relays == before.relays {
+            return Ok(false);
+        }
+        let pairing = {
+            let mut paired = self.lock_pairing();
+            // Forgotten, or paired with another node, while asking.
+            match paired.as_mut() {
+                Some(p) if p.node.id == before.node.id => {
+                    p.relays = relays.clone();
+                    p.clone()
+                }
+                _ => return Ok(false),
+            }
+        };
+        write_json(&self.dir.join("pairing.json"), &pairing)?;
+        self.relays.set(relays.as_ref()).await?;
+        info!(
+            relays = ?relays.as_ref().map(|r| &r.urls),
+            "took the relays the home node gives its phones now"
+        );
+        Ok(true)
     }
 
     /// Forgets the home node and everything saved from it. The device key

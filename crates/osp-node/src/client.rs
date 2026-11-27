@@ -351,9 +351,14 @@ impl Core {
         let ticket = PairingTicket {
             node: pairing_addr(self.full_addr_of(endpoint).await, relays),
             secret,
-            relays: phone_relays(&self.config.network),
+            relays: self.phone_relays(),
         };
         ticket.to_string()
+    }
+
+    /// The relays and token a phone uses, in its pairing code and after.
+    pub(crate) fn phone_relays(&self) -> Option<PairingRelays> {
+        phone_relays(&self.config.network)
     }
 
     fn pair_device(&self, device: EndpointId, secret: &str, name: &str) -> Result<ClientResponse> {

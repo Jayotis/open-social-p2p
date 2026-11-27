@@ -7,6 +7,7 @@ use std::{
     future::Future,
     path::PathBuf,
     sync::{Arc, Mutex},
+    time::{Duration, Instant},
 };
 
 use anyhow::{bail, Result};
@@ -50,7 +51,13 @@ pub struct OspApp {
     /// The project's hide list as this app checked it, if the node applies
     /// one (ADR 0042 §6): set by `hide_list`.
     hide: Mutex<Option<Hider>>,
+    /// When `status` last asked the node which relays its phones use.
+    relays_checked: Mutex<Option<Instant>>,
 }
+
+/// How often `status` asks the node which relays and token its phones use
+/// (ADR 0044), so a phone paired before they changed takes the new ones.
+const RELAYS_CHECK_EVERY: Duration = Duration::from_secs(60 * 60);
 
 /// What the app hides itself, besides what the node leaves out: posts,
 /// files and replies on a list checked against the project's key, unless
@@ -825,6 +832,7 @@ impl OspApp {
             dir,
             stop_post: Mutex::new(None),
             hide: Mutex::new(None),
+            relays_checked: Mutex::new(None),
         })
     }
 
@@ -852,6 +860,19 @@ impl OspApp {
         let ClientResponse::Status(s) = self.client.request(&ClientRequest::Status).await? else {
             bail!("unexpected reply to Status");
         };
+        let relays_due = {
+            let mut checked = self.relays_checked.lock().unwrap();
+            let due = checked.is_none_or(|at| at.elapsed() >= RELAYS_CHECK_EVERY);
+            if due {
+                *checked = Some(Instant::now());
+            }
+            due
+        };
+        if relays_due {
+            if let Err(e) = self.client.update_relays().await {
+                tracing::warn!("couldn't ask the node which relays its phones use: {e:#}");
+            }
+        }
         let conn = self.client.connection_info().await;
         Ok(NodeStatus {
             name: s.name,
