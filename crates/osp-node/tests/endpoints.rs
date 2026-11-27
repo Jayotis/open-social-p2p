@@ -26,7 +26,9 @@ use osp_proto::{
     Payload, SOCIAL_ALPN,
     framing::{UPDATE_YOUR_NODE, read_frame, write_frame},
     rpc::{ClientRequest, ClientResponse},
-    social::{SocialRequest, SocialResponse},
+    social::{
+        MEDIA_HOSTS_ALPN, MediaHostsRequest, MediaHostsResponse, SocialRequest, SocialResponse,
+    },
 };
 
 /// Lines of iroh's log saying a node was told of an address.
@@ -160,6 +162,12 @@ async fn assert_closed_on(tried: Result<Connection, impl std::fmt::Debug>) {
 
 /// Posts a small photo, which anyone may fetch, and returns its hash and size.
 async fn post_photo(node: &Node, dir: &Path) -> (BlobHash, u64) {
+    let (_, hash, size) = post_photo_with_id(node, dir).await;
+    (hash, size)
+}
+
+/// As `post_photo`, with the post's ID first.
+async fn post_photo_with_id(node: &Node, dir: &Path) -> (ObjectId, BlobHash, u64) {
     let photo = dir.join("photo.png");
     let status = tokio::process::Command::new("ffmpeg")
         .args(["-hide_banner", "-loglevel", "error", "-y"])
@@ -184,7 +192,7 @@ async fn post_photo(node: &Node, dir: &Path) -> (BlobHash, u64) {
         panic!("not shown")
     };
     let attachment = &item.attachments[0].attachment;
-    (attachment.blob, attachment.size)
+    (id, attachment.blob, attachment.size)
 }
 
 async fn fetch_on(conn: Connection, hash: BlobHash) -> usize {
@@ -858,5 +866,115 @@ async fn on_public_relays() {
     tokio::time::sleep(Duration::from_secs(2)).await;
     assert_eq!(told_of(&media.id), 0, "told of an address");
 
+    node.shutdown().await.unwrap();
+}
+
+/// Whether a connection was closed as busy within `wait`, rather than kept.
+async fn refused_as_busy(conn: &Connection, wait: Duration) -> bool {
+    match tokio::time::timeout(wait, conn.closed()).await {
+        Ok(ConnectionError::ApplicationClosed(close)) => close.error_code == BUSY,
+        Ok(other) => panic!("closed otherwise: {other:?}"),
+        Err(_) => false,
+    }
+}
+
+/// Asks the media endpoint who hosts `blob` of `post`, as a viewer does.
+async fn ask_media_hosts(
+    from: &Endpoint,
+    media: EndpointAddr,
+    post: ObjectId,
+    blob: BlobHash,
+) -> MediaHostsResponse {
+    let conn = from.connect(media, MEDIA_HOSTS_ALPN).await.unwrap();
+    let (mut send, mut recv) = conn.open_bi().await.unwrap();
+    write_frame(&mut send, &MediaHostsRequest { post, blob })
+        .await
+        .unwrap();
+    send.finish().unwrap();
+    let resp = read_frame(&mut recv).await.unwrap();
+    conn.close(0u32.into(), b"done");
+    resp
+}
+
+/// The code a stranger's connection is closed with when strangers have all
+/// their places (`strangers.rs`).
+const BUSY: VarInt = VarInt::from_u32(503);
+/// Matches `MAX_CONNECTIONS` in `strangers.rs`.
+const STRANGERS_AT_ONCE: usize = 32;
+
+/// ADR 0024 step 3: 200 viewers with fresh keys get no more than strangers'
+/// 32 connections at once in total, one key asking twice in a minute is told
+/// the node is busy, and the node's own phone still gets in throughout.
+#[tokio::test(flavor = "multi_thread")]
+async fn strangers_share_their_places_at_the_media_endpoint_whatever_their_keys() {
+    let (_relay, url) = local_relay().await;
+    let dir = tempfile::tempdir().unwrap();
+    let node = start(dir.path(), config("Node", &url, DirectRule::Nobody)).await;
+    let (post, hash, size) = post_photo_with_id(&node, dir.path()).await;
+    let media = through_relay(&node.media_addr().await.unwrap(), &url);
+
+    // One key, twice in a minute: the second is turned away. A new key isn't.
+    let viewer = stranger(&url).await;
+    let first = ask_media_hosts(&viewer, media.clone(), post, hash).await;
+    assert!(
+        matches!(first, MediaHostsResponse::Hosts { .. }),
+        "{first:?}"
+    );
+    let again = ask_media_hosts(&viewer, media.clone(), post, hash).await;
+    assert!(
+        matches!(&again, MediaHostsResponse::Error { message } if message.contains("busy")),
+        "{again:?}"
+    );
+    let another = stranger(&url).await;
+    let other = ask_media_hosts(&another, media.clone(), post, hash).await;
+    assert!(
+        matches!(other, MediaHostsResponse::Hosts { .. }),
+        "{other:?}"
+    );
+    // Closed, so their places are free at once.
+    viewer.close().await;
+    another.close().await;
+    tokio::time::sleep(SETTLE).await;
+
+    // 200 fresh keys, each holding a connection open.
+    let mut tries = tokio::task::JoinSet::new();
+    for _ in 0..200 {
+        let (url, media) = (url.clone(), media.clone());
+        tries.spawn(async move {
+            let viewer = stranger(&url).await;
+            let conn = viewer.connect(media, iroh_blobs::ALPN).await.unwrap();
+            let refused = refused_as_busy(&conn, Duration::from_secs(5)).await;
+            (viewer, conn, refused)
+        });
+    }
+    let viewers = tries.join_all().await;
+    let kept: Vec<&(Endpoint, Connection, bool)> = viewers.iter().filter(|v| !v.2).collect();
+    assert_eq!(kept.len(), STRANGERS_AT_ONCE, "strangers kept at once");
+
+    // The node's own phone isn't a stranger.
+    let ticket = pairing(&node).await;
+    let phone = endpoint_with(&url, SecretKey::generate()).await;
+    let _paired = pair_phone(&phone, &ticket, direct_addr(&node, &url).await).await;
+    let conn = phone
+        .connect(media.clone(), iroh_blobs::ALPN)
+        .await
+        .unwrap();
+    assert_eq!(fetch_on(conn, hash).await as u64, size);
+
+    // One stranger leaves, and the next gets its place.
+    let (gone, conn, _) = kept[0];
+    conn.close(0u32.into(), b"done");
+    gone.close().await;
+    tokio::time::sleep(SETTLE).await;
+    let next = stranger(&url).await;
+    let conn = next.connect(media.clone(), iroh_blobs::ALPN).await.unwrap();
+    assert!(!refused_as_busy(&conn, Duration::from_secs(2)).await);
+    let more = stranger(&url).await;
+    let conn = more.connect(media, iroh_blobs::ALPN).await.unwrap();
+    assert!(refused_as_busy(&conn, Duration::from_secs(5)).await);
+
+    for (viewer, _, _) in viewers {
+        viewer.close().await;
+    }
     node.shutdown().await.unwrap();
 }

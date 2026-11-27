@@ -46,6 +46,8 @@ fn sim(net: &SimNet) -> SimSettings {
     SimSettings {
         network: Some(net.link(Link::default())),
         machine_names: true,
+        // `offer_of` asks who hosts a file again and again from one key.
+        stranger_question_every: Duration::ZERO,
         ..SimSettings::default()
     }
 }
