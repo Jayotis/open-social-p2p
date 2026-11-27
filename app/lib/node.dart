@@ -62,6 +62,10 @@ class HomeNode extends ChangeNotifier with WidgetsBindingObserver {
   /// Deletes on their way to the node now.
   final Set<String> _sending = {};
 
+  /// What to do once a waiting delete is sent, by what it deletes: close
+  /// its Undo, which can't keep the post from then on.
+  final Map<String, void Function()> _onSending = {};
+
   /// The feed, less the posts whose delete is waiting.
   List<Post> get visiblePosts =>
       posts.where((p) => !_deleting.containsKey(p.deletable)).toList();
@@ -362,9 +366,16 @@ class HomeNode extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   /// Deletes [id] once [deleteWait] has passed, unless [undoDelete] comes
-  /// first. [onFailed] says why, if sending it fails.
-  void deleteLater(String id, {void Function(Object error)? onFailed}) {
+  /// first. [onSending] runs when it's sent, at the end of the wait or
+  /// sooner if the owner leaves the app. [onFailed] says why, if sending
+  /// it fails.
+  void deleteLater(
+    String id, {
+    void Function()? onSending,
+    void Function(Object error)? onFailed,
+  }) {
     _deleting[id]?.cancel();
+    if (onSending != null) _onSending[id] = onSending;
     _deleting[id] = Timer(deleteWait, () => _sendDelete(id, onFailed));
     _waiting?.add(id, clock.now().add(deleteWait));
     notifyListeners();
@@ -373,6 +384,7 @@ class HomeNode extends ChangeNotifier with WidgetsBindingObserver {
   /// Keeps a post whose delete is still waiting.
   void undoDelete(String id) {
     _deleting.remove(id)?.cancel();
+    _onSending.remove(id);
     _waiting?.remove(id);
     notifyListeners();
   }
@@ -384,6 +396,7 @@ class HomeNode extends ChangeNotifier with WidgetsBindingObserver {
   Future<void> _sendDelete(String id, void Function(Object)? onFailed) async {
     _deleting.remove(id);
     _sending.add(id);
+    _onSending.remove(id)?.call();
     try {
       await app.deletePost(id: id);
       _waiting?.remove(id);
