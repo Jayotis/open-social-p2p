@@ -718,7 +718,20 @@ const MIGRATIONS: &[&str] = &[
         devices_left INTEGER NOT NULL
     );
     ALTER TABLE devices ADD COLUMN review INTEGER NOT NULL DEFAULT 0;",
+    // People who said in a profile a directory gave that they may not be
+    // listed, and its date (ADR 0014): forgetting them took that profile
+    // too, so this keeps a directory that's behind from listing them again.
+    "CREATE TABLE withdrawn_people (
+        actor        TEXT PRIMARY KEY,
+        published_ms INTEGER NOT NULL,
+        noted_ms     INTEGER NOT NULL
+    );
+    CREATE INDEX withdrawn_people_by_noted ON withdrawn_people(noted_ms);",
 ];
+
+/// Withdrawals from being listed kept (`withdrawn_people`), the newest: about
+/// a megabyte. Identities are free, so a directory could list many.
+const MAX_WITHDRAWN: usize = 10_000;
 
 /// How many days of `served_days` are kept: the summary's 30, and today.
 pub const SERVED_DAYS: i64 = 31;
@@ -2560,6 +2573,62 @@ impl Db {
         )?;
         tx.commit()?;
         Ok(!held)
+    }
+
+    /// Someone's own profile, dated `published_ms`, says they may not be
+    /// listed: whatever directory brought them, what was found of them goes,
+    /// and the date is kept, so an older profile a directory still lists
+    /// can't bring them back. The caller has checked this node holds no later
+    /// profile of theirs. Only the newest `MAX_WITHDRAWN` are kept.
+    pub fn found_person_withdrew(&self, actor: &PublicKey, published_ms: i64) -> Result<()> {
+        let conn = self.conn();
+        let tx = conn.unchecked_transaction()?;
+        let actor_text = actor.to_string();
+        tx.execute(
+            "INSERT INTO withdrawn_people (actor, published_ms, noted_ms) VALUES (?1, ?2, ?3)
+             ON CONFLICT (actor) DO UPDATE SET
+                 published_ms = MAX(published_ms, excluded.published_ms),
+                 noted_ms = excluded.noted_ms",
+            params![actor_text, published_ms, now_ms()],
+        )?;
+        tx.execute(
+            "DELETE FROM withdrawn_people WHERE actor IN (
+                 SELECT actor FROM withdrawn_people ORDER BY noted_ms DESC, actor
+                 LIMIT -1 OFFSET ?1)",
+            params![MAX_WITHDRAWN as i64],
+        )?;
+        let found: bool = tx.query_row(
+            "SELECT EXISTS (SELECT 1 FROM found_people WHERE actor = ?1)",
+            params![actor_text],
+            |row| row.get(0),
+        )?;
+        if found {
+            drop_found_person(&tx, actor)?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// The date of the latest profile in which someone said they may not be
+    /// listed, as `found_person_withdrew` kept it.
+    pub fn withdrawn_at(&self, actor: &PublicKey) -> Result<Option<i64>> {
+        Ok(self
+            .conn()
+            .query_row(
+                "SELECT published_ms FROM withdrawn_people WHERE actor = ?1",
+                params![actor.to_string()],
+                |row| row.get(0),
+            )
+            .optional()?)
+    }
+
+    /// A later profile lets someone be listed again.
+    pub fn forget_withdrawal(&self, actor: &PublicKey) -> Result<()> {
+        self.conn().execute(
+            "DELETE FROM withdrawn_people WHERE actor = ?1",
+            params![actor.to_string()],
+        )?;
+        Ok(())
     }
 
     /// Drops what `directory` brought of someone, if that's where they came
@@ -6629,6 +6698,55 @@ mod tests {
     }
 
     #[test]
+    fn a_withdrawal_drops_the_found_person_and_only_the_newest_are_kept() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(&dir.path().join("t.db")).unwrap();
+        let directory = SecretKey::from_bytes(&[8; 32]).public();
+        let actor = found(&db, &directory, 1, "rowan", 100);
+        db.found_person_withdrew(&actor, 500).unwrap();
+        assert!(found_posts(&db, "rowan").is_empty());
+        assert!(db.found_through(&actor).unwrap().is_none());
+        assert_eq!(db.withdrawn_at(&actor).unwrap(), Some(500));
+        // An older one doesn't move the date back.
+        db.found_person_withdrew(&actor, 400).unwrap();
+        assert_eq!(db.withdrawn_at(&actor).unwrap(), Some(500));
+
+        // A full table: one more, and the one noted longest ago goes.
+        {
+            let conn = db.conn();
+            let tx = conn.unchecked_transaction().unwrap();
+            for i in 0..MAX_WITHDRAWN as i64 - 1 {
+                tx.execute(
+                    "INSERT INTO withdrawn_people (actor, published_ms, noted_ms)
+                     VALUES (?1, 1, ?2)",
+                    params![format!("filler-{i}"), 1_000 + i],
+                )
+                .unwrap();
+            }
+            tx.execute(
+                "UPDATE withdrawn_people SET noted_ms = 1 WHERE actor = ?1",
+                params![actor.to_string()],
+            )
+            .unwrap();
+            tx.commit().unwrap();
+        }
+        let newest = SecretKey::from_bytes(&[2; 32]).public();
+        db.found_person_withdrew(&newest, 600).unwrap();
+        assert_eq!(db.withdrawn_at(&actor).unwrap(), None);
+        assert_eq!(db.withdrawn_at(&newest).unwrap(), Some(600));
+        let kept: i64 = db
+            .conn()
+            .query_row("SELECT COUNT(*) FROM withdrawn_people", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(kept, MAX_WITHDRAWN as i64);
+
+        db.forget_withdrawal(&newest).unwrap();
+        assert_eq!(db.withdrawn_at(&newest).unwrap(), None);
+    }
+
+    #[test]
     fn a_later_reader_reads_a_directory_again_from_the_start() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("old.db");
@@ -7435,6 +7553,7 @@ mod tests {
                      DROP TABLE carrier_tips; DROP TABLE carrier_suggestions;
                      DROP TABLE carried_days;
                      DROP TABLE review_pairing; ALTER TABLE devices DROP COLUMN review;
+                     DROP TABLE withdrawn_people;
                      PRAGMA user_version = 24;",
                 )
                 .unwrap();

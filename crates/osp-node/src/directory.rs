@@ -19,7 +19,7 @@ use std::{
 };
 
 use anyhow::{Context, Result, anyhow, bail, ensure};
-use iroh::{EndpointAddr, EndpointId};
+use iroh::{EndpointAddr, EndpointId, PublicKey};
 use n0_future::{BufferedStreamExt, StreamExt, stream};
 use osp_proto::{
     Announce, Note, ObjectId, Payload, Person, SignedObject,
@@ -859,11 +859,18 @@ impl Core {
         let Payload::Person(person) = profile.verify()? else {
             bail!("not a profile");
         };
-        profile_date(&person)?;
+        let published = profile_date(&person)?;
         // Consent travels with the record, and a later profile can take it back.
-        if !person.discoverable || self.taken_back(&person)? {
+        if !person.discoverable {
+            self.withdrew(&person, published)?;
+            return Ok(false);
+        }
+        if self.taken_back(&person, published)? {
             self.db.forget_found(&directory, &actor)?;
             return Ok(false);
+        }
+        if self.db.withdrawn_at(&actor)?.is_some() {
+            self.db.forget_withdrawal(&actor)?;
         }
         for post in &posts {
             ensure!(post.signer() == actor, "a post signed by someone else");
@@ -923,18 +930,48 @@ impl Core {
             .keep_found_with(&directory, &person, profile, &checked, &found, now_ms())
     }
 
-    /// Whether a later profile than `person` is stored, saying they may not be
-    /// listed. A directory that's behind, or won't let go, can't bring them back.
-    fn taken_back(&self, person: &osp_proto::Person) -> Result<bool> {
-        let Some(stored) = self.db.profile(&person.actor)? else {
-            return Ok(false);
+    /// The profile this node holds of `actor`, if any, and its date.
+    fn held_profile(&self, actor: &PublicKey) -> Result<Option<(osp_proto::Person, i64)>> {
+        let Some(stored) = self.db.profile(actor)? else {
+            return Ok(None);
         };
         let Ok(Payload::Person(known)) = stored.verify() else {
-            return Ok(false);
+            return Ok(None);
         };
-        Ok(!known.discoverable
-            && osp_proto::parse_rfc3339_ms(&known.published)
-                > osp_proto::parse_rfc3339_ms(&person.published))
+        let date = osp_proto::parse_rfc3339_ms(&known.published).unwrap_or(i64::MIN);
+        Ok(Some((known, date)))
+    }
+
+    /// Whether `person`, dated `published`, said they may be listed before a
+    /// later profile said they may not: one this node holds, or one a
+    /// directory gave that `withdrew` kept the date of. A tie goes to the
+    /// withdrawal. A directory that's behind, or won't let go, can't bring
+    /// them back.
+    fn taken_back(&self, person: &osp_proto::Person, published: i64) -> Result<bool> {
+        if self
+            .db
+            .withdrawn_at(&person.actor)?
+            .is_some_and(|at| at >= published)
+        {
+            return Ok(true);
+        }
+        Ok(self
+            .held_profile(&person.actor)?
+            .is_some_and(|(known, at)| !known.discoverable && at >= published))
+    }
+
+    /// `person`'s profile, dated `published`, says they may not be listed:
+    /// what was found of them goes, whichever directory brought it, as it's
+    /// their own signed word. Unless this node holds a later profile of
+    /// theirs: a directory can't make it forget someone with an old one.
+    fn withdrew(&self, person: &osp_proto::Person, published: i64) -> Result<()> {
+        if self
+            .held_profile(&person.actor)?
+            .is_some_and(|(_, at)| at > published)
+        {
+            return Ok(());
+        }
+        self.db.found_person_withdrew(&person.actor, published)
     }
 }
 

@@ -876,6 +876,17 @@ fn at(secs: i64) -> String {
 
 /// A stranger's signed profile, as a directory would pass it on.
 fn signed_person(key: &SecretKey, name: &str, summary: &str, discoverable: bool) -> SignedObject {
+    signed_person_at(key, name, summary, discoverable, -60)
+}
+
+/// A profile dated `secs` from now.
+fn signed_person_at(
+    key: &SecretKey,
+    name: &str,
+    summary: &str,
+    discoverable: bool,
+    secs: i64,
+) -> SignedObject {
     let person = Person {
         actor: key.public(),
         name: name.into(),
@@ -883,7 +894,7 @@ fn signed_person(key: &SecretKey, name: &str, summary: &str, discoverable: bool)
         discoverable,
         nodes: vec![SecretKey::generate().public()],
         media_endpoints: vec![],
-        published: at(-60),
+        published: at(secs),
         icon: None,
         attachment: Vec::new(),
     };
@@ -1000,21 +1011,36 @@ async fn start_with_fake(
     net: &SimNet,
     settings: SimSettings,
 ) -> (Node, Arc<Mutex<FakeLists>>, Router) {
-    let (endpoint, key) = stranger_with_key(net).await;
-    let lists = Arc::new(Mutex::new(FakeLists::default()));
-    let fake = FakeDirectory {
-        key: key.clone(),
-        offers: vec!["directory".into()],
-        lists: lists.clone(),
-    };
-    let router = Router::builder(endpoint).accept(MACHINE_ALPN, fake).spawn();
+    let (carol, mut lists, mut routers) = start_with_fakes(root, net, settings, 1).await;
+    (carol, lists.remove(0), routers.remove(0))
+}
+
+/// Carol, knowing `n` directories run by the test.
+async fn start_with_fakes(
+    root: &Path,
+    net: &SimNet,
+    settings: SimSettings,
+    n: usize,
+) -> (Node, Vec<Arc<Mutex<FakeLists>>>, Vec<Router>) {
     let mut config = Config::local_test("Carol");
-    config.directory.known = vec![KnownDirectory {
-        machine: key.public(),
-        node: SecretKey::generate().public(),
-    }];
+    let (mut all_lists, mut routers) = (Vec::new(), Vec::new());
+    for _ in 0..n {
+        let (endpoint, key) = stranger_with_key(net).await;
+        let lists = Arc::new(Mutex::new(FakeLists::default()));
+        let fake = FakeDirectory {
+            key: key.clone(),
+            offers: vec!["directory".into()],
+            lists: lists.clone(),
+        };
+        routers.push(Router::builder(endpoint).accept(MACHINE_ALPN, fake).spawn());
+        all_lists.push(lists);
+        config.directory.known.push(KnownDirectory {
+            machine: key.public(),
+            node: SecretKey::generate().public(),
+        });
+    }
     let carol = start_sim(root, "Carol", config, settings).await;
-    (carol, lists, router)
+    (carol, all_lists, routers)
 }
 
 /// The gate's first half: nothing but a directory, and search finds a stranger.
@@ -1432,9 +1458,8 @@ async fn a_hostile_directory_costs_only_its_own_entries() {
 }
 
 /// Once this node holds a later profile saying no, as from having followed them,
-/// an older one saying yes doesn't bring them back. It holds no such profile for
-/// someone only ever found, as that goes with the rest of them: with more than
-/// one directory, one behind could list them again (ADR 0014's step 6).
+/// an older one saying yes doesn't bring them back. For someone only ever
+/// found, see `a_withdrawal_from_one_directory_holds_against_another_behind`.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_later_profile_this_node_holds_isnt_undone_by_a_directory_behind() {
     let dir = tempfile::tempdir().unwrap();
@@ -1473,6 +1498,55 @@ async fn a_later_profile_this_node_holds_isnt_undone_by_a_directory_behind() {
     for node in [alice, carol] {
         node.shutdown().await.unwrap();
     }
+}
+
+/// Kim, only ever found, asks not to be listed. One directory has her new
+/// profile; another is behind. Her own signed word holds against it, though
+/// Carol found her through the other one, and forgetting her took her profile
+/// (ADR 0014's step 6). A later profile lists her again, and a directory
+/// can't make Carol forget her with an old one.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_withdrawal_from_one_directory_holds_against_another_behind() {
+    let dir = tempfile::tempdir().unwrap();
+    let net = SimNet::new(52);
+    let (carol, fakes, _routers) = start_with_fakes(dir.path(), &net, sim(&net), 2).await;
+    let (ahead, behind) = (&fakes[0], &fakes[1]);
+    let kim = SecretKey::generate();
+    let yes = signed_person_at(&kim, "Kim Quill", "Pottery", true, -300);
+    let no = signed_person_at(&kim, "Kim Quill", "Pottery", false, -200);
+    let yes_again = signed_person_at(&kim, "Kim Quill", "Pottery", true, -100);
+    let serve = |lists: &Arc<Mutex<FakeLists>>, seq: u64, profile: &SignedObject| {
+        let mut lists = lists.lock().unwrap();
+        lists
+            .entries
+            .push(person_entry(seq, profile.clone(), vec![]));
+        lists.latest = seq;
+    };
+
+    // Found through the directory that will be behind.
+    serve(behind, 1, &yes);
+    assert_eq!(read_directories(&carol).await, 1);
+    assert_eq!(found_people(&carol, "quill").await, ["Kim Quill"]);
+
+    // The other has her withdrawal; the one behind lists her old profile again.
+    serve(ahead, 1, &no);
+    serve(behind, 2, &yes);
+    assert_eq!(read_directories(&carol).await, 0);
+    assert!(found_people(&carol, "quill").await.is_empty());
+    serve(behind, 3, &yes);
+    assert_eq!(read_directories(&carol).await, 0);
+    assert!(found_people(&carol, "quill").await.is_empty());
+
+    // Listed again by a later profile.
+    serve(behind, 4, &yes_again);
+    assert_eq!(read_directories(&carol).await, 1);
+    assert_eq!(found_people(&carol, "quill").await, ["Kim Quill"]);
+
+    // Her old withdrawal, given again, is older than what Carol holds.
+    serve(ahead, 2, &no);
+    assert_eq!(read_directories(&carol).await, 1);
+    assert_eq!(found_people(&carol, "quill").await, ["Kim Quill"]);
+    carol.shutdown().await.unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread")]
