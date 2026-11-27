@@ -46,6 +46,7 @@ Future<void> main() async {
           ? Directory.systemTemp
           : await getTemporaryDirectory(),
     );
+    await uploads.keepOutOfBackup();
     node = await HomeNode.open(dir.path, key, uploads);
   } catch (e) {
     error = describeError(e);
