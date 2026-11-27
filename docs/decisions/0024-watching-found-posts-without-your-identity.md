@@ -76,7 +76,7 @@ A viewer can make keys at will, so a source's limits on strangers count all of t
 
 - **Transfers:** strangers already share half a node's places for large files (`store.rs`), whatever key they come from. This doesn't change.
 - **Connections:** at most a fixed number of connections at once from endpoints the node doesn't know (32, a starting value), in aggregate.
-- **Who-hosts questions:** at most a fixed number an hour from unknown endpoints, in aggregate (600, a starting value), and at most one a minute from any one key about any one file. *(Amended 2026-11-26, for the maintainer to confirm: it said "one a minute from any one key". A viewing endpoint is kept for an author's posts for 10 minutes and asks about each file it fetches, so that would refuse a post's video after its thumbnail, or the author's next post opened within a minute.)*
+- **Who-hosts questions:** at most a fixed number an hour from unknown endpoints, in aggregate (600, a starting value), and at most one a minute from any one key about any one file. *(Amended 2026-11-26 by the maintainer: it said "one a minute from any one key". A viewing endpoint is kept for an author's posts for 10 minutes and asks about each file it fetches, so that would refuse a post's video after its thumbnail, or the author's next post opened within a minute.)*
 - **When they're full,** a stranger is refused as busy, as now, and followers and the node's own devices are unaffected.
 
 ## Consequences

@@ -878,6 +878,15 @@ async fn refused_as_busy(conn: &Connection, wait: Duration) -> bool {
     }
 }
 
+/// Whether a connection has been closed as busy by now.
+fn closed_as_busy(conn: &Connection) -> bool {
+    match conn.close_reason() {
+        Some(ConnectionError::ApplicationClosed(close)) => close.error_code == BUSY,
+        Some(other) => panic!("closed otherwise: {other:?}"),
+        None => false,
+    }
+}
+
 /// Asks the media endpoint who hosts `blob` of `post`, as a viewer does.
 async fn ask_media_hosts(
     from: &Endpoint,
@@ -903,8 +912,9 @@ const BUSY: VarInt = VarInt::from_u32(503);
 const STRANGERS_AT_ONCE: usize = 32;
 
 /// ADR 0024 step 3: 200 viewers with fresh keys get no more than strangers'
-/// 32 connections at once in total, one key asking twice in a minute is told
-/// the node is busy, and the node's own phone still gets in throughout.
+/// 32 connections at once in total, one key asking twice in a minute about the
+/// same file is told the node is busy, and the node's own phone still gets in
+/// throughout.
 #[tokio::test(flavor = "multi_thread")]
 async fn strangers_share_their_places_at_the_media_endpoint_whatever_their_keys() {
     let (_relay, url) = local_relay().await;
@@ -943,12 +953,30 @@ async fn strangers_share_their_places_at_the_media_endpoint_whatever_their_keys(
         tries.spawn(async move {
             let viewer = stranger(&url).await;
             let conn = viewer.connect(media, iroh_blobs::ALPN).await.unwrap();
-            let refused = refused_as_busy(&conn, Duration::from_secs(5)).await;
-            (viewer, conn, refused)
+            (viewer, conn)
         });
     }
     let viewers = tries.join_all().await;
-    let kept: Vec<&(Endpoint, Connection, bool)> = viewers.iter().filter(|v| !v.2).collect();
+    // All but 32 are closed as busy. On a slow machine the closes come late,
+    // so wait for that many rather than a fixed time for each.
+    let refused = |viewers: &[(Endpoint, Connection)]| {
+        viewers.iter().filter(|v| closed_as_busy(&v.1)).count()
+    };
+    let started = Instant::now();
+    while refused(&viewers) < viewers.len() - STRANGERS_AT_ONCE {
+        assert!(
+            started.elapsed() < Duration::from_secs(120),
+            "only {} strangers refused",
+            refused(&viewers)
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    // And the others stay.
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let kept: Vec<&(Endpoint, Connection)> = viewers
+        .iter()
+        .filter(|v| v.1.close_reason().is_none())
+        .collect();
     assert_eq!(kept.len(), STRANGERS_AT_ONCE, "strangers kept at once");
 
     // The node's own phone isn't a stranger.
@@ -962,7 +990,7 @@ async fn strangers_share_their_places_at_the_media_endpoint_whatever_their_keys(
     assert_eq!(fetch_on(conn, hash).await as u64, size);
 
     // One stranger leaves, and the next gets its place.
-    let (gone, conn, _) = kept[0];
+    let (gone, conn) = kept[0];
     conn.close(0u32.into(), b"done");
     gone.close().await;
     tokio::time::sleep(SETTLE).await;
@@ -973,7 +1001,7 @@ async fn strangers_share_their_places_at_the_media_endpoint_whatever_their_keys(
     let conn = more.connect(media, iroh_blobs::ALPN).await.unwrap();
     assert!(refused_as_busy(&conn, Duration::from_secs(5)).await);
 
-    for (viewer, _, _) in viewers {
+    for (viewer, _) in viewers {
         viewer.close().await;
     }
     node.shutdown().await.unwrap();
