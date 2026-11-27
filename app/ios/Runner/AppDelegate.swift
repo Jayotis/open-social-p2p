@@ -1,4 +1,5 @@
 import Flutter
+import OSLog
 import UIKit
 
 @main
@@ -58,7 +59,10 @@ import UIKit
         // Read back, so the flag can be checked in the phone's log.
         url.removeAllCachedResourceValues()
         let set = try url.resourceValues(forKeys: [.isExcludedFromBackupKey])
-        NSLog("osp: uploads folder excluded from backup: %@", String(describing: set.isExcludedFromBackup))
+        // Public: NSLog's text shows only as <private> in a release build.
+        Logger(subsystem: "osp", category: "files").notice(
+          "uploads folder excluded from backup: \(String(describing: set.isExcludedFromBackup), privacy: .public)"
+        )
         result(nil)
       } catch {
         result(FlutterError(code: "backup_flag", message: error.localizedDescription, details: nil))
