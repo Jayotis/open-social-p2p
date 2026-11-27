@@ -260,7 +260,7 @@ async fn except(node: &Node, actor: PublicKey, except: bool) -> HideListInfo {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn the_list_is_off_until_the_owner_answers() {
+async fn the_list_is_on_unless_the_owner_turns_it_off() {
     let dir = tempfile::tempdir().unwrap();
     let project = SecretKey::from_bytes(&[7; 32]);
     let home = dir.path().join("alice");
@@ -269,11 +269,21 @@ async fn the_list_is_off_until_the_owner_answers() {
     Node::init(&home, &config).unwrap();
     let alice = Node::spawn(&home).await.unwrap();
 
-    // Not asked yet: off, and a list isn't applied.
-    let first = info(&alice).await;
-    assert!(!first.asked && !first.on, "{first:?}");
+    // Unset: on, and a list is applied, its signed text kept for phones.
     let mut list = HideList::new(project.public());
     list.seq = 1;
+    let first = apply(&alice, signed(&list, &project)).await;
+    assert!(first.on, "{first:?}");
+    assert_eq!(
+        first.signed.as_deref(),
+        Some(signed(&list, &project).as_str())
+    );
+
+    // Off: a list isn't applied, and it stays off through a restart.
+    call(&alice, ClientRequest::SetHideList { on: false }).await;
+    alice.shutdown().await.unwrap();
+    let alice = Node::spawn(&home).await.unwrap();
+    assert!(!info(&alice).await.on);
     let refused = alice
         .handle(ClientRequest::ApplyHideList {
             list: signed(&list, &project),
@@ -284,24 +294,10 @@ async fn the_list_is_off_until_the_owner_answers() {
         "{refused:?}"
     );
 
-    // "Not now" is an answer: still off, but asked.
-    call(&alice, ClientRequest::SetHideList { on: false }).await;
-    let no = info(&alice).await;
-    assert!(no.asked && !no.on, "{no:?}");
-    // Then yes: the list is applied, and its signed text kept for phones.
+    // On again.
     call(&alice, ClientRequest::SetHideList { on: true }).await;
-    let yes = apply(&alice, signed(&list, &project)).await;
-    assert!(yes.asked && yes.on, "{yes:?}");
-    assert_eq!(
-        yes.signed.as_deref(),
-        Some(signed(&list, &project).as_str())
-    );
-
-    // The answer is kept in config.toml, through a restart.
-    alice.shutdown().await.unwrap();
-    let alice = Node::spawn(&home).await.unwrap();
-    let again = info(&alice).await;
-    assert!(again.asked && again.on, "{again:?}");
+    let again = apply(&alice, signed(&list, &project)).await;
+    assert!(again.on, "{again:?}");
     alice.shutdown().await.unwrap();
 }
 

@@ -1,38 +1,15 @@
 import 'package:flutter/material.dart';
 
-import '../format.dart';
 import '../node.dart';
 import '../theme.dart';
 
-/// Whether to use the project's hide list (ADR 0042 §6): asked on first
-/// start after the terms, and on a paired phone whose node hasn't been
-/// asked. "Use the list" is the highlighted answer.
-class HideListScreen extends StatefulWidget {
+/// The project's hide list (ADR 0042 §6): nodes use it unless turned off,
+/// so this only tells the owner, once, after the terms. The switch is under
+/// Advanced details.
+class HideListScreen extends StatelessWidget {
   const HideListScreen({super.key, required this.node});
 
   final HomeNode node;
-
-  @override
-  State<HideListScreen> createState() => _HideListScreenState();
-}
-
-class _HideListScreenState extends State<HideListScreen> {
-  bool _busy = false;
-  String? _error;
-
-  Future<void> _answer(bool use) async {
-    setState(() {
-      _busy = true;
-      _error = null;
-    });
-    try {
-      await widget.node.answerHideList(use);
-    } catch (e) {
-      if (mounted) setState(() => _error = describeError(e));
-    } finally {
-      if (mounted) setState(() => _busy = false);
-    }
-  }
 
   @override
   Widget build(BuildContext context) {
@@ -55,7 +32,7 @@ class _HideListScreenState extends State<HideListScreen> {
                     ),
                     const SizedBox(height: Space.m),
                     Text(
-                      'Hide the worst material?',
+                      'The worst material is hidden',
                       style: theme.textTheme.headlineSmall,
                       textAlign: TextAlign.center,
                     ),
@@ -64,8 +41,9 @@ class _HideListScreenState extends State<HideListScreen> {
                       'The project keeps a short list of posts and files '
                       'with the worst material, such as sexual material '
                       'involving children, or intimate images shared '
-                      "without consent. If you use it, you don't see them, "
-                      "and your node doesn't download them or pass them on.",
+                      "without consent. Your node uses it: you don't see "
+                      "them, and your node doesn't download them or pass "
+                      'them on.',
                     ),
                     const SizedBox(height: Space.m),
                     const _Point(
@@ -78,25 +56,12 @@ class _HideListScreenState extends State<HideListScreen> {
                       "person's posts anyway from their profile, and turn "
                       'the list off any time under You, Advanced details.',
                     ),
-                    if (_error != null)
-                      Padding(
-                        padding: const EdgeInsets.only(top: Space.m),
-                        child: Text(
-                          _error!,
-                          style: TextStyle(color: theme.colorScheme.error),
-                        ),
-                      ),
                   ],
                 ),
               ),
               FilledButton(
-                onPressed: _busy ? null : () => _answer(true),
-                child: const Text('Use the list'),
-              ),
-              const SizedBox(height: Space.s),
-              TextButton(
-                onPressed: _busy ? null : () => _answer(false),
-                child: const Text('Not now'),
+                onPressed: node.hideListTold,
+                child: const Text('Continue'),
               ),
             ],
           ),

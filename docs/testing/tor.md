@@ -146,7 +146,7 @@ Over real Tor, one of three test nodes, meeting the other two, built **55 circui
 
 ## The hide list
 
-The project's hide list ([ADR 0042 §6](../decisions/0042-content-rules-reports-and-the-project-hide-list.md#6-the-projects-hide-list)) comes through the node's Tor once a day, from `https://osp2p.com/lists/hide.json`, signed by the project's key, which is built in. It's off until the owner answers: `osp init` asks, `--hide-list` or `--no-hide-list` answer for scripts, and `osp hide-list on|off` answers later. `osp hide-list` says how it stands.
+The project's hide list ([ADR 0042 §6](../decisions/0042-content-rules-reports-and-the-project-hide-list.md#6-the-projects-hide-list)) comes through the node's Tor once a day, from `https://osp2p.com/lists/hide.json`, signed by the project's key, which is built in. It's on unless the owner turns it off: `osp init` says so, `--no-hide-list` turns it off at setup, and `osp hide-list on|off` sets it later. `osp hide-list` says how it stands.
 
 To test with a list of your own, name your key in `config.toml` instead, and restart the node:
 

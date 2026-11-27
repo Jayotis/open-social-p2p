@@ -911,10 +911,7 @@ class HideExceptionPerson {
 
 /// The project's hide list on the node (ADR 0042 §6).
 class HideListState {
-  /// Whether the owner has answered whether to use it. Until then it's off.
-  final bool asked;
-
-  /// Whether it's on: the owner chose to use it.
+  /// Whether it's on: unless the owner turned it off.
   final bool inUse;
 
   /// Whether the node has a key to check it by.
@@ -935,7 +932,6 @@ class HideListState {
   final List<HideExceptionPerson> exceptions;
 
   const HideListState({
-    required this.asked,
     required this.inUse,
     required this.hasKey,
     this.number,
@@ -948,7 +944,6 @@ class HideListState {
 
   @override
   int get hashCode =>
-      asked.hashCode ^
       inUse.hashCode ^
       hasKey.hashCode ^
       number.hashCode ^
@@ -963,7 +958,6 @@ class HideListState {
       identical(this, other) ||
       other is HideListState &&
           runtimeType == other.runtimeType &&
-          asked == other.asked &&
           inUse == other.inUse &&
           hasKey == other.hasKey &&
           number == other.number &&

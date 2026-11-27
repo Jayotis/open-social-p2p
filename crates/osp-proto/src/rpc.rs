@@ -1448,10 +1448,6 @@ pub struct HideListInfo {
     pub published: Option<String>,
     pub entries: Option<u64>,
     pub fetched: Option<String>,
-    /// Whether the owner was asked about it yet, at setup or since. Off
-    /// until they answer; the app asks if not.
-    #[serde(default)]
-    pub asked: bool,
     /// People whose posts it doesn't hide here, first excepted first.
     #[serde(default)]
     pub exceptions: Vec<HideException>,

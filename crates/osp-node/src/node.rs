@@ -346,11 +346,9 @@ pub(crate) struct Core {
     /// When a directory last answered a read, since the node started: an
     /// empty Universe after that has been looked at, not yet to be.
     pub directories_answered_at: Mutex<Option<Instant>>,
-    /// Whether the project's hide list is applied, as the owner last set it
-    /// (ADR 0042 §6).
+    /// Whether the project's hide list is applied: unless the owner turned
+    /// it off (ADR 0042 §6).
     pub hide_list_on: std::sync::atomic::AtomicBool,
-    /// Whether the owner answered whether to use it.
-    pub hide_list_asked: std::sync::atomic::AtomicBool,
     /// Wakes the hide list's fetch, when it's turned on.
     pub fetch_hide_list_now: Notify,
     /// The owner's answer on whether the hops this node picks may see its
@@ -701,8 +699,7 @@ impl Node {
         );
 
         let (prefetch_later, later) = mpsc::channel(sync::MAX_WAITING);
-        let hide_on = config.lists.hide == Some(true);
-        let hide_asked = config.lists.hide.is_some();
+        let hide_on = config.lists.hide != Some(false);
         let hops = config.carrier.hops;
         let seed_descriptors = crate::hops::SeedDescriptors::load(
             home.seed_descriptors(),
@@ -769,7 +766,6 @@ impl Node {
             directories_read_at: Mutex::new(None),
             directories_answered_at: Mutex::new(None),
             hide_list_on: std::sync::atomic::AtomicBool::new(hide_on),
-            hide_list_asked: std::sync::atomic::AtomicBool::new(hide_asked),
             fetch_hide_list_now: Notify::new(),
             hops: tokio::sync::watch::Sender::new(hops),
             viewing: Viewing::new(sim.viewing_reuse, sim.viewing_life),

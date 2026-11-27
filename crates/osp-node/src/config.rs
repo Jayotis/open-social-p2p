@@ -209,9 +209,9 @@ impl IntroductionsConfig {
 #[serde(default)]
 pub struct ListsConfig {
     /// Apply the project's hide list: what it holds isn't fetched, served or
-    /// shown. Asked at setup (`osp init`, or the app's first start); unset
-    /// until answered, and off while unset. `osp hide-list on|off`, or the
-    /// app's Advanced switch, changes it.
+    /// shown. On while unset: setup (`osp init`, or the app's first start)
+    /// says so and how to turn it off. `osp hide-list on|off`, or the app's
+    /// Advanced switch, sets it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hide: Option<bool>,
     /// Where the list is fetched, through Tor, once a day.

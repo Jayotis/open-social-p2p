@@ -31,7 +31,7 @@ It then:
 
 1. installs Tor, ffmpeg and heif-convert with apt, if they're missing;
 2. downloads `osp` for your machine into `~/.local/bin`, and checks it against the release's checksums (a damaged download is refused);
-3. creates your node in `~/.local/share/osp`. It asks your name (as others see it), whether to share copies of posts you follow, whether to be listed by directories, whether to use the project's hide list, your upload speed, your plan's monthly data cap and whether the nodes yours picks may see its address (see [Carrying](#carrying) below), then shows your recovery words and asks for three of them back;
+3. creates your node in `~/.local/share/osp`. It asks your name (as others see it), whether to share copies of posts you follow, whether to be listed by directories, your upload speed, your plan's monthly data cap and whether the nodes yours picks may see its address (see [Carrying](#carrying) below), tells you it uses the project's hide list of the worst material (`osp hide-list off` turns it off), then shows your recovery words and asks for three of them back;
 4. sets the node to read the alpha's directories, from the release's `directories.txt`. To change them later, edit `[[directory.known]]` in `~/.local/share/osp/config.toml`;
 5. with a token, sets the node to use the project's relays, from the release's `relays.txt`, and n0's only while those let nobody in. They're `relay`, `relay_token` and `relay_fallback` under `[network]` in the same file;
 6. sets the seed carriers (ADR 0043), from the release's `carriers.txt` if it has one: the nodes that may carry video next to yours from the start. They're `[[carrier.known]]` in the same file;

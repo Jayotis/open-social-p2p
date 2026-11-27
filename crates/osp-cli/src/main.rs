@@ -128,11 +128,11 @@ enum Command {
         /// Don't ask to be listed. Otherwise you're asked, unless Tor is off
         #[arg(long)]
         no_list_me: bool,
-        /// Use the project's hide list (ADR 0042): posts and files against the project's
-        /// rules aren't shown, fetched or passed on. Otherwise you're asked
+        /// Use the project's hide list (ADR 0042), written in config.toml: the worst posts and
+        /// files aren't shown, fetched or passed on. It's on without this too
         #[arg(long, conflicts_with = "no_hide_list")]
         hide_list: bool,
-        /// Don't use it. Otherwise you're asked; with no answer it stays off until you choose
+        /// Don't use it. `osp hide-list on` turns it on later
         #[arg(long)]
         no_hide_list: bool,
         /// A directory this node reads, by its machine name and public ID, written under
@@ -1144,7 +1144,7 @@ async fn init(home: &Path, mut config: Config, check_words: bool, answers: Answe
     }
     config.swarm.share_prefetched = ask_share(answers.share)?;
     config.directory.list_me = ask_list_me(answers.list_me, config.tor.enabled)?;
-    config.lists.hide = ask_hide_list(answers.hide_list)?;
+    config.lists.hide = tell_hide_list(answers.hide_list);
     ask_carrying(&mut config, &answers)?;
     let words = osp_node::backup::new_identity_words();
     print_words(&words);
@@ -1363,7 +1363,7 @@ async fn restore_node(
     // A backup doesn't keep the settings, so these are asked again.
     config.swarm.share_prefetched = ask_share(answers.share)?;
     config.directory.list_me = ask_list_me(answers.list_me, config.tor.enabled)?;
-    config.lists.hide = ask_hide_list(answers.hide_list)?;
+    config.lists.hide = tell_hide_list(answers.hide_list);
     ask_carrying(&mut config, &answers)?;
     let restored = Node::restore(home, &config, &words, backup, old_key)?;
     println!("Restored identity {}", restored.identity);
@@ -1592,39 +1592,23 @@ fn ask_list_me(choice: Option<bool>, tor: bool) -> Result<bool> {
     ask_yes_no("Ask directories to list you?", "--list-me or --no-list-me")
 }
 
-/// Asks whether to use the project's hide list (ADR 0042 §6), unless
-/// `choice` already says. "Use the list" is the answer given by Enter. With
-/// no answer at all (input closed), it's left unasked: off, until the owner
-/// chooses with `osp hide-list` or the app asks.
-fn ask_hide_list(choice: Option<bool>) -> Result<Option<bool>> {
-    if choice.is_some() {
-        return Ok(choice);
+/// Tells the owner about the project's hide list (ADR 0042 §6), which is on
+/// unless `choice` (a flag) turned it off. Nothing is asked: unset, it's on.
+fn tell_hide_list(choice: Option<bool>) -> Option<bool> {
+    if choice == Some(false) {
+        return choice;
     }
     println!();
-    println!("The project keeps a short list of posts and files with the worst material, such");
-    println!("as sexual material involving children, or intimate images shared without");
-    println!("consent. If you use the list, your node doesn't show, fetch or pass on what's");
+    println!("Your node uses the project's hide list: a short list of posts and files with");
+    println!("the worst material, such as sexual material involving children, or intimate");
+    println!("images shared without consent. Your node doesn't show, fetch or pass on what's");
     println!("on it.");
     println!("- Your node fetches it once a day through Tor, so the project doesn't learn who");
     println!("  fetched it. The list is signed, so nobody else can change it.");
     println!("- Your own posts are never hidden. You can show a person's posts anyway");
-    println!("  (`osp hide-list except`), and turn the list off at any time.");
-    println!();
-    loop {
-        print!("Use the list? [Use the list] / not now: ");
-        std::io::Write::flush(&mut std::io::stdout())?;
-        let mut line = String::new();
-        if std::io::stdin().read_line(&mut line)? == 0 {
-            println!();
-            println!("No answer: the list stays off until you choose (`osp hide-list on|off`).");
-            return Ok(None);
-        }
-        match line.trim().to_lowercase().as_str() {
-            "" | "use" | "use the list" | "yes" | "y" => return Ok(Some(true)),
-            "not now" | "no" | "n" => return Ok(Some(false)),
-            _ => println!("Please press Enter to use the list, or answer \"not now\"."),
-        }
-    }
+    println!("  (`osp hide-list except`), and turn the list off at any time");
+    println!("  (`osp hide-list off`).");
+    choice
 }
 
 /// Asks `question` until the answer is yes or no. With no answer at all, nothing
@@ -2445,9 +2429,6 @@ fn print(resp: ClientResponse, json: bool) -> Result<()> {
             match (info.on, info.key) {
                 (_, None) => println!(
                     "The project's hide list isn't applied: this build has no key to check it by."
-                ),
-                (false, Some(_)) if !info.asked => println!(
-                    "The project's hide list is off, as you haven't chosen yet. `osp hide-list on` uses it, `osp hide-list off` says no."
                 ),
                 (false, Some(_)) => println!(
                     "The project's hide list is off: nothing it holds is hidden here. `osp hide-list on` applies it again."

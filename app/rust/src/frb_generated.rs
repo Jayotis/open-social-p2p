@@ -4519,7 +4519,6 @@ impl SseDecode for crate::api::osp::HideExceptionPerson {
 impl SseDecode for crate::api::osp::HideListState {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
-        let mut var_asked = <bool>::sse_decode(deserializer);
         let mut var_inUse = <bool>::sse_decode(deserializer);
         let mut var_hasKey = <bool>::sse_decode(deserializer);
         let mut var_number = <Option<u32>>::sse_decode(deserializer);
@@ -4530,7 +4529,6 @@ impl SseDecode for crate::api::osp::HideListState {
         let mut var_exceptions =
             <Vec<crate::api::osp::HideExceptionPerson>>::sse_decode(deserializer);
         return crate::api::osp::HideListState {
-            asked: var_asked,
             in_use: var_inUse,
             has_key: var_hasKey,
             number: var_number,
@@ -6249,7 +6247,6 @@ impl flutter_rust_bridge::IntoIntoDart<crate::api::osp::HideExceptionPerson>
 impl flutter_rust_bridge::IntoDart for crate::api::osp::HideListState {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         [
-            self.asked.into_into_dart().into_dart(),
             self.in_use.into_into_dart().into_dart(),
             self.has_key.into_into_dart().into_dart(),
             self.number.into_into_dart().into_dart(),
@@ -7310,7 +7307,6 @@ impl SseEncode for crate::api::osp::HideExceptionPerson {
 impl SseEncode for crate::api::osp::HideListState {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
-        <bool>::sse_encode(self.asked, serializer);
         <bool>::sse_encode(self.in_use, serializer);
         <bool>::sse_encode(self.has_key, serializer);
         <Option<u32>>::sse_encode(self.number, serializer);

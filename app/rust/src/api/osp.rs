@@ -82,9 +82,7 @@ impl Hider {
 
 /// The project's hide list on the node (ADR 0042 §6).
 pub struct HideListState {
-    /// Whether the owner has answered whether to use it. Until then it's off.
-    pub asked: bool,
-    /// Whether it's on: the owner chose to use it.
+    /// Whether it's on: unless the owner turned it off.
     pub in_use: bool,
     /// Whether the node has a key to check it by.
     pub has_key: bool,
@@ -1302,7 +1300,6 @@ impl OspApp {
         }
         *self.hide.lock().unwrap() = listed.map(|listed| Hider { listed, spared });
         Ok(HideListState {
-            asked: info.asked,
             in_use: info.on,
             has_key: info.key.is_some(),
             number: info.seq.map(|n| n.min(u32::MAX as u64) as u32),

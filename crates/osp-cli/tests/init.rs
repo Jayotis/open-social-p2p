@@ -183,7 +183,7 @@ fn a_new_node_has_tor_on_and_is_asked_about_being_listed() {
 }
 
 #[test]
-fn init_asks_whether_to_use_the_hide_list() {
+fn init_tells_the_owner_the_hide_list_is_on() {
     let dir = tempfile::tempdir().unwrap();
     let new = [
         "--skip-word-check",
@@ -193,34 +193,25 @@ fn init_asks_whether_to_use_the_hide_list() {
         "Kim",
     ];
     let hide = |home: &Path| config(home).lists.hide;
+    let told = "Your node uses the project's hide list";
 
-    // Enter takes the highlighted answer; something else is asked again.
-    let home = dir.path().join("enter");
-    let out = osp_init(&home, &new, "maybe\n\n");
-    assert!(out.status.success(), "{out:?}");
-    let said = String::from_utf8_lossy(&out.stdout);
-    assert!(said.contains("[Use the list] / not now"), "{said}");
-    assert!(said.contains("Please press Enter"), "{said}");
-    assert_eq!(hide(&home), Some(true));
-
-    let home = dir.path().join("not now");
-    assert!(osp_init(&home, &new, "not now\n").status.success());
-    assert_eq!(hide(&home), Some(false));
-
-    // No answer, as from a script: made, with the list off and unasked.
-    let home = dir.path().join("none");
+    // Nothing asked: the owner is told, and the list is on while unset.
+    let home = dir.path().join("told");
     let out = osp_init(&home, &new, "");
     assert!(out.status.success(), "{out:?}");
+    let said = String::from_utf8_lossy(&out.stdout);
+    assert!(said.contains(told), "{said}");
+    assert!(said.contains("`osp hide-list off`"), "{said}");
     assert_eq!(hide(&home), None);
     let written = std::fs::read_to_string(Home::new(&home).config()).unwrap();
     assert!(!written.contains("hide ="), "{written}");
 
-    // A flag answers without asking.
+    // A flag sets it; turned off, the owner isn't told it's on.
     for (flag, on) in [("--hide-list", true), ("--no-hide-list", false)] {
         let home = dir.path().join(flag);
         let out = osp_init(&home, &[&new[..], &[flag]].concat(), "");
         assert!(out.status.success(), "{out:?}");
-        assert!(!String::from_utf8_lossy(&out.stdout).contains("Use the list?"));
+        assert_eq!(String::from_utf8_lossy(&out.stdout).contains(told), on);
         assert_eq!(hide(&home), Some(on));
     }
 }
