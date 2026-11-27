@@ -880,7 +880,15 @@ impl Core {
             && let Some(note) = self.stored_note(&post)?
         {
             let files: Vec<_> = note.blobs().collect();
-            self.db.stop_hosting(&files)?;
+            // Still here through a follow, they stay what a sync keeps.
+            let ahead: Vec<_> = match self.db.comes_through_a_follow(&post, &note.actor)? {
+                true => crate::sync::prefetchable(&note, None)
+                    .into_iter()
+                    .map(|w| w.blob)
+                    .collect(),
+                false => Vec::new(),
+            };
+            self.db.stop_hosting(&files, &ahead)?;
         }
         self.db.insert_object(&delete, &payload)?;
         let seq = self.db.append_outbox(&delete.id())?;
