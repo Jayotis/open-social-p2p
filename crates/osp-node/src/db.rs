@@ -859,6 +859,9 @@ pub struct Deleted {
     /// Whether one of the reshares that went was this node's owner's, so
     /// they pass the `Delete` on.
     pub ours: bool,
+    /// For a hosting reshare that went, the files of the post it pointed
+    /// at, which its resharer's nodes no longer host.
+    pub unhosted: Vec<BlobHash>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -1262,12 +1265,31 @@ impl Db {
             removed: held.is_some(),
             files: Vec::new(),
             ours: false,
+            unhosted: Vec::new(),
         };
         if let Some((_, json)) = held {
             let obj: SignedObject = serde_json::from_str(&json).context("corrupt stored object")?;
             let mut gone = vec![target.clone()];
             let note = match obj.verify() {
                 Ok(Payload::Note(note)) => Some(note),
+                Ok(Payload::Announce(a)) if a.hosting && a.object_actor != d.actor => {
+                    let reshared: Option<String> = tx
+                        .query_row(
+                            "SELECT signed FROM objects WHERE id = ?1",
+                            params![a.object.to_string()],
+                            |row| row.get(0),
+                        )
+                        .optional()?;
+                    let reshared = reshared.and_then(|json| {
+                        let obj: SignedObject = serde_json::from_str(&json).ok()?;
+                        match obj.verify() {
+                            Ok(Payload::Note(note)) => Some(note),
+                            _ => None,
+                        }
+                    });
+                    deleted.unhosted = reshared.iter().flat_map(|n| n.blobs()).collect();
+                    None
+                }
                 _ => None,
             };
             if note.is_some() {
@@ -3457,6 +3479,18 @@ impl Db {
     // ---- hosts ----
 
     /// Records a host of a blob, keeping only the most recently seen few.
+    /// Forgets `node` as a host of each of `blobs`.
+    pub fn forget_hosts(&self, blobs: &[BlobHash], node: &EndpointId) -> Result<()> {
+        let conn = self.conn();
+        for blob in blobs {
+            conn.execute(
+                "DELETE FROM hosts WHERE blob = ?1 AND node = ?2",
+                params![blob.to_string(), node.to_string()],
+            )?;
+        }
+        Ok(())
+    }
+
     pub fn add_host(&self, blob: &BlobHash, addr: &EndpointAddr) -> Result<()> {
         let conn = self.conn();
         conn.execute(
@@ -6054,6 +6088,7 @@ mod tests {
                 removed: true,
                 files: vec![only],
                 ours: true,
+                unhosted: Vec::new(),
             })
         );
         for id in [post.id(), bobs.id(), mine.id()] {
