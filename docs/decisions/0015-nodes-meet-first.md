@@ -92,7 +92,7 @@ Building step 2 settled these (2026-11-01):
 - **A directory reads each listed node once an hour,** and a listing holds the latest 5 posts. That limits how often one person's listing can change, and does the work of ADR 0014's cap on new posts per listed node per day.
 - **What comes from a directory goes where a stranger's reshared post goes,** and is marked as only found, so a search, a post's card and a reshare work on it. A mark goes when the owner follows them or reshares the post, or when a followed node's reshare brings it too.
 - **A reader takes machine records from the map and does nothing with them yet;** that's step 3.
-- **Not settled by step 2.** A found post's media opens only once its author is followed, as opening it first means asking their node, and what that reveals needs deciding. And a reader forgets a withdrawal along with the rest of them, so with more than one directory, one that's behind could list them again: that's for ADR 0014's step 6, where a directory returning stale results is tested.
+- **Not settled by step 2.** A found post's media opens only once its author is followed, as opening it first means asking their node, and what that reveals needs deciding. And a reader forgets a withdrawal along with the rest of them, so with more than one directory, one that's behind could list them again: that's for ADR 0014's step 6, where a directory returning stale results is tested. *Settled (2026-11-26):* a reader keeps the date of each withdrawal it reads, the newest 10,000, and an older profile saying yes doesn't list that person again. A withdrawal drops them whichever directory brought them, unless the reader holds a later profile of theirs.
 
 ### The local record: where reputation begins
 
