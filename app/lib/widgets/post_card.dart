@@ -11,6 +11,7 @@ import '../screens/profile_screen.dart';
 import '../screens/thread_screen.dart';
 import '../src/rust/api/osp.dart';
 import '../theme.dart';
+import 'delete_bar.dart';
 import 'like_button.dart';
 import 'person_avatar.dart';
 import 'post_action.dart';
@@ -97,22 +98,11 @@ class PostCard extends StatelessWidget {
       ),
     );
     if (sure != true || !context.mounted) return;
-    final messenger = ScaffoldMessenger.of(context);
-    node.deleteLater(
+    deleteWithUndo(
+      ScaffoldMessenger.of(context),
+      node,
       id,
-      onFailed: (e) => messenger.showSnackBar(
-        SnackBar(content: Text("Couldn't delete it: ${describeError(e)}")),
-      ),
-    );
-    messenger.showSnackBar(
-      SnackBar(
-        content: Text('Deleting $what in a minute.'),
-        duration: HomeNode.deleteWait,
-        action: SnackBarAction(
-          label: 'Undo',
-          onPressed: () => node.undoDelete(id),
-        ),
-      ),
+      text: 'Deleting $what in a minute.',
     );
   }
 

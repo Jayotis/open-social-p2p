@@ -187,6 +187,11 @@ void main() {
     expect(app.deleted, ['my-reshare']);
     await tester.pumpAndSettle();
     expect(find.text('reshared'), findsNothing);
+    expect(
+      find.text('Deleting your reshare in a minute.'),
+      findsNothing,
+      reason: 'a bar with Undo would otherwise stay until tapped',
+    );
     expect(find.text('mine'), findsOneWidget);
   });
 
@@ -197,6 +202,12 @@ void main() {
     node.didChangeAppLifecycleState(AppLifecycleState.paused);
     await tester.pump();
     expect(app.deleted, ['id-mine']);
+    await tester.pumpAndSettle();
+    expect(
+      find.text('Deleting your post in a minute.'),
+      findsNothing,
+      reason: "it's sent: Undo can't keep it any more",
+    );
     expect(app.disconnects, 1, reason: 'then the connection goes');
     // Nothing is left to send when the minute would have been up.
     await tester.pump(const Duration(minutes: 2));

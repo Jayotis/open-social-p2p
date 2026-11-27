@@ -7,6 +7,7 @@ import '../format.dart';
 import '../node.dart';
 import '../report.dart';
 import '../src/rust/api/osp.dart';
+import '../widgets/delete_bar.dart';
 import '../widgets/like_button.dart';
 import 'likers_screen.dart';
 import 'trust_screen.dart' show shownName;
@@ -232,23 +233,12 @@ class _ThreadScreenState extends State<ThreadScreen> {
   /// Deletes one of the owner's replies after a minute, with an undo
   /// meanwhile, as posts are (ADR 0019).
   void _delete(String id) {
-    final messenger = ScaffoldMessenger.of(context);
     _deletes.add(id);
-    _node.deleteLater(
+    deleteWithUndo(
+      ScaffoldMessenger.of(context),
+      _node,
       id,
-      onFailed: (e) => messenger.showSnackBar(
-        SnackBar(content: Text("Couldn't delete it: ${describeError(e)}")),
-      ),
-    );
-    messenger.showSnackBar(
-      SnackBar(
-        content: const Text('Deleting your reply in a minute.'),
-        duration: HomeNode.deleteWait,
-        action: SnackBarAction(
-          label: 'Undo',
-          onPressed: () => _node.undoDelete(id),
-        ),
-      ),
+      text: 'Deleting your reply in a minute.',
     );
   }
 
