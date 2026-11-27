@@ -1,5 +1,8 @@
 import 'dart:io';
 
+import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
+
 /// Keeps the files of a post being sent in the app's own folder until the
 /// home node has published it or the owner discards it.
 ///
@@ -18,6 +21,26 @@ class UploadsFolder {
   /// [dir], are moved, which takes no time on the same disk. Others are
   /// copied, so the app never moves a file it doesn't own.
   final Directory pickerDir;
+
+  static const _files = MethodChannel('osp/files');
+
+  /// Keeps [dir] out of the iPhone's iCloud and computer backups: the
+  /// copies in it are only waiting to be sent, and the owner has the
+  /// originals. The flag stays on the folder, and what's in it goes with
+  /// it. Android backs up nothing of the app (`AndroidManifest.xml`).
+  Future<void> keepOutOfBackup() async {
+    if (!Platform.isIOS) return;
+    try {
+      await dir.create(recursive: true);
+      await _files.invokeMethod<void>('excludeFromBackup', {'path': dir.path});
+    } on MissingPluginException {
+      // Not set up yet: tried again at the next start.
+    } on PlatformException catch (e) {
+      debugPrint('uploads folder backup flag: $e');
+    } on FileSystemException catch (e) {
+      debugPrint('uploads folder: $e');
+    }
+  }
 
   /// Moves or copies [files] into a new folder for one post, and returns
   /// their new paths in the same order.

@@ -38,5 +38,31 @@ import UIKit
         result(FlutterMethodNotImplemented)
       }
     }
+    // Keeping the folder of posts waiting to be sent out of backups
+    // (lib/uploads.dart).
+    FlutterMethodChannel(
+      name: "osp/files",
+      binaryMessenger: engineBridge.applicationRegistrar.messenger()
+    ).setMethodCallHandler { call, result in
+      guard call.method == "excludeFromBackup",
+        let path = (call.arguments as? [String: Any])?["path"] as? String
+      else {
+        result(FlutterMethodNotImplemented)
+        return
+      }
+      var url = URL(fileURLWithPath: path, isDirectory: true)
+      var values = URLResourceValues()
+      values.isExcludedFromBackup = true
+      do {
+        try url.setResourceValues(values)
+        // Read back, so the flag can be checked in the phone's log.
+        url.removeAllCachedResourceValues()
+        let set = try url.resourceValues(forKeys: [.isExcludedFromBackupKey])
+        NSLog("osp: uploads folder excluded from backup: %@", String(describing: set.isExcludedFromBackup))
+        result(nil)
+      } catch {
+        result(FlutterError(code: "backup_flag", message: error.localizedDescription, details: nil))
+      }
+    }
   }
 }
