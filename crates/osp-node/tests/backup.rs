@@ -19,8 +19,8 @@ use osp_node::{BlobClass, Config, Node, backup};
 use osp_proto::{
     BlobHash, EarlierKeys, ObjectId, Payload, Person, SOCIAL_ALPN, SecretKey, SignedObject,
     framing::{read_frame, write_frame},
-    rpc::{BackupInfo, ClientRequest, ClientResponse, FollowInfo, StatusInfo},
-    social::{SocialRequest, SocialResponse},
+    rpc::{BackupInfo, ClientRequest, ClientResponse, FollowInfo, ReplierChoice, StatusInfo},
+    social::{ReplyPolicy, SocialRequest, SocialResponse},
 };
 
 async fn start(root: &Path, name: &str) -> Node {
@@ -129,6 +129,27 @@ async fn export(node: &Node, path: &Path, media: bool) -> BackupInfo {
         ClientResponse::BackedUp { info, .. } => info,
         other => panic!("unexpected {other:?}"),
     }
+}
+
+/// The policy of one of `node`'s own posts, and the texts of its replies.
+async fn thread(node: &Node, post: ObjectId) -> (ReplyPolicy, Vec<String>) {
+    let req = ClientRequest::Thread { post, after: 0 };
+    let ClientResponse::Thread {
+        policy, replies, ..
+    } = call(node, req).await
+    else {
+        panic!("no thread")
+    };
+    (policy, replies.into_iter().map(|r| r.content).collect())
+}
+
+/// The texts of the replies `node`'s owner sent, newest first.
+async fn sent_replies(node: &Node) -> Vec<String> {
+    let ClientResponse::SentReplies { replies } = call(node, ClientRequest::SentReplies).await
+    else {
+        panic!("no sent replies")
+    };
+    replies.into_iter().map(|r| r.content).collect()
 }
 
 /// The IDs in a node's outbox, in order, as another node sees them.
@@ -570,6 +591,33 @@ async fn a_backup_brings_back_posts_follows_followers_and_media() {
     })
     .await;
 
+    // Carol replies to Alice's photo, and Alice to Bob's (ADR 0028). Alice
+    // then keeps her photo's replies to her circle, and lets Bob in.
+    let reply = ClientRequest::Reply {
+        post: alices_post,
+        content: "nice".into(),
+    };
+    call(&carol, reply).await;
+    wait_until("Alice's node to get Carol's reply", async || {
+        thread(&alice, alices_post).await.1 == ["nice"]
+    })
+    .await;
+    let reply = ClientRequest::Reply {
+        post: bobs_post,
+        content: "great bars".into(),
+    };
+    call(&alice, reply).await;
+    let policy = ClientRequest::SetReplyPolicy {
+        post: alices_post,
+        policy: ReplyPolicy::Circle,
+    };
+    call(&alice, policy).await;
+    let allow = ClientRequest::SetReplier {
+        actor: bob.identity(),
+        choice: Some(ReplierChoice::Allow),
+    };
+    call(&alice, allow).await;
+
     let file = dir.path().join("alice.ospbackup");
     let info = export(&alice, &file, true).await;
     assert_eq!((info.posts, info.follows, info.followers), (3, 1, 1));
@@ -600,6 +648,13 @@ async fn a_backup_brings_back_posts_follows_followers_and_media() {
 
     // Carol's reshare still vouches for her.
     assert_eq!(resharers(&alice, alices_post).await, Some(1));
+
+    // Carol's reply and the photo's policy are back, and so is her own reply.
+    assert_eq!(
+        thread(&alice, alices_post).await,
+        (ReplyPolicy::Circle, vec!["nice".to_string()])
+    );
+    assert_eq!(sent_replies(&alice).await, ["great bars"]);
 
     // Whom she trusted, and let connect directly, she still does.
     let ClientResponse::Trust { trusted, .. } = call(&alice, ClientRequest::TrustRequests).await
