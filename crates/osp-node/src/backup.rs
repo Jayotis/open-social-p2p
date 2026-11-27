@@ -40,7 +40,7 @@ use tokio::io::{AsyncWrite, AsyncWriteExt, BufWriter};
 use tracing::warn;
 
 use crate::{
-    db::{BlobClass, Db, VouchTables, now_ms},
+    db::{BlobClass, Db, ReplyTables, VouchTables, now_ms},
     home::Home,
     keys::{self, Signer},
     node::Core,
@@ -151,6 +151,11 @@ struct Manifest {
     /// told it tell only once. Files made before have none.
     #[serde(default)]
     vouches: VouchTables,
+    /// Replies to own posts and their answers, reply policies, who may
+    /// reply or is blocked, replies sent, and deletes of replies (ADR 0028).
+    /// Files made before have none.
+    #[serde(default)]
+    replies: ReplyTables,
 }
 
 /// A node trusted, and whose it is: the identity whose profile listed it,
@@ -476,6 +481,7 @@ impl Core {
         }
         manifest.direct_contacts = self.db.direct_contacts()?;
         manifest.vouches = self.db.vouch_tables()?;
+        manifest.replies = self.db.reply_tables()?;
         let mut media_missing = 0;
         if media {
             for (blob, class) in self.db.blobs()? {
@@ -647,6 +653,10 @@ impl BackupFile {
         }
         // Vouches are signed by others and hold wherever the node is.
         let vouches = db.restore_vouch_tables(&m.vouches)?;
+        let replies = db.restore_reply_tables(&m.replies, &me)?;
+        if replies > 0 {
+            tracing::info!(replies, "replies restored");
+        }
         let dir = home.restored_media();
         fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
         for media in &m.media {

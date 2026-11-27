@@ -33,6 +33,7 @@ mod likes;
 mod opened;
 mod profiles;
 mod replies;
+mod reply_backup;
 mod sent_replies;
 mod universe;
 mod vouches;
@@ -40,6 +41,7 @@ pub(crate) use carriers::{DAY_MS, Probationer, SUGGESTION_DAYS};
 pub use hide::Applied as HideApplied;
 pub(crate) use likes::{HeldLike, SentLike};
 pub(crate) use replies::{Choice, Held, ReceivedReply, ReplyRow};
+pub(crate) use reply_backup::ReplyTables;
 pub(crate) use sent_replies::SentReply;
 pub(crate) use vouches::{GivenCredit, NewVouch, SideVouch, VouchKind, VouchTables};
 
