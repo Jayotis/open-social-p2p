@@ -524,6 +524,12 @@ impl Core {
             info!(%author, post = %d.object.fmt_short(), "a post was deleted by its author");
         }
         self.store.let_go(&deleted.files).await;
+        // A resharer that stopped hosting isn't asked for the files again.
+        if !deleted.unhosted.is_empty() {
+            for node in self.nodes_of(&d.actor) {
+                self.db.forget_hosts(&deleted.unhosted, &node)?;
+            }
+        }
         self.lock_holds().remove(&d.object);
         self.drop_listed(&d.object, &d.actor)?;
         if deleted.ours {

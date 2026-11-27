@@ -1102,6 +1102,17 @@ impl Node {
         self.core.db.blob_class(hash)
     }
 
+    /// The nodes this node remembers as hosts of `hash`. For tests.
+    pub fn hosts_of(&self, hash: &BlobHash) -> Result<Vec<EndpointId>> {
+        Ok(self
+            .core
+            .db
+            .hosts(hash)?
+            .into_iter()
+            .map(|a| a.id)
+            .collect())
+    }
+
     /// Whether this node keeps a tombstone for `id`: its author deleted it
     /// (ADR 0019). For tests.
     pub fn knows_deleted(&self, id: &ObjectId) -> Result<bool> {

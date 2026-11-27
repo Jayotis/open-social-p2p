@@ -324,6 +324,41 @@ async fn a_deleted_hosting_reshare_leaves_what_a_follow_fetches_ahead() {
     }
 }
 
+/// A follower forgets a resharer's node as a host of the files once the
+/// hosting reshare is deleted, and keeps the author's.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_deleted_hosting_reshare_is_no_longer_a_host() {
+    let dir = tempfile::tempdir().unwrap();
+    let alice = start(dir.path(), "Alice").await;
+    let bob = start(dir.path(), "Bob").await;
+    let carol = start(dir.path(), "Carol").await;
+
+    // Bob hosts Alice's photo; Carol follows them both.
+    let (photo_post, photo) = post_photo(&alice, dir.path(), "a photo").await;
+    follow(&bob, &alice).await;
+    assert_eq!(feed_texts(&bob).await, ["a photo"]);
+    let bobs = reshare(&bob, photo_post, true).await;
+    follow(&carol, &alice).await;
+    follow(&carol, &bob).await;
+    feed_texts(&carol).await;
+    let hosts = carol.hosts_of(&photo).unwrap();
+    assert!(hosts.contains(&bob.node_id()), "{hosts:?}");
+    assert!(hosts.contains(&alice.node_id()), "{hosts:?}");
+
+    // Bob stops hosting: Carol keeps the post through Alice, and Bob's node
+    // is no longer one to ask.
+    call(&bob, delete(bobs)).await;
+    assert_eq!(feed_texts(&carol).await, ["a photo"]);
+    assert!(carol.knows_deleted(&bobs).unwrap());
+    let hosts = carol.hosts_of(&photo).unwrap();
+    assert!(!hosts.contains(&bob.node_id()), "{hosts:?}");
+    assert!(hosts.contains(&alice.node_id()), "{hosts:?}");
+
+    for node in [alice, bob, carol] {
+        node.shutdown().await.unwrap();
+    }
+}
+
 /// ADR 0019's "a fetch under way when the delete arrives": a file is kept
 /// only while a post here names it, so one whose post went while it came
 /// is let go once it's here.
