@@ -1317,17 +1317,37 @@ impl Db {
             .is_some())
     }
 
-    /// Stops hosting `blobs` for others, keeping them as cache, now that the
-    /// owner deleted the reshare that promised to host them (ADR 0019).
-    pub fn stop_hosting(&self, blobs: &[BlobHash]) -> Result<()> {
+    /// Stops hosting `blobs` for others, now that the owner deleted the
+    /// reshare that promised to host them (ADR 0019): those in `ahead` are
+    /// kept as fetched ahead of time, as a follow would have fetched them,
+    /// the rest as cache.
+    pub fn stop_hosting(&self, blobs: &[BlobHash], ahead: &[BlobHash]) -> Result<()> {
         let conn = self.conn();
         for blob in blobs {
+            let class = match ahead.contains(blob) {
+                true => BlobClass::Prefetch,
+                false => BlobClass::Cache,
+            };
             conn.execute(
-                "UPDATE blobs SET class = 'cache' WHERE hash = ?1 AND class = 'replica'",
-                params![blob.to_string()],
+                "UPDATE blobs SET class = ?2 WHERE hash = ?1 AND class = 'replica'",
+                params![blob.to_string(), class.as_str()],
             )?;
         }
         Ok(())
+    }
+
+    /// Whether `post` by `author` comes to this node through a follow: its
+    /// author is followed, or someone followed reshared it.
+    pub fn comes_through_a_follow(&self, post: &ObjectId, author: &PublicKey) -> Result<bool> {
+        Ok(self.conn().query_row(
+            "SELECT EXISTS (SELECT 1 FROM follows WHERE actor = ?2)
+                 OR EXISTS (SELECT 1 FROM refs
+                            JOIN objects ON objects.id = refs.id
+                            JOIN follows ON follows.actor = objects.actor
+                            WHERE refs.ref = ?1 AND objects.kind = 'Announce')",
+            params![post.to_string(), author.to_string()],
+            |row| row.get(0),
+        )?)
     }
 
     /// The posts the owner reshared, each with its author, from the outbox.
