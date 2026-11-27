@@ -1579,6 +1579,7 @@ fn builder_publishing(
     // they find passes the relay policy first.
     let mut builder = Endpoint::builder(presets::N0)
         .transport_config(transport)
+        .dns_resolver(relays.dns().clone())
         .clear_address_lookup()
         .address_lookup(Checked::new(lookup.clone(), relays.clone()));
     if net.address_lookup {
