@@ -3024,6 +3024,46 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn an_upload_cap_holds_serving_to_its_rate() {
+        // Kim's node serves her own 2 MiB file with an 8 Mbit/s cap.
+        let kim = Fixture::new().await;
+        let kims_store = kim.open_with_quotas(64).await;
+        let path = kim.dir.path().join("video");
+        let data = noise(2);
+        std::fs::write(&path, &data).unwrap();
+        let (blob, size) = kims_store.import(&path, BlobClass::Own).await.unwrap();
+        let serving = ServingConfig {
+            max_upload_mbps: 8,
+            ..ServingConfig::default()
+        };
+        let (blobs, rules) = kims_store.protocol(&serving, &SwarmConfig::default());
+        let router = Router::builder(kim.endpoint.clone())
+            .accept(iroh_blobs::ALPN, blobs)
+            .spawn();
+
+        // Alice fetches it over loopback, which on its own takes milliseconds.
+        let alice = Fixture::new().await;
+        alice.lookup.add_endpoint_info(kim.endpoint.addr());
+        let store = alice.open_with_quotas(64).await;
+        let sources = plain_sources(vec![kim.endpoint.id()], Vec::new());
+        let started = Instant::now();
+        let got = store
+            .download(&blob, sources, BlobClass::Cache, size)
+            .await
+            .unwrap();
+        let took = started.elapsed();
+        assert_eq!(got, size);
+
+        // At 1 MB/s, all but the first 16 KiB block take at least 2.08 s.
+        // An upper bound only says it wasn't stuck.
+        let at_cap = Duration::from_secs_f64((size - 16 * KB) as f64 / 1_000_000.0);
+        assert!(took >= at_cap.mul_f64(0.95), "{took:?} for {size} bytes");
+        assert!(took < Duration::from_secs(15), "{took:?}");
+        rules.abort();
+        router.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
     async fn the_part_a_node_cant_send_goes_to_another() {
         let f = Fixture::new().await;
         let store = f.open_with_quotas(64).await;
