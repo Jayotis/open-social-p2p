@@ -288,6 +288,42 @@ async fn a_follower_that_was_away_hears_at_its_next_sync() {
     }
 }
 
+/// Deleting a hosting reshare ends the hosting, but a file the owner would
+/// have fetched ahead anyway stays fetched ahead, not cache that goes first.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_deleted_hosting_reshare_leaves_what_a_follow_fetches_ahead() {
+    let dir = tempfile::tempdir().unwrap();
+    let alice = start(dir.path(), "Alice").await;
+    let bob = start(dir.path(), "Bob").await;
+    let carol = start(dir.path(), "Carol").await;
+
+    // Bob follows Alice; Carol follows only Bob, and has the photo through
+    // his hosting reshare.
+    let (photo_post, photo) = post_photo(&alice, dir.path(), "a photo").await;
+    follow(&bob, &alice).await;
+    assert_eq!(feed_texts(&bob).await, ["a photo"]);
+    assert_eq!(bob.blob_class(&photo).unwrap(), Some(BlobClass::Prefetch));
+    let bobs = reshare(&bob, photo_post, true).await;
+    assert_eq!(bob.blob_class(&photo).unwrap(), Some(BlobClass::Replica));
+    follow(&carol, &bob).await;
+    assert_eq!(feed_texts(&carol).await, ["a photo"]);
+    assert_eq!(carol.blob_class(&photo).unwrap(), Some(BlobClass::Prefetch));
+
+    // Carol hosts it too, then stops: Bob's reshare still brings it.
+    let carols = reshare(&carol, photo_post, true).await;
+    assert_eq!(carol.blob_class(&photo).unwrap(), Some(BlobClass::Replica));
+    call(&carol, delete(carols)).await;
+    assert_eq!(carol.blob_class(&photo).unwrap(), Some(BlobClass::Prefetch));
+
+    // Bob stops hosting; he follows Alice.
+    call(&bob, delete(bobs)).await;
+    assert_eq!(bob.blob_class(&photo).unwrap(), Some(BlobClass::Prefetch));
+
+    for node in [alice, bob, carol] {
+        node.shutdown().await.unwrap();
+    }
+}
+
 /// A follower forgets a resharer's node as a host of the files once the
 /// hosting reshare is deleted, and keeps the author's.
 #[tokio::test(flavor = "multi_thread")]

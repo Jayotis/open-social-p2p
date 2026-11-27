@@ -598,7 +598,9 @@ impl Core {
     }
 
     /// A seed carrier's descriptor is asked for again next time, in case the
-    /// hop restarted.
+    /// hop restarted. Only after a refused build: a download that broke on a
+    /// circuit the descriptor built says nothing against it, and asking
+    /// again costs seconds.
     fn forget_descriptor(&self, machine: &EndpointId) {
         self.seed_descriptors.forget(machine);
     }
@@ -632,7 +634,7 @@ impl Core {
                 Err(e) => {
                     debug!(machine = %m.machine.fmt_short(), "the fetch through a machine in the middle failed; without it: {e:#}");
                     self.middle_failed(m);
-                    self.fetch_through_hops(blob, host, offer, &hops, job)
+                    self.fetch_through_hops(blob, host, offer, &hops, &my_hop, job)
                         .await
                         .map(|size| (size, false))
                 }
@@ -642,7 +644,7 @@ impl Core {
                 .await
                 .map(|size| (size, false)),
         };
-        let (size, through_middle) = fetched.inspect_err(|_| self.forget_descriptor(&my_hop))?;
+        let (size, through_middle) = fetched?;
         // Only the hops that carried it are credited.
         let middle = middle.filter(|_| through_middle);
         if let Some(m) = &middle {
@@ -666,16 +668,21 @@ impl Core {
         Ok(size)
     }
 
-    /// One try at fetching `blob` through a circuit through `hops`.
+    /// One try at fetching `blob` through a circuit through `hops`, the
+    /// first of them this node's own hop `my_hop`.
     async fn fetch_through_hops(
         &self,
         blob: &BlobHash,
         host: EndpointId,
         offer: &CircuitOffer,
         hops: &[Descriptor],
+        my_hop: &EndpointId,
         job: (BlobClass, u64),
     ) -> Result<u64> {
-        let circuit = self.open(blob, offer, hops).await?;
+        let circuit = self
+            .open(blob, offer, hops)
+            .await
+            .inspect_err(|_| self.forget_descriptor(my_hop))?;
         self.download_over(circuit, None, blob, host, offer, job)
             .await
     }

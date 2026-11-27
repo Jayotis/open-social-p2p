@@ -1316,7 +1316,7 @@ impl Core {
 /// Media of a new post worth fetching ahead of time.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Wanted {
-    blob: BlobHash,
+    pub(crate) blob: BlobHash,
     /// The size its post declares.
     size: u64,
     /// Who made the post.
@@ -1594,7 +1594,7 @@ pub(crate) fn random_fraction() -> f64 {
 /// A post's media worth fetching ahead of time: thumbnails always, media
 /// files up to `MAX_PREFETCH_BYTES`. `tracker` is the followed node it came
 /// from, if that node keeps track of its followers' copies.
-fn prefetchable(note: &Note, tracker: Option<&EndpointAddr>) -> Vec<Wanted> {
+pub(crate) fn prefetchable(note: &Note, tracker: Option<&EndpointAddr>) -> Vec<Wanted> {
     let mut wanted = Vec::new();
     let mut add = |blob, size| {
         wanted.push(Wanted {
