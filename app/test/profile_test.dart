@@ -357,9 +357,7 @@ void main() {
       expect(find.text('Choose a photo'), findsOneWidget);
     });
 
-    testWidgets('your letter is your star, as everywhere else', (
-      tester,
-    ) async {
+    testWidgets('your letter is your star, as everywhere else', (tester) async {
       await edit(tester, profileOf('Me', own: true));
       InitialAvatar letter() =>
           tester.widget<InitialAvatar>(find.byType(InitialAvatar));
