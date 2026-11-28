@@ -30,8 +30,8 @@ use iroh::{
     },
 };
 use osp_proto::{
-    BlobHash, CLIENT_ALPN, NOT_ALLOWED, NOT_PAIRED, ObjectId, PairingRelays, PairingTicket,
-    connected,
+    BlobHash, CLIENT_ALPN, CODE_TURNED_DOWN, NOT_ALLOWED, NOT_PAIRED, ObjectId, PairingRelays,
+    PairingTicket, connected,
     framing::{read_frame, write_frame},
     rpc::{
         ClientRequest, ClientResponse, FeedItem, IconChange, PersonInfo, ProfileInfo,
@@ -426,7 +426,14 @@ impl Client {
             secret: data_encoding::HEXLOWER.encode(&ticket.secret),
             name: device_name.to_string(),
         };
-        let resp = request_on(&conn, &req, REPLY_TIMEOUT).await?;
+        // Straight to the node's address, a code it doesn't hold is turned
+        // away just after the handshake.
+        let resp = match request_on(&conn, &req, REPLY_TIMEOUT).await {
+            Err(_) if conn.close_reason().is_some_and(|why| turned_away(&why)) => {
+                bail!(CODE_TURNED_DOWN)
+            }
+            resp => resp?,
+        };
         let ClientResponse::Paired { identity, name } = check(resp)? else {
             bail!("unexpected reply to Pair");
         };
@@ -1107,11 +1114,12 @@ impl Client {
             .context("can't reach the home node")?;
         match connected {
             Ok(conn) => Ok(conn),
-            // Reached, and turned away. A code that was used or ran out is
-            // turned away too, and that isn't this.
-            Err(ConnectingError::ConnectionError { source, .. })
-                if !pairing && turned_away(&source) =>
-            {
+            // Reached, and turned away: with a code, the code; without one, a
+            // device the node forgot.
+            Err(ConnectingError::ConnectionError { source, .. }) if turned_away(&source) => {
+                if pairing {
+                    bail!(CODE_TURNED_DOWN)
+                }
                 bail!(NOT_PAIRED)
             }
             Err(e) => Err(anyhow::Error::new(e).context("can't reach the home node")),

@@ -304,7 +304,8 @@ async fn phone_pairs_posts_plays_and_is_revoked() {
     let thief = Client::open(&dir.path().join("thief"), ClientOptions::local_test())
         .await
         .unwrap();
-    assert!(thief.pair(&ticket, "Thief").await.is_err());
+    let err = thief.pair(&ticket, "Thief").await.unwrap_err();
+    assert_eq!(err.to_string(), osp_proto::CODE_TURNED_DOWN, "{err:#}");
 
     // A device that knows the node's address but never paired is refused.
     let stranger_dir = dir.path().join("stranger");

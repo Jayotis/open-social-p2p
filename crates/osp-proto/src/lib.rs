@@ -48,6 +48,12 @@ pub const CLIENT_ALPN: &[u8] = b"osp/client/0";
 /// pairing again.
 pub const NOT_PAIRED: &str = "this device isn't paired with this node";
 
+/// What pairing says when the node turns the code away, whether the node
+/// answers or its direct endpoint refuses the connection. Which it was, used
+/// or out of time, isn't told: a stranger holding the code would learn it too.
+pub const CODE_TURNED_DOWN: &str = "your node turned this pairing code down: it was already used, \
+     or it's more than 10 minutes old. Run `osp pair` on the node for a new one";
+
 /// The code a node's direct endpoint closes a connection with when its key
 /// isn't let in, once the handshake has shown whose it is.
 pub const NOT_ALLOWED: u32 = 403;
