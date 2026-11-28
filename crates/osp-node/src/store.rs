@@ -3157,6 +3157,47 @@ mod tests {
         assert!(again < 0.6, "{again}");
     }
 
+    /// A download in progress holds its promised space: the collector runs
+    /// and another download makes room in the cache while it goes on, and
+    /// neither touches what has arrived of it. (The blob store keeps a blob
+    /// that's being written out of the collector's sweep by itself, so this
+    /// passes without the download's temp tag too; that tag covers the
+    /// moments between writes, as before `keep` gives the blob its class.)
+    #[tokio::test]
+    async fn a_download_in_progress_survives_the_collector_and_a_full_cache() {
+        let f = Fixture::new().await;
+        let store = f.open_with_quotas(4).await;
+        let old = f.add(&store, 1, 1 << 20, BlobClass::Cache).await;
+        // 128 blocks of 16 KiB at 30 ms each: about 4 s.
+        let data = noise(2);
+        let size = data.len() as u64;
+        let (slow, hash) = f.slow_provider(&data, Duration::from_millis(30)).await;
+        let blob = to_blob_hash(hash);
+        let sources = plain_sources(vec![slow.id()], Vec::new());
+        let downloading = store.download(&blob, sources, BlobClass::Cache, size);
+        let meanwhile = async {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            // The 2 MB in flight count: 3 MB more is over the 4 MB quota.
+            let err = store.reserve(BlobClass::Cache, 3 << 20).await.err();
+            let err = format!("{:#}", err.expect("refused"));
+            assert!(err.contains("downloads in progress"), "{err}");
+            // 2 MB more fits only if the older cached file goes, not the
+            // download's partial, which has no class yet.
+            drop(store.reserve(BlobClass::Cache, 2 << 20).await.unwrap());
+            assert_eq!(f.db.blob_class(&old).unwrap(), None);
+            assert!(collected(&store, &old).await, "the collector ran");
+            tokio::time::sleep(GC_SOON * 10).await;
+            assert!(!store.has(&blob).await.unwrap(), "still downloading");
+        };
+        let (got, ()) = tokio::join!(downloading, meanwhile);
+        assert_eq!(got.unwrap(), size);
+        // Nothing that arrived was deleted and fetched again.
+        let sent = f.record(slow.id()).received_bytes / size as f64;
+        assert!(sent < 1.05, "{sent}");
+        assert_eq!(f.db.blob_class(&blob).unwrap(), Some(BlobClass::Cache));
+        assert_eq!(store.lock_reserved().values().sum::<u64>(), 0);
+    }
+
     /// Stage D's n0 step (2026-11-22, 23): a node sent 83.7 MB of a video,
     /// then no more of it, and the download waited out its 30 minutes on it
     /// without asking the next node. One node here stops sending mid-blob;
