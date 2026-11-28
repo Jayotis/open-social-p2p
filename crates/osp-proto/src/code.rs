@@ -263,4 +263,22 @@ mod tests {
         assert_eq!(OspCode::find_in(&text), Some(post));
         assert_eq!(OspCode::find_in("no code here, osp: nothing"), None);
     }
+
+    /// The app shares a code as a link, `https://osp2p.com/o#<code>`, so
+    /// mail and chat apps make it tappable. The code is the link's fragment,
+    /// which browsers never send to the site, and reads as itself.
+    #[test]
+    fn finds_the_code_in_its_link() {
+        let person = OspCode::Person(ticket());
+        let post = OspCode::Post {
+            id: post_id(),
+            by: ticket(),
+        };
+        for code in [person, post] {
+            let link = format!("https://osp2p.com/o#{code}");
+            assert_eq!(OspCode::find_in(&link), Some(code.clone()));
+            let shared = format!("Tap this link, or paste it into Invite and follow:\n\n{link}");
+            assert_eq!(OspCode::find_in(&shared), Some(code));
+        }
+    }
 }

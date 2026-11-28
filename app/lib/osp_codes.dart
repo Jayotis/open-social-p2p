@@ -14,8 +14,26 @@ import 'src/rust/api/osp.dart';
 const installGuide =
     'https://github.com/Jayotis/open-social-p2p/blob/main/docs/install.md'; // not shown
 
+/// A shared code as a link, so mail and chat apps make it tappable: a page
+/// on the project site that opens the app, which Android and iOS open
+/// without asking the site when OSP is installed (ADR 0039 §4). The code is
+/// the link's fragment, which browsers never send to the site. Pasted into
+/// Invite and follow, the whole link reads as its code.
+String codeLink(String code) => 'https://osp2p.com/o#$code';
+
+/// A tapped link as text to find a code in, with any `%3A`-style escapes
+/// an app added on the way undone.
+String linkText(Uri uri) {
+  final text = uri.toString();
+  try {
+    return Uri.decodeFull(text);
+  } on ArgumentError {
+    return text;
+  }
+}
+
 /// What sharing a profile says, for people who don't have OSP yet, with
-/// the code last so it's easy to copy.
+/// the code's link last so it's easy to tap or copy.
 String personShareText({
   required String name,
   required String code,
@@ -25,11 +43,12 @@ String personShareText({
       ? "I'm on Open Social P2P."
       : '${name.isEmpty ? 'Someone' : name} is on Open Social P2P.';
   return '$who To follow ${own ? 'me' : 'them'}, get OSP ($installGuide), '
-      'then paste this code into Invite and follow:\n\n$code';
+      'then tap this link, or paste it into Invite and follow:\n\n'
+      '${codeLink(code)}';
 }
 
 /// What sharing a post says: its first lines, who wrote it, how to get
-/// OSP, and the code.
+/// OSP, and the code's link.
 String postShareText({
   required String author,
   required String text,
@@ -40,9 +59,9 @@ String postShareText({
   return [
     if (quote.isNotEmpty) '“$quote”',
     '$by, on Open Social P2P. To open it, get OSP ($installGuide), then '
-        'paste this code into Invite and follow:',
+        'tap this link, or paste it into Invite and follow:',
     '',
-    code,
+    codeLink(code),
   ].join('\n');
 }
 
