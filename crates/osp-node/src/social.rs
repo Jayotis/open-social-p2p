@@ -529,8 +529,8 @@ impl Core {
                 self.reshared(remote, &announce, &profile)?;
                 SocialResponse::Ok
             }
-            SocialRequest::FoundEarly { credit, profile } => {
-                self.found_early(remote, &credit, &profile)?;
+            SocialRequest::Vouch { vouch, profile } => {
+                self.vouched(remote, &vouch, &profile)?;
                 SocialResponse::Ok
             }
             SocialRequest::WhoVouched => {

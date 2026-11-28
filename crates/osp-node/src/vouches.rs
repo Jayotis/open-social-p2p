@@ -1,39 +1,46 @@
-//! Who vouched for this node's owner (ADR 0029).
+//! Vouches (ADR 0029).
 //!
-//! Bob reshares Jimmy's post. Bob's node tells Jimmy's (`Reshared`), and
-//! Jimmy's node keeps Bob's `Announce` as a vouch for Jimmy. When a post of
-//! Jimmy's has 10 different resharers within 7 days of its first, Jimmy's node
-//! credits the first 3 it heard of with finding it early: it signs a
-//! `FoundEarly` for each and sends it to that finder's node, which keeps it as
-//! a vouch for its owner. This is how a hunter is vouched for.
+//! Bob reshares Jimmy's post. Bob's node tells Jimmy's (`Reshared`), which
+//! keeps it as a record of who reshared. That isn't a vouch (section 7):
+//! once the reshare has stood 10 minutes, Bob's node signs a `Vouch` for
+//! Jimmy, valid 30 days, and sends it to Jimmy's node, which holds it. Bob's
+//! node renews it around day 20 while Bob reshared Jimmy in the last 90
+//! days and hasn't blocked him. When a post of Jimmy's has 10 different
+//! resharers within 7 days of its first, Jimmy's node credits the first 3
+//! it heard of with finding it early: a found-early `Vouch` for each,
+//! renewed the same way unless Jimmy blocks them. This is how a hunter is
+//! vouched for. Nothing takes a vouch back: it runs out, and every node
+//! that reads one checks `valid_until` against its own clock.
 
-use std::{collections::HashSet, time::Duration};
+use std::{collections::HashMap, collections::HashSet, time::Duration};
 
 use anyhow::{Context, Result, bail, ensure};
 use iroh::{EndpointAddr, EndpointId, PublicKey};
 use osp_proto::{
-    FoundEarly, ObjectId, Payload, SignedObject,
+    ObjectId, Payload, SignedObject, Vouch, VouchKind,
     connected::How,
+    rpc::BlockTarget,
     social::{CarriedVouch, MAX_SIDE_VOUCHES, MAX_VOUCHES_ANSWERED, SocialRequest, SocialResponse},
 };
 use tracing::{debug, info, warn};
 
 use crate::{
-    db::{GivenCredit, NewVouch, SideVouch, VouchKind, now_ms},
+    db::{GivenVouch, HeldVouch, NewVouch, SideVouch, now_ms},
     node::Core,
     social::profile_date,
     sync::{jitter, random_fraction},
 };
 
-/// Vouches by reshare kept at most. Past it, those of the oldest posts go.
+/// Reshares of the owner's posts kept at most. Past it, those of the
+/// oldest posts go.
 pub(crate) const MAX_RESHARE_VOUCHES: usize = 10_000;
-/// Found-early credits kept at most: one for each of the owner's reshares
-/// that took off, so far fewer.
-pub(crate) const MAX_CREDITS_KEPT: usize = 1_000;
-/// New resharers, from everyone together, taken an hour. Past it they're
-/// refused, so a flood can't push out the real ones.
+/// Vouches held for the owner at most, one per voucher and kind. Past it,
+/// those that run out soonest go.
+pub(crate) const MAX_HELD_VOUCHES: usize = 10_000;
+/// New resharers and vouchers, from everyone together, taken an hour. Past
+/// it they're refused, so a flood can't push out the real ones.
 pub(crate) const MAX_NEW_RESHARERS_PER_HOUR: u32 = 200;
-/// Credits one node may send an hour.
+/// Found-early vouches one node may send an hour.
 pub(crate) const MAX_CREDITS_FROM_NODE_PER_HOUR: u32 = 10;
 /// Different resharers a post needs, within `CREDIT_WINDOW` of its first,
 /// for its first finders to be credited.
@@ -41,10 +48,27 @@ pub(crate) const RESHARERS_FOR_CREDIT: usize = 10;
 pub(crate) const CREDIT_WINDOW: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 /// Finders credited for one post.
 pub(crate) const FINDERS_CREDITED: usize = 3;
+/// How long a reshare stands before it vouches: one deleted sooner, a
+/// mis-tap, never does.
+pub(crate) const VOUCH_AFTER: Duration = Duration::from_secs(10 * 60);
+/// How long a vouch is valid.
+pub(crate) const VOUCH_VALID: Duration = Duration::from_secs(30 * 24 * 60 * 60);
+/// Reshares this recent keep renewing a vouch for resharing.
+pub(crate) const RESHARES_VOUCH_FOR: Duration = Duration::from_secs(90 * 24 * 60 * 60);
+/// A vouch is renewed at a random time this long after it was signed, so
+/// the node can be off for 10 days or more without it lapsing, and a block
+/// doesn't show by the day renewals stop.
+pub(crate) const RENEW_AFTER: (Duration, Duration) = (
+    Duration::from_secs(17 * 24 * 60 * 60),
+    Duration::from_secs(20 * 24 * 60 * 60),
+);
+/// How far past `VOUCH_VALID` from now a vouch taken may say it's valid:
+/// clocks differ.
+const CLOCKS_DIFFER: Duration = Duration::from_secs(24 * 60 * 60);
 /// The owner's reshares told to their authors' nodes in one daily pass, at
 /// most, newest first: the rest the next day.
 const RESHARES_TOLD_A_PASS: usize = 100;
-/// How often untold reshares and credits are tried again.
+/// How often untold reshares and vouches are tried again.
 const TOLD_AGAIN_EVERY: Duration = Duration::from_secs(24 * 60 * 60);
 /// "Who vouched for you" answered for one node an hour.
 pub(crate) const MAX_VOUCH_QUESTIONS_PER_HOUR: u32 = 10;
@@ -58,10 +82,14 @@ const GATHER_EVERY: Duration = Duration::from_secs(24 * 60 * 60);
 /// How long one node gets to answer "who vouched for you".
 const QUESTION_TIMEOUT: Duration = Duration::from_secs(60);
 
+fn ms(d: Duration) -> i64 {
+    d.as_millis() as i64
+}
+
 impl Core {
     /// The node `remote` says its owner reshared one of this node's owner's
-    /// posts. Kept as a vouch, with the resharer's profile; then, if the post
-    /// has taken off, its first finders are credited.
+    /// posts. Kept as a record of who reshared, with the resharer's profile;
+    /// then, if the post has taken off, its first finders are credited.
     pub(crate) fn reshared(
         &self,
         remote: EndpointId,
@@ -94,10 +122,9 @@ impl Core {
         // To be kept: checked against the keys this node knows of now (ADR 0010).
         self.keys_current(&[profile, announce])?;
         let now = now_ms();
-        let new = !self.db.has_vouch(VouchKind::Reshare, &a.object, &a.actor)?;
+        let new = !self.db.has_vouch(&a.object, &a.actor)?;
         self.db.add_vouch(
             &NewVouch {
-                kind: VouchKind::Reshare,
                 post: a.object,
                 voucher: a.actor,
                 signed: announce,
@@ -141,81 +168,198 @@ impl Core {
         if within < RESHARERS_FOR_CREDIT {
             return Ok(false);
         }
-        let me = self.signer.identity();
-        let published = osp_proto::now_rfc3339();
-        let mut credits = Vec::new();
-        for (finder, _) in resharers.iter().take(FINDERS_CREDITED) {
-            let signed = self.signer.sign(&Payload::FoundEarly(FoundEarly {
-                actor: me,
-                post: *post,
-                finder: *finder,
-                published: published.clone(),
-            }))?;
-            credits.push(GivenCredit {
-                post: *post,
-                finder: *finder,
-                signed,
-            });
-        }
-        self.db.add_credits(&credits)?;
+        let finders: Vec<PublicKey> = resharers
+            .iter()
+            .take(FINDERS_CREDITED)
+            .map(|(finder, _)| *finder)
+            .collect();
+        self.db.add_credits(post, &finders)?;
         info!(post = %post.fmt_short(), "a post took off; credited its first finders");
         Ok(true)
     }
 
-    /// The node `remote` says its owner credits this node's owner with
-    /// finding one of their posts early. Kept as a vouch, with the author's
-    /// profile, if this node's owner did reshare that post.
-    pub(crate) fn found_early(
+    /// The node `remote` says its owner vouches for this node's owner: a
+    /// new or renewed `Vouch`, with the voucher's profile. Held until it
+    /// runs out, unless one valid longer is held.
+    pub(crate) fn vouched(
         &self,
         remote: EndpointId,
-        credit: &SignedObject,
+        vouch: &SignedObject,
         profile: &SignedObject,
     ) -> Result<()> {
         let me = self.signer.identity();
-        let Payload::FoundEarly(f) = credit.verify()? else {
-            bail!("that isn't a found-early credit");
-        };
-        ensure!(
-            f.finder == me && f.actor != me,
-            "that credit isn't for this node's owner"
-        );
-        let profile_ms = check_profile(remote, f.actor, profile)?;
-        ensure!(
-            self.credit_senders
-                .allow(remote, MAX_CREDITS_FROM_NODE_PER_HOUR),
-            "this node takes no more credits from yours this hour; try again later"
-        );
-        ensure!(
-            self.db.owner_reshared(&me, &f.post)?,
-            "this node's owner didn't reshare {}",
-            f.post.fmt_short()
-        );
-        ensure!(
-            self.stored_note(&f.post)?
-                .is_some_and(|note| note.actor == f.actor),
-            "that credit isn't from the post's author"
-        );
-        self.keys_current(&[profile, credit])?;
         let now = now_ms();
-        self.db.add_vouch(
-            &NewVouch {
-                kind: VouchKind::FoundEarly,
-                post: f.post,
-                voucher: f.actor,
-                signed: credit,
-                post_ms: osp_proto::parse_rfc3339_ms(&f.published).unwrap_or(now),
+        let (voucher, subject, _) = vouch_parts_at(vouch, now)?;
+        ensure!(subject == me, "that vouch isn't for this node's owner");
+        let Payload::Vouch(v) = vouch.verify()? else {
+            bail!("that isn't a vouch");
+        };
+        let valid_until_ms =
+            osp_proto::parse_rfc3339_ms(&v.valid_until).context("the vouch has no valid date")?;
+        ensure!(
+            valid_until_ms <= now + ms(VOUCH_VALID + CLOCKS_DIFFER),
+            "a vouch is valid 30 days at most"
+        );
+        let profile_ms = check_profile(remote, voucher, profile)?;
+        if v.kind == VouchKind::FoundEarly {
+            ensure!(
+                self.credit_senders
+                    .allow(remote, MAX_CREDITS_FROM_NODE_PER_HOUR),
+                "this node takes no more credits from yours this hour; try again later"
+            );
+        }
+        if !self.db.knows_voucher(&voucher)?
+            && !self
+                .new_resharers
+                .allow(self.endpoint.id(), MAX_NEW_RESHARERS_PER_HOUR)
+        {
+            debug!(voucher = %voucher.fmt_short(), "too many new vouchers this hour");
+            bail!("this node takes no more new vouchers this hour; try again later");
+        }
+        // To be held: checked against the keys this node knows of now (ADR 0010).
+        self.keys_current(&[profile, vouch])?;
+        let held = self.db.hold_vouch(
+            &HeldVouch {
+                voucher,
+                kind: v.kind,
+                signed: vouch,
+                valid_until_ms,
                 now_ms: now,
                 profile,
                 profile_ms,
             },
-            MAX_CREDITS_KEPT,
+            MAX_HELD_VOUCHES,
         )?;
-        info!(
-            author = %f.actor.fmt_short(),
-            post = %f.post.fmt_short(),
-            "credited with finding a post early"
+        debug!(
+            voucher = %voucher.fmt_short(),
+            kind = ?v.kind,
+            held,
+            "a voucher's node sent its vouch"
         );
         Ok(())
+    }
+
+    /// Signs the owner's vouches that are due at `now`: for each person the
+    /// owner reshared between 10 minutes and 90 days ago, and each they
+    /// credited with finding a post early, unless the owner blocked them,
+    /// a vouch if there's none or it's due for renewal. Forgets those that
+    /// ran out. Returns when the next is due, if one will be.
+    pub(crate) fn issue_vouches(&self, now: i64) -> Result<Option<i64>> {
+        let me = self.signer.identity();
+        let mut next: Option<i64> = None;
+        let soon = |at: i64, next: &mut Option<i64>| {
+            *next = Some(next.map_or(at, |n| n.min(at)));
+        };
+        // For each author, whether a reshare vouches now, and when the
+        // first still waiting will.
+        let mut authors: HashMap<PublicKey, (bool, Option<i64>)> = HashMap::new();
+        for (author, at) in self.db.own_reshare_dates(&me)? {
+            if author == me || at < now - ms(RESHARES_VOUCH_FOR) {
+                continue;
+            }
+            let entry = authors.entry(author).or_default();
+            let ready = at + ms(VOUCH_AFTER);
+            if ready <= now {
+                entry.0 = true;
+            } else {
+                entry.1 = Some(entry.1.map_or(ready, |r| r.min(ready)));
+            }
+        }
+        let mut wanted = Vec::new();
+        for (author, (vouches, waiting)) in authors {
+            if vouches {
+                wanted.push((author, VouchKind::Reshare));
+            } else if let Some(ready) = waiting {
+                soon(ready, &mut next);
+            }
+        }
+        for finder in self.db.credited_finders()? {
+            if finder != me {
+                wanted.push((finder, VouchKind::FoundEarly));
+            }
+        }
+        let mut signed_now = 0;
+        for (subject, kind) in wanted {
+            if self
+                .db
+                .is_blocked(&BlockTarget::Account { actor: subject })?
+            {
+                continue;
+            }
+            if let Some(given) = self.db.given_vouch(&subject, kind)?
+                && given.renew_ms > now
+            {
+                soon(given.renew_ms, &mut next);
+                continue;
+            }
+            let valid_until_ms = now + ms(VOUCH_VALID);
+            let (from, to) = (ms(RENEW_AFTER.0), ms(RENEW_AFTER.1));
+            let renew_ms = now + from + ((to - from) as f64 * random_fraction()) as i64;
+            let signed = self.signer.sign(&Payload::Vouch(Vouch {
+                actor: me,
+                subject,
+                kind,
+                valid_until: osp_proto::rfc3339_from_ms(valid_until_ms.max(0) as u64),
+                published: osp_proto::rfc3339_from_ms(now.max(0) as u64),
+            }))?;
+            self.db.put_given_vouch(&GivenVouch {
+                subject,
+                kind,
+                signed,
+                valid_until_ms,
+                renew_ms,
+                told: false,
+            })?;
+            soon(renew_ms, &mut next);
+            signed_now += 1;
+        }
+        self.db.drop_expired_given(now)?;
+        self.db.drop_expired_held(now)?;
+        if signed_now > 0 {
+            debug!(vouches = signed_now, "signed the owner's vouches");
+        }
+        Ok(next)
+    }
+
+    /// Sends each of the owner's vouches valid at `now` that its subject's
+    /// node doesn't have yet, unless the owner blocked them since. Returns
+    /// how many were taken.
+    pub(crate) async fn tell_vouched(&self, now: i64) -> Result<usize> {
+        let mut told = 0;
+        for given in self.db.untold_given_vouches(now)? {
+            if self.db.is_blocked(&BlockTarget::Account {
+                actor: given.subject,
+            })? {
+                continue;
+            }
+            match self.tell_vouch(&given).await {
+                Ok(()) => {
+                    self.db.given_vouch_told(&given.signed)?;
+                    told += 1;
+                }
+                Err(e) => debug!(
+                    subject = %given.subject.fmt_short(),
+                    "couldn't give someone the owner's vouch: {e:#}"
+                ),
+            }
+        }
+        Ok(told)
+    }
+
+    async fn tell_vouch(&self, given: &GivenVouch) -> Result<()> {
+        let mut nodes = self.nodes_of(&given.subject);
+        if nodes.is_empty() {
+            nodes = self.voucher_nodes(&given.subject)?;
+        }
+        let node = *nodes.first().context("no node known for them")?;
+        let req = SocialRequest::Vouch {
+            vouch: given.signed.clone(),
+            profile: self.profile(),
+        };
+        match self.social_request(&EndpointAddr::new(node), &req).await? {
+            SocialResponse::Ok => Ok(()),
+            other => bail!("unexpected reply to Vouch: {other:?}"),
+        }
     }
 
     /// Tells the node of the author of the post `announce` reshares of it.
@@ -264,40 +408,6 @@ impl Core {
         Ok(told)
     }
 
-    /// Sends each credit the owner gave that its finder's node doesn't have
-    /// yet. Returns how many were taken.
-    pub(crate) async fn tell_finders(&self) -> Result<usize> {
-        let mut told = 0;
-        for credit in self.db.untold_credits()? {
-            match self.tell_finder(&credit).await {
-                Ok(()) => {
-                    self.db.credit_told(&credit.post, &credit.finder)?;
-                    told += 1;
-                }
-                Err(e) => debug!(
-                    finder = %credit.finder.fmt_short(),
-                    "couldn't give a finder their credit: {e:#}"
-                ),
-            }
-        }
-        Ok(told)
-    }
-
-    async fn tell_finder(&self, credit: &GivenCredit) -> Result<()> {
-        let node = *self
-            .voucher_nodes(&credit.finder)?
-            .first()
-            .context("no node known for the finder")?;
-        let req = SocialRequest::FoundEarly {
-            credit: credit.signed.clone(),
-            profile: self.profile(),
-        };
-        match self.social_request(&EndpointAddr::new(node), &req).await? {
-            SocialResponse::Ok => Ok(()),
-            other => bail!("unexpected reply to FoundEarly: {other:?}"),
-        }
-    }
-
     /// The home nodes a voucher's kept profile lists.
     pub(crate) fn voucher_nodes(&self, actor: &PublicKey) -> Result<Vec<EndpointId>> {
         Ok(self
@@ -308,9 +418,9 @@ impl Core {
     }
 
     /// "Who vouched for your owner?" from the node `remote`: the newest vouch
-    /// of each voucher, at most `MAX_VOUCHES_ANSWERED`, each with its
-    /// voucher's profile. Vouches and profiles signed with keys their
-    /// identities revoked are left out.
+    /// of each voucher, of those still valid, at most `MAX_VOUCHES_ANSWERED`,
+    /// each with its voucher's profile. Vouches and profiles signed with
+    /// keys their identities revoked are left out.
     pub(crate) fn who_vouched(&self, remote: EndpointId) -> Result<Vec<CarriedVouch>> {
         ensure!(
             self.vouch_questions
@@ -318,7 +428,7 @@ impl Core {
             "this node answers no more of your questions about vouches this hour; try again later"
         );
         let mut vouches = Vec::new();
-        for kept in self.db.newest_vouches(MAX_SIDE_VOUCHES)? {
+        for kept in self.db.newest_vouches(now_ms(), MAX_SIDE_VOUCHES)? {
             if vouches.len() >= MAX_VOUCHES_ANSWERED {
                 break;
             }
@@ -335,8 +445,8 @@ impl Core {
         Ok(vouches)
     }
 
-    /// Gathers the owner's side (ADR 0029): who vouched for them (kept
-    /// here), then, asking their nodes, who vouched for those, then one step
+    /// Gathers the owner's side (ADR 0029): who vouched for them (held
+    /// here, still valid), then, asking their nodes, who vouched for those, then one step
     /// further back. Each voucher once, at the nearest step; at most
     /// `MAX_SIDE_VOUCHES` in all and `MAX_GATHER_REQUESTS` questions. Nodes
     /// that don't answer, or answer with what doesn't check out, are passed
@@ -348,7 +458,7 @@ impl Core {
         let mut side = Vec::new();
         // Whom to ask about next: each with the profile that names their nodes.
         let mut frontier = Vec::new();
-        for kept in self.db.newest_vouches(MAX_SIDE_VOUCHES)? {
+        for kept in self.db.newest_vouches(now_ms(), MAX_SIDE_VOUCHES)? {
             if self.db.signed_by_revoked_key(&kept.signed)? || !placed.insert(kept.voucher) {
                 continue;
             }
@@ -444,19 +554,32 @@ pub struct Gathered {
 }
 
 /// Who signed a vouch, whom it's for, and which kind it is. Checks its
-/// signatures.
+/// signatures, and that it's valid now by this node's clock: a reshare, or
+/// a vouch that ran out, counts for nothing (ADR 0029 section 7).
 pub(crate) fn vouch_parts(signed: &SignedObject) -> Result<(PublicKey, PublicKey, How)> {
-    let (voucher, subject, how) = match signed.verify()? {
-        Payload::Announce(a) => (a.actor, a.object_actor, How::Reshared),
-        Payload::FoundEarly(f) => (f.actor, f.finder, How::CreditedEarly),
+    vouch_parts_at(signed, now_ms())
+}
+
+/// `vouch_parts`, as of `now_ms`.
+pub(crate) fn vouch_parts_at(
+    signed: &SignedObject,
+    now_ms: i64,
+) -> Result<(PublicKey, PublicKey, How)> {
+    let v = match signed.verify()? {
+        Payload::Vouch(v) => v,
         other => bail!("a {} isn't a vouch", other.kind()),
     };
     ensure!(
-        signed.signer() == voucher,
+        signed.signer() == v.actor,
         "the vouch isn't signed by its voucher"
     );
-    ensure!(voucher != subject, "nobody vouches for themselves");
-    Ok((voucher, subject, how))
+    ensure!(v.actor != v.subject, "nobody vouches for themselves");
+    ensure!(v.valid_at(now_ms), "the vouch ran out");
+    let how = match v.kind {
+        VouchKind::Reshare => How::Reshared,
+        VouchKind::FoundEarly => How::CreditedEarly,
+    };
+    Ok((v.actor, v.subject, how))
 }
 
 /// Checks a vouch an answer to `WhoVouched` carried: that it verifies, is
@@ -500,9 +623,9 @@ fn check_profile(remote: EndpointId, actor: PublicKey, profile: &SignedObject) -
     Ok(published)
 }
 
-/// Tells authors' nodes of the owner's reshares, and finders' nodes of the
-/// credits the owner gave: at once when woken, and each day for those
-/// missed while a node was off.
+/// Tells authors' nodes of the owner's reshares, and signs and sends the
+/// owner's vouches: at once when woken, when the next vouch is due, and
+/// each day for those missed while a node was off.
 pub(crate) async fn vouches_loop(core: std::sync::Arc<Core>) {
     let mut wait = Duration::from_secs(10 * 60).mul_f64(random_fraction());
     loop {
@@ -514,13 +637,22 @@ pub(crate) async fn vouches_loop(core: std::sync::Arc<Core>) {
         if let Some(tor) = &core.tor {
             tor.ready().await;
         }
-        if let Err(e) = core.tell_finders().await {
-            warn!("giving finders their credits failed: {e:#}");
+        wait = jitter(TOLD_AGAIN_EVERY);
+        match core.issue_vouches(now_ms()) {
+            Ok(Some(due)) => {
+                // A second late, so it's due when the loop looks.
+                let until = Duration::from_millis((due - now_ms()).max(0) as u64 + 1_000);
+                wait = wait.min(until);
+            }
+            Ok(None) => {}
+            Err(e) => warn!("signing the owner's vouches failed: {e:#}"),
+        }
+        if let Err(e) = core.tell_vouched(now_ms()).await {
+            warn!("giving the owner's vouches failed: {e:#}");
         }
         if let Err(e) = core.tell_authors_reshared().await {
             warn!("telling authors of our reshares failed: {e:#}");
         }
-        wait = jitter(TOLD_AGAIN_EVERY);
     }
 }
 
@@ -558,6 +690,8 @@ mod tests {
     use iroh::SecretKey;
     use osp_proto::{Announce, Note, Person};
 
+    use crate::db::now_ms;
+
     use super::*;
 
     fn profile(who: &SecretKey) -> SignedObject {
@@ -575,15 +709,20 @@ mod tests {
         SignedObject::sign(who, &person).unwrap()
     }
 
-    fn reshare(who: &SecretKey, of: PublicKey) -> SignedObject {
-        let a = Payload::Announce(Announce {
+    /// `who`'s vouch for `of`, valid until `until`.
+    fn vouch_until(who: &SecretKey, of: PublicKey, until: i64) -> SignedObject {
+        let v = Payload::Vouch(Vouch {
             actor: who.public(),
-            object: ObjectId::of(b"a post"),
-            object_actor: of,
+            subject: of,
+            kind: VouchKind::Reshare,
+            valid_until: osp_proto::rfc3339_from_ms(until as u64),
             published: osp_proto::now_rfc3339(),
-            hosting: false,
         });
-        SignedObject::sign(who, &a).unwrap()
+        SignedObject::sign(who, &v).unwrap()
+    }
+
+    fn reshare(who: &SecretKey, of: PublicKey) -> SignedObject {
+        vouch_until(who, of, now_ms() + 60_000)
     }
 
     fn carried(vouch: SignedObject, profile: SignedObject) -> CarriedVouch {
@@ -626,6 +765,32 @@ mod tests {
         let own = carried(reshare(&bob, bob.public()), profile(&bob));
         let err = check_carried(&own, &bob.public()).unwrap_err();
         assert!(err.to_string().contains("themselves"), "{err:#}");
+    }
+
+    #[test]
+    fn a_vouch_that_ran_out_or_a_bare_reshare_doesnt_count() {
+        let (bob, carol) = (SecretKey::generate(), SecretKey::generate());
+        let now = now_ms();
+        let ran_out = vouch_until(&carol, bob.public(), now - 1);
+        let err = vouch_parts(&ran_out).unwrap_err();
+        assert!(err.to_string().contains("ran out"), "{err:#}");
+        // Valid until a moment from now: checked by the reader's clock.
+        let later = vouch_until(&carol, bob.public(), now + 60_000);
+        assert!(vouch_parts(&later).is_ok());
+        assert!(vouch_parts_at(&later, now + 60_000).is_err());
+        // A reshare was a vouch until section 7; it isn't now.
+        let a = Payload::Announce(Announce {
+            actor: carol.public(),
+            object: ObjectId::of(b"a post"),
+            object_actor: bob.public(),
+            published: osp_proto::now_rfc3339(),
+            hosting: false,
+        });
+        let bare = SignedObject::sign(&carol, &a).unwrap();
+        let err = vouch_parts(&bare).unwrap_err();
+        assert!(err.to_string().contains("isn't a vouch"), "{err:#}");
+        let err = check_carried(&carried(bare, profile(&carol)), &bob.public()).unwrap_err();
+        assert!(err.to_string().contains("isn't a vouch"), "{err:#}");
     }
 
     #[test]

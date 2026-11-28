@@ -90,7 +90,7 @@ pub enum Payload {
     Key(Key),
     Delete(Delete),
     ForwardDelete(ForwardDelete),
-    FoundEarly(FoundEarly),
+    Vouch(Vouch),
     Like(Like),
     Undo(Undo),
 }
@@ -105,7 +105,7 @@ impl Payload {
             Payload::Key(k) => k.actor,
             Payload::Delete(d) => d.actor,
             Payload::ForwardDelete(f) => f.actor,
-            Payload::FoundEarly(f) => f.actor,
+            Payload::Vouch(v) => v.actor,
             Payload::Like(l) => l.actor,
             Payload::Undo(u) => u.actor,
         }
@@ -120,7 +120,7 @@ impl Payload {
             Payload::Key(_) => "Key",
             Payload::Delete(_) => "Delete",
             Payload::ForwardDelete(_) => "ForwardDelete",
-            Payload::FoundEarly(_) => "FoundEarly",
+            Payload::Vouch(_) => "Vouch",
             Payload::Like(_) => "Like",
             Payload::Undo(_) => "Undo",
         }
@@ -134,7 +134,7 @@ impl Payload {
             Payload::Key(k) => &k.published,
             Payload::Delete(d) => &d.published,
             Payload::ForwardDelete(f) => &f.published,
-            Payload::FoundEarly(f) => &f.published,
+            Payload::Vouch(v) => &v.published,
             Payload::Like(l) => &l.published,
             Payload::Undo(u) => &u.published,
         }
@@ -200,7 +200,7 @@ impl Payload {
             | Payload::Key(_)
             | Payload::Delete(_)
             | Payload::ForwardDelete(_)
-            | Payload::FoundEarly(_)
+            | Payload::Vouch(_)
             | Payload::Like(_)
             | Payload::Undo(_) => {}
         }
@@ -475,16 +475,37 @@ pub struct Announce {
     pub hosting: bool,
 }
 
-/// A found-early credit (ADR 0029): the author of `post` credits `finder`
-/// with being one of the first to reshare it, in the order the author's node
-/// heard them. Not AS2. Never in an outbox: the author's node sends it to the
-/// finder's, which keeps it as a vouch for its owner.
+/// A vouch (ADR 0029 section 7): `actor` vouches for `subject` until
+/// `valid_until`. Signed by `actor`, so only they can extend it, by signing
+/// a new one. Not AS2. Never in an outbox: the voucher's node sends it to
+/// the subject's, which keeps it and shows it to those who ask.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct FoundEarly {
+pub struct Vouch {
     pub actor: PublicKey,
-    pub post: ObjectId,
-    pub finder: PublicKey,
+    pub subject: PublicKey,
+    pub kind: VouchKind,
+    /// RFC 3339, like `published`. Past it, the vouch counts for nothing.
+    #[serde(rename = "validUntil")]
+    pub valid_until: String,
     pub published: String,
+}
+
+impl Vouch {
+    /// Whether it's still valid at `now_ms`, by the reader's own clock.
+    pub fn valid_at(&self, now_ms: i64) -> bool {
+        crate::parse_rfc3339_ms(&self.valid_until).is_some_and(|until| until > now_ms)
+    }
+}
+
+/// Why someone vouches (ADR 0029).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VouchKind {
+    /// The voucher reshared the subject's posts in the last 90 days.
+    Reshare,
+    /// The voucher, an author, credits the subject with being one of the
+    /// first to reshare a post of theirs that took off.
+    FoundEarly,
 }
 
 /// A key certificate (ADR 0010): the identity names the key that signs its

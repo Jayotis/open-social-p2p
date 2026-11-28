@@ -11,7 +11,7 @@ use std::collections::{HashMap, HashSet};
 use anyhow::{Result, bail};
 use iroh::PublicKey;
 use osp_proto::{
-    MediaKind, Payload, SignedObject,
+    MediaKind, Payload, SignedObject, VouchKind,
     rpc::ClientResponse,
     share::{
         CardPoint, MAX_CARD_LINES, MAX_CARD_NAMES, MAX_CARD_POINTS, ShareCard, on_grid, two_figures,
@@ -626,19 +626,30 @@ impl Core {
         let since = now - LINE_DAYS as i64 * DAY_MS;
         let mut lines: HashMap<(LineKind, PublicKey, PublicKey), (u32, i64)> = HashMap::new();
         let mut seen = HashSet::new();
+        // A vouch for resharing stands for reshares: it draws a line only
+        // where none of those is held, so it doesn't count them twice.
+        let mut vouches = Vec::new();
         for obj in self.db.public_acts(since)? {
             // The same act can be kept in more than one table.
             if !seen.insert(obj.id()) {
                 continue;
             }
-            let Some((kind, from, to, at)) = public_act(&obj) else {
+            let Some((kind, from, to, at, vouch)) = public_act(&obj) else {
                 continue;
             };
             if from == to || at < since {
                 continue;
             }
+            if vouch {
+                vouches.push(((kind, from, to), at));
+                continue;
+            }
             let line = lines.entry((kind, from, to)).or_insert((0, at));
             line.0 += 1;
+            line.1 = line.1.max(at);
+        }
+        for (key, at) in vouches {
+            let line = lines.entry(key).or_insert((1, at));
             line.1 = line.1.max(at);
         }
         let mut lines: Vec<Act> = lines
@@ -787,16 +798,34 @@ fn fit(mut snapshot: Snapshot) -> Result<Snapshot> {
     Ok(snapshot)
 }
 
-/// A reshare or found-early credit, as checked when it was stored: its
-/// kind, from whom to whom, and its date.
-fn public_act(obj: &SignedObject) -> Option<(LineKind, PublicKey, PublicKey, i64)> {
-    let (kind, from, to, published) = match obj.stored_payload().ok()? {
-        Payload::Announce(a) => (LineKind::Reshared, a.actor, a.object_actor, a.published),
-        Payload::FoundEarly(f) => (LineKind::CreditedEarly, f.actor, f.finder, f.published),
+/// A reshare or vouch, as checked when it was stored: its kind, from whom
+/// to whom, its date, and whether it's a vouch.
+fn public_act(obj: &SignedObject) -> Option<(LineKind, PublicKey, PublicKey, i64, bool)> {
+    let (kind, from, to, published, vouch) = match obj.stored_payload().ok()? {
+        Payload::Announce(a) => (
+            LineKind::Reshared,
+            a.actor,
+            a.object_actor,
+            a.published,
+            false,
+        ),
+        Payload::Vouch(v) => {
+            let kind = match v.kind {
+                VouchKind::Reshare => LineKind::Reshared,
+                VouchKind::FoundEarly => LineKind::CreditedEarly,
+            };
+            (kind, v.actor, v.subject, v.published, true)
+        }
         _ => return None,
     };
     (obj.signer() == from).then_some(())?;
-    Some((kind, from, to, osp_proto::parse_rfc3339_ms(&published)?))
+    Some((
+        kind,
+        from,
+        to,
+        osp_proto::parse_rfc3339_ms(&published)?,
+        vouch,
+    ))
 }
 
 fn machine_points(seen: Vec<Seen>) -> Vec<MachinePoint> {

@@ -1,7 +1,9 @@
 //! Who vouched for a node's owner (ADR 0029). Alice reshares Kim's post, and
-//! Alice's node tells Kim's, which keeps it as a vouch for Kim. Once the post
-//! has 10 resharers, Kim's node credits the first 3 it heard of with finding
-//! it early, and Alice's node keeps her credit as a vouch for Alice.
+//! Alice's node tells Kim's, which keeps it as a record of who reshared. Once
+//! the reshare has stood 10 minutes, Alice's node vouches for Kim: a signed
+//! `Vouch`, valid 30 days and renewed while it stands. Once the post has 10
+//! resharers, Kim's node credits the first 3 it heard of with finding it
+//! early, and Alice's node holds her found-early vouch.
 //!
 //! Other resharers are peers made by hand, so a test can sign as any
 //! identity. All nodes run in this process on loopback with relays and DNS
@@ -21,10 +23,11 @@ use iroh::{
 };
 use osp_node::{Config, Node};
 use osp_proto::{
-    Announce, FoundEarly, Note, ObjectId, Payload, Person, PublicKey, SOCIAL_ALPN, SignedObject,
+    Announce, Note, ObjectId, Payload, Person, PublicKey, SOCIAL_ALPN, SignedObject, Vouch,
+    VouchKind,
     connected::{self, Hop, How, SideFrom},
     framing::{read_frame, write_frame},
-    rpc::{ClientRequest, ClientResponse, ReplyInfo, SentStatus},
+    rpc::{BlockTarget, ClientRequest, ClientResponse, ReplyInfo, SentStatus},
     social::{PlacedAt, ReplyState, SocialRequest, SocialResponse},
 };
 
@@ -68,8 +71,12 @@ async fn post(node: &Node, text: &str) -> ObjectId {
     id
 }
 
-async fn reshare(node: &Node, id: ObjectId) {
-    call(node, ClientRequest::Reshare { id, host: false }).await;
+/// Reshares `id`, and gives the reshare's ID.
+async fn reshare(node: &Node, id: ObjectId) -> ObjectId {
+    match call(node, ClientRequest::Reshare { id, host: false }).await {
+        ClientResponse::Posted { id } => id,
+        other => panic!("unexpected {other:?}"),
+    }
 }
 
 /// How many resharers the author's node counts for its post.
@@ -123,6 +130,25 @@ fn announce(
         hosting: false,
     });
     SignedObject::sign(identity, &a).unwrap()
+}
+
+const MINUTE_MS: i64 = 60 * 1000;
+const DAY_MS: i64 = 24 * 60 * MINUTE_MS;
+
+fn now_ms() -> i64 {
+    osp_proto::parse_rfc3339_ms(&osp_proto::now_rfc3339()).unwrap()
+}
+
+/// `voucher`'s vouch of `kind` for `of`, valid until `until`.
+fn vouch_of(voucher: &SecretKey, of: PublicKey, kind: VouchKind, until: i64) -> SignedObject {
+    let v = Payload::Vouch(Vouch {
+        actor: voucher.public(),
+        subject: of,
+        kind,
+        valid_until: osp_proto::rfc3339_from_ms(until as u64),
+        published: osp_proto::now_rfc3339(),
+    });
+    SignedObject::sign(voucher, &v).unwrap()
 }
 
 /// A node made by hand, connected to another. Holds its endpoint, since
@@ -201,6 +227,15 @@ impl Peer {
         let req = SocialRequest::ShowVouches {
             reply: reply.id(),
             side,
+        };
+        self.ask(&req).await
+    }
+
+    /// Sends `identity`'s vouch, with their profile listing this node.
+    async fn vouched(&self, identity: &SecretKey, vouch: SignedObject) -> SocialResponse {
+        let req = SocialRequest::Vouch {
+            vouch,
+            profile: self.profile(identity),
         };
         self.ask(&req).await
     }
@@ -349,8 +384,9 @@ async fn the_first_three_heard_of_are_credited_once_ten_reshare() {
         kim.credited_finders(&took_off).unwrap(),
         [alice.identity(), others[0].public(), others[1].public()]
     );
-    wait_for("Alice's node to keep her credit", || async {
-        alice.found_early_credits().unwrap() == [took_off]
+    // A credit needs no wait: Kim's node signs her vouch at once.
+    wait_for("Alice's node to hold her credit", || async {
+        alice.found_early_credits().unwrap() == [kim.identity()]
     })
     .await;
 
@@ -365,51 +401,251 @@ async fn the_first_three_heard_of_are_credited_once_ten_reshare() {
         .await);
     assert_eq!(kim.credited_finders(&took_off).unwrap().len(), 3);
 
+    // Kim's node renews it, until Kim blocks Alice. Nothing is sent then.
+    let alices = |given: Vec<(PublicKey, VouchKind, i64, i64)>| {
+        given
+            .into_iter()
+            .find(|g| g.0 == alice.identity() && g.1 == VouchKind::FoundEarly)
+            .map(|g| g.2)
+    };
+    // Signed only: the other two finders' nodes are made by hand and
+    // don't answer.
+    let first = alices(kim.given_vouches().unwrap()).unwrap();
+    kim.sign_vouches_at(now_ms() + 21 * DAY_MS).unwrap();
+    let renewed = alices(kim.given_vouches().unwrap()).unwrap();
+    assert!(renewed > first + 20 * DAY_MS);
+    let block = ClientRequest::Block {
+        target: BlockTarget::Account {
+            actor: alice.identity(),
+        },
+    };
+    call(&kim, block).await;
+    kim.sign_vouches_at(now_ms() + 42 * DAY_MS).unwrap();
+    assert_eq!(alices(kim.given_vouches().unwrap()), Some(renewed));
+
     for node in [kim, alice] {
         node.shutdown().await.unwrap();
     }
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn credits_that_dont_check_out_are_refused() {
+async fn vouches_that_dont_check_out_are_refused() {
     let dir = tempfile::tempdir().unwrap();
-    let kim = start(dir.path(), "Kim").await;
     let alice = start(dir.path(), "Alice").await;
-    let reshared = post(&kim, "Alice reshares this").await;
-    let not_reshared = post(&kim, "but not this").await;
-    follow(&alice, &kim).await;
-    call(&alice, ClientRequest::Sync).await;
-    reshare(&alice, reshared).await;
-
     let peer = Peer::new(&alice.addr().await).await;
+    let me = alice.identity();
     let dan = SecretKey::generate();
-    let credit = |post: ObjectId, finder: PublicKey| {
-        let f = Payload::FoundEarly(FoundEarly {
-            actor: dan.public(),
-            post,
-            finder,
-            published: osp_proto::now_rfc3339(),
-        });
-        SocialRequest::FoundEarly {
-            credit: SignedObject::sign(&dan, &f).unwrap(),
-            profile: peer.profile(&dan),
-        }
-    };
-    // Dan isn't the author of what Alice reshared.
-    let message = refused(peer.ask(&credit(reshared, alice.identity())).await);
-    assert!(
-        message.contains("isn't from the post's author"),
-        "{message}"
+    let now = now_ms();
+
+    // For someone else.
+    let other = vouch_of(&dan, dan.public(), VouchKind::Reshare, now + DAY_MS);
+    let message = refused(peer.vouched(&dan, other).await);
+    assert!(message.contains("themselves"), "{message}");
+    let other = vouch_of(
+        &dan,
+        SecretKey::generate().public(),
+        VouchKind::Reshare,
+        now + DAY_MS,
     );
-    // Alice didn't reshare it.
-    let message = refused(peer.ask(&credit(not_reshared, alice.identity())).await);
-    assert!(message.contains("didn't reshare"), "{message}");
-    // It's for someone else.
-    let message = refused(peer.ask(&credit(reshared, dan.public())).await);
+    let message = refused(peer.vouched(&dan, other).await);
     assert!(message.contains("isn't for this node's owner"), "{message}");
+    // Ran out, or valid longer than a vouch may be.
+    let ran_out = vouch_of(&dan, me, VouchKind::Reshare, now - 1);
+    let message = refused(peer.vouched(&dan, ran_out).await);
+    assert!(message.contains("ran out"), "{message}");
+    let too_long = vouch_of(&dan, me, VouchKind::FoundEarly, now + 40 * DAY_MS);
+    let message = refused(peer.vouched(&dan, too_long).await);
+    assert!(message.contains("30 days at most"), "{message}");
+    // A reshare is no vouch.
+    let bare = announce(&dan, ObjectId::of(b"a post"), me, &osp_proto::now_rfc3339());
+    let message = refused(peer.vouched(&dan, bare).await);
+    assert!(message.contains("isn't a vouch"), "{message}");
+    // From a node the voucher's profile doesn't list.
+    let req = SocialRequest::Vouch {
+        vouch: vouch(&dan, me),
+        profile: profile_listing(&dan, vec![SecretKey::generate().public()]),
+    };
+    let message = refused(peer.ask(&req).await);
+    assert!(message.contains("doesn't list your node"), "{message}");
+    assert!(alice.held_reshare_vouches().unwrap().is_empty());
+
+    // A good one is held; an older one sent after it changes nothing.
+    ok(peer.vouched(&dan, vouch(&dan, me)).await);
+    ok(peer
+        .vouched(&dan, vouch_of(&dan, me, VouchKind::Reshare, now + DAY_MS))
+        .await);
+    assert_eq!(alice.held_reshare_vouches().unwrap(), [dan.public()]);
     assert!(alice.found_early_credits().unwrap().is_empty());
 
-    for node in [kim, alice] {
+    alice.shutdown().await.unwrap();
+}
+
+/// Has each of `nodes` vouch for `subject` for the reshares it made, as it
+/// does once they've stood 10 minutes, and waits for `subject`'s node to
+/// hold them.
+async fn vouch_for_their_reshares(subject: &Node, nodes: &[&Node]) {
+    let later = now_ms() + 11 * MINUTE_MS;
+    for node in nodes {
+        node.vouch_now(later).await.unwrap();
+        holds_from(subject, node.identity()).await;
+    }
+}
+
+/// Waits for `subject`'s node to hold a vouch for resharing from `voucher`.
+async fn holds_from(subject: &Node, voucher: PublicKey) {
+    wait_for("the subject's node to hold the vouch", || async {
+        subject.held_reshare_vouches().unwrap().contains(&voucher)
+    })
+    .await;
+}
+
+/// Bob's vouches for resharing: each person, and when it runs out.
+fn reshare_vouches(bob: &Node) -> Vec<(PublicKey, i64)> {
+    bob.given_vouches()
+        .unwrap()
+        .into_iter()
+        .filter(|g| g.1 == VouchKind::Reshare)
+        .map(|g| (g.0, g.2))
+        .collect()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_reshare_vouches_once_it_has_stood_ten_minutes() {
+    let dir = tempfile::tempdir().unwrap();
+    let jimmy = start(dir.path(), "Jimmy").await;
+    let carol = start(dir.path(), "Carol").await;
+    let bob = start(dir.path(), "Bob").await;
+    let jimmys = post(&jimmy, "by Jimmy").await;
+    let carols = post(&carol, "by Carol").await;
+    follow(&bob, &jimmy).await;
+    follow(&bob, &carol).await;
+    call(&bob, ClientRequest::Sync).await;
+
+    // Bob reshares both; Carol's he takes back at once.
+    reshare(&bob, jimmys).await;
+    let mine = reshare(&bob, carols).await;
+    wait_for("both authors' nodes to hear of the reshares", || async {
+        resharers(&jimmy, jimmys).await == Some(1) && resharers(&carol, carols).await == Some(1)
+    })
+    .await;
+    call(&bob, ClientRequest::Delete { id: mine }).await;
+
+    // Not yet: the reshare is told at once, the vouch waits.
+    assert_eq!(bob.vouch_now(now_ms()).await.unwrap(), 0);
+    assert!(jimmy.held_reshare_vouches().unwrap().is_empty());
+
+    // Ten minutes on: Jimmy's vouch, and none for Carol.
+    let at = now_ms() + 11 * MINUTE_MS;
+    assert_eq!(bob.vouch_now(at).await.unwrap(), 1);
+    holds_from(&jimmy, bob.identity()).await;
+    assert!(carol.held_reshare_vouches().unwrap().is_empty());
+    assert_eq!(
+        reshare_vouches(&bob),
+        [(jimmy.identity(), at + 30 * DAY_MS)]
+    );
+
+    for node in [jimmy, carol, bob] {
+        node.shutdown().await.unwrap();
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_vouch_is_renewed_while_it_stands_and_runs_out_once_it_doesnt() {
+    let dir = tempfile::tempdir().unwrap();
+    let jimmy = start(dir.path(), "Jimmy").await;
+    let bob = start(dir.path(), "Bob").await;
+    let jimmys = post(&jimmy, "by Jimmy").await;
+    follow(&bob, &jimmy).await;
+    call(&bob, ClientRequest::Sync).await;
+    let mine = reshare(&bob, jimmys).await;
+    let t0 = now_ms() + 11 * MINUTE_MS;
+    bob.vouch_now(t0).await.unwrap();
+    holds_from(&jimmy, bob.identity()).await;
+
+    // Renewed between days 17 and 20: with the node off up to 10 days, it
+    // still comes before day 30.
+    let (_, _, until, renew) = bob.given_vouches().unwrap()[0];
+    assert_eq!(until, t0 + 30 * DAY_MS);
+    assert!(
+        (t0 + 17 * DAY_MS..=t0 + 20 * DAY_MS).contains(&renew),
+        "{renew}"
+    );
+    assert!(renew + 10 * DAY_MS < until);
+    bob.vouch_now(t0 + 15 * DAY_MS).await.unwrap();
+    assert_eq!(reshare_vouches(&bob), [(jimmy.identity(), until)]);
+
+    // Unfollowing Jimmy isn't distrust: still renewed.
+    call(
+        &bob,
+        ClientRequest::Unfollow {
+            actor: jimmy.identity(),
+        },
+    )
+    .await;
+    let t1 = t0 + 21 * DAY_MS;
+    bob.vouch_now(t1).await.unwrap();
+    assert_eq!(
+        reshare_vouches(&bob),
+        [(jimmy.identity(), t1 + 30 * DAY_MS)]
+    );
+
+    // Deleted: kept until it runs out, not renewed, then forgotten.
+    call(&bob, ClientRequest::Delete { id: mine }).await;
+    bob.vouch_now(t1 + 21 * DAY_MS).await.unwrap();
+    assert_eq!(
+        reshare_vouches(&bob),
+        [(jimmy.identity(), t1 + 30 * DAY_MS)]
+    );
+    bob.vouch_now(t1 + 30 * DAY_MS).await.unwrap();
+    assert!(reshare_vouches(&bob).is_empty());
+
+    for node in [jimmy, bob] {
+        node.shutdown().await.unwrap();
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn blocking_stops_renewal_and_a_reshare_past_ninety_days_does_too() {
+    let dir = tempfile::tempdir().unwrap();
+    let jimmy = start(dir.path(), "Jimmy").await;
+    let carol = start(dir.path(), "Carol").await;
+    let bob = start(dir.path(), "Bob").await;
+    let jimmys = post(&jimmy, "by Jimmy").await;
+    let carols = post(&carol, "by Carol").await;
+    follow(&bob, &jimmy).await;
+    follow(&bob, &carol).await;
+    call(&bob, ClientRequest::Sync).await;
+    reshare(&bob, jimmys).await;
+    reshare(&bob, carols).await;
+    let t0 = now_ms() + 11 * MINUTE_MS;
+    bob.vouch_now(t0).await.unwrap();
+    holds_from(&jimmy, bob.identity()).await;
+    holds_from(&carol, bob.identity()).await;
+
+    // Bob blocks Jimmy: his vouch isn't renewed; Carol's is.
+    let block = ClientRequest::Block {
+        target: BlockTarget::Account {
+            actor: jimmy.identity(),
+        },
+    };
+    call(&bob, block).await;
+    let t1 = t0 + 21 * DAY_MS;
+    bob.vouch_now(t1).await.unwrap();
+    let mut given = reshare_vouches(&bob);
+    given.sort_by_key(|g| g.1);
+    assert_eq!(
+        given,
+        [
+            (jimmy.identity(), t0 + 30 * DAY_MS),
+            (carol.identity(), t1 + 30 * DAY_MS)
+        ]
+    );
+
+    // A reshare from more than 90 days ago renews nothing.
+    bob.vouch_now(t0 + 91 * DAY_MS).await.unwrap();
+    assert!(reshare_vouches(&bob).is_empty());
+
+    for node in [jimmy, carol, bob] {
         node.shutdown().await.unwrap();
     }
 }
@@ -471,12 +707,16 @@ async fn who_vouched_is_answered_newest_first_one_per_voucher() {
     let now = osp_proto::now_rfc3339();
     let resharers: Vec<SecretKey> = (0..40).map(|_| SecretKey::generate()).collect();
     for resharer in &resharers {
-        ok(peer.reshared(resharer, first, me, &now).await);
+        ok(peer.vouched(resharer, vouch(resharer, me)).await);
         // Heard of one after another, so the order is plain.
         tokio::time::sleep(Duration::from_millis(2)).await;
     }
-    // The first resharer reshares the second post too: newest, but once.
-    ok(peer.reshared(&resharers[0], second, me, &now).await);
+    // The first resharer credits Kim too: newest, but once.
+    let credit = vouch_of(&resharers[0], me, VouchKind::FoundEarly, now_ms() + DAY_MS);
+    ok(peer.vouched(&resharers[0], credit).await);
+    // A reshare, and a vouch that ran out, aren't answered.
+    ok(peer.reshared(&resharers[1], first, me, &now).await);
+    ok(peer.reshared(&resharers[1], second, me, &now).await);
 
     let answered = vouchers(peer.ask(&SocialRequest::WhoVouched).await);
     let mut expected = vec![resharers[0].public()];
@@ -521,13 +761,17 @@ async fn a_node_gathers_its_owners_side_three_steps_back() {
     )
     .await;
 
-    // Dan, on a node made by hand, reshares Carol's.
-    let carols = post(&carol, "by Carol").await;
+    // Their reshares vouch once they've stood 10 minutes.
+    let later = now_ms() + 11 * MINUTE_MS;
+    bob.vouch_now(later).await.unwrap();
+    carol.vouch_now(later).await.unwrap();
+    holds_from(&jimmy, bob.identity()).await;
+    holds_from(&bob, carol.identity()).await;
+
+    // Dan, on a node made by hand, vouches for Carol.
     let peer = Peer::new(&carol.addr().await).await;
     let dan = SecretKey::generate();
-    ok(peer
-        .reshared(&dan, carols, carol.identity(), &osp_proto::now_rfc3339())
-        .await);
+    ok(peer.vouched(&dan, vouch(&dan, carol.identity())).await);
 
     // So Jimmy's node can reach Bob's and Carol's, with DNS lookup off.
     follow(&jimmy, &bob).await;
@@ -611,6 +855,9 @@ async fn the_owner_sees_who_vouched_and_gathers_their_side_when_asked() {
     // Not gathered: asking to see doesn't gather.
     assert!(side.is_empty());
     assert_eq!(gathered, None);
+    // Her reshare vouches once it's stood 10 minutes.
+    alice.vouch_now(now_ms() + 11 * MINUTE_MS).await.unwrap();
+    holds_from(&kim, alice.identity()).await;
 
     let (_, _, _, gathering) = vouches(&kim, true).await;
     assert!(gathering);
@@ -648,14 +895,9 @@ async fn requests(node: &Node) -> Vec<ReplyInfo> {
     }
 }
 
-/// `voucher`'s reshare of a post of `of`'s: a vouch for them.
+/// `voucher`'s vouch for `of`, for resharing, valid 30 days.
 fn vouch(voucher: &SecretKey, of: PublicKey) -> SignedObject {
-    announce(
-        voucher,
-        ObjectId::of(b"a post of theirs"),
-        of,
-        &osp_proto::now_rfc3339(),
-    )
+    vouch_of(voucher, of, VouchKind::Reshare, now_ms() + 30 * DAY_MS)
 }
 
 /// Someone `kim`'s owner trusts, on a node made by hand that follows hers.
@@ -709,7 +951,8 @@ async fn a_strangers_side_is_asked_for_and_each_vouch_checked() {
     assert!(message.contains("from your node"), "{message}");
 
     // Two of Kim's circle vouched for him. A third vouch doesn't verify,
-    // a fourth is for someone else: neither counts.
+    // a fourth is for someone else, a fifth ran out, and a reshare is no
+    // vouch: none of those counts.
     let mut tampered = serde_json::to_value(vouch(&circle[2].0, jimmy.public())).unwrap();
     tampered["signer"] = serde_json::to_value(circle[1].0.public()).unwrap();
     let side = vec![
@@ -717,6 +960,18 @@ async fn a_strangers_side_is_asked_for_and_each_vouch_checked() {
         vouch(&circle[1].0, jimmy.public()),
         serde_json::from_value(tampered).unwrap(),
         vouch(&circle[2].0, SecretKey::generate().public()),
+        vouch_of(
+            &circle[2].0,
+            jimmy.public(),
+            VouchKind::Reshare,
+            now_ms() - 1,
+        ),
+        announce(
+            &circle[2].0,
+            ObjectId::of(b"a post of his"),
+            jimmy.public(),
+            &osp_proto::now_rfc3339(),
+        ),
     ];
     assert_eq!(
         answered(jimmys_node.show(&first, side).await),
@@ -859,6 +1114,7 @@ async fn a_reply_is_let_in_where_the_sides_meet_through_the_circle() {
         resharers(&jimmy, jimmys).await == Some(3)
     })
     .await;
+    vouch_for_their_reshares(&jimmy, &[&alice, &bob, &dan]).await;
     jimmy.gather_side_now().await.unwrap();
     assert_eq!(jimmy.side().unwrap().len(), 3);
 
@@ -1005,6 +1261,7 @@ async fn a_circle_node_that_never_answers_loses_nobody_elses_answer() {
         resharers(&jimmy, jimmys).await == Some(3)
     })
     .await;
+    vouch_for_their_reshares(&jimmy, &[&alice, &bob, &dan]).await;
     jimmy.gather_side_now().await.unwrap();
     assert_eq!(jimmy.side().unwrap().len(), 3);
 
@@ -1058,7 +1315,7 @@ async fn four_steps_through_alice_alone_waits_and_a_second_root_lets_it_in() {
     let jimmy = SecretKey::generate();
     let between: Vec<SecretKey> = (0..5).map(|_| SecretKey::generate()).collect();
     let mut side: Vec<SignedObject> = between.iter().map(|s| vouch(s, jimmy.public())).collect();
-    side.push(x.sign_reshare_of(between[0].public()).unwrap());
+    side.push(x.sign_vouch_for(between[0].public()).unwrap());
     side.extend(
         trusted
             .iter()

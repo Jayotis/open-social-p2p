@@ -15,7 +15,7 @@
 use std::{
     collections::{HashMap, HashSet},
     path::Path,
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use osp_node::{
@@ -285,11 +285,20 @@ async fn the_universe_holds_no_address_and_opening_it_sends_nothing() {
     let bob = start_knowing(dir.path(), &net, "Bob", &directory).await;
     let fred = start_knowing(dir.path(), &net, "Fred", &directory).await;
 
+    // A node signs a reshare's vouch once the reshare has stood 10 minutes
+    // (ADR 0029 section 7): here, as of 11 minutes on, rather than wait.
+    let later = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as i64
+        + 11 * 60 * 1000;
+
     // Jimmy reshares Alice; Kim follows Jimmy.
     follow(&jimmy, &alice).await;
     let alices = post(&alice, "A birch stool").await;
     call(&jimmy, ClientRequest::Sync).await;
     reshare(&jimmy, alices).await;
+    jimmy.vouch_now(later).await.unwrap();
     follow(&kim, &jimmy).await;
     call(&kim, ClientRequest::Sync).await;
 
@@ -299,6 +308,7 @@ async fn the_universe_holds_no_address_and_opening_it_sends_nothing() {
     let kims = post(&kim, "Kim's chair").await;
     call(&bob, ClientRequest::Sync).await;
     reshare(&bob, kims).await;
+    bob.vouch_now(later).await.unwrap();
     let vouched = || async {
         let resp = call(&kim, ClientRequest::Vouches { gather: false }).await;
         matches!(resp, ClientResponse::Vouches { vouchers, .. } if !vouchers.is_empty())

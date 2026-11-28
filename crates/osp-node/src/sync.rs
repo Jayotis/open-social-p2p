@@ -395,9 +395,9 @@ impl Core {
                         }
                         continue;
                     }
-                    // Sent only to its finder's node, never in an outbox (ADR 0029).
-                    Payload::FoundEarly(_) => {
-                        debug!(%actor, "skipping a found-early credit in an outbox");
+                    // Sent only to its subject's node, never in an outbox (ADR 0029).
+                    Payload::Vouch(_) => {
+                        debug!(%actor, "skipping a vouch in an outbox");
                         continue;
                     }
                     // Sent only to the post's creator's node (ADR 0038).
@@ -457,7 +457,7 @@ impl Core {
                     | Payload::Key(_)
                     | Payload::Delete(_)
                     | Payload::ForwardDelete(_)
-                    | Payload::FoundEarly(_)
+                    | Payload::Vouch(_)
                     | Payload::Like(_)
                     | Payload::Undo(_) => {}
                 }

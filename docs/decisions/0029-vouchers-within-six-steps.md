@@ -38,11 +38,11 @@ Today a resharer tells the author's node only of reshares with hosting (ADR 0025
 - at most 10,000 in all, dropping those of the oldest posts first;
 - at most 200 new resharers an hour, past which new ones are refused, so a flood can't push out the real ones.
 
-The author's node hears reshares in the order they come. When a post has **10 different resharers within 7 days** of its first, the author's node signs a **found-early credit** for each of the first 3: `FoundEarly { post, finder }`. It sends each finder's node its credit, and that node keeps it. Order is the author's own: a finder can't backdate their way in.
+The author's node hears reshares in the order they come. When a post has **10 different resharers within 7 days** of its first, the author's node credits each of the first 3 with finding it early, and keeps which post each was for. The **found-early credit** it sends each finder's node is a `Vouch` of kind `found_early` (section 7), which that node holds. Order is the author's own: a finder can't backdate their way in.
 
 ### 2. Jimmy's node gathers his side, in the background
 
-Once a day, Jimmy's node asks the nodes of those who vouched for him: "who vouched for you?" Each answers from its record (step 1), at most 32 vouches, newest first, each with its voucher's signed profile so Jimmy's node can reach their node. Then it does the same one step further back.
+Once a day, Jimmy's node asks the nodes of those who vouched for him: "who vouched for you?" Each answers from the vouches it holds that are still valid (section 7), at most 32, newest first, each with its voucher's signed profile so Jimmy's node can reach their node. Then it does the same one step further back.
 
 It keeps at most **256 vouches** in all, nearest first. These are public acts, so any node answers anyone, limited to 10 questions an hour from one node.
 
@@ -112,7 +112,7 @@ Resharing a post, vouching for a person and keeping a relationship with them are
 
 Until this amendment, the signed reshare was the vouch, and Jimmy's node kept it for good: deleting it, or blocking Jimmy, changed nothing. So a vouch is now its own signed object, and it expires instead of being taken back:
 
-- **`Vouch { voucher, actor, kind, valid_until }`**, signed by Bob's node with Bob's identity key, for Jimmy (`actor`). `kind` is `reshare` or `found_early`. One per voucher, person and kind: Bob's 40 reshares of Jimmy's posts are one vouch.
+- **`Vouch { actor, subject, kind, valid_until }`**, signed by Bob's node for Bob (`actor`), as every object is ([ADR 0010](0010-signing-keys-and-revocation.md)), for Jimmy (`subject`). `kind` is `reshare` or `found_early`. One per voucher, person and kind: Bob's 40 reshares of Jimmy's posts are one vouch. The voucher's node sends it to Jimmy's with `Vouch { vouch, profile }` on the social endpoint.
 - **Issued 10 minutes after the reshare**, if it still stands. A reshare deleted within that time never vouches, so a mis-tap costs nothing. The reshare goes to Bob's followers at once as before; only the vouch waits.
 - **Valid 30 days.** Bob's node renews it around day 20, at a random time within a few days, so Bob's node can be off for about 10 days without a lapse. Jimmy can't extend it: he can't sign as Bob.
 - **Renewed while Bob reshared Jimmy in the last 90 days and hasn't blocked him.** A reshare deleted later still counts until its vouch runs out; a reshare older than 90 days no longer renews it. Unfollowing Jimmy changes nothing: it isn't distrust.

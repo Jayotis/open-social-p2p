@@ -808,7 +808,7 @@ impl Core {
 #[cfg(test)]
 mod tests {
     use iroh::SecretKey;
-    use osp_proto::{Announce, EarlierKeys, Payload, object::CertifiedKey};
+    use osp_proto::{EarlierKeys, Payload, Vouch, VouchKind, object::CertifiedKey};
 
     use super::*;
 
@@ -1063,6 +1063,19 @@ mod tests {
         );
     }
 
+    /// `by`'s vouch for `of`, valid a day.
+    fn vouch(by: PublicKey, of: PublicKey) -> Payload {
+        Payload::Vouch(Vouch {
+            actor: by,
+            subject: of,
+            kind: VouchKind::Reshare,
+            valid_until: osp_proto::rfc3339_from_ms(
+                (crate::db::now_ms() + 24 * 60 * 60 * 1000) as u64,
+            ),
+            published: osp_proto::now_rfc3339(),
+        })
+    }
+
     #[test]
     fn a_vouch_signed_by_a_revoked_key_or_that_doesnt_verify_doesnt_count() {
         let dir = tempfile::tempdir().unwrap();
@@ -1072,15 +1085,7 @@ mod tests {
             SecretKey::generate(),
             SecretKey::generate(),
         );
-        let reshare = |of: PublicKey, by: PublicKey| {
-            Payload::Announce(Announce {
-                actor: by,
-                object: ObjectId::of(b"a post"),
-                object_actor: of,
-                published: osp_proto::now_rfc3339(),
-                hosting: false,
-            })
-        };
+        let reshare = |of: PublicKey, by: PublicKey| vouch(by, of);
         // Bob's vouch is signed by a key he later revokes.
         let old_key = CertifiedKey::certify(
             &bob,
@@ -1132,14 +1137,7 @@ mod tests {
         let side: Vec<SignedObject> = (0..256)
             .map(|_| {
                 let v = SecretKey::generate();
-                let a = Payload::Announce(Announce {
-                    actor: v.public(),
-                    object: ObjectId::of(b"a post"),
-                    object_actor: jimmy,
-                    published: osp_proto::now_rfc3339(),
-                    hosting: false,
-                });
-                SignedObject::sign(&v, &a).unwrap()
+                SignedObject::sign(&v, &vouch(v.public(), jimmy)).unwrap()
             })
             .collect();
         let t = std::time::Instant::now();

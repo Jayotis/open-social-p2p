@@ -30,7 +30,7 @@ The paths come from the **same code** that admits replies, not from a copy of it
 ### 3. Three kinds of line
 
 - **Known:** Kim's own follows, and the people she knows.
-- **Signed evidence:** a reshare or a found-early credit her node checked.
+- **Signed evidence:** a vouch her node checked, for resharing or a found-early credit, and still valid ([ADR 0029 section 7](0029-vouchers-within-six-steps.md#7-a-vouch-is-separate-from-a-reshare-and-expires)).
 - **A gap:** a step her node knows exists but can't see into. A circle node's `PlaceWithin` answer is one: "Alice's node places Carol within 2 steps." It's drawn as a dashed line of that length, with no one named inside, as the answer was given on terms ([ADR 0033](0033-what-the-universe-may-show.md)).
 
 The map never draws a line it doesn't have. If there are no paths, it says "Your node hasn't found a connection," not "not connected."

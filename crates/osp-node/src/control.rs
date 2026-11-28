@@ -33,7 +33,7 @@ use tracing::{debug, info, warn};
 
 use crate::{
     config::RelayChoice,
-    db::{BlobClass, Choice, VouchKind, day_of, now_ms},
+    db::{BlobClass, Choice, day_of, now_ms},
     directory, health, machine, media, network,
     node::{Core, check_addr, remember},
     social::FOLLOWER_SILENCE,
@@ -825,12 +825,14 @@ impl Core {
                 hosting: host,
             }))
             .await?;
-        // The author's node keeps it as a vouch (ADR 0029). And with the
-        // whole copy here, each chunk checked, it may name it (ADR 0025). If
-        // either can't be told now, it is tomorrow.
+        // The author's node keeps it as a record of who reshared, and this
+        // node vouches for the author once it has stood 10 minutes (ADR
+        // 0029). And with the whole copy here, each chunk checked, it may
+        // name it (ADR 0025). If either can't be told now, it is tomorrow.
         if note.actor != me
             && let Some(announce) = self.db.outbox_object(&id)?
         {
+            self.tell_vouches_now.notify_one();
             let core = self.clone();
             tokio::spawn(async move {
                 if let Err(e) = core.tell_author_reshared(&announce).await {
@@ -1224,7 +1226,7 @@ impl Core {
             _ => (note.actor == me).then_some(id),
         };
         let resharers = match note.actor == me {
-            true => Some(self.db.vouches_for(VouchKind::Reshare, &id)? as u32),
+            true => Some(self.db.vouches_for(&id)? as u32),
             false => None,
         };
         let likes = match note.actor == me {
@@ -1273,7 +1275,7 @@ impl Core {
             Payload::Delete(_) | Payload::ForwardDelete(_) => {
                 bail!("{id} is a delete, not a post")
             }
-            Payload::FoundEarly(_) => bail!("{id} is a found-early credit, not a post"),
+            Payload::Vouch(_) => bail!("{id} is a vouch, not a post"),
             Payload::Like(_) | Payload::Undo(_) => bail!("{id} is a like, not a post"),
         }
     }
@@ -1301,7 +1303,7 @@ impl Core {
         }
         let vouchers = self
             .db
-            .vouchers()?
+            .vouchers(now_ms())?
             .into_iter()
             .map(|v| VoucherInfo {
                 actor: v.actor,
