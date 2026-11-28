@@ -2,7 +2,8 @@
 //! looks for to offer pairing again, whichever way the node's direct endpoint
 //! turns it away (ADR 0014): refused at the first packet through a relay, or
 //! closed as not allowed just after the handshake when it came straight to
-//! the node's address. Pairing again with a new code then works.
+//! the node's address. A used code is turned down in plain words, and pairing
+//! again with a new code then works.
 //!
 //! The node runs with its media and direct endpoints on, as nodes do, and the
 //! phone on loopback.
@@ -13,7 +14,7 @@ use iroh_relay::server::{RelayConfig, Server, ServerConfig};
 use osp_client::{Client, ClientOptions};
 use osp_node::{Config, Node, RelayChoice};
 use osp_proto::{
-    NOT_PAIRED,
+    CODE_TURNED_DOWN, NOT_PAIRED,
     rpc::{ClientRequest, ClientResponse},
 };
 
@@ -41,10 +42,8 @@ async fn assert_reaches_node(phone: &Client) {
 /// Pairs `phone`, has the node forget it, checks what the phone is told,
 /// then pairs it again.
 async fn forget_and_pair_again(node: &Node, phone: &Client, path: &str) {
-    phone
-        .pair(&new_pairing(node).await, "Kim's phone")
-        .await
-        .unwrap();
+    let first = new_pairing(node).await;
+    phone.pair(&first, "Kim's phone").await.unwrap();
     assert_reaches_node(phone).await;
     assert_eq!(phone.connection_info().await.unwrap().path, path);
 
@@ -62,6 +61,10 @@ async fn forget_and_pair_again(node: &Node, phone: &Client, path: &str) {
         assert_eq!(err.to_string(), NOT_PAIRED, "{err:#}");
     }
     assert!(phone.pairing().is_some(), "kept until a new one works");
+
+    // The first code was used: the node turns it down, and says so.
+    let err = phone.pair(&first, "Kim's phone").await.unwrap_err();
+    assert_eq!(err.to_string(), CODE_TURNED_DOWN, "{err:#}");
 
     phone
         .pair(&new_pairing(node).await, "Kim's phone")

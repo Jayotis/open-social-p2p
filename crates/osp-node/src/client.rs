@@ -375,7 +375,7 @@ impl Core {
             let i = pending
                 .iter()
                 .position(|p| p.secret_hash == hash)
-                .context("this pairing code is wrong, used or expired; run `osp pair` again")?;
+                .context(osp_proto::CODE_TURNED_DOWN)?;
             let review = pending.remove(i).review;
             if review {
                 // It stays for the devices it has left.
