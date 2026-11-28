@@ -1374,6 +1374,23 @@ impl Db {
         )?)
     }
 
+    /// The owner's reshare of `post`, if their outbox holds one.
+    pub fn own_reshare_of(&self, me: &PublicKey, post: &ObjectId) -> Result<Option<ObjectId>> {
+        let id: Option<String> = self
+            .conn()
+            .query_row(
+                "SELECT objects.id FROM refs
+                 JOIN objects ON objects.id = refs.id
+                 JOIN outbox ON outbox.id = objects.id
+                 WHERE refs.ref = ?1 AND objects.kind = 'Announce' AND objects.actor = ?2
+                 ORDER BY objects.published_ms DESC LIMIT 1",
+                params![post.to_string(), me.to_string()],
+                |row| row.get(0),
+            )
+            .optional()?;
+        id.map(|id| id.parse()).transpose()
+    }
+
     /// The posts the owner reshared, each with its author, from the outbox.
     pub fn own_reshares(&self, me: &PublicKey) -> Result<Vec<(ObjectId, PublicKey)>> {
         let conn = self.conn();

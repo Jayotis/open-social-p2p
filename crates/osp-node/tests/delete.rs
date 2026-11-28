@@ -156,6 +156,50 @@ async fn a_deleted_post_goes_from_followers_and_through_reshares() {
     }
 }
 
+/// A post's feed item says which is the owner's reshare of it, until
+/// that reshare is deleted; a second reshare is refused.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_owners_reshare_shows_on_the_post_and_only_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let alice = start(dir.path(), "Alice").await;
+    let bob = start(dir.path(), "Bob").await;
+    let post = post(&alice, "a table of green oak").await;
+    follow(&bob, &alice).await;
+    feed_texts(&bob).await;
+
+    async fn reshared(node: &Node) -> Vec<Option<ObjectId>> {
+        match call(node, ClientRequest::Feed { limit: 50 }).await {
+            ClientResponse::Feed { items } => items.into_iter().map(|i| i.reshared).collect(),
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+    let none: Vec<Option<ObjectId>> = vec![None];
+    assert_eq!(reshared(&bob).await, none);
+
+    let bobs = reshare(&bob, post, false).await;
+    // One item for the post and his reshare of it, naming the reshare.
+    assert_eq!(reshared(&bob).await, [Some(bobs)]);
+    // Asked through the reshare too, it's the same post.
+    for id in [post, bobs] {
+        let ClientResponse::Error { message } =
+            bob.handle(ClientRequest::Reshare { id, host: false }).await
+        else {
+            panic!("reshared twice")
+        };
+        assert!(message.contains("already reshared"), "{message}");
+    }
+
+    call(&bob, delete(bobs)).await;
+    assert_eq!(reshared(&bob).await, none);
+    // Deleted, it can be reshared again.
+    let again = reshare(&bob, post, false).await;
+    assert_eq!(reshared(&bob).await, [Some(again)]);
+
+    for node in [alice, bob] {
+        node.shutdown().await.unwrap();
+    }
+}
+
 /// ADR 0025's step 5: a resharer's status counts what it served of the
 /// posts it shared with hosting, and nothing else it serves.
 #[tokio::test(flavor = "multi_thread")]

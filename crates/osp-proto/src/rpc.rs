@@ -1577,6 +1577,10 @@ pub struct FeedItem {
     /// Whether the owner likes it, as their node has it (ADR 0038).
     #[serde(default)]
     pub liked: bool,
+    /// The owner's own reshare of it, if their outbox holds one: on the post
+    /// itself and on anyone's reshare of it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reshared: Option<ObjectId>,
     /// Whether it's an opened post (ADR 0039 §4): opened from an OSP code,
     /// its author not followed, and kept only while the owner looks at it.
     #[serde(default)]

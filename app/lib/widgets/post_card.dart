@@ -67,10 +67,9 @@ class PostCard extends StatelessWidget {
     }
   }
 
-  /// Deletes the owner's post or reshare after a minute, with an undo
+  /// Deletes the owner's post or reshare [id] after a minute, with an undo
   /// meanwhile, saying first what deleting does (ADR 0019).
-  Future<void> _delete(BuildContext context) async {
-    final id = post.deletable!;
+  Future<void> _delete(BuildContext context, String id) async {
     final reshare = id != post.id;
     final what = reshare ? 'your reshare' : 'your post';
     final sure = await showModalBottomSheet<bool>(
@@ -131,6 +130,12 @@ class PostCard extends StatelessWidget {
     final published = DateTime.tryParse(post.published);
     final online = node.reachability == Reachability.online;
     final resharers = post.resharers ?? 0;
+    // The owner's reshare: tapping again offers to take it back. While its
+    // delete waits out the minute, it's as good as gone.
+    final mine = switch (post.reshared) {
+      final id? when !node.isDeleting(id) => id,
+      _ => null,
+    };
     return Card(
       margin: const EdgeInsets.fromLTRB(Space.m, Space.s, Space.m, 0),
       child: Column(
@@ -193,7 +198,7 @@ class PostCard extends StatelessWidget {
                   tooltip: 'More',
                   icon: Icon(Icons.more_horiz, color: quiet?.color),
                   onSelected: (choice) => switch (choice) {
-                    'delete' => _delete(context),
+                    'delete' => _delete(context, post.deletable!),
                     'report' => openReport(reportUri(post: post.id)),
                     'hide' => blockPost(context, node, post.id),
                     'block' => blockPerson(
@@ -286,13 +291,18 @@ class PostCard extends StatelessWidget {
                 ),
                 PostAction(
                   icon: Icons.repeat,
-                  label: switch (resharers) {
-                    0 => 'Reshare',
-                    1 => 'Reshare. Reshared by 1 person',
-                    _ => 'Reshare. Reshared by $resharers people',
-                  },
+                  label: [
+                    mine == null ? 'Reshare' : 'You reshared this',
+                    if (resharers == 1) 'Reshared by 1 person',
+                    if (resharers > 1) 'Reshared by $resharers people',
+                  ].join('. '),
                   count: resharers,
-                  onPressed: online ? () => _reshare(context) : null,
+                  color: mine == null ? null : theme.colorScheme.primary,
+                  onPressed: !online
+                      ? null
+                      : mine == null
+                      ? () => _reshare(context)
+                      : () => _delete(context, mine),
                 ),
               ],
             ),
