@@ -3820,8 +3820,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   Post dco_decode_post(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 16)
-      throw Exception('unexpected arr length: expect 16 but see ${arr.length}');
+    if (arr.length != 17)
+      throw Exception('unexpected arr length: expect 17 but see ${arr.length}');
     return Post(
       id: dco_decode_String(arr[0]),
       author: dco_decode_String(arr[1]),
@@ -3837,8 +3837,9 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       resharers: dco_decode_opt_box_autoadd_u_32(arr[11]),
       likes: dco_decode_opt_box_autoadd_u_32(arr[12]),
       liked: dco_decode_bool(arr[13]),
-      opened: dco_decode_bool(arr[14]),
-      regions: dco_decode_list_String(arr[15]),
+      reshared: dco_decode_opt_String(arr[14]),
+      opened: dco_decode_bool(arr[15]),
+      regions: dco_decode_list_String(arr[16]),
     );
   }
 
@@ -5357,6 +5358,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_resharers = sse_decode_opt_box_autoadd_u_32(deserializer);
     var var_likes = sse_decode_opt_box_autoadd_u_32(deserializer);
     var var_liked = sse_decode_bool(deserializer);
+    var var_reshared = sse_decode_opt_String(deserializer);
     var var_opened = sse_decode_bool(deserializer);
     var var_regions = sse_decode_list_String(deserializer);
     return Post(
@@ -5374,6 +5376,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       resharers: var_resharers,
       likes: var_likes,
       liked: var_liked,
+      reshared: var_reshared,
       opened: var_opened,
       regions: var_regions,
     );
@@ -6804,6 +6807,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_opt_box_autoadd_u_32(self.resharers, serializer);
     sse_encode_opt_box_autoadd_u_32(self.likes, serializer);
     sse_encode_bool(self.liked, serializer);
+    sse_encode_opt_String(self.reshared, serializer);
     sse_encode_bool(self.opened, serializer);
     sse_encode_list_String(self.regions, serializer);
   }

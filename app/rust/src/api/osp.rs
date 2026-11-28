@@ -303,6 +303,9 @@ pub struct Post {
     pub likes: Option<u32>,
     /// Whether the owner likes it.
     pub liked: bool,
+    /// The owner's own reshare of it, if they reshared it: what deleting
+    /// takes the reshare back.
+    pub reshared: Option<String>,
     /// Whether it's an opened post (ADR 0039 §4): opened from an OSP code,
     /// its author not followed, and kept only while the owner looks at it.
     pub opened: bool,
@@ -2097,6 +2100,7 @@ fn post(item: FeedItem) -> Post {
         resharers: item.resharers,
         likes: item.likes.map(|n| n.min(u32::MAX as u64) as u32),
         liked: item.liked,
+        reshared: item.reshared.map(|id| id.to_string()),
         opened: item.opened,
         regions: item.regions,
     }
@@ -2465,6 +2469,7 @@ mod tests {
             resharers: None,
             likes: None,
             liked: false,
+            reshared: None,
             opened: false,
             regions: vec![],
             actor_picture: None,

@@ -5229,6 +5229,7 @@ impl SseDecode for crate::api::osp::Post {
         let mut var_resharers = <Option<u32>>::sse_decode(deserializer);
         let mut var_likes = <Option<u32>>::sse_decode(deserializer);
         let mut var_liked = <bool>::sse_decode(deserializer);
+        let mut var_reshared = <Option<String>>::sse_decode(deserializer);
         let mut var_opened = <bool>::sse_decode(deserializer);
         let mut var_regions = <Vec<String>>::sse_decode(deserializer);
         return crate::api::osp::Post {
@@ -5246,6 +5247,7 @@ impl SseDecode for crate::api::osp::Post {
             resharers: var_resharers,
             likes: var_likes,
             liked: var_liked,
+            reshared: var_reshared,
             opened: var_opened,
             regions: var_regions,
         };
@@ -6476,6 +6478,7 @@ impl flutter_rust_bridge::IntoDart for crate::api::osp::Post {
             self.resharers.into_into_dart().into_dart(),
             self.likes.into_into_dart().into_dart(),
             self.liked.into_into_dart().into_dart(),
+            self.reshared.into_into_dart().into_dart(),
             self.opened.into_into_dart().into_dart(),
             self.regions.into_into_dart().into_dart(),
         ]
@@ -7890,6 +7893,7 @@ impl SseEncode for crate::api::osp::Post {
         <Option<u32>>::sse_encode(self.resharers, serializer);
         <Option<u32>>::sse_encode(self.likes, serializer);
         <bool>::sse_encode(self.liked, serializer);
+        <Option<String>>::sse_encode(self.reshared, serializer);
         <bool>::sse_encode(self.opened, serializer);
         <Vec<String>>::sse_encode(self.regions, serializer);
     }

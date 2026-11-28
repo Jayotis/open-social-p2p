@@ -787,6 +787,12 @@ impl Core {
 
     async fn reshare(self: &Arc<Self>, id: &ObjectId, host: bool) -> Result<ObjectId> {
         let (note_id, note) = self.resolve_note(id)?;
+        let me = self.signer.identity();
+        // Twice would show twice in followers' feeds, and vouch no more.
+        ensure!(
+            self.db.own_reshare_of(&me, &note_id)?.is_none(),
+            "you've already reshared this post"
+        );
         if host {
             // Check the whole post fits before fetching any of it.
             let mut needed = 0;
@@ -815,7 +821,6 @@ impl Core {
                 self.db.note_shared(&blob, &note_id)?;
             }
         }
-        let me = self.signer.identity();
         let id = self
             .publish(Payload::Announce(Announce {
                 actor: me,
@@ -1251,6 +1256,7 @@ impl Core {
             resharers,
             likes,
             liked,
+            reshared: self.db.own_reshare_of(&me, &id)?,
             opened: self.db.opened_until(&id)?.is_some(),
             regions: Vec::new(),
         }))

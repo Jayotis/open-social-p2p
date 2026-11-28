@@ -3379,6 +3379,15 @@ fn item_text(item: &FeedItem) -> String {
     if let Some(directory) = &item.found_through {
         let _ = writeln!(out, "  found through directory {directory}");
     }
+    // Unless this is that reshare, said just above.
+    if let Some(mine) = item.reshared
+        && item
+            .reshared_by
+            .as_ref()
+            .is_none_or(|by| by.announce != mine)
+    {
+        let _ = writeln!(out, "  you reshared it ({})", mine.fmt_short());
+    }
     match item.resharers {
         Some(1) => out.push_str("  reshared by 1 person\n"),
         Some(n) if n > 1 => {
@@ -3654,6 +3663,7 @@ mod tests {
             deletable: None,
             likes: None,
             liked: false,
+            reshared: None,
             opened: false,
             actor_picture: None,
             found_reshares: vec![ResharedBy {

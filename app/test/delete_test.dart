@@ -53,6 +53,7 @@ Post post(
   String? deletable,
   String? resharedBy,
   int? resharers,
+  String? reshared,
 }) => Post(
   regions: const [],
   id: 'id-$text',
@@ -67,6 +68,7 @@ Post post(
   opened: false,
   deletable: deletable,
   resharers: resharers,
+  reshared: reshared,
 );
 
 void main() {
@@ -92,6 +94,7 @@ void main() {
     node.posts = [
       post('mine', deletable: 'id-mine', resharers: 2),
       post('theirs'),
+      post('passed on', reshared: 'my-other-reshare'),
       post('reshared', deletable: 'my-reshare', resharedBy: 'Ann'),
     ];
   });
@@ -136,7 +139,7 @@ void main() {
   ) async {
     await open(tester);
     // Every post can be shared; only yours deleted.
-    expect(find.byTooltip('More'), findsNWidgets(3));
+    expect(find.byTooltip('More'), findsNWidgets(4));
     Future<void> menuOf(String text) async {
       final card = find.ancestor(
         of: find.text(text),
@@ -160,6 +163,22 @@ void main() {
   testWidgets('your own post says how many reshared it', (tester) async {
     await open(tester);
     expect(find.byTooltip('Reshare. Reshared by 2 people'), findsOneWidget);
+  });
+
+  testWidgets('a post you reshared says so, and offers to take it back', (
+    tester,
+  ) async {
+    await open(tester);
+    expect(find.byTooltip('You reshared this'), findsOneWidget);
+    await tester.tap(find.byTooltip('You reshared this'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Delete your reshare'));
+    await tester.pumpAndSettle();
+    // The post stays, its button off while the delete waits.
+    expect(find.text('passed on'), findsOneWidget);
+    expect(find.byTooltip('You reshared this'), findsNothing);
+    await tester.pump(const Duration(seconds: 61));
+    expect(app.deleted, ['my-other-reshare']);
   });
 
   testWidgets('a delete waits a minute, and Undo keeps the post', (

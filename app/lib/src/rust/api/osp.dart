@@ -1328,6 +1328,10 @@ class Post {
   /// Whether the owner likes it.
   final bool liked;
 
+  /// The owner's own reshare of it, if they reshared it: what deleting
+  /// takes the reshare back.
+  final String? reshared;
+
   /// Whether it's an opened post (ADR 0039 §4): opened from an OSP code,
   /// its author not followed, and kept only while the owner looks at it.
   final bool opened;
@@ -1350,6 +1354,7 @@ class Post {
     this.resharers,
     this.likes,
     required this.liked,
+    this.reshared,
     required this.opened,
     required this.regions,
   });
@@ -1370,6 +1375,7 @@ class Post {
       resharers.hashCode ^
       likes.hashCode ^
       liked.hashCode ^
+      reshared.hashCode ^
       opened.hashCode ^
       regions.hashCode;
 
@@ -1392,6 +1398,7 @@ class Post {
           resharers == other.resharers &&
           likes == other.likes &&
           liked == other.liked &&
+          reshared == other.reshared &&
           opened == other.opened &&
           regions == other.regions;
 }
