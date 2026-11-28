@@ -94,6 +94,10 @@ The same scenario with another seed (`--seed 2`), whose careless person has 4 vo
 - **Work:** at most 24 ms on the desktop (median 17), about 120 ms on an SBC-sized node.
 - **Gathering a side:** at most 80 nodes asked, the node's own limit; the median side held 114 people.
 
+### Section 7 round: vouches as signed objects
+
+On 2026-11-27, with [section 7](../decisions/0029-vouchers-within-six-steps.md)'s vouches (seed 1). **Every mark was met:** no throwaway reply published (1 point at most); 25 of 30 popular strangers published, against 27 for the same table and seed in the third round, so the margin over the mark is one reply; at most 11 questions a meeting; at most 22 ms of work on the desktop (median 15), about 110 ms on an SBC-sized node; gathering a side asked at most 80 nodes. The 5 popular strangers that waited met at 4 or 5 steps with 3 to 5 points.
+
 ### Found on the way
 
 - A node that can't tell an author's node of a reshare at once, as when that node is busy, tells it on its next pass, a day later. About 1 reshare in 200 waited so in a trial run. By design; the harness brings the pass forward.
