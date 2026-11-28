@@ -177,6 +177,7 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
     return PersonAvatar(
       node: widget.node,
       name: _name.text,
+      identity: widget.profile.identity,
       picture: current,
       radius: radius,
     );

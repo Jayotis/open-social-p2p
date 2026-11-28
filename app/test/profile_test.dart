@@ -8,6 +8,7 @@ import 'package:osp_app/screens/found_people_screen.dart';
 import 'package:osp_app/screens/profile_screen.dart';
 import 'package:osp_app/src/rust/api/osp.dart';
 import 'package:osp_app/uploads.dart';
+import 'package:osp_app/widgets/person_avatar.dart';
 
 import 'plain_words.dart';
 
@@ -354,6 +355,19 @@ void main() {
       await edit(tester, profileOf('Me', own: true));
       expect(find.textContaining('picture is public'), findsOneWidget);
       expect(find.text('Choose a photo'), findsOneWidget);
+    });
+
+    testWidgets('your letter is your star, as everywhere else', (tester) async {
+      await edit(tester, profileOf('Me', own: true));
+      InitialAvatar letter() =>
+          tester.widget<InitialAvatar>(find.byType(InitialAvatar));
+      expect(letter().yours, isTrue);
+      expect(letter().seed, 'id-Me');
+      // A new name changes the letter, not the colour.
+      await tester.enterText(find.byType(TextField).first, 'Robin');
+      await tester.pump();
+      expect(letter().name, 'Robin');
+      expect(letter().seed, 'id-Me');
     });
 
     testWidgets('saves a name, a summary, a link and a photo', (tester) async {
