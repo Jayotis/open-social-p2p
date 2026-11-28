@@ -9,6 +9,7 @@ import 'package:path_provider/path_provider.dart';
 import 'device_key.dart';
 import 'format.dart';
 import 'node.dart';
+import 'osp_codes.dart';
 import 'screens/hide_list_screen.dart';
 import 'screens/hops_screen.dart';
 import 'screens/pair_screen.dart';
@@ -51,11 +52,12 @@ Future<void> main() async {
   } catch (e) {
     error = describeError(e);
   }
-  // An `osp:` link tapped elsewhere, the one that started the app among
-  // them (ADR 0039 §4). The shell opens it once the phone is paired.
+  // An `osp:` link tapped elsewhere, or its https://osp2p.com/o# form, the
+  // one that started the app among them (ADR 0039 §4). The shell opens it
+  // once the phone is paired, finding the code in the link.
   if (node case final node?) {
     AppLinks().uriLinkStream.listen(
-      (uri) => node.openCode(uri.toString()),
+      (uri) => node.openCode(linkText(uri)),
       onError: (Object _) {},
     );
   }

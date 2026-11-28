@@ -55,6 +55,16 @@
                 <category android:name="android.intent.category.BROWSABLE"/>
                 <data android:scheme="osp"/>
             </intent-filter>
+            <!-- The same codes as links, https://osp2p.com/o#<code>, so mail
+                 and chat apps make them tappable. Verified by the site's
+                 /.well-known/assetlinks.json, Android opens them here
+                 without asking the site. -->
+            <intent-filter android:autoVerify="true">
+                <action android:name="android.intent.action.VIEW"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+                <category android:name="android.intent.category.BROWSABLE"/>
+                <data android:scheme="https" android:host="osp2p.com" android:path="/o"/>
+            </intent-filter>
         </activity>
         <service
             android:name=".UploadService"

@@ -97,24 +97,24 @@ Post post(String text, {bool opened = false}) => Post(
 
 void main() {
   group('share texts', () {
-    test('a profile: who, how to get OSP, and the code last', () {
+    test("a profile: who, how to get OSP, and the code's link last", () {
       final text = personShareText(name: 'Kim', code: kimCode);
       expect(text, startsWith('Kim is on Open Social P2P.'));
       expect(text, contains(installGuide));
-      expect(text.split('\n').last, kimCode);
+      expect(text.split('\n').last, 'https://osp2p.com/o#$kimCode');
       expect(protocolWords.hasMatch(words(text)), isFalse);
       final own = personShareText(name: '', code: kimCode, own: true);
       expect(own, startsWith("I'm on Open Social P2P. To follow me"));
     });
 
-    test('a post: its first lines, its author, and the code last', () {
+    test("a post: its first lines, its author, and the code's link last", () {
       final text = postShareText(
         author: 'Ann',
         text: 'First line\n\nsecond line\nthird line',
         code: postCode,
       );
       expect(text, startsWith('“First line\nsecond line…”\nAnn, on Open'));
-      expect(text.split('\n').last, postCode);
+      expect(text.split('\n').last, codeLink(postCode));
       expect(protocolWords.hasMatch(words(text)), isFalse);
       // A post of photos alone has no quote.
       final bare = postShareText(author: '', text: '', code: postCode);
@@ -130,6 +130,16 @@ void main() {
     test('telling someone about OSP gives the install guide', () {
       expect(aboutOspText(), contains(installGuide));
       expect(protocolWords.hasMatch(words(aboutOspText())), isFalse);
+    });
+
+    test('a tapped link is read with its escapes undone', () {
+      final link = Uri.parse(codeLink(postCode));
+      expect(linkText(link), codeLink(postCode));
+      final escaped = Uri.parse(
+        'https://osp2p.com/o#osp%3Apost%2Fabc%3Fby%3DOSP1ANN',
+      );
+      expect(linkText(escaped), codeLink(postCode));
+      expect(linkText(Uri.parse('osp:person/OSP1KIM')), kimCode);
     });
 
     test('the word that is a code is picked out of a message', () {
@@ -180,7 +190,7 @@ void main() {
       expect(app.codesFor, [('id-Ann', 'id-post')]);
       expect(shared, hasLength(1));
       expect(shared.single, startsWith('“Hello there”\nAnn, on Open'));
-      expect(shared.single, endsWith(postCode));
+      expect(shared.single, endsWith(codeLink(postCode)));
       expect(subjects, ['A post by Ann on Open Social P2P']);
     });
 
